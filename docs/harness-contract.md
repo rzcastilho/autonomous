@@ -111,6 +111,33 @@ Consequences for later phases:
   `stream-json`. Bake into orchestrator preflight.
 - `runtime_tools_required: ["claude"]`.
 
+## Phase 3 findings (Jido agent runtime + model validation)
+
+- **CONFIRM #4 resolved:** `Jido.AgentServer.state/1` is public
+  (`{:ok, %State{}}`), and `call/3` returns `{:ok, agent}` with the routed
+  action's `{:ok, state_update}` merged into `agent.state`. The
+  runner-drives-agent design holds. Routed actions receive `signal.data` as
+  params and `context[:agent]` for current state.
+- **Standalone agents need `register_global: false`.** `AgentServer.start_link`
+  otherwise registers the id in `Jido.Registry`, which only exists under a Jido
+  instance (Phase 4). Until then, start agents with `register_global: false` and
+  address them by pid.
+- **Model must be an ALIAS, not a full string** (overturns the Phase 0 / user
+  "full strings" decision — forced by the SDK). The pinned `ClaudeAgentSDK`
+  validates `model` against its **bundled catalog**
+  (`CliSubprocessCore.ModelCatalog`), which currently accepts
+  `opus`/`sonnet`/`haiku` and `opus[1m]`/`sonnet[1m]`/`legacy-sonnet`. Full
+  current strings like `claude-opus-4-8` are **not** in the catalog and fail with
+  `{:unknown_model, ...}`. Config now uses aliases. For reproducibility, pin the
+  alias→full-model mapping via `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL` env
+  vars (the adapter runtime contract forwards them) rather than hardcoding full
+  ids that the catalog rejects. Re-check when the SDK/catalog dep is bumped.
+- **Phases run as fresh sessions.** Each phase is a new `claude -p` invocation;
+  Spec Kit phase state lives in repo files, not the session. The runner captures
+  `session_id` into agent state (observability / future cancel) but never
+  resumes it into the next phase's request — threading it triggers the adapter's
+  `resume/3` path.
+
 ## Deferred to Phase 2 (needs org allowlist + spend approval)
 
 - One real end-to-end `run(:claude, "/speckit.specify …", cwd: repo)` to observe

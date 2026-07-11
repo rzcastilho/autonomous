@@ -57,8 +57,9 @@ dependency, fully unit-testable:
 - `Feature` — the work-unit struct + lifecycle status (`:pending → :running →`
   terminal `:done | :escalated | :halted | :failed`, plus `:blocked`).
 - `Config` — typed accessors over `config :speckit_orchestrator`. Model routing
-  uses **full model strings**, not CLI aliases; `model_for/1` raises on an
-  unrouted phase (no silent fallback).
+  uses **CLI aliases** (`opus`/`sonnet`) — the pinned ClaudeAgentSDK catalog
+  rejects full strings like `claude-opus-4-8`; pin reproducibility via
+  `ANTHROPIC_DEFAULT_*_MODEL` env. `model_for/1` raises on an unrouted phase.
 - `Pipeline` — the pure phase transition table. `next/3` is the whole decision
   surface: advance, or divert via the **clarify gate** (`## NEEDS HUMAN` →
   `:escalated`) or **analyze gate** (Critical finding → `:halted`). Gate signals
@@ -95,6 +96,18 @@ future code:
 `jido_harness` and `jido_claude` are **not on Hex** — pinned to GitHub HEAD SHAs
 in `mix.exs` with `override: true` on the harness. Re-check Hex monthly; bump
 SHAs deliberately.
+
+**Feature vertical (Phase 3).** `Worktree` manages per-feature git worktrees
+(`feature/NNN-slug`), asserting the committed `.specify/`/`.claude/` scaffold
+travelled in; **never** run `specify init` inside a worktree. `FeatureAgent` is a
+Jido agent that passively holds one feature's run state; `FeatureRunner` drives
+it synchronously via `AgentServer.call/3` — one `"phase.run"` signal per phase —
+reads the returned agent's `last_outcome`/`last_signals`, applies
+`Pipeline.next/3`, and on a terminal state finalizes status, removes the worktree
+on `:done` (keeps it otherwise for post-mortem), and notifies. Actions
+(`InitFeature`, `RunFeaturePhase`, `FinalizeFeature`) return `{:ok, state_update}`
+maps that merge into agent state. Agents run `register_global: false` until the
+app's Jido instance exists (Phase 4).
 
 ## Test fixtures
 

@@ -9,14 +9,17 @@ defmodule SpeckitOrchestrator.Config do
 
   @app :speckit_orchestrator
 
+  # Aliases, not full strings — the pinned ClaudeAgentSDK catalog validates
+  # against these (see config/config.exs). Pin reproducibility via
+  # ANTHROPIC_DEFAULT_*_MODEL env vars.
   @default_models %{
-    specify: "claude-sonnet-4-6",
-    clarify: "claude-opus-4-8",
-    plan: "claude-opus-4-8",
-    tasks: "claude-sonnet-4-6",
-    analyze: "claude-opus-4-8",
-    implement: "claude-sonnet-4-6",
-    converge: "claude-sonnet-4-6"
+    specify: "sonnet",
+    clarify: "opus",
+    plan: "opus",
+    tasks: "sonnet",
+    analyze: "opus",
+    implement: "sonnet",
+    converge: "sonnet"
   }
 
   @doc "Path to the target Spec Kit repo the orchestrator drives."

@@ -13,7 +13,7 @@ defmodule SpeckitOrchestrator.PhaseRequestTest do
     assert r.prompt =~ "docs/breakdown/001-core-ledger.md"
     assert r.prompt =~ "001"
     assert r.prompt =~ "core-ledger"
-    assert r.model == "claude-sonnet-4-6"
+    assert r.model == "sonnet"
     assert r.cwd == "."
     assert r.max_turns == nil
     assert r.permission_mode == nil
@@ -25,7 +25,7 @@ defmodule SpeckitOrchestrator.PhaseRequestTest do
     assert r.prompt =~ "clarify reviewer"
     assert r.prompt =~ "## NEEDS HUMAN"
     assert r.prompt =~ "001 core-ledger"
-    assert r.model == "claude-opus-4-8"
+    assert r.model == "opus"
   end
 
   test "analyze: slash command + JSON schema pack, read-only permissions" do
@@ -35,7 +35,7 @@ defmodule SpeckitOrchestrator.PhaseRequestTest do
     assert r.permission_mode == :plan
     assert r.allowed_tools == ~w(Read Grep Glob)
     assert r.disallowed_tools == ~w(Write Edit)
-    assert r.model == "claude-opus-4-8"
+    assert r.model == "opus"
   end
 
   test "implement: max_turns + scoped write permissions" do
