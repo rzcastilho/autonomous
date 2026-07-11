@@ -139,6 +139,16 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
     assert result.reason == {:analyze, :error}
   end
 
+  test "breaker tripping mid-run halts the feature (drain, not kill)" do
+    # budget below one phase's cost -> after the first phase records cost, the
+    # breaker trips and the runner halts before the next phase.
+    {:ok, ledger} = Ledger.start_link(budget: 0.05, name: nil)
+    result = FeatureRunner.run(feature(), ledger: ledger, notify: self())
+    assert result.status == :halted
+    assert result.reason == :breaker
+    assert_received {:feature_finished, "001", :halted, :breaker}
+  end
+
   test "a phase call timeout marks the feature :failed" do
     # 1ms timeout forces the call to die; the runner catches and fails the feature.
     result = FeatureRunner.run(feature(), phase_timeout: 1, notify: self())

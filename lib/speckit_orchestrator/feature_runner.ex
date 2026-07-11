@@ -46,7 +46,7 @@ defmodule SpeckitOrchestrator.FeatureRunner do
         {:ok, _} =
           call(pid, "feature.init", %{feature: feature, worktree: worktree, ledger: ledger}, timeout)
 
-        {status, reason, agent} = loop(pid, Pipeline.first(), timeout)
+        {status, reason, agent} = loop(pid, Pipeline.first(), timeout, ledger)
         call(pid, "feature.finalize", %{status: status, reason: reason}, timeout)
         handle_worktree(status, worktree)
         notify(notify, feature.id, status, reason)
@@ -65,18 +65,34 @@ defmodule SpeckitOrchestrator.FeatureRunner do
 
   # ---- loop ---------------------------------------------------------------
 
-  defp loop(pid, phase, timeout) do
+  defp loop(pid, phase, timeout, ledger) do
     {:ok, agent} = call(pid, "phase.run", %{phase: phase}, timeout)
     st = agent.state
 
     case Pipeline.next(phase, st.last_outcome, st.last_signals) do
-      {:cont, next} -> loop(pid, next, timeout)
-      {:done, :done} -> {:done, :done, agent}
-      {:escalated, reason} -> {:escalated, reason, agent}
-      {:halted, reason} -> {:halted, reason, agent}
-      {:failed, reason} -> {:failed, reason, agent}
+      {:cont, next} ->
+        # Drain-don't-kill: the current phase finished; if the breaker has since
+        # tripped, halt before starting the next phase rather than mid-phase.
+        if breaker_tripped?(ledger),
+          do: {:halted, :breaker, agent},
+          else: loop(pid, next, timeout, ledger)
+
+      {:done, :done} ->
+        {:done, :done, agent}
+
+      {:escalated, reason} ->
+        {:escalated, reason, agent}
+
+      {:halted, reason} ->
+        {:halted, reason, agent}
+
+      {:failed, reason} ->
+        {:failed, reason, agent}
     end
   end
+
+  defp breaker_tripped?(nil), do: false
+  defp breaker_tripped?(ledger), do: SpeckitOrchestrator.Ledger.breaker_tripped?(ledger)
 
   # ---- helpers ------------------------------------------------------------
 

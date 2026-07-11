@@ -56,13 +56,14 @@ defmodule SpeckitOrchestrator.LedgerTest do
     refute snap.tripped?
   end
 
-  test "default-named server: no-arg start_link and server-less API" do
-    {:ok, pid} = Ledger.start_link()
-    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
-    {:ok, ref} = Ledger.reserve(10)
-    assert Ledger.record(ref, 10) == 10
-    assert Ledger.spent() == 10
-    refute Ledger.breaker_tripped?()
+  test "server-less API targets the default-named (app-supervised) ledger" do
+    # The application starts a default-named Ledger; exercise the no-server-arg
+    # heads against it with a delta assertion (no absolute-spend coupling).
+    before = Ledger.spent()
+    {:ok, ref} = Ledger.reserve(1)
+    assert Ledger.record(ref, 1) == before + 1
+    assert Ledger.spent() == before + 1
+    assert is_boolean(Ledger.breaker_tripped?())
   end
 
   property "committed spend never exceeds budget + one in-flight reservation" do

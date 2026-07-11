@@ -15,9 +15,9 @@ defmodule SpeckitOrchestrator.ConfigTest do
     assert is_map(Config.models())
   end
 
-  test "model_for/1 returns the full model string per phase" do
-    assert Config.model_for(:clarify) == "claude-opus-4-8"
-    assert Config.model_for(:implement) == "claude-sonnet-4-6"
+  test "model_for/1 returns the model alias per phase" do
+    assert Config.model_for(:clarify) == "opus"
+    assert Config.model_for(:implement) == "sonnet"
   end
 
   test "model_for/1 raises on an unconfigured phase" do

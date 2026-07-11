@@ -1,6 +1,4 @@
 defmodule SpeckitOrchestrator.Application do
-  # See https://hexdocs.pm/elixir/Application.html
-  # for more information on OTP Applications
   @moduledoc false
 
   use Application
@@ -8,12 +6,13 @@ defmodule SpeckitOrchestrator.Application do
   @impl true
   def start(_type, _args) do
     children = [
-      # Starts a worker by calling: SpeckitOrchestrator.Worker.start_link(arg)
-      # {SpeckitOrchestrator.Worker, arg}
+      # Cost circuit-breaker, run-scoped budget from config.
+      SpeckitOrchestrator.Ledger,
+      # Supervises the per-feature FeatureRunner tasks.
+      {Task.Supervisor, name: SpeckitOrchestrator.RunnerSup}
+      # Coordinator is started per-run (see SpeckitOrchestrator.run/0), not here.
     ]
 
-    # See https://hexdocs.pm/elixir/Supervisor.html
-    # for other strategies and supported options
     opts = [strategy: :one_for_one, name: SpeckitOrchestrator.Supervisor]
     Supervisor.start_link(children, opts)
   end

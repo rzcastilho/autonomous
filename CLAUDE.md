@@ -97,6 +97,19 @@ future code:
 in `mix.exs` with `override: true` on the harness. Re-check Hex monthly; bump
 SHAs deliberately.
 
+**Control plane (Phase 4).** `SpeckitOrchestrator.run/1` (facade) loads the
+backlog and starts a per-run `Coordinator`; `status/0` reports it. The
+`Coordinator` is a **plain GenServer** (deliberate deviation from the plan's
+"Jido agent" — it supervises Task-based runners reacting to async finish
+notifications; a Jido agent would push spawning into action bodies). It holds
+features/statuses/in-flight, releases dependency-and-cap waves via `Release`, and
+on drain emits a final report (`done`/`escalated`/`halted`/`failed`/`blocked`/
+`not_started`/`spend`). Runner spawning is an **injected seam** (`:runner`) so
+wave/DAG/breaker logic is unit-tested without CLI/worktrees; the facade supplies
+the real runner. A tripped `Ledger` breaker releases nothing new and
+`FeatureRunner` halts in-flight features between phases (drain, not kill). App
+tree: `Ledger` + `{Task.Supervisor, RunnerSup}`; the Coordinator is per-run.
+
 **Feature vertical (Phase 3).** `Worktree` manages per-feature git worktrees
 (`feature/NNN-slug`), asserting the committed `.specify/`/`.claude/` scaffold
 travelled in; **never** run `specify init` inside a worktree. `FeatureAgent` is a
