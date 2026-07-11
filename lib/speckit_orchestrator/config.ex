@@ -72,6 +72,22 @@ defmodule SpeckitOrchestrator.Config do
   @spec speckit_version() :: String.t()
   def speckit_version, do: get(:speckit_version, "v0.12.11")
 
+  @default_cost_estimates %{
+    specify: 0.20,
+    clarify: 0.40,
+    plan: 0.60,
+    tasks: 0.30,
+    analyze: 0.40,
+    implement: 2.50,
+    converge: 0.30
+  }
+
+  @doc "Fallback per-phase USD cost estimate (used when the run surfaces no cost)."
+  @spec cost_estimate(atom()) :: number()
+  def cost_estimate(phase) when is_atom(phase) do
+    get(:cost_estimates, @default_cost_estimates) |> Map.get(phase, 0.0)
+  end
+
   @spec get(atom(), term()) :: term()
   defp get(key, default), do: Application.get_env(@app, key, default)
 end

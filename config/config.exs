@@ -44,5 +44,17 @@ config :speckit_orchestrator,
   budget_usd: 25.0,
   # Turn cap for the long-running implement phase.
   implement_max_turns: 80,
+  # Conservative per-phase USD cost estimates. Used as a FALLBACK only — the
+  # Claude adapter emits a :usage event with actual cost_usd when the CLI
+  # reports total_cost_usd; the estimate is recorded when it does not.
+  cost_estimates: %{
+    specify: 0.20,
+    clarify: 0.40,
+    plan: 0.60,
+    tasks: 0.30,
+    analyze: 0.40,
+    implement: 2.50,
+    converge: 0.30
+  },
   # Pinned Spec Kit CLI tag (drift diagnosis — plan §4.6).
   speckit_version: "v0.12.11"

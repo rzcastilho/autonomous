@@ -84,8 +84,10 @@ future code:
   **first-class `RunRequest` fields** (there is no `provider_options`), so
   per-phase permissions get set directly on the request.
 - `run/2,3` returns `{:ok, Stream.of(Jido.Harness.Event)}` — **streaming**.
-- Adapter `capabilities.usage? == false` → no cost events; `Ledger` records must
-  be **config-derived per-phase estimates**, not measured spend.
+- Adapter `capabilities.usage? == false` is conservative: the mapper **does**
+  emit a `:usage` event with `cost_usd` when the CLI reports `total_cost_usd`.
+  Cost is opportunistic — `Cost.for_phase/2` prefers actual, falls back to the
+  per-phase config estimate.
 - The adapter's runtime template uses `--dangerously-skip-permissions`, so
   in-tree write containment relies on the committed `.claude/settings.json` +
   PreToolUse hook (Phase 5), not the CLI's own permission prompts.

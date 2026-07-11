@@ -83,11 +83,14 @@ resume?: true       usage?: false        file_changes?: false   cancellation?: f
 ```
 
 Consequences for later phases:
-- **`usage?: false`** → the adapter does **not** surface cost/usage events.
-  Cost extraction (plan Phase 2 §5) must **fall back to a conservative per-phase
-  flat estimate from config** and feed `Ledger.record/2`. Document as an
-  estimate, not measured spend. (`Jido.Harness.Event.Usage` exists as a type but
-  the claude adapter does not emit it — do not rely on it.)
+- **`usage?: false`** is a *conservative capability flag*, but Phase 2 source
+  reading corrected this: `Jido.Claude.Mapper` **does** emit a `:usage` event
+  (`%Jido.Harness.Event{type: :usage, payload: %{"cost_usd" => ..., "input_tokens",
+  "output_tokens", ...}}`) on `result:success` **when the CLI reports
+  `total_cost_usd`**. So cost extraction is **opportunistic**: `PhaseResult`
+  folds the actual `cost_usd` when present, and `Cost.for_phase/2` falls back to
+  the per-phase config estimate only when it is absent. Because the flag says
+  `false`, never *require* the usage event — always keep the estimate path.
 - **`cancellation?: false`** → no hard mid-phase cancel via the adapter. Fine:
   the breaker uses drain-don't-kill (finish current phase, then halt), never a
   hard cancel.
