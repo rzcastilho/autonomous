@@ -8,7 +8,7 @@ defmodule SpeckitOrchestrator do
   the whole operator surface (no UI in v1).
   """
 
-  alias SpeckitOrchestrator.{Backlog, Config, Coordinator, FeatureRunner, Ledger, Worktree}
+  alias SpeckitOrchestrator.{Backlog, Config, Coordinator, FeatureRunner, Ledger, Report, Worktree}
 
   @coordinator SpeckitOrchestrator.Coordinator
 
@@ -38,6 +38,31 @@ defmodule SpeckitOrchestrator do
   @doc "Live run snapshot (statuses, in-flight, spend, report)."
   @spec status() :: map()
   def status, do: Coordinator.status(@coordinator)
+
+  @doc "Print the live run status as a table (iex operator surface)."
+  @spec print_status() :: :ok
+  def print_status, do: status() |> Report.format_status() |> IO.puts()
+
+  @doc """
+  Prepare a previously-escalated/halted feature for re-run after a human has
+  resolved it. Removes the kept worktree (the human's clarifications stay
+  committed on the feature branch); the next `run/1` reuses that branch and
+  re-runs the feature's pipeline (v1: from the start — mid-pipeline resume is
+  v2). Returns `:ok`, `{:error, {:unknown_feature, id}}`, or a git error.
+  """
+  @spec resolve(String.t(), keyword()) :: :ok | {:error, term()}
+  def resolve(feature_id, opts \\ []) do
+    features = Keyword.get_lazy(opts, :features, &load_backlog/0)
+
+    case Enum.find(features, &(&1.id == feature_id)) do
+      nil ->
+        {:error, {:unknown_feature, feature_id}}
+
+      feature ->
+        worktree = Worktree.locate(feature, opts)
+        if File.dir?(worktree.path), do: Worktree.remove(worktree), else: :ok
+    end
+  end
 
   # ---- internals ----------------------------------------------------------
 

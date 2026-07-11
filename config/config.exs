@@ -1,5 +1,10 @@
 import Config
 
+# Keep test output readable — the runner logs a line per phase transition.
+if config_env() == :test do
+  config :logger, level: :warning
+end
+
 # ---------------------------------------------------------------------------
 # jido_harness provider registration
 #

@@ -139,6 +139,32 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
     assert result.reason == {:analyze, :error}
   end
 
+  test "emits phase + terminal telemetry and writes per-phase transcripts" do
+    Application.put_env(:speckit_orchestrator, :test_fake_scenario, :escalate)
+    wt = scaffolded_worktree()
+
+    test_pid = self()
+    handler = "tele-#{System.unique_integer([:positive])}"
+
+    :telemetry.attach_many(
+      handler,
+      [[:speckit, :phase, :stop], [:speckit, :feature, :terminal]],
+      fn event, _meas, meta, _ -> send(test_pid, {:tele, event, meta}) end,
+      nil
+    )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+
+    FeatureRunner.run(feature(), worktree: wt, notify: self())
+
+    assert_received {:tele, [:speckit, :phase, :stop], %{phase: :specify, outcome: :ok, model: "sonnet"}}
+    assert_received {:tele, [:speckit, :feature, :terminal], %{status: :escalated}}
+
+    # worktree kept on escalation -> transcripts present
+    assert File.exists?(Path.join(wt.path, ".speckit_logs/01-specify.md"))
+    assert File.read!(Path.join(wt.path, ".speckit_logs/02-clarify.md")) =~ "# clarify"
+  end
+
   test "breaker tripping mid-run halts the feature (drain, not kill)" do
     # budget below one phase's cost -> after the first phase records cost, the
     # breaker trips and the runner halts before the next phase.

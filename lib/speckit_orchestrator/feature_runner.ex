@@ -15,8 +15,10 @@ defmodule SpeckitOrchestrator.FeatureRunner do
   long, so `:phase_timeout` defaults generously.
   """
 
+  require Logger
+
   alias Jido.{AgentServer, Signal}
-  alias SpeckitOrchestrator.{FeatureAgent, Pipeline, Worktree}
+  alias SpeckitOrchestrator.{Config, FeatureAgent, Pipeline, Transcripts, Worktree}
 
   @default_phase_timeout :timer.minutes(45)
 
@@ -46,9 +48,10 @@ defmodule SpeckitOrchestrator.FeatureRunner do
         {:ok, _} =
           call(pid, "feature.init", %{feature: feature, worktree: worktree, ledger: ledger}, timeout)
 
-        {status, reason, agent} = loop(pid, Pipeline.first(), timeout, ledger)
+        {status, reason, agent} = loop(pid, feature, Pipeline.first(), 1, timeout, ledger, worktree)
         call(pid, "feature.finalize", %{status: status, reason: reason}, timeout)
         handle_worktree(status, worktree)
+        emit_terminal(feature, status, reason, agent.state.cost_total)
         notify(notify, feature.id, status, reason)
         stop_agent(pid)
 
@@ -65,8 +68,8 @@ defmodule SpeckitOrchestrator.FeatureRunner do
 
   # ---- loop ---------------------------------------------------------------
 
-  defp loop(pid, phase, timeout, ledger) do
-    {:ok, agent} = call(pid, "phase.run", %{phase: phase}, timeout)
+  defp loop(pid, feature, phase, step, timeout, ledger, worktree) do
+    agent = run_phase(pid, feature, phase, step, timeout, worktree)
     st = agent.state
 
     case Pipeline.next(phase, st.last_outcome, st.last_signals) do
@@ -75,7 +78,7 @@ defmodule SpeckitOrchestrator.FeatureRunner do
         # tripped, halt before starting the next phase rather than mid-phase.
         if breaker_tripped?(ledger),
           do: {:halted, :breaker, agent},
-          else: loop(pid, next, timeout, ledger)
+          else: loop(pid, feature, next, step + 1, timeout, ledger, worktree)
 
       {:done, :done} ->
         {:done, :done, agent}
@@ -89,6 +92,31 @@ defmodule SpeckitOrchestrator.FeatureRunner do
       {:failed, reason} ->
         {:failed, reason, agent}
     end
+  end
+
+  # Run one phase inside a telemetry span, write its transcript, and log the
+  # transition.
+  defp run_phase(pid, feature, phase, step, timeout, worktree) do
+    meta = %{feature_id: feature.id, phase: phase, model: Config.model_for(phase), step: step}
+
+    :telemetry.span([:speckit, :phase], meta, fn ->
+      {:ok, agent} = call(pid, "phase.run", %{phase: phase}, timeout)
+      entry = List.first(agent.state.history) || %{}
+      Transcripts.write(worktree, step, phase, agent.state.last_result)
+      Logger.info("feature #{feature.id} phase #{phase} -> #{inspect(Map.get(entry, :outcome))}")
+
+      {agent, Map.merge(meta, %{outcome: Map.get(entry, :outcome), cost: Map.get(entry, :cost, 0.0)})}
+    end)
+  end
+
+  defp emit_terminal(feature, status, reason, cost_total) do
+    :telemetry.execute(
+      [:speckit, :feature, :terminal],
+      %{cost_total: cost_total || 0.0},
+      %{feature_id: feature.id, status: status, reason: reason}
+    )
+
+    Logger.info("feature #{feature.id} terminal=#{status} reason=#{inspect(reason)}")
   end
 
   defp breaker_tripped?(nil), do: false

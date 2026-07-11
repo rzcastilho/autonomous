@@ -33,6 +33,7 @@ defmodule SpeckitOrchestrator.Coordinator do
   defstruct features: %{},
             statuses: %{},
             inflight: MapSet.new(),
+            started_at: %{},
             cap: 2,
             ledger: nil,
             runner: nil,
@@ -126,7 +127,8 @@ defmodule SpeckitOrchestrator.Coordinator do
     %{
       state
       | statuses: Map.put(state.statuses, id, :running),
-        inflight: MapSet.put(state.inflight, id)
+        inflight: MapSet.put(state.inflight, id),
+        started_at: Map.put(state.started_at, id, now_ms())
     }
   end
 
@@ -183,8 +185,15 @@ defmodule SpeckitOrchestrator.Coordinator do
   # ---- helpers ------------------------------------------------------------
 
   defp snapshot(state) do
+    per_feature =
+      Map.new(state.statuses, fn {id, status} ->
+        {id, %{status: status, elapsed_ms: elapsed_ms(state, id)}}
+      end)
+
     %{
       statuses: state.statuses,
+      per_feature: per_feature,
+      totals: state.statuses |> Map.values() |> Enum.frequencies(),
       inflight: MapSet.to_list(state.inflight),
       spend: spend(state),
       breaker_tripped: breaker_tripped?(state),
@@ -192,6 +201,15 @@ defmodule SpeckitOrchestrator.Coordinator do
       report: state.report
     }
   end
+
+  defp elapsed_ms(state, id) do
+    case Map.get(state.started_at, id) do
+      nil -> nil
+      started -> now_ms() - started
+    end
+  end
+
+  defp now_ms, do: System.monotonic_time(:millisecond)
 
   defp feature_list(state), do: Map.values(state.features)
 

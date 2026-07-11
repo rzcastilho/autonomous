@@ -41,19 +41,33 @@ defmodule SpeckitOrchestrator.Worktree do
       present in the worktree (default `true`).
   """
   @spec create(Feature.t(), keyword()) :: {:ok, t()} | {:error, term()}
-  def create(%Feature{id: id, slug: slug}, opts \\ []) do
-    repo = Keyword.get(opts, :repo, Config.repo())
-    root = Keyword.get(opts, :worktree_root, Config.worktree_root())
+  def create(%Feature{} = feature, opts \\ []) do
+    %__MODULE__{path: path, branch: branch, repo: repo} = wt = locate(feature, opts)
+    root = Path.dirname(path)
     base = Keyword.get(opts, :base, "HEAD")
-    branch = "feature/#{id}-#{slug}"
-    path = Path.join(root, "#{id}-#{slug}")
 
     with :ok <- ensure_root(root),
          :ok <- git_worktree_add(repo, branch, path, base),
-         wt = %__MODULE__{path: path, branch: branch, repo: repo, feature_id: id},
          :ok <- maybe_assert_scaffold(wt, Keyword.get(opts, :require_scaffold, true)) do
       {:ok, wt}
     end
+  end
+
+  @doc """
+  Compute the `%Worktree{}` for a feature **without** touching git. Used by
+  `resolve/1` to find a previously-kept worktree.
+  """
+  @spec locate(Feature.t(), keyword()) :: t()
+  def locate(%Feature{id: id, slug: slug}, opts \\ []) do
+    repo = Keyword.get(opts, :repo, Config.repo())
+    root = Keyword.get(opts, :worktree_root, Config.worktree_root())
+
+    %__MODULE__{
+      path: Path.join(root, "#{id}-#{slug}"),
+      branch: "feature/#{id}-#{slug}",
+      repo: repo,
+      feature_id: id
+    }
   end
 
   @doc "Remove the worktree directory (keeps the branch for later PR review)."
@@ -85,11 +99,22 @@ defmodule SpeckitOrchestrator.Worktree do
     end
   end
 
+  # Reuse an existing branch (e.g. after `resolve/1` freed its worktree, keeping
+  # the human's committed clarifications on the branch); otherwise create it.
   defp git_worktree_add(repo, branch, path, base) do
-    case git(repo, ["worktree", "add", "-b", branch, path, base]) do
+    args =
+      if branch_exists?(repo, branch),
+        do: ["worktree", "add", path, branch],
+        else: ["worktree", "add", "-b", branch, path, base]
+
+    case git(repo, args) do
       {:ok, _} -> :ok
       {:error, reason} -> {:error, {:worktree_add, reason}}
     end
+  end
+
+  defp branch_exists?(repo, branch) do
+    match?({:ok, _}, git(repo, ["rev-parse", "--verify", "--quiet", "refs/heads/#{branch}"]))
   end
 
   defp maybe_assert_scaffold(_wt, false), do: :ok

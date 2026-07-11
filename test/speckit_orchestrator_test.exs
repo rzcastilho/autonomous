@@ -1,6 +1,7 @@
 defmodule SpeckitOrchestratorTest do
   # async: false — starts a named Coordinator via the facade.
   use ExUnit.Case, async: false
+  import ExUnit.CaptureIO
 
   alias SpeckitOrchestrator.Feature
 
@@ -18,5 +19,9 @@ defmodule SpeckitOrchestratorTest do
     assert_receive {:run_complete, report}, 2_000
     assert report.done == ["001", "002"]
     assert SpeckitOrchestrator.status().finished?
+
+    out = capture_io(fn -> SpeckitOrchestrator.print_status() end)
+    assert out =~ "FEATURE"
+    assert out =~ "001"
   end
 end
