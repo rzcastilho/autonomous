@@ -97,6 +97,17 @@ future code:
 in `mix.exs` with `override: true` on the harness. Re-check Hex monthly; bump
 SHAs deliberately.
 
+**Enforcement (Phase 5).** Because the adapter runs the CLI with
+`--dangerously-skip-permissions`, containment is a committed **target-repo pack**
+(`priv/target_pack/.claude/`), not the CLI's prompts. `scope_guard.py` is a
+PreToolUse hook that denies out-of-tree writes and dangerous Bash (fails closed
+on bad input); `settings.json` is least-privilege and registers it.
+`TargetPack.install/2` lays the pack into a target repo without clobbering the
+constitution; `TargetPack.verify/1` is the preflight (fails while the template
+constitution marker is present, or if it's uncommitted). `PhaseRequest` per-phase
+permissions are the second layer; a container recipe (`docs/enforcement.md`) is
+the third. Red-teamed by `scope_guard_test` running the real hook.
+
 **Control plane (Phase 4).** `SpeckitOrchestrator.run/1` (facade) loads the
 backlog and starts a per-run `Coordinator`; `status/0` reports it. The
 `Coordinator` is a **plain GenServer** (deliberate deviation from the plan's
