@@ -20,7 +20,11 @@ defmodule SpeckitOrchestrator.FeatureRunner do
   alias Jido.{AgentServer, Signal}
   alias SpeckitOrchestrator.{Config, FeatureAgent, Pipeline, Transcripts, Worktree}
 
-  @default_phase_timeout :timer.minutes(45)
+  # Kept strictly larger than the jido_action `:default_timeout` (config.exs, 45
+  # min) so the *action* execution timeout is the governing guard, not this outer
+  # AgentServer.call — otherwise the call fires first and the phase is marked
+  # :failed while the action is still legitimately running.
+  @default_phase_timeout :timer.minutes(50)
 
   @type terminal :: :done | :escalated | :halted | :failed
   @type result :: %{feature_id: String.t(), status: terminal(), reason: term(), cost_total: number() | nil}

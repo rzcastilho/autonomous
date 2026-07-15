@@ -18,6 +18,16 @@ config :jido_harness,
   default_provider: :claude
 
 # ---------------------------------------------------------------------------
+# jido_action execution timeout. The default is 30s (jido_action Exec), which
+# kills a phase action mid-CLI-run — Spec Kit phases take minutes (implement
+# runs up to `implement_max_turns` turns). Raise the ceiling to cover the
+# longest phase; the outer `FeatureRunner` AgentServer.call timeout is kept
+# strictly larger so the action timeout is the governing guard, not the call.
+# Per-phase timeouts are a future tuning knob (runbook §6).
+# ---------------------------------------------------------------------------
+config :jido_action, default_timeout: :timer.minutes(45)
+
+# ---------------------------------------------------------------------------
 # speckit_orchestrator — orchestrator configuration (Phase 1 consumes these
 # via SpeckitOrchestrator.Config). Model values are FULL model strings, not
 # CLI aliases, for reproducibility (user decision). Placeholders below are
