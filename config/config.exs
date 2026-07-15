@@ -63,8 +63,10 @@ config :speckit_orchestrator,
     implement: "sonnet",
     converge: "sonnet"
   },
-  # Ordered plan stack passed to the plan phase (documented placeholder).
-  plan_stack: [],
+  # Ordered plan stack passed to the plan phase. The LedgerLite spec deliberately
+  # delegates language/format to plan, so plan cannot proceed without one — this
+  # is the product/tech decision the pipeline can't derive.
+  plan_stack: ["Python 3 (standard library only: argparse, unittest; no third-party dependencies)"],
   # Max features running concurrently (worktree-level parallelism).
   max_concurrency: 2,
   # Cost circuit-breaker budget for a run, in USD. Sized to ~5 features' worth

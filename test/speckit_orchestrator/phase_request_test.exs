@@ -7,7 +7,7 @@ defmodule SpeckitOrchestrator.PhaseRequestTest do
     %Feature{id: "001", slug: "core-ledger", path: "/abs/docs/breakdown/001-core-ledger.md"}
   end
 
-  test "specify: slash command + breakdown ref, sonnet model, no write scope" do
+  test "specify: slash command + breakdown ref, sonnet model, non-interactive Bash" do
     r = PhaseRequest.build(feature(), :specify)
     assert String.starts_with?(r.prompt, "/speckit.specify")
     assert r.prompt =~ "docs/breakdown/001-core-ledger.md"
@@ -16,8 +16,24 @@ defmodule SpeckitOrchestrator.PhaseRequestTest do
     assert r.model == "sonnet"
     assert r.cwd == "."
     assert r.max_turns == nil
-    assert r.permission_mode == nil
-    assert r.allowed_tools == nil
+    # specify runs a Spec Kit script (create-new-feature.sh) → Bash pre-approved.
+    assert r.permission_mode == :accept_edits
+    assert "Bash" in r.allowed_tools
+  end
+
+  test "plan/tasks/converge get non-interactive Bash for their Spec Kit scripts" do
+    for phase <- [:plan, :tasks, :converge] do
+      r = PhaseRequest.build(feature(), phase)
+      assert r.permission_mode == :accept_edits, "#{phase} permission_mode"
+      assert "Bash" in r.allowed_tools, "#{phase} allows Bash"
+    end
+  end
+
+  test "clarify edits the spec but gets no Bash" do
+    r = PhaseRequest.build(feature(), :clarify)
+    assert r.permission_mode == :accept_edits
+    assert "Edit" in r.allowed_tools
+    refute "Bash" in r.allowed_tools
   end
 
   test "clarify: reviewer prompt pack with the NEEDS HUMAN contract, opus model" do

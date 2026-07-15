@@ -90,7 +90,16 @@ defmodule SpeckitOrchestrator.PhaseRequest do
   defp max_turns(:implement), do: Config.implement_max_turns()
   defp max_turns(_), do: nil
 
-  # analyze is read-only; implement gets a scoped write set; others default.
+  # Tools that must be pre-approved (via `--allowedTools`) so the headless CLI
+  # runs them non-interactively — Bash is required because the Spec Kit phase
+  # scripts (`.specify/scripts/*.sh`, e.g. setup-plan.sh) run under Bash; without
+  # this they hit "This command requires approval" and the phase produces no
+  # files (plan.md/tasks.md), silently no-opping everything downstream.
+  @write_bash_tools ~w(Read Write Edit Bash Grep Glob)
+
+  # analyze is read-only. The phases that run Spec Kit scripts and/or write repo
+  # files (specify, plan, tasks, implement, converge) get non-interactive
+  # write+Bash. clarify only edits the spec, so it needs no Bash.
   defp permissions(:analyze) do
     %{
       permission_mode: :plan,
@@ -99,11 +108,12 @@ defmodule SpeckitOrchestrator.PhaseRequest do
     }
   end
 
-  defp permissions(:implement) do
-    %{
-      permission_mode: :accept_edits,
-      allowed_tools: ~w(Read Write Edit Bash Grep Glob)
-    }
+  defp permissions(:clarify) do
+    %{permission_mode: :accept_edits, allowed_tools: ~w(Read Write Edit Grep Glob)}
+  end
+
+  defp permissions(phase) when phase in [:specify, :plan, :tasks, :implement, :converge] do
+    %{permission_mode: :accept_edits, allowed_tools: @write_bash_tools}
   end
 
   defp permissions(_phase), do: %{}
