@@ -3,6 +3,12 @@ import Config
 # Keep test output readable — the runner logs a line per phase transition.
 if config_env() == :test do
   config :logger, level: :warning
+
+  # Durable transcripts default to a repo-relative sibling dir; in tests pin them
+  # to a tmp path so runs that drive FeatureRunner/Transcripts don't write into
+  # the real ../.speckit-transcripts.
+  config :speckit_orchestrator,
+    transcript_root: Path.join(System.tmp_dir!(), "speckit_test_transcripts")
 end
 
 # ---------------------------------------------------------------------------

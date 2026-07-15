@@ -34,6 +34,14 @@ defmodule SpeckitOrchestrator.Config do
   @spec worktree_root() :: String.t()
   def worktree_root, do: get(:worktree_root, "../.speckit-worktrees")
 
+  @doc """
+  Root for durable per-phase transcripts, resolved relative to `repo/0`. These
+  survive worktree teardown on `:done` (the in-worktree `.speckit_logs` copy does
+  not), so plan/tasks/implement output stays inspectable after a completed run.
+  """
+  @spec transcript_root() :: String.t()
+  def transcript_root, do: Path.expand(get(:transcript_root, "../.speckit-transcripts"), repo())
+
   @doc "Full per-phase model routing map."
   @spec models() :: %{atom() => String.t()}
   def models, do: get(:models, @default_models)
