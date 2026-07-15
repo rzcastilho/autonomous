@@ -14,9 +14,12 @@ git-worktree parallelism across features, and a cost circuit breaker.
 
 Build follows a phased plan: **`docs/speckit-orchestrator-implementation-plan.md`**
 is the source of truth for scope, sequencing, and exit criteria. As of now
-**Phase 0 (env + harness contract) and Phase 1 (pure core) are done**; Phase 2+
-(real harness `RunPhase`, worktrees, Coordinator, enforcement, LedgerLite
-validation) are not yet built.
+**Phases 0–6 are done** (env + harness contract, pure core, real harness
+`RunPhase`, feature vertical, Coordinator control plane, enforcement pack, and
+observability/docs). **Phase 7 (LedgerLite greenfield validation run) is the
+current gate**: the target repo is prepared and committed (sibling
+`../ledgerlite` — `TargetPack.verify` passes) but the live spend + human PR
+review remain. See `docs/phase7-ledgerlite-runbook.md`.
 
 ## Toolchain — read first
 
