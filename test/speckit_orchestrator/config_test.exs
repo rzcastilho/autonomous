@@ -8,7 +8,7 @@ defmodule SpeckitOrchestrator.ConfigTest do
     assert Config.breakdown_dir() == "docs/breakdown"
     assert Config.worktree_root() == "../.speckit-worktrees"
     assert Config.max_concurrency() == 2
-    assert Config.budget_usd() == 25.0
+    assert Config.budget_usd() == 74.0
     assert Config.implement_max_turns() == 80
     assert Config.plan_stack() == []
     assert Config.speckit_version() == "v0.12.11"

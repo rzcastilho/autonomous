@@ -51,21 +51,31 @@ config :speckit_orchestrator,
   plan_stack: [],
   # Max features running concurrently (worktree-level parallelism).
   max_concurrency: 2,
-  # Cost circuit-breaker budget for a run, in USD.
-  budget_usd: 25.0,
+  # Cost circuit-breaker budget for a run, in USD. Sized to ~5 features' worth
+  # of the recalibrated per-feature estimate (~$14.82) so the breaker drill trips
+  # mid-run over the 7-feature LedgerLite backlog (plan §7.2 trap 3). Raise for a
+  # non-drill run that should complete all 7 (>~$104).
+  budget_usd: 74.0,
   # Turn cap for the long-running implement phase.
   implement_max_turns: 80,
-  # Conservative per-phase USD cost estimates. Used as a FALLBACK only — the
-  # Claude adapter emits a :usage event with actual cost_usd when the CLI
-  # reports total_cost_usd; the estimate is recorded when it does not.
+  # Per-phase USD cost estimates. Used as a FALLBACK only — the Claude adapter
+  # emits a :usage event with actual cost_usd when the CLI reports
+  # total_cost_usd; the estimate is recorded when it does not.
+  #
+  # Recalibrated 2026-07-15 from a live single-phase smoke: `/speckit.specify`
+  # for feature 001 cost $0.63 actual vs the old $0.20 estimate (3.15x under).
+  # `specify` is the one measured phase; the rest are the old estimates scaled by
+  # that 3.15x factor — PROVISIONAL, refine after a full-pipeline live run
+  # (esp. `implement`, which dominates and is the least like `specify`).
+  # Per-feature sum ~= $14.82.
   cost_estimates: %{
-    specify: 0.20,
-    clarify: 0.40,
-    plan: 0.60,
-    tasks: 0.30,
-    analyze: 0.40,
-    implement: 2.50,
-    converge: 0.30
+    specify: 0.63,
+    clarify: 1.26,
+    plan: 1.89,
+    tasks: 0.95,
+    analyze: 1.26,
+    implement: 7.88,
+    converge: 0.95
   },
   # Pinned Spec Kit CLI tag (drift diagnosis — plan §4.6).
   speckit_version: "v0.12.11"

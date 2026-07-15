@@ -84,7 +84,7 @@ defmodule SpeckitOrchestrator.RunPhaseTest do
     assert out.phase_result.error == "kaboom"
     # no usage event -> falls back to the config estimate for :specify
     assert out.cost_source == :estimate
-    assert Ledger.spent(ledger) == 0.20
+    assert Ledger.spent(ledger) == 0.63
   end
 
   test "runs with no ledger (cost recording is a no-op)" do

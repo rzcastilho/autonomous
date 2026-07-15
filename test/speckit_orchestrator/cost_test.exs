@@ -9,8 +9,8 @@ defmodule SpeckitOrchestrator.CostTest do
   end
 
   test "falls back to the per-phase config estimate when no cost surfaced" do
-    assert Cost.for_phase(:implement, %PhaseResult{cost_usd: nil}) == {2.50, :estimate}
-    assert Cost.for_phase(:specify, %PhaseResult{}) == {0.20, :estimate}
+    assert Cost.for_phase(:implement, %PhaseResult{cost_usd: nil}) == {7.88, :estimate}
+    assert Cost.for_phase(:specify, %PhaseResult{}) == {0.63, :estimate}
   end
 
   test "zero cost is treated as no cost (estimate)" do
