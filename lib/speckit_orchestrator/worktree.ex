@@ -90,6 +90,43 @@ defmodule SpeckitOrchestrator.Worktree do
   @spec keep_for_inspection(t()) :: {:ok, String.t()}
   def keep_for_inspection(%__MODULE__{path: path}), do: {:ok, path}
 
+  @doc """
+  Stage and commit everything the pipeline generated in the worktree onto the
+  feature branch (`.gitignore` still applies, so transcript logs stay out).
+
+  Called on every terminal state before the worktree is removed (`:done`) or
+  kept — otherwise a successful run's generated spec/plan/tasks/code is
+  discarded when the worktree is torn down. Uses a dedicated orchestrator author
+  so pipeline commits are distinguishable from human resolution commits.
+
+  Returns `:ok` on a commit, `:noop` when there was nothing to commit (a clean
+  tree — e.g. a run that produced no file changes), or `{:error, term}`.
+  """
+  @spec commit(t(), String.t()) :: :ok | :noop | {:error, term()}
+  def commit(%__MODULE__{path: path}, message) do
+    _ = git(path, ["add", "-A"])
+
+    # `diff --cached --quiet` exits 0 (=> {:ok, _}) when nothing is staged.
+    case git(path, ["diff", "--cached", "--quiet"]) do
+      {:ok, _} ->
+        :noop
+
+      {:error, _} ->
+        case git(path, [
+               "-c",
+               "user.name=speckit-orchestrator",
+               "-c",
+               "user.email=orchestrator@speckit.local",
+               "commit",
+               "-m",
+               message
+             ]) do
+          {:ok, _} -> :ok
+          {:error, _} = err -> err
+        end
+    end
+  end
+
   # ---- git plumbing -------------------------------------------------------
 
   defp ensure_root(root) do

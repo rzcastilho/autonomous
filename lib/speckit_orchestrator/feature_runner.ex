@@ -133,8 +133,19 @@ defmodule SpeckitOrchestrator.FeatureRunner do
   end
 
   defp handle_worktree(_status, nil), do: :ok
-  defp handle_worktree(:done, %Worktree{} = wt), do: Worktree.remove(wt)
-  defp handle_worktree(_terminal, %Worktree{} = wt), do: Worktree.keep_for_inspection(wt)
+
+  # Commit whatever the pipeline generated onto the feature branch BEFORE the
+  # worktree is torn down — otherwise a successful run's spec/plan/tasks/code is
+  # discarded on removal. Commit on kept terminals too, so a later `resolve/1`
+  # (which removes the worktree) doesn't lose them either.
+  defp handle_worktree(status, %Worktree{feature_id: id} = wt) do
+    _ = Worktree.commit(wt, "speckit: feature #{id} pipeline artifacts (#{status})")
+
+    case status do
+      :done -> Worktree.remove(wt)
+      _ -> Worktree.keep_for_inspection(wt)
+    end
+  end
 
   defp start_agent(feature, opts) do
     id = Keyword.get(opts, :agent_id, "feature-#{feature.id}-#{System.unique_integer([:positive])}")

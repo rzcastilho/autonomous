@@ -94,4 +94,37 @@ defmodule SpeckitOrchestrator.WorktreeTest do
     # second create at a fresh root but same branch name -> git fails
     assert {:error, {:worktree_add, _}} = Worktree.create(feature(), with_root(repo))
   end
+
+  test "commit/2 persists generated artifacts onto the branch, honoring .gitignore" do
+    repo = base_repo()
+    {:ok, wt} = Worktree.create(feature(), with_root(repo))
+
+    File.write!(Path.join(wt.path, ".gitignore"), ".speckit_logs/\n")
+    File.mkdir_p!(Path.join(wt.path, "lib"))
+    File.write!(Path.join(wt.path, "lib/ledger.ex"), "defmodule Ledger do\nend\n")
+    File.mkdir_p!(Path.join(wt.path, ".speckit_logs"))
+    File.write!(Path.join(wt.path, ".speckit_logs/01-specify.md"), "transcript\n")
+
+    assert :ok = Worktree.commit(wt, "speckit: feature 001 pipeline artifacts (done)")
+
+    {tree, 0} = System.cmd("git", ["-C", repo, "ls-tree", "-r", "--name-only", wt.branch])
+    assert tree =~ "lib/ledger.ex"
+    # .gitignore respected — transcript logs stay out of the commit
+    refute tree =~ ".speckit_logs"
+
+    {msg, 0} = System.cmd("git", ["-C", repo, "log", "-1", "--format=%an %s", wt.branch])
+    assert msg =~ "speckit-orchestrator"
+    assert msg =~ "pipeline artifacts (done)"
+  end
+
+  test "commit/2 is a no-op on a clean tree" do
+    repo = base_repo()
+    {:ok, wt} = Worktree.create(feature(), with_root(repo))
+    {before, 0} = System.cmd("git", ["-C", repo, "rev-parse", wt.branch])
+
+    assert :noop = Worktree.commit(wt, "nothing to do")
+
+    {after_, 0} = System.cmd("git", ["-C", repo, "rev-parse", wt.branch])
+    assert before == after_
+  end
 end
