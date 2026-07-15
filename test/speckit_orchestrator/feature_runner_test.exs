@@ -29,9 +29,18 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
 
       cond do
         String.contains?(prompt, "clarify reviewer") ->
-          if scenario == :escalate,
-            do: "Reviewed the spec.\n\n## NEEDS HUMAN\nProration semantics unspecified.",
-            else: "Clarified: all ambiguities resolved from the constitution."
+          case scenario do
+            :escalate ->
+              "Reviewed the spec.\n\n## NEEDS HUMAN\nProration semantics unspecified."
+
+            # Reviewer converged and *mentions* the marker inline while saying it
+            # did NOT escalate — must not trip the line-anchored heading match.
+            :clarify_prose_marker ->
+              "Spec decisive. No `## NEEDS HUMAN` — nothing material left; all edge cases defaulted."
+
+            _ ->
+              "Clarified: all ambiguities resolved from the constitution."
+          end
 
         String.contains?(prompt, "/speckit.analyze") ->
           case scenario do
@@ -111,6 +120,19 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
     assert result.status == :escalated
     assert_received {:feature_finished, "001", :escalated, :needs_human}
     assert File.dir?(wt.path)
+  end
+
+  test "clarify that only mentions the marker in prose does not escalate" do
+    Application.put_env(:speckit_orchestrator, :test_fake_scenario, :clarify_prose_marker)
+    wt = scaffolded_worktree()
+
+    result = FeatureRunner.run(feature(), worktree: wt, notify: self())
+
+    # Line-anchored heading match: an inline `## NEEDS HUMAN` mention in a
+    # negation sentence is not an escalation — the pipeline runs to :done.
+    assert result.status == :done
+    assert_received {:feature_finished, "001", :done, _}
+    refute File.dir?(wt.path)
   end
 
   test "analyze critical: stops at :halted and keeps the worktree" do

@@ -25,7 +25,12 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhase do
 
   alias SpeckitOrchestrator.{AnalyzeResult, Cost, Ledger, PhaseRequest, PhaseResult}
 
-  @needs_human_marker "## NEEDS HUMAN"
+  # The escalation signal is the literal `## NEEDS HUMAN` heading emitted by the
+  # clarify reviewer. Match it only as a real Markdown heading (line start, whole
+  # line) — a naive substring match trips on prose that *mentions* the marker,
+  # e.g. "No `## NEEDS HUMAN` — nothing material left", turning a clean pass into
+  # a false escalation.
+  @needs_human_marker ~r/^\#\#[ \t]+NEEDS HUMAN[ \t]*$/m
 
   @impl true
   def run(%{phase: phase}, context) do
@@ -71,7 +76,7 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhase do
   # ---- gate classification ------------------------------------------------
 
   defp classify(:clarify, %PhaseResult{} = r) do
-    {outcome_of(r), %{needs_human?: String.contains?(r.final_text, @needs_human_marker)}}
+    {outcome_of(r), %{needs_human?: Regex.match?(@needs_human_marker, r.final_text || "")}}
   end
 
   defp classify(:analyze, %PhaseResult{status: :ok} = r) do
