@@ -23,9 +23,11 @@ end-to-end, branch `feature/001-core-ledger` carries planning docs + `src/` +
 `tests/` with **109 tests green**, integer-cents respected. Driving 001 live
 surfaced six orchestrator fixes (action timeout; clarify materiality test;
 clarify gate marker line-anchored; commit worktree before teardown; plan/tasks
-non-interactive Bash + `plan_stack`; durable transcripts). Still open: analyze
-integer-cents trap injection (§7.2 trap 2), features 002–007 (wave/breaker/007
-clarify traps), and human PR review of 001. Ops guide: `docs/runbook.md`;
+non-interactive Bash + `plan_stack`; durable transcripts). The **analyze
+integer-cents trap is proven** (§7.2 trap 2): an injected float-money path in
+001's `data-model.md` was flagged Critical against constitution Principle 1 →
+gate halts. Still open: features 002–007 (wave/breaker/007 clarify traps) and
+human PR review of 001. Ops guide: `docs/runbook.md`;
 workflow diagram: `docs/workflow.md`; validation protocol:
 `docs/phase7-ledgerlite-runbook.md`.
 
