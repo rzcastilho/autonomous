@@ -16,18 +16,29 @@ Build follows a phased plan: **`docs/speckit-orchestrator-implementation-plan.md
 is the source of truth for scope, sequencing, and exit criteria. As of now
 **Phases 0–6 are done** (env + harness contract, pure core, real harness
 `RunPhase`, feature vertical, Coordinator control plane, enforcement pack, and
-observability/docs). **Phase 7 (LedgerLite greenfield validation run) is in
-progress**: the sibling target `../ledgerlite` (Python 3 stdlib) is live, and
-**feature 001 (core-ledger) is fully validated** — the pipeline built it
-end-to-end, branch `feature/001-core-ledger` carries planning docs + `src/` +
-`tests/` with **109 tests green**, integer-cents respected. Driving 001 live
-surfaced six orchestrator fixes (action timeout; clarify materiality test;
-clarify gate marker line-anchored; commit worktree before teardown; plan/tasks
-non-interactive Bash + `plan_stack`; durable transcripts). The **analyze
-integer-cents trap is proven** (§7.2 trap 2): an injected float-money path in
-001's `data-model.md` was flagged Critical against constitution Principle 1 →
-gate halts. Still open: features 002–007 (wave/breaker/007 clarify traps) and
-human PR review of 001. Ops guide: `docs/runbook.md`;
+observability/docs). **Phase 7 (LedgerLite greenfield validation run) is done —
+every automated exit criterion met; only human PR review (an inherently manual
+gate) remains.** Against the sibling target `../ledgerlite` (Python 3 stdlib) the
+orchestrator drove the whole 7-feature backlog end-to-end:
+
+- **001–006 built end-to-end**, each with working tests (109 / 202 / 260 / 220 /
+  243 + 005 CSV), on branches `feature/NNN-slug`. 001 and 002 were merged to the
+  target's `main` so dependents build on real code.
+- **007 escalated at clarify** (the seeded month-end/proration/edit trap) with
+  materiality-reasoned `## NEEDS HUMAN` — §7.2 trap 1.
+- **analyze halts on a constitution Critical** — proven both injected (float in
+  001's `data-model.md`) and natural (002's forced money path) — §7.2 trap 2.
+- **wave shape** validated live: 001 solo → 002+005 parallel → 003/004/006
+  three-vs-cap-2 contention.
+- **breaker drain-not-kill** validated live: budget tripped, an in-flight feature
+  finished its phase then halted between phases; report tallied correctly and
+  spend stayed within budget + one reservation — §7.2 trap 3.
+
+Driving these runs surfaced **seven orchestrator fixes** (all on `origin`): action
+timeout; clarify materiality test; clarify gate marker line-anchored; clarify
+gate scans `spec.md` for unresolved `## NEEDS HUMAN`; commit worktree before
+teardown; plan/tasks non-interactive Bash + `plan_stack`; durable transcripts;
+and analyze parser salvages truncated findings JSON. Ops guide: `docs/runbook.md`;
 workflow diagram: `docs/workflow.md`; validation protocol:
 `docs/phase7-ledgerlite-runbook.md`.
 

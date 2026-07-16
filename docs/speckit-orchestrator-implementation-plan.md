@@ -1,6 +1,6 @@
 # speckit_orchestrator — Detailed Implementation Plan
 
-**Date:** July 2026 · **Status:** Draft for review · **Source:** project README + stack verification against upstream releases
+**Date:** July 2026 · **Status:** Phases 0–7 complete (2026-07-16); Phase 7 validation passed, only human PR review remains · **Source:** project README + stack verification against upstream releases
 
 This plan turns the README's design into a phased build. It updates every version and API assumption against the state of the ecosystem as of July 2026, resolves or narrows the five "CONFIRM before first run" items, and sequences the work so each phase produces something runnable and testable before the next begins.
 
@@ -168,6 +168,18 @@ Tasks:
 **Exit criteria:** an operator who didn't build the system can run, watch, and unblock a run from the runbook alone.
 
 ### Phase 7 — Greenfield validation run ("LedgerLite") and hardening (gate before fleet mode)
+
+> **✅ DONE (2026-07-16).** Every automated exit criterion below was met against
+> the LedgerLite target (`../ledgerlite`, Python 3 stdlib). Features 001–006 built
+> end-to-end with passing tests (109 / 202 / 260 / 220 / 243, plus 005); 007
+> escalated at `clarify` on the seeded month-end/proration/edit trap; the analyze
+> gate halted on a constitution Critical both injected (float in 001) and natural
+> (002's forced money path); the wave shape ran solo → parallel → three-vs-cap-2
+> contention; and the breaker drained cleanly on real spend (in-flight feature
+> finished its phase then halted, correct tally, spend within budget + one
+> reservation). The run surfaced **seven orchestrator fixes** (see CLAUDE.md).
+> The only remaining item is human PR review of the feature branches — an
+> inherently manual gate, not an orchestrator capability.
 
 The pilot does not run against a real product first. It runs against a purpose-built greenfield target — **LedgerLite** — designed so that every orchestrator mechanism is exercised deliberately, including the failure paths, on a cheap and disposable codebase.
 
