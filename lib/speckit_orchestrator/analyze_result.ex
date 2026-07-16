@@ -91,11 +91,79 @@ defmodule SpeckitOrchestrator.AnalyzeResult do
     with_findings = Enum.filter(decoded, &Map.has_key?(&1, "findings"))
 
     cond do
-      with_findings != [] -> {:ok, List.last(with_findings)}
-      decoded != [] -> {:ok, List.last(decoded)}
-      true -> :error
+      with_findings != [] ->
+        {:ok, List.last(with_findings)}
+
+      # Recover a truncated/unbalanced findings object (a common model failure:
+      # the transcript ends before the closing `}`/`]`, so balanced extraction
+      # finds nothing) before falling back to any findings-less object.
+      match?({:ok, _}, salvage(transcript)) ->
+        salvage(transcript)
+
+      decoded != [] ->
+        {:ok, List.last(decoded)}
+
+      true ->
+        :error
     end
   end
+
+  # ---- salvage of truncated / unbalanced JSON -----------------------------
+
+  # Take the last object that opens `{ "summary"` (the analyze schema's root),
+  # string-aware-balance its unclosed `{`/`[`, and decode. Returns a map only if
+  # it decodes AND carries a `"findings"` list — never a partial guess.
+  @spec salvage(String.t()) :: {:ok, map()} | :error
+  defp salvage(transcript) do
+    case last_root_start(transcript) do
+      nil ->
+        :error
+
+      start ->
+        frag = binary_part(transcript, start, byte_size(transcript) - start)
+
+        case Jason.decode(balance_close(frag)) do
+          {:ok, %{"findings" => f} = obj} when is_list(f) -> {:ok, obj}
+          _ -> :error
+        end
+    end
+  end
+
+  @root_re ~r/\{\s*"summary"/
+
+  defp last_root_start(transcript) do
+    case Regex.scan(@root_re, transcript, return: :index) do
+      [] -> nil
+      matches -> matches |> List.last() |> hd() |> elem(0)
+    end
+  end
+
+  # Append the closers needed to balance the fragment, closing an unterminated
+  # trailing string first. String-aware so braces/brackets inside string values
+  # are not counted.
+  defp balance_close(frag) do
+    {stack, in_str?, _esc?} =
+      frag |> String.to_charlist() |> Enum.reduce({[], false, false}, &balance_step/2)
+
+    string_close = if in_str?, do: "\"", else: ""
+    closers = stack |> Enum.map(&closer_for/1) |> List.to_string()
+    frag <> string_close <> closers
+  end
+
+  # state = {stack (openers, head = innermost), in_string?, escaped?}
+  defp balance_step(_c, {stack, true, true}), do: {stack, true, false}
+  defp balance_step(?\\, {stack, true, false}), do: {stack, true, true}
+  defp balance_step(?", {stack, true, false}), do: {stack, false, false}
+  defp balance_step(_c, {stack, true, false}), do: {stack, true, false}
+  defp balance_step(?", {stack, false, _}), do: {stack, true, false}
+  defp balance_step(?{, {stack, false, _}), do: {[?{ | stack], false, false}
+  defp balance_step(?[, {stack, false, _}), do: {[?[ | stack], false, false}
+  defp balance_step(?}, {[?{ | stack], false, _}), do: {stack, false, false}
+  defp balance_step(?], {[?[ | stack], false, _}), do: {stack, false, false}
+  defp balance_step(_c, {stack, false, esc}), do: {stack, false, esc}
+
+  defp closer_for(?{), do: ?}
+  defp closer_for(?[), do: ?]
 
   @fence_re ~r/```(?:json)?\s*(\{.*?\})\s*```/s
 

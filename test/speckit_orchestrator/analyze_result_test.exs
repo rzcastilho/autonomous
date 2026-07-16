@@ -83,4 +83,45 @@ defmodule SpeckitOrchestrator.AnalyzeResultTest do
   test "object without a findings key is not a valid analyze result" do
     assert {:error, :no_analyze_json} = AnalyzeResult.parse(~s({"summary":"x"}))
   end
+
+  test "salvages a truncated findings object missing its closing braces" do
+    # Model stopped emitting before the final `}` / `]` (observed in a live run).
+    transcript = """
+    Analysis below.
+
+    {"summary":"halts on money path","findings":[{"severity":"critical","title":"float money","detail":"forbidden","constitution_rule":"P1"}]
+    """
+
+    assert {:ok, r} = AnalyzeResult.parse(transcript)
+    assert r.critical?
+    assert length(r.findings) == 1
+    assert r.summary == "halts on money path"
+  end
+
+  test "salvages truncation mid-string (closes the string, then the structure)" do
+    transcript = ~s({"summary":"ok","findings":[{"severity":"critical","title":"cut off here)
+
+    assert {:ok, r} = AnalyzeResult.parse(transcript)
+    assert r.critical?
+  end
+
+  test "salvage still recovers the value path from a noisy transcript" do
+    transcript = """
+    Read all artifacts.
+
+    ## Findings
+    prose with braces-free text and a stray ] bracket mention.
+
+    {"summary":"clean","findings":[]
+    """
+
+    assert {:ok, r} = AnalyzeResult.parse(transcript)
+    refute r.critical?
+    assert r.findings == []
+  end
+
+  test "salvage does not fabricate: a non-summary truncated object stays a failure" do
+    assert {:error, :no_analyze_json} =
+             AnalyzeResult.parse(~s({"findings": [ {"severity": "critical" ))
+  end
 end
