@@ -16,10 +16,18 @@ Build follows a phased plan: **`docs/speckit-orchestrator-implementation-plan.md
 is the source of truth for scope, sequencing, and exit criteria. As of now
 **Phases 0–6 are done** (env + harness contract, pure core, real harness
 `RunPhase`, feature vertical, Coordinator control plane, enforcement pack, and
-observability/docs). **Phase 7 (LedgerLite greenfield validation run) is the
-current gate**: the target repo is prepared and committed (sibling
-`../ledgerlite` — `TargetPack.verify` passes) but the live spend + human PR
-review remain. See `docs/phase7-ledgerlite-runbook.md`.
+observability/docs). **Phase 7 (LedgerLite greenfield validation run) is in
+progress**: the sibling target `../ledgerlite` (Python 3 stdlib) is live, and
+**feature 001 (core-ledger) is fully validated** — the pipeline built it
+end-to-end, branch `feature/001-core-ledger` carries planning docs + `src/` +
+`tests/` with **109 tests green**, integer-cents respected. Driving 001 live
+surfaced six orchestrator fixes (action timeout; clarify materiality test;
+clarify gate marker line-anchored; commit worktree before teardown; plan/tasks
+non-interactive Bash + `plan_stack`; durable transcripts). Still open: analyze
+integer-cents trap injection (§7.2 trap 2), features 002–007 (wave/breaker/007
+clarify traps), and human PR review of 001. Ops guide: `docs/runbook.md`;
+workflow diagram: `docs/workflow.md`; validation protocol:
+`docs/phase7-ledgerlite-runbook.md`.
 
 ## Toolchain — read first
 
