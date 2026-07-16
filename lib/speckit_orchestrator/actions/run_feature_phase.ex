@@ -46,7 +46,7 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhase do
     case Jido.Harness.run_request(:claude, request, []) do
       {:ok, stream} ->
         result = PhaseResult.reduce(stream)
-        {outcome, signals} = classify(phase, result)
+        {outcome, signals} = classify(phase, result, state)
         {amount, _source} = Cost.for_phase(phase, result)
         record_cost(state.ledger, amount)
 
@@ -75,11 +75,20 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhase do
 
   # ---- gate classification ------------------------------------------------
 
-  defp classify(:clarify, %PhaseResult{} = r) do
-    {outcome_of(r), %{needs_human?: Regex.match?(@needs_human_marker, r.final_text || "")}}
+  # Escalate if the marker is in the clarify RESPONSE **or** left unresolved in
+  # the spec file. The reviewer can write `## NEEDS HUMAN` into `spec.md` while
+  # its response summary reads clean — checking only the response lets a real,
+  # material escalation slip past the gate, and the next phase (`plan`) then
+  # refuses on the unresolved clarification but reports `:ok` (a false-green).
+  defp classify(:clarify, %PhaseResult{} = r, state) do
+    needs_human? =
+      Regex.match?(@needs_human_marker, r.final_text || "") or
+        spec_has_needs_human?(state.worktree, state.feature)
+
+    {outcome_of(r), %{needs_human?: needs_human?}}
   end
 
-  defp classify(:analyze, %PhaseResult{status: :ok} = r) do
+  defp classify(:analyze, %PhaseResult{status: :ok} = r, _state) do
     case AnalyzeResult.parse(r.final_text) do
       {:ok, parsed} -> {:ok, %{critical?: parsed.critical?}}
       # malformed / absent analyze JSON = failure, not a silent pass
@@ -87,7 +96,24 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhase do
     end
   end
 
-  defp classify(_phase, %PhaseResult{} = r), do: {outcome_of(r), %{}}
+  defp classify(_phase, %PhaseResult{} = r, _state), do: {outcome_of(r), %{}}
+
+  # True when any `spec.md` under the feature's worktree still carries an
+  # unresolved `## NEEDS HUMAN` heading (line-anchored, same as the response
+  # check). No worktree (dry runs / tests) → false.
+  defp spec_has_needs_human?(%{path: path}, _feature) when is_binary(path) do
+    path
+    |> Path.join("specs/**/spec.md")
+    |> Path.wildcard()
+    |> Enum.any?(fn file ->
+      case File.read(file) do
+        {:ok, content} -> Regex.match?(@needs_human_marker, content)
+        _ -> false
+      end
+    end)
+  end
+
+  defp spec_has_needs_human?(_worktree, _feature), do: false
 
   # A run that did not reach a successful terminal event is an error outcome
   # (covers :error and :incomplete).

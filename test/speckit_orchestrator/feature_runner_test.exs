@@ -135,6 +135,21 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
     refute File.dir?(wt.path)
   end
 
+  test "clarify escalates on a spec-file NEEDS HUMAN even when its response is clean" do
+    wt = scaffolded_worktree()
+    # A prior phase left an unresolved marker in the spec; the clarify response
+    # (scenario :happy) reads clean. The gate must catch the spec-file marker.
+    spec_dir = Path.join(wt.path, "specs/001-core-ledger")
+    File.mkdir_p!(spec_dir)
+    File.write!(Path.join(spec_dir, "spec.md"), "# Spec\n\n## NEEDS HUMAN\nQ1 unresolved\n")
+
+    result = FeatureRunner.run(feature(), worktree: wt, notify: self())
+
+    assert result.status == :escalated
+    assert_received {:feature_finished, "001", :escalated, :needs_human}
+    assert File.dir?(wt.path)
+  end
+
   test "analyze critical: stops at :halted and keeps the worktree" do
     Application.put_env(:speckit_orchestrator, :test_fake_scenario, :halt)
     wt = scaffolded_worktree()

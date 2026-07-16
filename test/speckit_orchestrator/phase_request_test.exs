@@ -65,6 +65,11 @@ defmodule SpeckitOrchestrator.PhaseRequestTest do
 
   test "tasks and plan use their slash commands" do
     assert PhaseRequest.build(feature(), :tasks).prompt == "/speckit.tasks"
+
+    # With no configured stack, plan is the bare slash command (config now ships
+    # a default plan_stack, so clear it for this assertion).
+    Application.put_env(:speckit_orchestrator, :plan_stack, [])
+    on_exit(fn -> Application.delete_env(:speckit_orchestrator, :plan_stack) end)
     assert PhaseRequest.build(feature(), :plan).prompt == "/speckit.plan"
   end
 
