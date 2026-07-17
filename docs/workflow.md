@@ -77,5 +77,32 @@ flowchart TB
   branch, `resolve/1` to free the worktree, and re-run — the feature reuses its
   branch. Escalations can span multiple rounds.
 
+## Variant — stacked sequential PR workflow (`pr_workflow: true`)
+
+An opt-in facade mode. The data plane (the 7 phases + gates) is unchanged; only
+release and terminal handling differ: concurrency is forced to **1** (features
+build one at a time), the target repo's remote is **preflighted**, each feature
+branches from the **previous completed feature's branch**, and on `:done` the
+branch is **pushed and a PR opened** against that base — stacked PRs, merged
+bottom-up.
+
+```mermaid
+flowchart LR
+  M[main] --> F1[feature/001]
+  F1 --> F2[feature/002]
+  F2 --> F3[feature/003]
+  F1 -. PR #1 .-> M
+  F2 -. PR #2 .-> F1
+  F3 -. PR #3 .-> F2
+
+  classDef b fill:#166534,stroke:#052e16,color:#fff;
+  class M,F1,F2,F3 b;
+```
+
+Only `:done` opens a PR; escalated/halted/failed keep the branch for the
+human-resolve loop above and open the PR after a resolved re-run reaches `:done`.
+See `docs/runbook.md` → "Stacked sequential PR workflow" for the knobs
+(`pr_workflow` / `pr_base` / `pr_remote`) and prerequisites (remote + `gh`).
+
 See `docs/runbook.md` for the operator step-by-step and
 `docs/speckit-orchestrator-implementation-plan.md` for scope and rationale.
