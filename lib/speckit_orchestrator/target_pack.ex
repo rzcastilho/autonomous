@@ -63,6 +63,7 @@ defmodule SpeckitOrchestrator.TargetPack do
       |> require_dir(repo, ".claude/skills")
       |> check_constitution(repo)
       |> check_committed(repo, Keyword.get(opts, :check_git, true))
+      |> check_remote(repo, Keyword.get(opts, :check_remote, false))
 
     case problems do
       [] -> :ok
@@ -111,6 +112,21 @@ defmodule SpeckitOrchestrator.TargetPack do
          ) do
       {_, 0} -> problems
       {_, _} -> [{:uncommitted, rel} | problems]
+    end
+  end
+
+  # `check_remote:` — `false` (default) skips; `true` checks the configured
+  # `pr_remote`; a string checks that named remote. Used by the PR workflow's
+  # preflight so a run cannot start without a push target.
+  defp check_remote(problems, _repo, false), do: problems
+
+  defp check_remote(problems, repo, true),
+    do: check_remote(problems, repo, SpeckitOrchestrator.Config.pr_remote())
+
+  defp check_remote(problems, repo, remote) when is_binary(remote) do
+    case System.cmd("git", ["-C", repo, "remote", "get-url", remote], stderr_to_stdout: true) do
+      {_, 0} -> problems
+      {_, _} -> [{:no_remote, remote} | problems]
     end
   end
 

@@ -10,7 +10,10 @@ defmodule SpeckitOrchestrator.ConfigTest do
     assert Config.max_concurrency() == 2
     assert Config.budget_usd() == 74.0
     assert Config.implement_max_turns() == 80
-    assert Config.plan_stack() == []
+
+    assert Config.plan_stack() ==
+             ["Python 3 (standard library only: argparse, unittest; no third-party dependencies)"]
+
     assert Config.speckit_version() == "v0.12.11"
     assert is_map(Config.models())
   end

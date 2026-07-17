@@ -11,7 +11,8 @@ defmodule SpeckitOrchestrator.TargetPackTest do
     dir
   end
 
-  defp git!(repo, args), do: {_, 0} = System.cmd("git", ["-C", repo | args], stderr_to_stdout: true)
+  defp git!(repo, args),
+    do: {_, 0} = System.cmd("git", ["-C", repo | args], stderr_to_stdout: true)
 
   test "install/2 lays down settings, executable hook, and template constitution" do
     repo = tmp_repo()
@@ -23,7 +24,9 @@ defmodule SpeckitOrchestrator.TargetPackTest do
     assert File.regular?(hook)
     stat = File.stat!(hook)
     assert (stat.mode &&& 0o100) != 0, "hook should be executable"
-    assert File.read!(Path.join(repo, ".specify/memory/constitution.md")) =~ "SPECKIT_ORCHESTRATOR_TEMPLATE"
+
+    assert File.read!(Path.join(repo, ".specify/memory/constitution.md")) =~
+             "SPECKIT_ORCHESTRATOR_TEMPLATE"
   end
 
   test "install/2 never clobbers an existing constitution" do
@@ -33,7 +36,9 @@ defmodule SpeckitOrchestrator.TargetPackTest do
 
     assert {:ok, summary} = TargetPack.install(repo)
     assert summary.constitution_skipped
-    assert File.read!(Path.join(repo, ".specify/memory/constitution.md")) == "# Real constitution\n"
+
+    assert File.read!(Path.join(repo, ".specify/memory/constitution.md")) ==
+             "# Real constitution\n"
   end
 
   test "verify/1 fails while the template constitution is in place" do
@@ -71,5 +76,40 @@ defmodule SpeckitOrchestrator.TargetPackTest do
     repo = tmp_repo()
     assert {:error, problems} = TargetPack.verify(repo, check_git: false)
     assert Enum.any?(problems, &match?({:missing, ".claude/settings.json"}, &1))
+  end
+
+  defp committed_target do
+    repo = tmp_repo()
+    {:ok, _} = TargetPack.install(repo)
+    File.write!(Path.join(repo, ".specify/memory/constitution.md"), "# Real\n\n1. cents.\n")
+    git!(repo, ["init", "-q", "-b", "main"])
+    git!(repo, ["config", "user.email", "t@e.com"])
+    git!(repo, ["config", "user.name", "T"])
+    git!(repo, ["add", "-A"])
+    git!(repo, ["commit", "-q", "-m", "pack"])
+    repo
+  end
+
+  test "verify(check_remote: true) fails when the target has no remote" do
+    repo = committed_target()
+    assert {:error, problems} = TargetPack.verify(repo, check_remote: true)
+    assert Enum.any?(problems, &match?({:no_remote, "origin"}, &1))
+  end
+
+  test "verify(check_remote: true) passes once origin is configured" do
+    repo = committed_target()
+    remote = Path.join(System.tmp_dir!(), "tp_remote_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(remote)
+    git!(remote, ["init", "-q", "--bare"])
+    on_exit(fn -> File.rm_rf(remote) end)
+    git!(repo, ["remote", "add", "origin", remote])
+
+    assert :ok = TargetPack.verify(repo, check_remote: true)
+  end
+
+  test "verify(check_remote: <name>) checks a named remote" do
+    repo = committed_target()
+    assert {:error, problems} = TargetPack.verify(repo, check_remote: "upstream")
+    assert Enum.any?(problems, &match?({:no_remote, "upstream"}, &1))
   end
 end

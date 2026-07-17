@@ -66,10 +66,12 @@ defmodule SpeckitOrchestrator.PhaseRequestTest do
   test "tasks and plan use their slash commands" do
     assert PhaseRequest.build(feature(), :tasks).prompt == "/speckit.tasks"
 
-    # With no configured stack, plan is the bare slash command (config now ships
-    # a default plan_stack, so clear it for this assertion).
+    # With no configured stack, plan is the bare slash command (config ships a
+    # default plan_stack, so clear it for this assertion — restoring the original
+    # so we don't pollute other tests' view of :plan_stack).
+    original = Application.get_env(:speckit_orchestrator, :plan_stack)
     Application.put_env(:speckit_orchestrator, :plan_stack, [])
-    on_exit(fn -> Application.delete_env(:speckit_orchestrator, :plan_stack) end)
+    on_exit(fn -> Application.put_env(:speckit_orchestrator, :plan_stack, original) end)
     assert PhaseRequest.build(feature(), :plan).prompt == "/speckit.plan"
   end
 
@@ -86,8 +88,9 @@ defmodule SpeckitOrchestrator.PhaseRequestTest do
   end
 
   test "plan_stack config feeds the plan prompt when set" do
+    original = Application.get_env(:speckit_orchestrator, :plan_stack)
     Application.put_env(:speckit_orchestrator, :plan_stack, ["Elixir", "SQLite"])
-    on_exit(fn -> Application.put_env(:speckit_orchestrator, :plan_stack, []) end)
+    on_exit(fn -> Application.put_env(:speckit_orchestrator, :plan_stack, original) end)
     r = PhaseRequest.build(feature(), :plan)
     assert r.prompt =~ "Elixir, SQLite"
     assert r.prompt =~ "Feature 001"

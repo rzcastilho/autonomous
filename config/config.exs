@@ -66,9 +66,19 @@ config :speckit_orchestrator,
   # Ordered plan stack passed to the plan phase. The LedgerLite spec deliberately
   # delegates language/format to plan, so plan cannot proceed without one — this
   # is the product/tech decision the pipeline can't derive.
-  plan_stack: ["Python 3 (standard library only: argparse, unittest; no third-party dependencies)"],
+  plan_stack: [
+    "Python 3 (standard library only: argparse, unittest; no third-party dependencies)"
+  ],
   # Max features running concurrently (worktree-level parallelism).
   max_concurrency: 2,
+  # Stacked sequential PR workflow (off by default). When true, `run/1` forces
+  # cap 1, requires the `:pr_remote` remote on the target, stacks each feature on
+  # the previous feature's branch, and opens a PR per feature on :done.
+  pr_workflow: false,
+  # Root base branch for the first feature's PR; later features stack on the prior.
+  pr_base: "main",
+  # Remote to push feature branches to (and preflight) in the PR workflow.
+  pr_remote: "origin",
   # Cost circuit-breaker budget for a run, in USD. Sized to ~5 features' worth
   # of the recalibrated per-feature estimate (~$14.82) so the breaker drill trips
   # mid-run over the 7-feature LedgerLite backlog (plan §7.2 trap 3). Raise for a
