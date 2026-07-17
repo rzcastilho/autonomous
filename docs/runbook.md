@@ -109,6 +109,52 @@ the run drains.
 
 ---
 
+## Stacked sequential PR workflow (opt-in)
+
+An alternative to the default parallel-wave run that builds features **one at a
+time** and opens a **pull request per feature**. Enable it with
+`config :speckit_orchestrator, pr_workflow: true` (or per-run
+`SpeckitOrchestrator.run(pr_workflow: true)`). When on, it enforces three things:
+
+1. **Sequential** — concurrency is forced to 1; features build strictly in
+   dependency/id order, one at a time.
+2. **Remote required** — `run/1` preflights that the target repo has the
+   configured remote (`:pr_remote`, default `origin`) and refuses to start with
+   `{:error, {:preflight, problems}}` if it is missing (or the pack/constitution
+   preflight otherwise fails).
+3. **PR per feature** — when a feature reaches `:done`, its branch is pushed and a
+   PR is opened. PRs are **stacked**: feature N branches from feature N-1's branch
+   and its PR targets that branch (`001 → main`, `002 → feature/001`,
+   `003 → feature/002`). Each PR carries a clean diff on top of its prerequisite;
+   **you merge them bottom-up**.
+
+Config knobs (`config :speckit_orchestrator`):
+
+- `pr_workflow: false` — the master switch.
+- `pr_base: "main"` — base branch for the first feature's PR.
+- `pr_remote: "origin"` — remote to push to and preflight.
+
+Extra prerequisites for this mode:
+
+- The target repo has a remote (`git -C <repo> remote add origin <url>`); its base
+  branch (`pr_base`) is pushed. Preflight: `TargetPack.verify(repo,
+  check_remote: true)` must return `:ok`.
+- The **`gh` CLI** is installed and authenticated on the run host (PRs are opened
+  with `gh pr create`; it infers the repository from `origin`).
+
+Notes:
+
+- Push/PR are **best-effort** — a failure is logged and never fails the run; the
+  local branch still exists, so the next feature stacks on it regardless. Reopen a
+  missed PR by hand if needed.
+- A PR is opened **only on `:done`**. Escalated/halted/failed features keep their
+  worktree/branch for you to resolve (see "Respond to an escalation"); the PR
+  opens after you resolve and the feature reaches `:done` on a re-run.
+- Only the facade path changes; the DAG, breaker, gates, and transcripts behave
+  exactly as documented elsewhere.
+
+---
+
 ## Watch a run
 
 ```elixir
