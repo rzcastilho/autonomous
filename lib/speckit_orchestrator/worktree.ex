@@ -127,6 +127,19 @@ defmodule SpeckitOrchestrator.Worktree do
     end
   end
 
+  @doc """
+  Push the feature branch to `remote`, setting upstream (`push -u`). Used by the
+  stacked PR workflow after the terminal commit so a PR can be opened against it.
+  Runs against the base repo (works whether or not the worktree still exists).
+  """
+  @spec push(t(), String.t()) :: :ok | {:error, term()}
+  def push(%__MODULE__{repo: repo, branch: branch}, remote) when is_binary(remote) do
+    case git(repo, ["push", "-u", remote, branch]) do
+      {:ok, _} -> :ok
+      {:error, _} = err -> err
+    end
+  end
+
   # ---- git plumbing -------------------------------------------------------
 
   defp ensure_root(root) do

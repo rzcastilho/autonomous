@@ -3,7 +3,8 @@ defmodule SpeckitOrchestrator.WorktreeTest do
 
   alias SpeckitOrchestrator.{Feature, Worktree}
 
-  defp git!(repo, args), do: {_, 0} = System.cmd("git", ["-C", repo | args], stderr_to_stdout: true)
+  defp git!(repo, args),
+    do: {_, 0} = System.cmd("git", ["-C", repo | args], stderr_to_stdout: true)
 
   # Build a throwaway base repo with the committed scaffold, unless
   # `scaffold: false`.
@@ -126,5 +127,28 @@ defmodule SpeckitOrchestrator.WorktreeTest do
 
     {after_, 0} = System.cmd("git", ["-C", repo, "rev-parse", wt.branch])
     assert before == after_
+  end
+
+  test "push/2 sends the feature branch to the configured remote" do
+    repo = base_repo()
+    {:ok, wt} = Worktree.create(feature(), with_root(repo))
+
+    # A bare repo acts as the remote; register it as `origin`.
+    remote_dir = Path.join(System.tmp_dir!(), "wt_remote_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(remote_dir)
+    git!(remote_dir, ["init", "-q", "--bare"])
+    on_exit(fn -> File.rm_rf(remote_dir) end)
+    git!(repo, ["remote", "add", "origin", remote_dir])
+
+    File.mkdir_p!(Path.join(wt.path, "lib"))
+    File.write!(Path.join(wt.path, "lib/x.ex"), "defmodule X do\nend\n")
+    Worktree.commit(wt, "work")
+
+    assert :ok = Worktree.push(wt, "origin")
+
+    # The branch now exists on the remote at the worktree's commit.
+    {remote_ref, 0} = System.cmd("git", ["-C", remote_dir, "rev-parse", wt.branch])
+    {local_ref, 0} = System.cmd("git", ["-C", repo, "rev-parse", wt.branch])
+    assert String.trim(remote_ref) == String.trim(local_ref)
   end
 end
