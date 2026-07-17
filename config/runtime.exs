@@ -4,11 +4,12 @@ import Config
 # Runtime configuration — evaluated at boot (dev/prod), NOT at compile time.
 #
 # Everything here is driven by environment variables with sane defaults, so a
-# run can be steered without editing code. Skipped under :test — the suite
-# injects features directly and asserts the compile-time defaults, so env
-# overrides must not leak into it.
+# run can be steered without editing code. Applied only in :prod — dev/test keep
+# the compile-time defaults (config/config.exs), so the deterministic suite and
+# local iex sessions are never steered by a stray env var. In :prod, SPECKIT_REPO
+# MUST be set explicitly (no fallback).
 # ---------------------------------------------------------------------------
-if config_env() != :test do
+if config_env() == :prod do
   # "1" / "true" / "yes" / "on" (case-insensitive) → true; anything else → default.
   truthy = fn name, default ->
     case System.get_env(name) do
@@ -17,14 +18,10 @@ if config_env() != :test do
     end
   end
 
-  # Target Spec Kit repo the orchestrator drives. `SPECKIT_REPO` wins; falls back
-  # to the sibling LedgerLite validation target (docs/phase7-ledgerlite-runbook.md).
-  repo =
-    System.get_env("SPECKIT_REPO") ||
-      "/Users/castilho/code/github.com/rzcastilho/ledgerlite"
-
+  # Target Spec Kit repo the orchestrator drives. Required in :prod — raises at
+  # boot if unset, so a production run can never silently point at the wrong repo.
   config :speckit_orchestrator,
-    repo: repo,
+    repo: System.fetch_env!("SPECKIT_REPO"),
     # Stacked sequential PR workflow (docs/runbook.md → "Stacked sequential PR
     # workflow"). SPECKIT_PR_WORKFLOW=true forces cap 1, preflights the remote,
     # and opens a stacked PR per feature on :done.
