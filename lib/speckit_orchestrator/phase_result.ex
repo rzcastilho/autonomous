@@ -62,6 +62,46 @@ defmodule SpeckitOrchestrator.PhaseResult do
               count: 0
   end
 
+  # Substrings (lower-cased) that mark a transient server/API failure worth
+  # retrying — a dropped/incomplete stream rather than a real, deterministic
+  # error. Kept specific so a genuine failure is not retried repeatedly.
+  @transient_markers [
+    "server error",
+    "api error",
+    "mid-response",
+    "overloaded",
+    "rate limit",
+    "temporarily unavailable",
+    "service unavailable",
+    "connection reset",
+    "connection closed",
+    " 503",
+    " 502",
+    " 529"
+  ]
+
+  @doc """
+  True when a phase failure looks **transient** (a server/API drop) rather than a
+  real, deterministic error — used to retry the phase instead of failing the
+  feature.
+
+  Transient: a harness-level error (`nil` — the request never returned a stream),
+  an `:incomplete` stream (no terminal event arrived — the connection was cut
+  mid-response), or an `:error` result whose text carries a known server/API
+  failure signature. A clean `:error` with an application message, and any `:ok`
+  result, are **not** transient.
+  """
+  @spec transient?(t() | nil) :: boolean()
+  def transient?(nil), do: true
+  def transient?(%__MODULE__{status: :incomplete}), do: true
+
+  def transient?(%__MODULE__{status: :error} = r) do
+    blob = String.downcase("#{r.final_text} #{inspect(r.error)}")
+    Enum.any?(@transient_markers, &String.contains?(blob, &1))
+  end
+
+  def transient?(%__MODULE__{}), do: false
+
   @doc """
   Fold an enumerable of `%Jido.Harness.Event{}` into a `%PhaseResult{}`.
 

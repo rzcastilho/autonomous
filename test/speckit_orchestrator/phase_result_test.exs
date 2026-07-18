@@ -74,4 +74,35 @@ defmodule SpeckitOrchestrator.PhaseResultTest do
     stream = Stream.map(["a", "b", "c"], &ev(:output_text_delta, %{"text" => &1}, "s"))
     assert PhaseResult.reduce(stream).final_text == "abc"
   end
+
+  describe "transient?/1" do
+    test "harness-level nil (no stream returned) is transient" do
+      assert PhaseResult.transient?(nil)
+    end
+
+    test "an incomplete stream (no terminal event) is transient" do
+      assert PhaseResult.transient?(%PhaseResult{status: :incomplete})
+    end
+
+    test "an :error carrying a server/API drop signature is transient" do
+      assert PhaseResult.transient?(%PhaseResult{
+               status: :error,
+               final_text: "API Error: Server error mid-response. The response above may be incomplete."
+             })
+
+      assert PhaseResult.transient?(%PhaseResult{status: :error, error: "upstream 503 unavailable"})
+      assert PhaseResult.transient?(%PhaseResult{status: :error, final_text: "model overloaded, try later"})
+    end
+
+    test "a clean application :error is NOT transient" do
+      refute PhaseResult.transient?(%PhaseResult{
+               status: :error,
+               final_text: "no such file: lib/foo.ex"
+             })
+    end
+
+    test "a successful result is never transient" do
+      refute PhaseResult.transient?(%PhaseResult{status: :ok, final_text: "done"})
+    end
+  end
 end

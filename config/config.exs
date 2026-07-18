@@ -86,6 +86,9 @@ config :speckit_orchestrator,
   budget_usd: 74.0,
   # Turn cap for the long-running implement phase.
   implement_max_turns: 80,
+  # Retries for a phase that fails transiently (server/API drop, incomplete
+  # stream) before the feature is failed. Real errors are never retried.
+  phase_max_retries: 1,
   # Per-phase USD cost estimates. Used as a FALLBACK only — the Claude adapter
   # emits a :usage event with actual cost_usd when the CLI reports
   # total_cost_usd; the estimate is recorded when it does not.

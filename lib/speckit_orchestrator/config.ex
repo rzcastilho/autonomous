@@ -99,6 +99,14 @@ defmodule SpeckitOrchestrator.Config do
   @spec implement_max_turns() :: pos_integer()
   def implement_max_turns, do: get(:implement_max_turns, 80)
 
+  @doc """
+  How many times to retry a phase that fails **transiently** (a server/API drop —
+  see `PhaseResult.transient?/1`) before failing the feature. A real,
+  deterministic failure is never retried.
+  """
+  @spec phase_max_retries() :: non_neg_integer()
+  def phase_max_retries, do: get(:phase_max_retries, 1)
+
   @doc "Pinned Spec Kit CLI tag (drift diagnosis)."
   @spec speckit_version() :: String.t()
   def speckit_version, do: get(:speckit_version, "v0.12.11")
