@@ -1,5 +1,6 @@
 defmodule SpeckitOrchestrator.DescribeTest do
-  use ExUnit.Case, async: true
+  # async: false — mutates the global :transcript_root app env.
+  use ExUnit.Case, async: false
 
   alias SpeckitOrchestrator.Describe
 
