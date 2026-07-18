@@ -35,12 +35,15 @@ defmodule SpeckitOrchestrator.Config do
   def worktree_root, do: get(:worktree_root, "../.speckit-worktrees")
 
   @doc """
-  Root for durable per-phase transcripts, resolved relative to `repo/0`. These
-  survive worktree teardown on `:done` (the in-worktree `.speckit_logs` copy does
-  not), so plan/tasks/implement output stays inspectable after a completed run.
+  Root for durable per-phase transcripts, resolved relative to `repo/0`. Defaults
+  to `<repo>/.speckit-transcripts` — **inside the target repo** so different
+  targets never share a transcript dir (a sibling default keyed by feature id
+  mixes `001/` across every target). These survive worktree teardown on `:done`
+  (the in-worktree `.speckit_logs` copy does not), so plan/tasks/implement output
+  stays inspectable. Gitignore `.speckit-transcripts/` in the target repo.
   """
   @spec transcript_root() :: String.t()
-  def transcript_root, do: Path.expand(get(:transcript_root, "../.speckit-transcripts"), repo())
+  def transcript_root, do: Path.expand(get(:transcript_root, ".speckit-transcripts"), repo())
 
   @doc "Full per-phase model routing map."
   @spec models() :: %{atom() => String.t()}
@@ -95,6 +98,14 @@ defmodule SpeckitOrchestrator.Config do
   @doc "Turn cap for the long-running implement phase."
   @spec implement_max_turns() :: pos_integer()
   def implement_max_turns, do: get(:implement_max_turns, 80)
+
+  @doc """
+  How many times to retry a phase that fails **transiently** (a server/API drop —
+  see `PhaseResult.transient?/1`) before failing the feature. A real,
+  deterministic failure is never retried.
+  """
+  @spec phase_max_retries() :: non_neg_integer()
+  def phase_max_retries, do: get(:phase_max_retries, 1)
 
   @doc "Pinned Spec Kit CLI tag (drift diagnosis)."
   @spec speckit_version() :: String.t()

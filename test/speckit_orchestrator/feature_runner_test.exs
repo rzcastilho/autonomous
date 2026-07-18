@@ -10,18 +10,47 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
     alias ClaudeAgentSDK.Message
 
     def query(prompt, _options) do
-      text = response_text(prompt)
+      scenario = Application.get_env(:speckit_orchestrator, :test_fake_scenario, :happy)
 
-      [
-        %Message{type: :system, subtype: :init, data: %{session_id: "s"}, raw: %{}},
-        %Message{type: :assistant, data: %{session_id: "s", message: %{"content" => text}}, raw: %{}},
-        %Message{
-          type: :result,
-          subtype: :success,
-          data: %{session_id: "s", result: text, is_error: false, total_cost_usd: 0.10},
-          raw: %{}
-        }
-      ]
+      if scenario == :transient_once and first_call?() do
+        # First call drops mid-response: an error result carrying a server-drop
+        # signature. Must be retried, not fail the feature.
+        [
+          %Message{type: :system, subtype: :init, data: %{session_id: "s"}, raw: %{}},
+          %Message{
+            type: :result,
+            subtype: :error,
+            data: %{
+              session_id: "s",
+              result: "API Error: Server error mid-response.",
+              is_error: true,
+              total_cost_usd: nil
+            },
+            raw: %{}
+          }
+        ]
+      else
+        text = response_text(prompt)
+
+        [
+          %Message{type: :system, subtype: :init, data: %{session_id: "s"}, raw: %{}},
+          %Message{type: :assistant, data: %{session_id: "s", message: %{"content" => text}}, raw: %{}},
+          %Message{
+            type: :result,
+            subtype: :success,
+            data: %{session_id: "s", result: text, is_error: false, total_cost_usd: 0.10},
+            raw: %{}
+          }
+        ]
+      end
+    end
+
+    # True exactly once (the first query call), via a test-provided counter Agent.
+    defp first_call? do
+      case Application.get_env(:speckit_orchestrator, :test_transient_counter) do
+        nil -> false
+        agent -> Agent.get_and_update(agent, fn n -> {n == 0, n + 1} end)
+      end
     end
 
     defp response_text(prompt) do
@@ -148,6 +177,25 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
     assert result.status == :escalated
     assert_received {:feature_finished, "001", :escalated, :needs_human}
     assert File.dir?(wt.path)
+  end
+
+  test "retries a transient phase failure, then runs to :done" do
+    {:ok, counter} = Agent.start_link(fn -> 0 end)
+    Application.put_env(:speckit_orchestrator, :test_transient_counter, counter)
+    Application.put_env(:speckit_orchestrator, :test_fake_scenario, :transient_once)
+
+    on_exit(fn ->
+      Application.delete_env(:speckit_orchestrator, :test_transient_counter)
+      if Process.alive?(counter), do: Agent.stop(counter)
+    end)
+
+    wt = scaffolded_worktree()
+    result = FeatureRunner.run(feature(), worktree: wt, notify: self())
+
+    # First (specify) call dropped mid-response; the phase was retried and the
+    # feature still reached :done. Calls = 1 dropped + 7 phases.
+    assert result.status == :done
+    assert Agent.get(counter, & &1) == 8
   end
 
   test "analyze critical: stops at :halted and keeps the worktree" do

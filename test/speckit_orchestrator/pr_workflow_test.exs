@@ -80,4 +80,20 @@ defmodule SpeckitOrchestrator.PRWorkflowTest do
     n2.("002", :done, nil)
     assert_receive {:started, "003", _}, 2_000
   end
+
+  test "a second run replaces the previous Coordinator (no :already_started)" do
+    me = self()
+    runner = fn feature, notify -> send(me, {:started, feature.id, notify}) end
+    feats = [feat("001", "a")]
+
+    {:ok, pid1} = SpeckitOrchestrator.run(features: feats, runner: runner, owner: me)
+    assert_receive {:started, "001", _}, 2_000
+
+    # Re-run without the first having drained — must not collide on the fixed name.
+    {:ok, pid2} = SpeckitOrchestrator.run(features: feats, runner: runner, owner: me)
+    on_exit(fn -> if Process.alive?(pid2), do: GenServer.stop(pid2) end)
+
+    assert pid2 != pid1
+    refute Process.alive?(pid1)
+  end
 end

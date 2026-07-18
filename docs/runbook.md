@@ -174,10 +174,11 @@ state:  running
 - **Transcripts (two locations):**
   - Live, in-worktree: `<worktree>/.speckit_logs/NN-<phase>.md`.
   - **Durable**: `<transcript_root>/<feature_id>/NN-<phase>.md`
-    (`config :transcript_root`, default `../.speckit-transcripts` relative to the
-    target repo). These survive worktree teardown on `:done`, so a completed
-    run's plan/tasks/implement transcripts stay inspectable. Read these to
-    diagnose any phase.
+    (`config :transcript_root`, default `<repo>/.speckit-transcripts` — **inside
+    the target repo** so different targets never share a transcript dir; gitignore
+    `.speckit-transcripts/`). These survive worktree teardown on `:done`, so a
+    completed run's plan/tasks/implement transcripts stay inspectable. Read these
+    to diagnose any phase.
 - Rough cost: a full 7-phase feature build runs **~$10–12** (`clarify` and
   `implement` dominate). `config :budget_usd` (default 74.0) is the breaker cap.
 

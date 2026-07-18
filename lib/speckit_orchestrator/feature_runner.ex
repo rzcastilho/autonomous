@@ -18,7 +18,7 @@ defmodule SpeckitOrchestrator.FeatureRunner do
   require Logger
 
   alias Jido.{AgentServer, Signal}
-  alias SpeckitOrchestrator.{Config, FeatureAgent, Pipeline, Transcripts, Worktree}
+  alias SpeckitOrchestrator.{Config, FeatureAgent, PhaseResult, Pipeline, Transcripts, Worktree}
 
   # Kept strictly larger than the jido_action `:default_timeout` (config.exs, 45
   # min) so the *action* execution timeout is the governing guard, not this outer
@@ -73,7 +73,7 @@ defmodule SpeckitOrchestrator.FeatureRunner do
   # ---- loop ---------------------------------------------------------------
 
   defp loop(pid, feature, phase, step, timeout, ledger, worktree) do
-    agent = run_phase(pid, feature, phase, step, timeout, worktree)
+    agent = run_phase_with_retry(pid, feature, phase, step, timeout, worktree, Config.phase_max_retries())
     st = agent.state
 
     case Pipeline.next(phase, st.last_outcome, st.last_signals) do
@@ -95,6 +95,25 @@ defmodule SpeckitOrchestrator.FeatureRunner do
 
       {:failed, reason} ->
         {:failed, reason, agent}
+    end
+  end
+
+  # Re-run a phase that failed transiently (a server/API drop, not a real error)
+  # up to `retries` times before giving up — a single dropped stream should not
+  # fail an expensive feature. Real errors and the gate outcomes (`:escalated` /
+  # `:halted`, which are signals, not `:error`) fall straight through.
+  defp run_phase_with_retry(pid, feature, phase, step, timeout, worktree, retries) do
+    agent = run_phase(pid, feature, phase, step, timeout, worktree)
+    st = agent.state
+
+    if retries > 0 and st.last_outcome == :error and PhaseResult.transient?(st.last_result) do
+      Logger.warning(
+        "feature #{feature.id} phase #{phase} failed transiently — retrying (#{retries} left)"
+      )
+
+      run_phase_with_retry(pid, feature, phase, step, timeout, worktree, retries - 1)
+    else
+      agent
     end
   end
 
