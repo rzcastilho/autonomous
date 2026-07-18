@@ -88,6 +88,11 @@ defmodule SpeckitOrchestrator do
   # ---- internals ----------------------------------------------------------
 
   defp start_run(opts, extra) do
+    # The per-run Coordinator is a named process that outlives a drained run, so
+    # a second run/1 would collide with `{:error, {:already_started, pid}}`. Stop
+    # any prior one first — re-running replaces the previous run.
+    stop_previous_run()
+
     Coordinator.start_link(
       [
         features: Keyword.get_lazy(opts, :features, &load_backlog/0),
@@ -96,6 +101,13 @@ defmodule SpeckitOrchestrator do
         name: @coordinator
       ] ++ extra
     )
+  end
+
+  defp stop_previous_run do
+    case Process.whereis(@coordinator) do
+      nil -> :ok
+      pid -> GenServer.stop(pid, :normal)
+    end
   end
 
   defp load_backlog do
