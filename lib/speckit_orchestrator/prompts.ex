@@ -6,7 +6,7 @@ defmodule SpeckitOrchestrator.Prompts do
 
   @prompts_dir Path.join([__DIR__, "..", "..", "priv", "prompts"])
 
-  for name <- ~w(clarify analyze converge) do
+  for name <- ~w(clarify analyze converge describe) do
     path = Path.join(@prompts_dir, "#{name}.md")
     @external_resource path
     contents = File.read!(path)

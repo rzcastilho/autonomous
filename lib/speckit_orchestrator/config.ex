@@ -19,7 +19,8 @@ defmodule SpeckitOrchestrator.Config do
     tasks: "sonnet",
     analyze: "opus",
     implement: "sonnet",
-    converge: "sonnet"
+    converge: "sonnet",
+    describe: "sonnet"
   }
 
   @doc "Path to the target Spec Kit repo the orchestrator drives."

@@ -18,7 +18,16 @@ defmodule SpeckitOrchestrator.FeatureRunner do
   require Logger
 
   alias Jido.{AgentServer, Signal}
-  alias SpeckitOrchestrator.{Config, FeatureAgent, PhaseResult, Pipeline, Transcripts, Worktree}
+
+  alias SpeckitOrchestrator.{
+    Config,
+    Describe,
+    FeatureAgent,
+    PhaseResult,
+    Pipeline,
+    Transcripts,
+    Worktree
+  }
 
   # Kept strictly larger than the jido_action `:default_timeout` (config.exs, 45
   # min) so the *action* execution timeout is the governing guard, not this outer
@@ -27,7 +36,12 @@ defmodule SpeckitOrchestrator.FeatureRunner do
   @default_phase_timeout :timer.minutes(50)
 
   @type terminal :: :done | :escalated | :halted | :failed
-  @type result :: %{feature_id: String.t(), status: terminal(), reason: term(), cost_total: number() | nil}
+  @type result :: %{
+          feature_id: String.t(),
+          status: terminal(),
+          reason: term(),
+          cost_total: number() | nil
+        }
 
   @doc """
   Run `feature` to a terminal state. Options:
@@ -50,19 +64,31 @@ defmodule SpeckitOrchestrator.FeatureRunner do
     with {:ok, pid} <- start_agent(feature, opts) do
       try do
         {:ok, _} =
-          call(pid, "feature.init", %{feature: feature, worktree: worktree, ledger: ledger}, timeout)
+          call(
+            pid,
+            "feature.init",
+            %{feature: feature, worktree: worktree, ledger: ledger},
+            timeout
+          )
 
-        {status, reason, agent} = loop(pid, feature, Pipeline.first(), 1, timeout, ledger, worktree)
+        {status, reason, agent} =
+          loop(pid, feature, Pipeline.first(), 1, timeout, ledger, worktree)
+
         call(pid, "feature.finalize", %{status: status, reason: reason}, timeout)
-        handle_worktree(status, worktree)
+        handle_worktree(feature, status, worktree)
         emit_terminal(feature, status, reason, agent.state.cost_total)
         notify(notify, feature.id, status, reason)
         stop_agent(pid)
 
-        %{feature_id: feature.id, status: status, reason: reason, cost_total: agent.state.cost_total}
+        %{
+          feature_id: feature.id,
+          status: status,
+          reason: reason,
+          cost_total: agent.state.cost_total
+        }
       catch
         kind, err ->
-          handle_worktree(:failed, worktree)
+          handle_worktree(feature, :failed, worktree)
           notify(notify, feature.id, :failed, {kind, err})
           stop_agent(pid)
           %{feature_id: feature.id, status: :failed, reason: {kind, err}, cost_total: nil}
@@ -73,7 +99,17 @@ defmodule SpeckitOrchestrator.FeatureRunner do
   # ---- loop ---------------------------------------------------------------
 
   defp loop(pid, feature, phase, step, timeout, ledger, worktree) do
-    agent = run_phase_with_retry(pid, feature, phase, step, timeout, worktree, Config.phase_max_retries())
+    agent =
+      run_phase_with_retry(
+        pid,
+        feature,
+        phase,
+        step,
+        timeout,
+        worktree,
+        Config.phase_max_retries()
+      )
+
     st = agent.state
 
     case Pipeline.next(phase, st.last_outcome, st.last_signals) do
@@ -128,7 +164,8 @@ defmodule SpeckitOrchestrator.FeatureRunner do
       Transcripts.write(worktree, step, phase, agent.state.last_result)
       Logger.info("feature #{feature.id} phase #{phase} -> #{inspect(Map.get(entry, :outcome))}")
 
-      {agent, Map.merge(meta, %{outcome: Map.get(entry, :outcome), cost: Map.get(entry, :cost, 0.0)})}
+      {agent,
+       Map.merge(meta, %{outcome: Map.get(entry, :outcome), cost: Map.get(entry, :cost, 0.0)})}
     end)
   end
 
@@ -151,23 +188,50 @@ defmodule SpeckitOrchestrator.FeatureRunner do
     AgentServer.call(pid, Signal.new!(type, data, source: "/runner"), timeout)
   end
 
-  defp handle_worktree(_status, nil), do: :ok
+  defp handle_worktree(_feature, _status, nil), do: :ok
 
   # Commit whatever the pipeline generated onto the feature branch BEFORE the
   # worktree is torn down — otherwise a successful run's spec/plan/tasks/code is
-  # discarded on removal. Commit on kept terminals too, so a later `resolve/1`
-  # (which removes the worktree) doesn't lose them either.
-  defp handle_worktree(status, %Worktree{feature_id: id} = wt) do
-    _ = Worktree.commit(wt, "speckit: feature #{id} pipeline artifacts (#{status})")
+  # discarded on removal. On :done under the PR workflow, ask Claude to author the
+  # commit message + PR text from the real diff first (best-effort; falls back to
+  # the template). Commit on kept terminals too, so a later `resolve/1` (which
+  # removes the worktree) doesn't lose them either.
+  defp handle_worktree(feature, :done, %Worktree{feature_id: id} = wt) do
+    {message, pr} = authored_or_template(feature, wt)
+    _ = Worktree.commit(wt, message)
+    if pr, do: Describe.write_pr(id, pr)
+    Worktree.remove(wt)
+  end
 
-    case status do
-      :done -> Worktree.remove(wt)
-      _ -> Worktree.keep_for_inspection(wt)
+  defp handle_worktree(feature, status, %Worktree{} = wt) do
+    _ = Worktree.commit(wt, "speckit: feature #{feature.id} pipeline artifacts (#{status})")
+    Worktree.keep_for_inspection(wt)
+  end
+
+  # Claude-authored commit message + PR text when the PR workflow is on; else the
+  # mechanical template. A describe failure logs and falls back — never blocks.
+  defp authored_or_template(feature, wt) do
+    fallback = "speckit: feature #{feature.id} pipeline artifacts (done)"
+
+    if Config.pr_workflow?() do
+      case Describe.run(feature, wt) do
+        {:ok, d} ->
+          message = if d.commit_message == "", do: fallback, else: d.commit_message
+          {message, %{pr_title: d.pr_title, pr_body: d.pr_body}}
+
+        {:error, reason} ->
+          Logger.warning("feature #{feature.id} describe failed: #{inspect(reason)}")
+          {fallback, nil}
+      end
+    else
+      {fallback, nil}
     end
   end
 
   defp start_agent(feature, opts) do
-    id = Keyword.get(opts, :agent_id, "feature-#{feature.id}-#{System.unique_integer([:positive])}")
+    id =
+      Keyword.get(opts, :agent_id, "feature-#{feature.id}-#{System.unique_integer([:positive])}")
+
     # register_global: false — standalone agent addressed by pid; no global
     # Jido.Registry needed until the app runs under its Jido instance (Phase 4).
     AgentServer.start_link(agent: FeatureAgent, id: id, register_global: false)

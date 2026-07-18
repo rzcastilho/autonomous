@@ -2,7 +2,7 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
   # async: false — swaps the global :jido_claude sdk_module + a scenario flag.
   use ExUnit.Case, async: false
 
-  alias SpeckitOrchestrator.{Feature, FeatureRunner, Ledger, Worktree}
+  alias SpeckitOrchestrator.{Describe, Feature, FeatureRunner, Ledger, Worktree}
 
   # Fake SDK that branches on the prompt so a single fake drives every phase.
   # The scenario is read from app env so each test picks happy/escalate/halt.
@@ -34,7 +34,11 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
 
         [
           %Message{type: :system, subtype: :init, data: %{session_id: "s"}, raw: %{}},
-          %Message{type: :assistant, data: %{session_id: "s", message: %{"content" => text}}, raw: %{}},
+          %Message{
+            type: :assistant,
+            data: %{session_id: "s", message: %{"content" => text}},
+            raw: %{}
+          },
           %Message{
             type: :result,
             subtype: :success,
@@ -71,11 +75,19 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
               "Clarified: all ambiguities resolved from the constitution."
           end
 
+        String.contains?(prompt, "pull-request description") ->
+          ~s|{"commit_message":"feat(001): built core ledger","pr_title":"Add core ledger","pr_body":"## Summary\\n- built the ledger"}|
+
         String.contains?(prompt, "/speckit.analyze") ->
           case scenario do
-            :halt -> ~s({"summary":"violation","findings":[{"severity":"critical","title":"float money"}]})
-            :bad_analyze -> "No JSON here, just prose — malformed analyze output."
-            _ -> ~s({"summary":"clean","findings":[]})
+            :halt ->
+              ~s({"summary":"violation","findings":[{"severity":"critical","title":"float money"}]})
+
+            :bad_analyze ->
+              "No JSON here, just prose — malformed analyze output."
+
+            _ ->
+              ~s({"summary":"clean","findings":[]})
           end
 
         true ->
@@ -90,7 +102,8 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
     Application.put_env(:speckit_orchestrator, :test_fake_scenario, :happy)
 
     on_exit(fn ->
-      if prev_sdk, do: Application.put_env(:jido_claude, :sdk_module, prev_sdk),
+      if prev_sdk,
+        do: Application.put_env(:jido_claude, :sdk_module, prev_sdk),
         else: Application.delete_env(:jido_claude, :sdk_module)
 
       Application.delete_env(:speckit_orchestrator, :test_fake_scenario)
@@ -99,10 +112,12 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
     :ok
   end
 
-  defp feature, do: %Feature{id: "001", slug: "core-ledger", path: "docs/breakdown/001-core-ledger.md"}
+  defp feature,
+    do: %Feature{id: "001", slug: "core-ledger", path: "docs/breakdown/001-core-ledger.md"}
 
   # --- real base repo + worktree for the containment assertions ---
-  defp git!(repo, args), do: {_, 0} = System.cmd("git", ["-C", repo | args], stderr_to_stdout: true)
+  defp git!(repo, args),
+    do: {_, 0} = System.cmd("git", ["-C", repo | args], stderr_to_stdout: true)
 
   defp scaffolded_worktree do
     repo = Path.join(System.tmp_dir!(), "fr_repo_#{System.unique_integer([:positive])}")
@@ -118,6 +133,7 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
     File.write!(Path.join(repo, ".claude/settings.json"), "{}")
     git!(repo, ["add", "-A"])
     git!(repo, ["commit", "-q", "-m", "base"])
+
     on_exit(fn ->
       File.rm_rf(repo)
       File.rm_rf(root)
@@ -198,6 +214,26 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
     assert Agent.get(counter, & &1) == 8
   end
 
+  test "PR workflow :done — describe authors the commit message + PR text" do
+    Application.put_env(:speckit_orchestrator, :pr_workflow, true)
+    on_exit(fn -> Application.delete_env(:speckit_orchestrator, :pr_workflow) end)
+
+    wt = scaffolded_worktree()
+    # Give the commit something to include so the authored message actually lands.
+    File.write!(Path.join(wt.path, "note.txt"), "generated\n")
+
+    result = FeatureRunner.run(feature(), worktree: wt, notify: self())
+    assert result.status == :done
+
+    # Commit message on the branch is the Claude-authored one (not the template).
+    {subject, 0} = System.cmd("git", ["-C", wt.repo, "log", "-1", "--format=%s", wt.branch])
+    assert subject =~ "feat(001): built core ledger"
+
+    # PR title/body were written for the facade to open the PR with.
+    assert {:ok, %{pr_title: "Add core ledger", pr_body: body}} = Describe.read_pr("001")
+    assert body =~ "Summary"
+  end
+
   test "analyze critical: stops at :halted and keeps the worktree" do
     Application.put_env(:speckit_orchestrator, :test_fake_scenario, :halt)
     wt = scaffolded_worktree()
@@ -242,7 +278,9 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
 
     FeatureRunner.run(feature(), worktree: wt, notify: self())
 
-    assert_received {:tele, [:speckit, :phase, :stop], %{phase: :specify, outcome: :ok, model: "sonnet"}}
+    assert_received {:tele, [:speckit, :phase, :stop],
+                     %{phase: :specify, outcome: :ok, model: "sonnet"}}
+
     assert_received {:tele, [:speckit, :feature, :terminal], %{status: :escalated}}
 
     # worktree kept on escalation -> transcripts present

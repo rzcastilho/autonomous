@@ -11,6 +11,7 @@ defmodule SpeckitOrchestrator do
   alias SpeckitOrchestrator.{
     Backlog,
     Config,
+    Describe,
     Coordinator,
     FeatureRunner,
     Ledger,
@@ -215,14 +216,22 @@ defmodule SpeckitOrchestrator do
     wt = Worktree.locate(feature)
 
     with :ok <- Worktree.push(wt, Config.pr_remote()) do
-      PullRequest.open(Config.repo(), %{
-        head: wt.branch,
-        base: base,
-        title: "feat(#{feature.id}-#{feature.slug}): autonomous build",
-        body:
-          "Autonomous build of feature #{feature.id} (#{feature.slug}) by " <>
-            "speckit_orchestrator.\n\nStacked on `#{base}`."
-      })
+      {title, body} = pr_text(feature, base)
+      PullRequest.open(Config.repo(), %{head: wt.branch, base: base, title: title, body: body})
+    end
+  end
+
+  # Prefer the Claude-authored PR text the describe step wrote on :done; fall back
+  # to a template if it is absent/empty.
+  defp pr_text(feature, base) do
+    case Describe.read_pr(feature.id) do
+      {:ok, %{pr_title: t, pr_body: b}} when t != "" and b != "" ->
+        {t, b}
+
+      _ ->
+        {"feat(#{feature.id}-#{feature.slug}): autonomous build",
+         "Autonomous build of feature #{feature.id} (#{feature.slug}) by " <>
+           "speckit_orchestrator.\n\nStacked on `#{base}`."}
     end
   end
 end

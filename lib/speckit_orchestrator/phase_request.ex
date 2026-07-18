@@ -62,8 +62,11 @@ defmodule SpeckitOrchestrator.PhaseRequest do
 
   defp prompt(feature, :plan) do
     case Config.plan_stack() do
-      [] -> @slash.plan
-      stack -> "#{@slash.plan} Preferred stack: #{Enum.join(stack, ", ")}. " <> feature_tag(feature)
+      [] ->
+        @slash.plan
+
+      stack ->
+        "#{@slash.plan} Preferred stack: #{Enum.join(stack, ", ")}. " <> feature_tag(feature)
     end
   end
 
@@ -74,6 +77,12 @@ defmodule SpeckitOrchestrator.PhaseRequest do
   defp prompt(_feature, :implement), do: @slash.implement
 
   defp prompt(feature, :converge), do: Prompts.load("converge") <> "\n\n" <> feature_tag(feature)
+
+  defp prompt(feature, :describe) do
+    Prompts.load("describe") <>
+      "\n\n---\nFeature just built: #{feature.id} #{feature.slug} " <>
+      "(#{breakdown_ref(feature)})."
+  end
 
   defp prompt(_feature, phase) do
     raise ArgumentError, "no prompt defined for phase #{inspect(phase)}"
@@ -110,6 +119,15 @@ defmodule SpeckitOrchestrator.PhaseRequest do
 
   defp permissions(:clarify) do
     %{permission_mode: :accept_edits, allowed_tools: ~w(Read Write Edit Grep Glob)}
+  end
+
+  # describe is read-only but needs Bash to inspect the diff (git diff/log/status).
+  defp permissions(:describe) do
+    %{
+      permission_mode: :plan,
+      allowed_tools: ~w(Read Grep Glob Bash),
+      disallowed_tools: ~w(Write Edit)
+    }
   end
 
   defp permissions(phase) when phase in [:specify, :plan, :tasks, :implement, :converge] do

@@ -61,7 +61,8 @@ config :speckit_orchestrator,
     tasks: "sonnet",
     analyze: "opus",
     implement: "sonnet",
-    converge: "sonnet"
+    converge: "sonnet",
+    describe: "sonnet"
   },
   # Ordered plan stack passed to the plan phase. The LedgerLite spec deliberately
   # delegates language/format to plan, so plan cannot proceed without one — this
@@ -106,7 +107,8 @@ config :speckit_orchestrator,
     tasks: 0.95,
     analyze: 1.26,
     implement: 7.88,
-    converge: 0.95
+    converge: 0.95,
+    describe: 0.15
   },
   # Pinned Spec Kit CLI tag (drift diagnosis — plan §4.6).
   speckit_version: "v0.12.11"
