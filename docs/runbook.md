@@ -109,6 +109,41 @@ the run drains.
 
 ---
 
+## Single-spec run (no backlog required)
+
+To drive **exactly one** feature from a free-text description — no
+`docs/breakdown/NNN-slug.md` file to author, no prerequisites to declare — use
+`SpeckitOrchestrator.run_spec/2` instead of `run/1`:
+
+```elixir
+iex -S mix
+iex> {:ok, _coord} = SpeckitOrchestrator.run_spec("""
+...> Add a health-check endpoint that returns service status and version.
+...> """)
+iex> SpeckitOrchestrator.print_status()
+```
+
+`run_spec/2` auto-assigns the feature id (one past the highest existing
+breakdown id or `feature/NNN-*` branch) and derives a kebab-case slug from the
+description, materializes it as a one-off breakdown seed inside the feature's
+own worktree so the existing `specify` phase reads it unchanged, and runs the
+feature as a wave of one through the same `Coordinator` a backlog run uses — so
+every guarantee (clarify escalation, analyze halt, cost-breaker drain-not-kill,
+least-privilege containment, durable transcripts, worktree retention on a
+non-`:done` outcome) applies identically. An empty or whitespace-only
+description is rejected immediately with `{:error, :empty_description}` and
+starts nothing.
+
+The optional stacked PR workflow works too — `run_spec(description,
+pr_workflow: true)` preflights the remote/pack, then pushes the branch and
+opens a PR on `:done`, exactly like `run/1`.
+
+See `specs/001-single-spec-run/quickstart.md` for the full validation walkthrough
+(including the guarantee checks) and `specs/001-single-spec-run/contracts/run_spec.md`
+for the interface contract.
+
+---
+
 ## Stacked sequential PR workflow (opt-in)
 
 An alternative to the default parallel-wave run that builds features **one at a
