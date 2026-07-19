@@ -17,6 +17,7 @@ defmodule SpeckitOrchestrator do
     Ledger,
     PullRequest,
     Report,
+    SingleSpec,
     StackTracker,
     TargetPack,
     Worktree
@@ -56,6 +57,52 @@ defmodule SpeckitOrchestrator do
       )
     end
   end
+
+  @doc """
+  Start a run for exactly ONE feature described in free text — no breakdown
+  backlog required (specs/001-single-spec-run). The id is auto-assigned and the
+  slug derived (`SingleSpec.build/3`); the description is materialized as a
+  one-off breakdown seed inside the feature's worktree so the existing
+  `specify` phase reads it unchanged, then the feature runs as a wave of one
+  through `run/1`. All safety behavior (clarify/analyze gates, cost breaker,
+  containment, transcripts, worktree retention) is inherited from `run/1`
+  unchanged.
+
+  Options: same as `run/1`, plus:
+    * `:repo`, `:breakdown_dir` — override target locations used to gather
+      already-taken ids (tests; default `Config.repo/0`, `Config.breakdown_dir/0`).
+
+  When the caller injects `:runner` or `:executor` (test seam), the seed is
+  **not** written — there is no real worktree to write it into.
+
+  Returns `{:error, :empty_description}` for a `nil`/empty/whitespace-only
+  description with no side effect, `{:error, {:preflight, problems}}` under the
+  PR workflow if the remote/pack preflight fails, or the coordinator
+  `on_start` tuple.
+  """
+  @spec run_spec(String.t() | nil, keyword()) ::
+          GenServer.on_start() | {:error, :empty_description} | {:error, term()}
+  def run_spec(description, opts \\ []) do
+    # Validate before gathering taken ids — an invalid description must cause
+    # zero IO (no dir listing, no git call), not just zero run (Principle II).
+    if blank?(description) do
+      {:error, :empty_description}
+    else
+      case SingleSpec.build(description, gather_taken_ids(opts), opts) do
+        {:error, :empty_description} = err ->
+          err
+
+        {:ok, feature} ->
+          case spec_run_opts(opts, feature, description) do
+            {:ok, run_opts} -> run(run_opts)
+            {:error, _reason} = err -> err
+          end
+      end
+    end
+  end
+
+  defp blank?(nil), do: true
+  defp blank?(description) when is_binary(description), do: String.trim(description) == ""
 
   @doc "Live run snapshot (statuses, in-flight, spend, report)."
   @spec status() :: map()
@@ -130,6 +177,115 @@ defmodule SpeckitOrchestrator do
     end)
 
     :ok
+  end
+
+  # ---- single-spec run (specs/001-single-spec-run) -------------------------
+  #
+  # `run/1` already accepts an explicit `:features` list; single-spec mode
+  # supplies a one-element list built by `SingleSpec` and, unless the caller
+  # injected its own `:runner`/`:executor` (test seam — no real worktree to
+  # seed), swaps in a seed-writing wrapper around `default_runner/2` /
+  # `default_executor/3` so the existing `specify` phase reads the operator's
+  # description unchanged (see contracts/run_spec.md).
+
+  # Preflight decision made BEFORE injecting our own seed_executor — injecting
+  # it first would make `run_stacked/1`'s own `:runner`/`:executor` presence
+  # check think the *caller* supplied a test seam and silently skip its
+  # preflight for a real run. We check against the caller's original opts, run
+  # the preflight ourselves when it applies, and only then inject.
+  defp spec_run_opts(opts, feature, description) do
+    opts = Keyword.put(opts, :features, [feature])
+    caller_test_mode? = Keyword.has_key?(opts, :runner) or Keyword.has_key?(opts, :executor)
+    pr_workflow? = Keyword.get(opts, :pr_workflow, Config.pr_workflow?())
+
+    cond do
+      caller_test_mode? ->
+        {:ok, opts}
+
+      pr_workflow? ->
+        case TargetPack.verify(Config.repo(), check_remote: Config.pr_remote()) do
+          :ok -> {:ok, Keyword.put(opts, :executor, seed_executor(description))}
+          {:error, problems} -> {:error, {:preflight, problems}}
+        end
+
+      true ->
+        {:ok, Keyword.put(opts, :runner, seed_runner(description))}
+    end
+  end
+
+  # Existing breakdown ids (dir listing) + existing `feature/NNN-*` branch ids
+  # (git), so an auto-assigned id never collides with — and never clobbers —
+  # a prior backlog or single-spec feature (constitution Principle II).
+  defp gather_taken_ids(opts) do
+    repo = Keyword.get(opts, :repo, Config.repo())
+    breakdown_dir = Keyword.get(opts, :breakdown_dir, Config.breakdown_dir())
+
+    breakdown_ids(Path.join(repo, breakdown_dir)) ++ branch_ids(repo)
+  end
+
+  defp breakdown_ids(dir) do
+    case File.ls(dir) do
+      {:ok, names} -> Enum.flat_map(names, &id_prefix/1)
+      {:error, _reason} -> []
+    end
+  end
+
+  defp branch_ids(repo) do
+    case System.cmd("git", ["-C", repo, "branch", "--list", "feature/*"], stderr_to_stdout: true) do
+      {out, 0} -> Regex.scan(~r/feature\/(\d{3,})-/, out) |> Enum.map(&Enum.at(&1, 1))
+      _ -> []
+    end
+  end
+
+  defp id_prefix(name) do
+    case Regex.run(~r/^(\d{3,})-/, name) do
+      [_, id] -> [id]
+      nil -> []
+    end
+  end
+
+  defp seed_runner(description) do
+    fn feature, notify ->
+      Task.Supervisor.start_child(SpeckitOrchestrator.RunnerSup, fn ->
+        case Worktree.create(feature) do
+          {:ok, worktree} -> run_seeded(feature, worktree, description, notify)
+          {:error, reason} -> notify.(feature.id, :failed, {:worktree, reason})
+        end
+      end)
+
+      :ok
+    end
+  end
+
+  defp seed_executor(description) do
+    fn feature, base, notify ->
+      Task.Supervisor.start_child(SpeckitOrchestrator.RunnerSup, fn ->
+        case Worktree.create(feature, base: base) do
+          {:ok, worktree} -> run_seeded(feature, worktree, description, notify)
+          {:error, reason} -> notify.(feature.id, :failed, {:worktree, reason})
+        end
+      end)
+
+      :ok
+    end
+  end
+
+  defp run_seeded(feature, worktree, description, notify) do
+    case write_seed(worktree, feature, description) do
+      :ok -> FeatureRunner.run(feature, worktree: worktree, ledger: Ledger, notify: notify)
+      {:error, reason} -> notify.(feature.id, :failed, {:seed, reason})
+    end
+  end
+
+  # Writes to <worktree>/<breakdown_dir>/<basename(feature.path)> — the exact
+  # path `PhaseRequest.breakdown_ref/1` resolves for the `specify` phase — and
+  # ONLY inside the worktree, never the base repo tree (containment).
+  defp write_seed(worktree, feature, description) do
+    path = Path.join([worktree.path, Config.breakdown_dir(), Path.basename(feature.path)])
+
+    with :ok <- File.mkdir_p(Path.dirname(path)) do
+      File.write(path, SingleSpec.seed_body(feature.id, description))
+    end
   end
 
   # ---- stacked sequential PR workflow -------------------------------------
