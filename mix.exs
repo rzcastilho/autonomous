@@ -8,9 +8,15 @@ defmodule SpeckitOrchestrator.MixProject do
       elixir: "~> 1.20",
       start_permanent: Mix.env() == :prod,
       elixirc_options: [warnings_as_errors: true],
+      elixirc_paths: elixirc_paths(Mix.env()),
       deps: deps()
     ]
   end
+
+  # test/support carries shared test helpers (e.g. FakeArtifacts, which makes the
+  # offline fake SDKs write the files the artifact gate checks for).
+  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  defp elixirc_paths(_), do: ["lib"]
 
   # Run "mix help compile.app" to learn about applications.
   def application do

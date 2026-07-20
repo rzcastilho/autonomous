@@ -9,7 +9,17 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
   defmodule FakeSDK do
     alias ClaudeAgentSDK.Message
 
-    def query(prompt, _options) do
+    def query(prompt, options) do
+      # The real CLI writes files into its cwd; the artifact gate reads them, so
+      # the fake must too — otherwise every phase looks successful while writing
+      # nothing, which is exactly the false-green the gate exists to catch.
+      # `:test_artifact_hook` lets a test suppress one phase's artifact to
+      # exercise the gate.
+      case Application.get_env(:speckit_orchestrator, :test_artifact_hook) do
+        nil -> SpeckitOrchestrator.FakeArtifacts.write(prompt, options)
+        hook when is_function(hook, 2) -> hook.(prompt, options)
+      end
+
       scenario = Application.get_env(:speckit_orchestrator, :test_fake_scenario, :happy)
 
       if scenario == :transient_once and first_call?() do
@@ -86,8 +96,20 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
             :bad_analyze ->
               "No JSON here, just prose — malformed analyze output."
 
+            :analyze_high ->
+              ~s({"summary":"gaps","findings":[{"severity":"high","title":"plan.md missing"}]})
+
             _ ->
               ~s({"summary":"clean","findings":[]})
+          end
+
+        String.contains?(prompt, "ready for human PR review") ->
+          case scenario do
+            :converge_not_ready ->
+              "Branch is spec-only; acceptance criteria not satisfiable.\n\n## CONVERGE: NOT READY"
+
+            _ ->
+              "Tests green, committed.\n\n## CONVERGE: READY"
           end
 
         true ->
@@ -242,6 +264,79 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
 
     assert result.status == :halted
     assert_received {:feature_finished, "001", :halted, :critical_finding}
+    assert File.dir?(wt.path)
+  end
+
+  # --- artifact + converge gates: the false-green class ---------------------
+  #
+  # Regression for a live run against quickpoll: a stale `plan_stack` contradicted
+  # the target, so `/speckit.plan` REFUSED and asked which stack to use. In a
+  # headless run nobody answers, so plan wrote no plan.md — yet its transcript was
+  # a perfectly successful response. tasks/implement then no-opped ("No plan.md
+  # yet"), analyze reported the gap as `high`, converge said "Not ready for PR
+  # review", and the feature still reached :done and opened a PR for a spec-only
+  # branch. Only checking the filesystem catches this.
+
+  defp fake_writing_all_but(skipped) do
+    scenario = fn prompt, opts ->
+      SpeckitOrchestrator.FakeArtifacts.write(prompt, opts, except: skipped)
+    end
+
+    Application.put_env(:speckit_orchestrator, :test_artifact_hook, scenario)
+    on_exit(fn -> Application.delete_env(:speckit_orchestrator, :test_artifact_hook) end)
+  end
+
+  test "plan that returns success but writes no plan.md fails the feature" do
+    fake_writing_all_but([:plan])
+    wt = scaffolded_worktree()
+
+    result = FeatureRunner.run(feature(), worktree: wt, notify: self())
+
+    assert result.status == :failed
+    assert result.reason == {:missing_artifact, :plan, "specs/**/plan.md"}
+    # kept for post-mortem, never removed
+    assert File.dir?(wt.path)
+  end
+
+  test "tasks that writes no tasks.md fails the feature" do
+    fake_writing_all_but([:tasks])
+    wt = scaffolded_worktree()
+
+    result = FeatureRunner.run(feature(), worktree: wt, notify: self())
+
+    assert result.status == :failed
+    assert result.reason == {:missing_artifact, :tasks, "specs/**/tasks.md"}
+  end
+
+  test "implement that writes only spec files (no code) fails the feature" do
+    fake_writing_all_but([:implement])
+    wt = scaffolded_worktree()
+
+    result = FeatureRunner.run(feature(), worktree: wt, notify: self())
+
+    assert result.status == :failed
+    assert result.reason == {:missing_artifact, :implement, "implementation changes"}
+  end
+
+  test "converge reporting NOT READY fails the feature instead of reaching :done" do
+    Application.put_env(:speckit_orchestrator, :test_fake_scenario, :converge_not_ready)
+    wt = scaffolded_worktree()
+
+    result = FeatureRunner.run(feature(), worktree: wt, notify: self())
+
+    assert result.status == :failed
+    assert result.reason == :converge_not_ready
+    assert File.dir?(wt.path)
+  end
+
+  test "analyze high findings escalate for a human" do
+    Application.put_env(:speckit_orchestrator, :test_fake_scenario, :analyze_high)
+    wt = scaffolded_worktree()
+
+    result = FeatureRunner.run(feature(), worktree: wt, notify: self())
+
+    assert result.status == :escalated
+    assert result.reason == :high_findings
     assert File.dir?(wt.path)
   end
 

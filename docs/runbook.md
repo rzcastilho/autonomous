@@ -308,3 +308,37 @@ Common `:failed` / no-output causes seen in practice:
 - **Bash script denied.** The Spec Kit phase scripts run under Bash; the target
   pack's `settings.json` must allow `Bash`, and the phase must pre-approve it
   (specify/plan/tasks/implement/converge do — analyze is read-only by design).
+- **A phase refused and asked a question.** See the artifact gate below.
+
+---
+
+## Artifact & converge gates (no-op phase detection)
+
+A phase can return a *perfectly successful* transcript while writing **nothing**:
+it refused, asked a clarifying question no one can answer headlessly, or no-opped
+because an upstream artifact was missing. Without a filesystem check the pipeline
+marches on and opens a PR for an unbuilt feature — every downstream phase
+reporting the problem in prose that nobody reads.
+
+Two deterministic gates close this:
+
+| Gate | Check | Terminal |
+|------|-------|----------|
+| artifact | after `plan` → some `specs/**/plan.md` exists; after `tasks` → `specs/**/tasks.md`; after `implement` → the worktree has changes **outside** `specs/`, `docs/breakdown/`, `.specify/`, and the log dirs | `:failed`, reason `{:missing_artifact, phase, what}` |
+| converge | converge's last line is `## CONVERGE: NOT READY` | `:failed`, reason `:converge_not_ready` |
+
+Both keep the worktree for post-mortem. `analyze` also escalates on a `high`
+finding now (`:escalated`, reason `:high_findings`); `critical` still halts.
+
+**The most common trigger — a contradictory `plan_stack`.** If the stack handed
+to `plan` conflicts with the target's own constitution/manifest (e.g. a Python
+stack against a Phoenix repo), plan will refuse and ask which to use, then write
+no `plan.md`. Leave `SPECKIT_PLAN_STACK` **unset** so plan derives the stack from
+the target itself; set it only for a target whose spec deliberately leaves the
+stack open:
+
+```bash
+export SPECKIT_PLAN_STACK="Python 3 (standard library only: argparse, unittest)"
+```
+
+Read `<transcript_root>/<feature_id>/03-plan.md` to see exactly what plan said.

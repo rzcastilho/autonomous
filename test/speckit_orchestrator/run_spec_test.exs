@@ -10,7 +10,9 @@ defmodule SpeckitOrchestrator.RunSpecTest do
   defmodule FakeSDK do
     alias ClaudeAgentSDK.Message
 
-    def query(prompt, _opts) do
+    def query(prompt, opts) do
+      # Simulate the CLI's file side effects — the artifact gate reads the tree.
+      SpeckitOrchestrator.FakeArtifacts.write(prompt, opts)
       text = response_text(prompt)
 
       [

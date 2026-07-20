@@ -17,19 +17,27 @@ defmodule SpeckitOrchestrator.AnalyzeResult do
   A finding with `severity` in `#{inspect(~w(critical blocker))}`
   (case-insensitive) sets `critical?: true`, which drives the analyze gate
   (`Pipeline.next(:analyze, :ok, %{critical?: true})` → `:halted`).
+
+  A finding with `severity` `"high"` sets `high?: true`, which escalates for a
+  human (`Pipeline.next(:analyze, :ok, %{high?: true})` → `:escalated`). A live
+  run surfaced why this matters: analyze reported `high` findings that plan.md
+  and tasks.md were missing entirely, and — because only Critical halted — the
+  feature sailed through to `:done` and opened a PR for a spec-only branch.
   """
 
   alias SpeckitOrchestrator.AnalyzeResult
 
   @critical_severities ~w(critical blocker)
+  @high_severities ~w(high)
 
-  defstruct summary: nil, findings: [], critical?: false, raw: %{}
+  defstruct summary: nil, findings: [], critical?: false, high?: false, raw: %{}
 
   @type finding :: %{String.t() => term()}
   @type t :: %__MODULE__{
           summary: String.t() | nil,
           findings: [finding()],
           critical?: boolean(),
+          high?: boolean(),
           raw: map()
         }
 
@@ -50,6 +58,7 @@ defmodule SpeckitOrchestrator.AnalyzeResult do
            summary: Map.get(obj, "summary"),
            findings: findings,
            critical?: Enum.any?(findings, &critical_finding?/1),
+           high?: Enum.any?(findings, &high_finding?/1),
            raw: obj
          }}
 
@@ -72,6 +81,15 @@ defmodule SpeckitOrchestrator.AnalyzeResult do
     do: String.downcase(sev) in @critical_severities
 
   defp critical_finding?(_), do: false
+
+  @doc "True when the parsed result carries a High finding (escalation-worthy)."
+  @spec high?(t()) :: boolean()
+  def high?(%AnalyzeResult{high?: h}), do: h
+
+  defp high_finding?(%{"severity" => sev}) when is_binary(sev),
+    do: String.downcase(sev) in @high_severities
+
+  defp high_finding?(_), do: false
 
   # ---- JSON recovery ------------------------------------------------------
 

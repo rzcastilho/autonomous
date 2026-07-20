@@ -42,6 +42,19 @@ if config_env() == :prod do
     config :speckit_orchestrator, budget_usd: elem(Float.parse(v), 0)
   end
 
+  # Preferred stack handed to the plan phase. Unset/empty (the default) means
+  # plan derives the stack from the target's constitution and manifest, which is
+  # what you want for any target that already has one. Set it ONLY for a target
+  # whose spec deliberately leaves the stack open, e.g.:
+  #   SPECKIT_PLAN_STACK="Python 3 (standard library only: argparse, unittest)"
+  # A value contradicting the target makes plan refuse and ask a question no one
+  # can answer headlessly — see the note in config/config.exs.
+  case System.get_env("SPECKIT_PLAN_STACK") do
+    nil -> :ok
+    "" -> :ok
+    stack -> config :speckit_orchestrator, plan_stack: [stack]
+  end
+
   # Model pin: the ClaudeAgentSDK catalog accepts aliases (opus/sonnet); pin the
   # alias -> full-model mapping via these env vars for reproducibility (see
   # docs/harness-contract.md). Set them in the run environment, e.g.:
