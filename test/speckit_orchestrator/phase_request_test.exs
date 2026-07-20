@@ -14,6 +14,7 @@ defmodule SpeckitOrchestrator.PhaseRequestTest do
     assert r.prompt =~ "001"
     assert r.prompt =~ "core-ledger"
     assert r.model == "sonnet"
+    assert r.prompt =~ "SPECIFY_FEATURE_DIRECTORY=specs/001-core-ledger"
     assert r.cwd == "."
     assert r.max_turns == nil
     # specify runs a Spec Kit script (create-new-feature.sh) → Bash pre-approved.
