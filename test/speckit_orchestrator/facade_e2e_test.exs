@@ -8,7 +8,10 @@ defmodule SpeckitOrchestrator.FacadeE2ETest do
   defmodule FakeSDK do
     alias ClaudeAgentSDK.Message
 
-    def query(prompt, _opts) do
+    def query(prompt, opts) do
+      # Simulate the CLI's file side effects — the artifact gate reads the tree.
+      SpeckitOrchestrator.FakeArtifacts.write(prompt, opts)
+
       text =
         cond do
           String.contains?(prompt, "clarify reviewer") -> "Clarified."

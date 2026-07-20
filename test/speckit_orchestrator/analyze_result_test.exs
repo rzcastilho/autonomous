@@ -124,4 +124,37 @@ defmodule SpeckitOrchestrator.AnalyzeResultTest do
     assert {:error, :no_analyze_json} =
              AnalyzeResult.parse(~s({"findings": [ {"severity": "critical" ))
   end
+
+  describe "high? severity" do
+    test "a high finding sets high? without setting critical?" do
+      transcript = ~s({"summary":"gaps","findings":[{"severity":"high","title":"plan.md missing"}]})
+
+      assert {:ok, r} = AnalyzeResult.parse(transcript)
+      assert r.high?
+      assert AnalyzeResult.high?(r)
+      refute r.critical?
+    end
+
+    test "high? is case-insensitive" do
+      assert {:ok, r} = AnalyzeResult.parse(~s({"summary":"s","findings":[{"severity":"HIGH"}]}))
+      assert r.high?
+    end
+
+    test "no findings means neither high? nor critical?" do
+      assert {:ok, r} = AnalyzeResult.parse(~s({"summary":"clean","findings":[]}))
+      refute r.high?
+      refute r.critical?
+    end
+
+    # The live-run shape this was added for: analyze reported the design
+    # artifacts were missing as `high`, and the feature reached :done anyway.
+    test "a critical finding alongside a high one sets both flags" do
+      transcript =
+        ~s({"summary":"s","findings":[{"severity":"high"},{"severity":"critical"}]})
+
+      assert {:ok, r} = AnalyzeResult.parse(transcript)
+      assert r.high?
+      assert r.critical?
+    end
+  end
 end

@@ -11,8 +11,10 @@ defmodule SpeckitOrchestrator.ConfigTest do
     assert Config.budget_usd() == 74.0
     assert Config.implement_max_turns() == 80
 
-    assert Config.plan_stack() ==
-             ["Python 3 (standard library only: argparse, unittest; no third-party dependencies)"]
+    # Empty by default: plan derives the stack from the target's own
+    # constitution/manifest. Set per-target via SPECKIT_PLAN_STACK — a stack that
+    # contradicts the target makes plan refuse and ask an unanswerable question.
+    assert Config.plan_stack() == []
 
     assert Config.speckit_version() == "v0.12.11"
     assert is_map(Config.models())

@@ -64,12 +64,18 @@ config :speckit_orchestrator,
     converge: "sonnet",
     describe: "sonnet"
   },
-  # Ordered plan stack passed to the plan phase. The LedgerLite spec deliberately
-  # delegates language/format to plan, so plan cannot proceed without one — this
-  # is the product/tech decision the pipeline can't derive.
-  plan_stack: [
-    "Python 3 (standard library only: argparse, unittest; no third-party dependencies)"
-  ],
+  # Ordered plan stack passed to the plan phase. EMPTY BY DEFAULT: plan then
+  # derives the stack from the target's own constitution and manifest
+  # (mix.exs/package.json/…). Set it only for a target that genuinely cannot be
+  # derived — e.g. the LedgerLite spec deliberately delegates language/format to
+  # plan, so that run sets SPECKIT_PLAN_STACK="Python 3 (standard library only:
+  # argparse, unittest; no third-party dependencies)".
+  #
+  # A stack that contradicts the target (the old hardcoded Python default against
+  # an Elixir/Phoenix target) makes plan REFUSE and ask which to use — an
+  # unanswerable question in a headless run, so plan writes no plan.md and every
+  # later phase silently no-ops. See config/runtime.exs → SPECKIT_PLAN_STACK.
+  plan_stack: [],
   # Max features running concurrently (worktree-level parallelism).
   max_concurrency: 2,
   # Stacked sequential PR workflow (off by default). When true, `run/1` forces

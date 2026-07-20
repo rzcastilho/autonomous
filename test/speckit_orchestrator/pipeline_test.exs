@@ -68,6 +68,59 @@ defmodule SpeckitOrchestrator.PipelineTest do
     end
   end
 
+  describe "analyze high gate" do
+    test "high? at analyze escalates for a human" do
+      assert Pipeline.next(:analyze, :ok, %{high?: true}) == {:escalated, :high_findings}
+    end
+
+    test "critical? outranks high? (halt beats escalate)" do
+      assert Pipeline.next(:analyze, :ok, %{critical?: true, high?: true}) ==
+               {:halted, :critical_finding}
+    end
+
+    test "high? on a non-analyze phase does NOT escalate" do
+      assert Pipeline.next(:plan, :ok, %{high?: true}) == {:cont, :tasks}
+    end
+  end
+
+  describe "artifact gate" do
+    test "a missing artifact fails the phase that should have written it" do
+      for {phase, artifact} <- [
+            {:plan, "specs/**/plan.md"},
+            {:tasks, "specs/**/tasks.md"},
+            {:implement, "implementation changes"}
+          ] do
+        assert Pipeline.next(phase, :ok, %{missing_artifact: artifact}) ==
+                 {:failed, {:missing_artifact, phase, artifact}}
+      end
+    end
+
+    test "no missing_artifact signal advances normally" do
+      assert Pipeline.next(:plan, :ok, %{}) == {:cont, :tasks}
+    end
+
+    # The false-green this gate exists to close: a phase can refuse or ask an
+    # unanswerable question and still return a perfectly successful transcript.
+    test "a successful outcome does not rescue a phase that wrote nothing" do
+      assert Pipeline.next(:plan, :ok, %{missing_artifact: "specs/**/plan.md"}) ==
+               {:failed, {:missing_artifact, :plan, "specs/**/plan.md"}}
+    end
+  end
+
+  describe "converge gate" do
+    test "not_ready? at converge fails instead of reaching :done" do
+      assert Pipeline.next(:converge, :ok, %{not_ready?: true}) == {:failed, :converge_not_ready}
+    end
+
+    test "not_ready? false at converge reaches :done" do
+      assert Pipeline.next(:converge, :ok, %{not_ready?: false}) == {:done, :done}
+    end
+
+    test "not_ready? on a non-converge phase does NOT fail" do
+      assert Pipeline.next(:plan, :ok, %{not_ready?: true}) == {:cont, :tasks}
+    end
+  end
+
   test "error takes precedence over gate signals" do
     assert Pipeline.next(:clarify, :error, %{needs_human?: true}) == {:failed, {:clarify, :error}}
     assert Pipeline.next(:analyze, :error, %{critical?: true}) == {:failed, {:analyze, :error}}

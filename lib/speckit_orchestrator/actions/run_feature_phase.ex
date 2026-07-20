@@ -14,8 +14,14 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhase do
   Gate extraction:
   * `:clarify` → `needs_human?` when the transcript carries the literal
     `## NEEDS HUMAN` marker.
-  * `:analyze` → `critical?` from `AnalyzeResult.parse/1`; **malformed analyze
-    JSON is an error outcome**, never a silent pass.
+  * `:analyze` → `critical?` / `high?` from `AnalyzeResult.parse/1`; **malformed
+    analyze JSON is an error outcome**, never a silent pass.
+  * `:plan` / `:tasks` / `:implement` → `missing_artifact` when the phase
+    returned a successful transcript but produced none of the files it exists to
+    write. A phase can refuse, ask an unanswerable question, or no-op on a
+    missing upstream artifact and still look perfectly successful — only the
+    filesystem tells the truth.
+  * `:converge` → `not_ready?` from the `## CONVERGE: NOT READY` marker.
   """
 
   use Jido.Action,
@@ -31,6 +37,13 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhase do
   # e.g. "No `## NEEDS HUMAN` — nothing material left", turning a clean pass into
   # a false escalation.
   @needs_human_marker ~r/^\#\#[ \t]+NEEDS HUMAN[ \t]*$/m
+
+  # Converge's verdict line (see priv/prompts/converge.md). Line-anchored for the
+  # same reason as the NEEDS HUMAN marker: prose that *mentions* the marker must
+  # not trip the gate. Absence of any marker is treated as ready — the artifact
+  # gate is the primary net for an unbuilt feature, so a model that forgets the
+  # line does not fail an otherwise good run.
+  @converge_not_ready_marker ~r/^\#\#[ \t]+CONVERGE:[ \t]+NOT READY[ \t]*$/m
 
   @impl true
   def run(%{phase: phase}, context) do
@@ -90,13 +103,81 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhase do
 
   defp classify(:analyze, %PhaseResult{status: :ok} = r, _state) do
     case AnalyzeResult.parse(r.final_text) do
-      {:ok, parsed} -> {:ok, %{critical?: parsed.critical?}}
+      {:ok, parsed} -> {:ok, %{critical?: parsed.critical?, high?: parsed.high?}}
       # malformed / absent analyze JSON = failure, not a silent pass
       {:error, _reason} -> {:error, %{critical?: false}}
     end
   end
 
+  # Artifact gate: a successful transcript proves nothing — check the tree.
+  defp classify(phase, %PhaseResult{status: :ok}, state)
+       when phase in [:plan, :tasks, :implement] do
+    case missing_artifact(state.worktree, phase) do
+      nil -> {:ok, %{}}
+      artifact -> {:ok, %{missing_artifact: artifact}}
+    end
+  end
+
+  defp classify(:converge, %PhaseResult{status: :ok} = r, _state) do
+    {:ok, %{not_ready?: Regex.match?(@converge_not_ready_marker, r.final_text || "")}}
+  end
+
   defp classify(_phase, %PhaseResult{} = r, _state), do: {outcome_of(r), %{}}
+
+  # ---- artifact gate ------------------------------------------------------
+
+  # Globbed rather than pinned to `specs/<id>-<slug>/`: the failure this catches
+  # is "the file exists nowhere", and globbing avoids a false failure if the
+  # target's Spec Kit names the directory differently. Mirrors the clarify
+  # gate's `specs/**/spec.md` scan.
+  @phase_artifacts %{plan: "specs/**/plan.md", tasks: "specs/**/tasks.md"}
+
+  # Paths that exist even when nothing was implemented — spec/plan/task docs, the
+  # single-spec seed, and the orchestrator's own logs.
+  @non_implementation_prefixes ~w(specs/ docs/breakdown/ .speckit_logs/ .speckit-transcripts/ .specify/)
+
+  # No worktree (dry runs / unit tests) → nothing to check.
+  defp missing_artifact(%{path: path}, phase) when is_binary(path) do
+    case phase do
+      :implement -> if implementation_changes?(path), do: nil, else: "implementation changes"
+      _ -> glob_artifact(path, @phase_artifacts[phase])
+    end
+  end
+
+  defp missing_artifact(_worktree, _phase), do: nil
+
+  defp glob_artifact(worktree_path, pattern) do
+    case worktree_path |> Path.join(pattern) |> Path.wildcard() do
+      [] -> pattern
+      _ -> nil
+    end
+  end
+
+  # True when the worktree carries at least one change outside the spec/doc
+  # scaffolding — i.e. implement actually wrote code. A git failure returns true
+  # (can't tell → don't fail the feature on a broken probe).
+  defp implementation_changes?(worktree_path) do
+    case System.cmd("git", ["-C", worktree_path, "status", "--porcelain"], stderr_to_stdout: true) do
+      {out, 0} ->
+        out
+        |> String.split("\n", trim: true)
+        |> Enum.map(&changed_path/1)
+        |> Enum.any?(&implementation_path?/1)
+
+      _ ->
+        true
+    end
+  end
+
+  # Porcelain v1 line: 2 status chars + space + path (renames use "old -> new").
+  defp changed_path(line) do
+    line |> String.slice(3..-1//1) |> String.split(" -> ") |> List.last() |> String.trim("\"")
+  end
+
+  defp implementation_path?(""), do: false
+
+  defp implementation_path?(path),
+    do: not Enum.any?(@non_implementation_prefixes, &String.starts_with?(path, &1))
 
   # True when any `spec.md` under the feature's worktree still carries an
   # unresolved `## NEEDS HUMAN` heading (line-anchored, same as the response
