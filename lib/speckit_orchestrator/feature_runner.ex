@@ -54,6 +54,11 @@ defmodule SpeckitOrchestrator.FeatureRunner do
       `{:feature_finished, id, status, reason}`).
     * `:phase_timeout` — per-phase `call` timeout (default 45 min).
     * `:agent_id` — override the agent id.
+    * `:start_phase` — phase to begin the loop at (default `Pipeline.first()`),
+      for resuming a halted/escalated feature at its stopped phase.
+    * `:resume_prompt` — optional operator note carried into agent state
+      alongside the fixed `resume_phase` anchor; does not alter any phase
+      request in this feature.
   """
   @spec run(SpeckitOrchestrator.Feature.t(), keyword()) :: result() | {:error, term()}
   def run(feature, opts \\ []) do
@@ -61,6 +66,8 @@ defmodule SpeckitOrchestrator.FeatureRunner do
     ledger = Keyword.get(opts, :ledger)
     timeout = Keyword.get(opts, :phase_timeout, @default_phase_timeout)
     notify = Keyword.get(opts, :notify)
+    start_phase = Keyword.get(opts, :start_phase, Pipeline.first())
+    resume_prompt = Keyword.get(opts, :resume_prompt)
 
     with {:ok, pid} <- start_agent(feature, opts) do
       try do
@@ -68,12 +75,18 @@ defmodule SpeckitOrchestrator.FeatureRunner do
           call(
             pid,
             "feature.init",
-            %{feature: feature, worktree: worktree, ledger: ledger},
+            %{
+              feature: feature,
+              worktree: worktree,
+              ledger: ledger,
+              phase: start_phase,
+              resume_prompt: resume_prompt
+            },
             timeout
           )
 
         {status, reason, agent} =
-          loop(pid, feature, Pipeline.first(), 1, timeout, ledger, worktree)
+          loop(pid, feature, start_phase, Pipeline.step_of(start_phase), timeout, ledger, worktree)
 
         call(pid, "feature.finalize", %{status: status, reason: reason}, timeout)
         checkpoint(feature, status, reason, agent)
