@@ -2,7 +2,8 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
   # async: false — swaps the global :jido_claude sdk_module + a scenario flag.
   use ExUnit.Case, async: false
 
-  alias SpeckitOrchestrator.{Describe, Feature, FeatureRunner, Ledger, Worktree}
+  alias Jido.{AgentServer, Signal}
+  alias SpeckitOrchestrator.{Describe, Feature, FeatureAgent, FeatureRunner, Ledger, Worktree}
 
   # Fake SDK that branches on the prompt so a single fake drives every phase.
   # The scenario is read from app env so each test picks happy/escalate/halt.
@@ -393,10 +394,105 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
     assert_received {:feature_finished, "001", :halted, :breaker}
   end
 
+  test "start_phase: :plan resumes mid-pipeline, skipping specify/clarify" do
+    # :halt keeps the worktree (analyze critical -> :halted) so the transcripts
+    # written along the way survive for inspection; :done removes the worktree
+    # entirely, which would defeat this assertion regardless of start phase.
+    Application.put_env(:speckit_orchestrator, :test_fake_scenario, :halt)
+    wt = scaffolded_worktree()
+
+    result = FeatureRunner.run(feature(), start_phase: :plan, worktree: wt, notify: self())
+
+    assert result.status == :halted
+    assert File.exists?(Path.join(wt.path, ".speckit_logs/03-plan.md"))
+    refute File.exists?(Path.join(wt.path, ".speckit_logs/01-specify.md"))
+    refute File.exists?(Path.join(wt.path, ".speckit_logs/02-clarify.md"))
+  end
+
+  test "no start_phase: begins at :specify, step 1 (explicit no-regression)" do
+    # :halt keeps the worktree (analyze critical -> :halted) so the transcript
+    # written along the way survives for inspection.
+    Application.put_env(:speckit_orchestrator, :test_fake_scenario, :halt)
+    wt = scaffolded_worktree()
+
+    test_pid = self()
+    handler = "tele-#{System.unique_integer([:positive])}"
+
+    :telemetry.attach(
+      handler,
+      [:speckit, :phase, :stop],
+      fn event, _meas, meta, _ -> send(test_pid, {:tele, event, meta}) end,
+      nil
+    )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+
+    FeatureRunner.run(feature(), worktree: wt, notify: self())
+
+    assert_received {:tele, [:speckit, :phase, :stop], %{phase: :specify, step: 1}}
+    assert File.exists?(Path.join(wt.path, ".speckit_logs/01-specify.md"))
+  end
+
+  test "start_phase: :plan begins at step 3, matching its pipeline position" do
+    wt = scaffolded_worktree()
+
+    test_pid = self()
+    handler = "tele-#{System.unique_integer([:positive])}"
+
+    :telemetry.attach(
+      handler,
+      [:speckit, :phase, :stop],
+      fn event, _meas, meta, _ -> send(test_pid, {:tele, event, meta}) end,
+      nil
+    )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+
+    FeatureRunner.run(feature(), start_phase: :plan, worktree: wt, notify: self())
+
+    assert_received {:tele, [:speckit, :phase, :stop], %{phase: :plan, step: 3}}
+  end
+
   test "a phase call timeout marks the feature :failed" do
     # 1ms timeout forces the call to die; the runner catches and fails the feature.
     result = FeatureRunner.run(feature(), phase_timeout: 1, notify: self())
     assert result.status == :failed
     assert_received {:feature_finished, "001", :failed, _}
+  end
+
+  test "resume_phase stays fixed at the anchor phase as phase advances" do
+    # Drives the agent directly (bypassing FeatureRunner.run/2's opaque
+    # synchronous loop) so state can be inspected between phase.run calls.
+    {:ok, pid} =
+      AgentServer.start_link(
+        agent: FeatureAgent,
+        id: "resume-anchor-#{System.unique_integer([:positive])}",
+        register_global: false
+      )
+
+    {:ok, agent} =
+      AgentServer.call(
+        pid,
+        Signal.new!(
+          "feature.init",
+          %{feature: feature(), phase: :plan, resume_prompt: "pick up at plan"},
+          source: "/test"
+        ),
+        5_000
+      )
+
+    assert agent.state.resume_phase == :plan
+    assert agent.state.resume_prompt == "pick up at plan"
+
+    {:ok, _agent} =
+      AgentServer.call(pid, Signal.new!("phase.run", %{phase: :plan}, source: "/test"), 5_000)
+
+    {:ok, agent} =
+      AgentServer.call(pid, Signal.new!("phase.run", %{phase: :tasks}, source: "/test"), 5_000)
+
+    assert agent.state.phase == :tasks
+    assert agent.state.resume_phase == :plan
+
+    GenServer.stop(pid, :normal)
   end
 end

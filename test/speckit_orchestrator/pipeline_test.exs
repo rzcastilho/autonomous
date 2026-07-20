@@ -19,6 +19,19 @@ defmodule SpeckitOrchestrator.PipelineTest do
     assert Pipeline.first() == :specify
   end
 
+  describe "step_of/1" do
+    test "matches each phase's 1-indexed position in phases/0" do
+      for {phase, step} <- Enum.with_index(Pipeline.phases(), 1) do
+        assert Pipeline.step_of(phase) == step
+      end
+    end
+
+    test "boundaries" do
+      assert Pipeline.step_of(:specify) == 1
+      assert Pipeline.step_of(:converge) == 7
+    end
+  end
+
   describe "next/3 — :ok advances each phase" do
     for {phase, expected} <- @advances do
       test "#{phase} advances to #{expected}" do

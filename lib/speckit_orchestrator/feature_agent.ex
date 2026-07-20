@@ -7,6 +7,10 @@ defmodule SpeckitOrchestrator.FeatureAgent do
 
     * `feature` / `worktree` / `ledger` — seeded by `feature.init`.
     * `phase` — the phase last run.
+    * `resume_phase` — the phase the run started at (fixed at init, unlike
+      `phase` which advances); `resume_prompt` — an optional operator note
+      carried alongside it. Both are a stable anchor for future prompt
+      injection (state only — no phase request is altered by this feature).
     * `session_id` — Claude session id, carried forward for resume.
     * `status` — `:pending → :running →` terminal (`:done | :escalated |
       :halted | :failed`), set by `feature.finalize`.
@@ -24,6 +28,8 @@ defmodule SpeckitOrchestrator.FeatureAgent do
       worktree: [type: :any, default: nil],
       ledger: [type: :any, default: nil],
       phase: [type: :atom, default: nil],
+      resume_phase: [type: :atom, default: nil],
+      resume_prompt: [type: :string, default: nil],
       session_id: [type: :string, default: nil],
       status: [type: :atom, default: :pending],
       last_outcome: [type: :atom, default: nil],
