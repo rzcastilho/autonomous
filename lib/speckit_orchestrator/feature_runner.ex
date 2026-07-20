@@ -20,6 +20,7 @@ defmodule SpeckitOrchestrator.FeatureRunner do
   alias Jido.{AgentServer, Signal}
 
   alias SpeckitOrchestrator.{
+    Checkpoint,
     Config,
     Describe,
     FeatureAgent,
@@ -75,6 +76,7 @@ defmodule SpeckitOrchestrator.FeatureRunner do
           loop(pid, feature, Pipeline.first(), 1, timeout, ledger, worktree)
 
         call(pid, "feature.finalize", %{status: status, reason: reason}, timeout)
+        checkpoint(feature, status, reason, agent)
         handle_worktree(feature, status, worktree)
         emit_terminal(feature, status, reason, agent.state.cost_total)
         notify(notify, feature.id, status, reason)
@@ -177,6 +179,20 @@ defmodule SpeckitOrchestrator.FeatureRunner do
     )
 
     Logger.info("feature #{feature.id} terminal=#{status} reason=#{inspect(reason)}")
+  end
+
+  # Best-effort resume pointer for a diverted terminal (FR-010). Delete-on-:done
+  # (US2) is wired separately once Checkpoint.delete/1 is implemented.
+  defp checkpoint(feature, :done, _reason, _agent), do: Checkpoint.delete(feature.id)
+
+  defp checkpoint(feature, status, reason, agent) do
+    Checkpoint.write(%{
+      feature_id: feature.id,
+      last_phase: agent.state.phase,
+      status: status,
+      reason: reason,
+      session_id: agent.state.session_id
+    })
   end
 
   defp breaker_tripped?(nil), do: false
