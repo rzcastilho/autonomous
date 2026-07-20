@@ -88,6 +88,46 @@ defmodule SpeckitOrchestrator.PhaseRequestTest do
     assert r.session_id == "sess-9"
   end
 
+  test "resume_prompt: non-blank guidance is appended as a trailing section" do
+    base = PhaseRequest.build(feature(), :implement)
+    r = PhaseRequest.build(feature(), :implement, resume_prompt: "resolved: use integer cents")
+
+    assert r.prompt ==
+             base.prompt <> "\n\n---\nOperator guidance (resume): resolved: use integer cents"
+  end
+
+  test "resume_prompt: blank/absent guidance leaves the prompt byte-identical" do
+    base = PhaseRequest.build(feature(), :implement)
+
+    for blank <- [nil, "", "   ", "\n\t"] do
+      r = PhaseRequest.build(feature(), :implement, resume_prompt: blank)
+      assert r.prompt == base.prompt, "blank #{inspect(blank)} must not change the prompt"
+    end
+
+    # opt entirely absent behaves the same as an explicit nil
+    assert PhaseRequest.build(feature(), :implement).prompt == base.prompt
+  end
+
+  test "resume_prompt: no other RunRequest field changes with or without it" do
+    base = PhaseRequest.build(feature(), :implement, cwd: "/wt", session_id: "sess-1")
+
+    r =
+      PhaseRequest.build(feature(), :implement,
+        cwd: "/wt",
+        session_id: "sess-1",
+        resume_prompt: "resolved: use integer cents"
+      )
+
+    assert r.model == base.model
+    assert r.permission_mode == base.permission_mode
+    assert r.allowed_tools == base.allowed_tools
+    assert r.disallowed_tools == base.disallowed_tools
+    assert r.max_turns == base.max_turns
+    assert r.cwd == base.cwd
+    assert r.session_id == base.session_id
+    refute r.prompt == base.prompt
+  end
+
   test "plan_stack config feeds the plan prompt when set" do
     original = Application.get_env(:speckit_orchestrator, :plan_stack)
     Application.put_env(:speckit_orchestrator, :plan_stack, ["Elixir", "SQLite"])

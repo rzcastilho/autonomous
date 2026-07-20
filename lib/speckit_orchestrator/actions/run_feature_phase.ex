@@ -54,7 +54,11 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhase do
     # observability/cancellation, but never resume it into the next phase's
     # request (that would hit the adapter's resume path). Mid-pipeline session
     # resume is a v2 concern.
-    request = PhaseRequest.build(state.feature, phase, cwd: worktree_path(state.worktree))
+    request =
+      PhaseRequest.build(state.feature, phase,
+        cwd: worktree_path(state.worktree),
+        resume_prompt: resume_prompt_for(state, phase)
+      )
 
     case Jido.Harness.run_request(:claude, request, []) do
       {:ok, stream} ->
@@ -85,6 +89,11 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhase do
          }}
     end
   end
+
+  # Operator guidance is scoped to exactly the phase the run was resumed at —
+  # the fixed `resume_phase` anchor, not the currently-advancing `phase`.
+  defp resume_prompt_for(state, phase) when phase == state.resume_phase, do: state.resume_prompt
+  defp resume_prompt_for(_state, _phase), do: nil
 
   # ---- gate classification ------------------------------------------------
 

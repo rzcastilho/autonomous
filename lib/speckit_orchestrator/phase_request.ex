@@ -33,11 +33,13 @@ defmodule SpeckitOrchestrator.PhaseRequest do
     * `:cwd` — working directory (defaults to `Config.repo/0`; in a real run this
       is the feature worktree, supplied by the runner in Phase 3).
     * `:session_id` — resume an existing Claude session (nil = fresh).
+    * `:resume_prompt` — operator's free-text guidance for a resumed phase;
+      appended as a trailing section to the built prompt. `nil`/blank = no-op.
   """
   @spec build(Feature.t(), atom(), keyword()) :: RunRequest.t()
   def build(%Feature{} = feature, phase, opts \\ []) when is_atom(phase) do
     %{
-      prompt: prompt(feature, phase),
+      prompt: append_resume_prompt(prompt(feature, phase), Keyword.get(opts, :resume_prompt)),
       cwd: Keyword.get(opts, :cwd, Config.repo()),
       model: Config.model_for(phase)
     }
@@ -98,6 +100,19 @@ defmodule SpeckitOrchestrator.PhaseRequest do
   defp prompt(_feature, phase) do
     raise ArgumentError, "no prompt defined for phase #{inspect(phase)}"
   end
+
+  # Blank (nil/""/whitespace-only) guidance leaves the prompt byte-identical to
+  # the no-opt build — only a non-blank string gets the trailing section.
+  defp append_resume_prompt(prompt, resume_prompt) do
+    if blank?(resume_prompt) do
+      prompt
+    else
+      prompt <> "\n\n---\nOperator guidance (resume): " <> resume_prompt
+    end
+  end
+
+  defp blank?(nil), do: true
+  defp blank?(str) when is_binary(str), do: String.trim(str) == ""
 
   defp breakdown_ref(%Feature{path: path}) do
     Path.join(Config.breakdown_dir(), Path.basename(path))
