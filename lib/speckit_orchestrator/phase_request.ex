@@ -49,9 +49,20 @@ defmodule SpeckitOrchestrator.PhaseRequest do
 
   # ---- prompt assembly ----------------------------------------------------
 
+  # Pins SPECIFY_FEATURE_DIRECTORY to specs/<id>-<slug> — the exact slug the
+  # worktree's branch (feature/<id>-<slug>) already carries — so specify's own
+  # short-name generation can never pick a *different* spec-dir slug than the
+  # branch. Left to its own heuristic, Claude may condense a description into a
+  # shorter/different slug (e.g. "list-all-previous-polls-result" vs
+  # "list-polls-results"); every later phase (plan/tasks/analyze/implement) is a
+  # bare slash command with no feature-specific text, resolved by the CLI via
+  # feature.json/branch-name — a divergent spec dir silently orphans it, so
+  # spec.md gets written but plan/tasks/implementation never do (see
+  # specs/001-single-spec-run — manual validation caught this in production).
   defp prompt(feature, :specify) do
     "#{@slash.specify} Implement the feature specified in #{breakdown_ref(feature)} " <>
-      "(id #{feature.id}, #{feature.slug}). Follow the constitution."
+      "(id #{feature.id}, #{feature.slug}). Use SPECIFY_FEATURE_DIRECTORY=specs/#{feature.id}-#{feature.slug}. " <>
+      "Follow the constitution."
   end
 
   defp prompt(feature, :clarify) do
