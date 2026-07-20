@@ -10,11 +10,13 @@ defmodule SpeckitOrchestrator do
 
   alias SpeckitOrchestrator.{
     Backlog,
+    Checkpoint,
     Config,
     Describe,
     Coordinator,
     FeatureRunner,
     Ledger,
+    Pipeline,
     PullRequest,
     Report,
     SingleSpec,
@@ -131,6 +133,130 @@ defmodule SpeckitOrchestrator do
         worktree = Worktree.locate(feature, opts)
         if File.dir?(worktree.path), do: Worktree.remove(worktree), else: :ok
     end
+  end
+
+  @doc """
+  Restart a previously-escalated/halted feature at its checkpointed phase,
+  reusing (or recreating from) its existing branch — the mid-pipeline
+  counterpart to `resolve/1`'s full restart. Every unsafe precondition returns
+  a distinct `{:error, …}` and starts no run: unknown feature id, missing or
+  corrupt checkpoint, or a checkpoint phase (or `:from` override) that isn't a
+  real pipeline phase.
+  Options: same as `run/1` (`:features`, `:runner`, `:owner`,
+  `:max_concurrency`, …, passed through unchanged), plus:
+
+    * `:prompt` — operator guidance note carried into the resumed phase as
+      `resume_prompt`; omitted/`nil` runs the phase with no note.
+    * `:from` — override the start phase; takes precedence over the
+      checkpoint's stored `last_phase`.
+
+  A caller-supplied `:runner` wins over the injected resume runner. See
+  `specs/005-resume-facade/contracts/resume.md`.
+  """
+  @spec resume(String.t(), keyword()) ::
+          GenServer.on_start()
+          | {:error, {:unknown_feature, String.t()}}
+          | {:error, :no_checkpoint}
+          | {:error, :corrupt_checkpoint}
+          | {:error, {:unknown_phase, term()}}
+  def resume(feature_id, opts \\ []) do
+    features = Keyword.get_lazy(opts, :features, &load_backlog/0)
+
+    with {:ok, feature} <- find_feature(features, feature_id),
+         {:ok, record} <- read_checkpoint(feature_id),
+         {:ok, start_phase} <- resolve_start_phase(record, opts) do
+      runner =
+        case Keyword.fetch(opts, :runner) do
+          {:ok, r} -> r
+          :error -> resume_runner(start_phase, Keyword.get(opts, :prompt))
+        end
+
+      opts
+      |> Keyword.put(:features, [feature])
+      |> Keyword.put(:runner, runner)
+      |> run()
+    end
+  end
+
+  defp find_feature(features, feature_id) do
+    case Enum.find(features, &(&1.id == feature_id)) do
+      nil -> {:error, {:unknown_feature, feature_id}}
+      feature -> {:ok, feature}
+    end
+  end
+
+  defp read_checkpoint(feature_id) do
+    case Checkpoint.read(feature_id) do
+      {:ok, record} -> {:ok, record}
+      {:error, :no_checkpoint} -> {:error, :no_checkpoint}
+      {:error, :corrupt} -> {:error, :corrupt_checkpoint}
+    end
+  end
+
+  # `:from` takes precedence over the checkpoint's stored phase (validated the
+  # same way). Never String.to_atom/1 on file contents (atom-table safety) —
+  # guarded by Pipeline.phase?/1, catching the case where the stored string
+  # never was a real atom at all (a hand-corrupted checkpoint).
+  defp resolve_start_phase(%{"last_phase" => last_phase}, opts) do
+    case Keyword.fetch(opts, :from) do
+      {:ok, from} -> validate_phase(from)
+      :error -> parse_checkpoint_phase(last_phase)
+    end
+  end
+
+  defp validate_phase(phase) do
+    if Pipeline.phase?(phase), do: {:ok, phase}, else: {:error, {:unknown_phase, phase}}
+  end
+
+  defp parse_checkpoint_phase(last_phase) do
+    validate_phase(String.to_existing_atom(last_phase))
+  rescue
+    ArgumentError -> {:error, {:unknown_phase, last_phase}}
+  end
+
+  # Reuse the kept worktree if one exists (a prior resolve/1 froze it, or the
+  # feature never tore it down); else recreate it from the existing branch.
+  # Never falls back to a fresh branch (FR-005, SC-005) — a missing branch is
+  # a distinct worktree error, not silently re-created from HEAD.
+  defp resume_runner(start_phase, prompt) do
+    fn feature, notify ->
+      Task.Supervisor.start_child(SpeckitOrchestrator.RunnerSup, fn ->
+        case resume_worktree(feature) do
+          {:ok, worktree} ->
+            FeatureRunner.run(feature,
+              worktree: worktree,
+              ledger: Ledger,
+              notify: notify,
+              start_phase: start_phase,
+              resume_prompt: prompt
+            )
+
+          {:error, reason} ->
+            notify.(feature.id, :failed, {:worktree, reason})
+        end
+      end)
+
+      :ok
+    end
+  end
+
+  defp resume_worktree(feature) do
+    worktree = Worktree.locate(feature)
+
+    cond do
+      File.dir?(worktree.path) -> {:ok, worktree}
+      branch_exists?(worktree.repo, worktree.branch) -> Worktree.create(feature)
+      true -> {:error, :branch_missing}
+    end
+  end
+
+  defp branch_exists?(repo, branch) do
+    match?(
+      {_, 0},
+      System.cmd("git", ["-C", repo, "rev-parse", "--verify", "--quiet", "refs/heads/#{branch}"],
+        stderr_to_stdout: true
+      )
+    )
   end
 
   # ---- internals ----------------------------------------------------------
