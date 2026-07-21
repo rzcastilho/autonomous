@@ -19,6 +19,18 @@ defmodule SpeckitOrchestrator.PipelineTest do
     assert Pipeline.first() == :specify
   end
 
+  describe "phase?/1" do
+    test "true for every member of phases/0" do
+      for phase <- Pipeline.phases() do
+        assert Pipeline.phase?(phase)
+      end
+    end
+
+    test "false for a non-phase atom" do
+      refute Pipeline.phase?(:bogus)
+    end
+  end
+
   describe "step_of/1" do
     test "matches each phase's 1-indexed position in phases/0" do
       for {phase, step} <- Enum.with_index(Pipeline.phases(), 1) do

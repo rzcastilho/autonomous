@@ -65,6 +65,10 @@ defmodule SpeckitOrchestrator.Pipeline do
   @spec first() :: phase()
   def first, do: hd(@ordered)
 
+  @doc "Whether `phase` is a member of the ordered run phases."
+  @spec phase?(atom()) :: boolean()
+  def phase?(phase), do: phase in @ordered
+
   @doc "The 1-indexed step number of `phase` in the run order."
   @spec step_of(phase()) :: pos_integer()
   def step_of(phase), do: Enum.find_index(@ordered, &(&1 == phase)) + 1
