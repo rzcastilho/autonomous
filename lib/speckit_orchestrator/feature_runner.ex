@@ -59,6 +59,9 @@ defmodule SpeckitOrchestrator.FeatureRunner do
     * `:resume_prompt` — optional operator note carried into agent state
       alongside the fixed `resume_phase` anchor; does not alter any phase
       request in this feature.
+    * `:run_context` — a `RunContext.t()` captured by the facade for this run;
+      threaded into a diverted-terminal checkpoint write so a resume reapplies
+      the original run shape. Defaults to `nil` (tests and non-context callers).
   """
   @spec run(SpeckitOrchestrator.Feature.t(), keyword()) :: result() | {:error, term()}
   def run(feature, opts \\ []) do
@@ -68,6 +71,7 @@ defmodule SpeckitOrchestrator.FeatureRunner do
     notify = Keyword.get(opts, :notify)
     start_phase = Keyword.get(opts, :start_phase, Pipeline.first())
     resume_prompt = Keyword.get(opts, :resume_prompt)
+    run_context = Keyword.get(opts, :run_context)
 
     with {:ok, pid} <- start_agent(feature, opts) do
       try do
@@ -86,10 +90,18 @@ defmodule SpeckitOrchestrator.FeatureRunner do
           )
 
         {status, reason, agent} =
-          loop(pid, feature, start_phase, Pipeline.step_of(start_phase), timeout, ledger, worktree)
+          loop(
+            pid,
+            feature,
+            start_phase,
+            Pipeline.step_of(start_phase),
+            timeout,
+            ledger,
+            worktree
+          )
 
         call(pid, "feature.finalize", %{status: status, reason: reason}, timeout)
-        checkpoint(feature, status, reason, agent)
+        checkpoint(feature, status, reason, agent, run_context)
         handle_worktree(feature, status, worktree)
         emit_terminal(feature, status, reason, agent.state.cost_total)
         notify(notify, feature.id, status, reason)
@@ -196,15 +208,19 @@ defmodule SpeckitOrchestrator.FeatureRunner do
 
   # Best-effort resume pointer for a diverted terminal (FR-010). Delete-on-:done
   # (US2) is wired separately once Checkpoint.delete/1 is implemented.
-  defp checkpoint(feature, :done, _reason, _agent), do: Checkpoint.delete(feature.id)
+  defp checkpoint(feature, :done, _reason, _agent, _run_context),
+    do: Checkpoint.delete(feature.id)
 
-  defp checkpoint(feature, status, reason, agent) do
+  defp checkpoint(feature, status, reason, agent, run_context) do
     Checkpoint.write(%{
       feature_id: feature.id,
       last_phase: agent.state.phase,
       status: status,
       reason: reason,
-      session_id: agent.state.session_id
+      session_id: agent.state.session_id,
+      slug: feature.slug,
+      path: feature.path,
+      run_context: run_context
     })
   end
 

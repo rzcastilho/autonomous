@@ -320,9 +320,48 @@ branch — the mid-pipeline counterpart to `resolve/1`'s full restart from
   iex> SpeckitOrchestrator.resume("003", from: :plan, prompt: "re-plan around the money fix")
   ```
 
-All other options (`:features`, `:runner`, `:owner`, `:max_concurrency`, …)
-pass through unchanged to `run/1`; a caller-supplied `:runner` wins over the
-injected resume runner.
+`resume(id)` alone is the canonical, self-sufficient form: identity (`slug`,
+`path`) is recovered from the checkpoint itself, so no hand-typed `%Feature{}`
+and no loadable backlog are required. Passing `:features` (an explicit list,
+or a working `load_backlog/0`) still works and takes precedence over
+checkpoint identity when both name the same id — kept for backward
+compatibility, not required for a normal resume.
+
+All other options (`:runner`, `:owner`, `:max_concurrency`, …) pass through
+unchanged to `run/1`; a caller-supplied `:runner`/`:executor` wins over the
+injected resume runner/executor.
+
+### Run context reapply
+
+The checkpoint also records the run-shaping settings in effect when the
+feature was originally started — `pr_workflow`, `max_concurrency`,
+`budget_usd`, `plan_stack`, `pr_base`, `pr_remote` — and `resume/2` reapplies
+them, so a resumed run re-executes under its original shape even if the live
+environment/Config has since changed (e.g. `pr_workflow` was on for the
+original run but is off by default now). Precedence, fixed:
+
+**explicit `resume/2` option > recorded checkpoint context > live Config/default**
+
+```elixir
+# Checkpoint recorded pr_workflow: true — resume routes through the stacked
+# PR-workflow executor (cap 1, stacking, PR-on-:done) even if the live
+# Config default is off:
+iex> SpeckitOrchestrator.resume("003")
+
+# Override deliberately — explicit opt beats the recorded value:
+iex> SpeckitOrchestrator.resume("003", pr_workflow: false)
+```
+
+A setting missing from the checkpoint (old checkpoint written before this
+feature, or a partial record) falls back to live `Config` and logs which
+settings fell back:
+
+```text
+feature 003 resume: no recorded context for [:max_concurrency, :budget_usd, :plan_stack, :pr_base, :pr_remote] — falling back to live Config
+```
+
+No crash either way — a resume never fails because context is missing, only
+because identity/checkpoint/phase is invalid (see the table below).
 
 ### `resolve/1` vs `resume/2`
 

@@ -14,11 +14,13 @@ defmodule SpeckitOrchestrator do
     Config,
     Describe,
     Coordinator,
+    Feature,
     FeatureRunner,
     Ledger,
     Pipeline,
     PullRequest,
     Report,
+    RunContext,
     SingleSpec,
     StackTracker,
     TargetPack,
@@ -45,17 +47,29 @@ defmodule SpeckitOrchestrator do
     * `:publisher` — override the PR opener (tests inject a fake);
       `(repo, spec) -> {:ok, url} | {:error, term}`.
 
+  Captures the six run-shaping settings (`pr_workflow`, `max_concurrency`,
+  `budget_usd`, `plan_stack`, `pr_base`, `pr_remote`) from the effective opts
+  at call time (`RunContext.capture/1`) and threads them into every feature's
+  `FeatureRunner.run/2` call, so a diverted feature's checkpoint records the
+  run shape it actually ran under (FR-006) — see
+  `specs/007-resume-self-sufficient/contracts/run_context.md`.
+
   Returns `{:ok, coordinator_pid}`, or `{:error, {:preflight, problems}}` if the
   PR workflow's remote/pack preflight fails.
   """
   @spec run(keyword()) :: GenServer.on_start() | {:error, term()}
   def run(opts \\ []) do
+    run_context = RunContext.capture(opts)
+
     if Keyword.get(opts, :pr_workflow, Config.pr_workflow?()) do
-      run_stacked(opts)
+      run_stacked(opts, run_context)
     else
       start_run(opts,
         max_concurrency: Keyword.get(opts, :max_concurrency, Config.max_concurrency()),
-        runner: Keyword.get(opts, :runner, &default_runner/2)
+        runner:
+          Keyword.get(opts, :runner, fn feature, notify ->
+            default_runner(feature, notify, run_context)
+          end)
       )
     end
   end
@@ -138,10 +152,16 @@ defmodule SpeckitOrchestrator do
   @doc """
   Restart a previously-escalated/halted feature at its checkpointed phase,
   reusing (or recreating from) its existing branch — the mid-pipeline
-  counterpart to `resolve/1`'s full restart. Every unsafe precondition returns
-  a distinct `{:error, …}` and starts no run: unknown feature id, missing or
-  corrupt checkpoint, or a checkpoint phase (or `:from` override) that isn't a
-  real pipeline phase.
+  counterpart to `resolve/1`'s full restart. Identity (`slug`/`path`) is
+  recovered from the checkpoint itself when no explicit/backlog feature is
+  supplied, so `resume(id)` alone is sufficient — no hand-typed `%Feature{}`,
+  no loadable backlog required (FR-001..004). An explicit/backlog feature for
+  the id still wins over checkpoint identity when both exist. Every unsafe
+  precondition returns a distinct `{:error, …}` and starts no run: unknown
+  feature id (neither an explicit/backlog feature nor checkpoint identity),
+  missing or corrupt checkpoint, or a checkpoint phase (or `:from` override)
+  that isn't a real pipeline phase.
+
   Options: same as `run/1` (`:features`, `:runner`, `:owner`,
   `:max_concurrency`, …, passed through unchanged), plus:
 
@@ -150,8 +170,21 @@ defmodule SpeckitOrchestrator do
     * `:from` — override the start phase; takes precedence over the
       checkpoint's stored `last_phase`.
 
-  A caller-supplied `:runner` wins over the injected resume runner. See
-  `specs/005-resume-facade/contracts/resume.md`.
+  Also reapplies the run-shaping context (`pr_workflow`, `max_concurrency`,
+  `budget_usd`, `plan_stack`, `pr_base`, `pr_remote`) the checkpoint recorded
+  at the original run's start (FR-006), so the resumed run re-executes under
+  its original shape without the caller re-declaring it. Precedence (fixed,
+  documented once): **explicit resume opt > recorded checkpoint context >
+  live Config/default** (FR-007) — the six opts above, when passed to
+  `resume/2`, override the recorded value; an unrecorded/partial setting
+  falls back to live `Config` and logs which settings fell back (FR-008). The
+  reapplied `pr_workflow` decides worktree strategy: `false` resumes through
+  the plain runner path (unchanged from 005); `true` routes the resume
+  through the stacked PR-workflow executor path so cap-1 sequencing,
+  preflight, stacking, and PR-on-`:done` are preserved (FR-009). A
+  caller-supplied `:runner` or `:executor` still wins over either injected
+  strategy (test seam). See `specs/005-resume-facade/contracts/resume.md` and
+  `specs/007-resume-self-sufficient/contracts/resume.md`.
   """
   @spec resume(String.t(), keyword()) ::
           GenServer.on_start()
@@ -160,30 +193,82 @@ defmodule SpeckitOrchestrator do
           | {:error, :corrupt_checkpoint}
           | {:error, {:unknown_phase, term()}}
   def resume(feature_id, opts \\ []) do
-    features = Keyword.get_lazy(opts, :features, &load_backlog/0)
-
-    with {:ok, feature} <- find_feature(features, feature_id),
-         {:ok, record} <- read_checkpoint(feature_id),
+    with {:ok, record} <- read_checkpoint(feature_id),
+         {:ok, feature} <- resolve_identity(feature_id, record, opts),
          {:ok, start_phase} <- resolve_start_phase(record, opts) do
-      runner =
-        case Keyword.fetch(opts, :runner) do
-          {:ok, r} -> r
-          :error -> resume_runner(start_phase, Keyword.get(opts, :prompt))
-        end
+      {merged_opts, fell_back} = RunContext.merge(opts, RunContext.from_map(record["context"]))
+      log_context_fallback(feature_id, fell_back)
 
-      opts
+      run_context = RunContext.capture(merged_opts)
+      pr_workflow? = Keyword.get(merged_opts, :pr_workflow, Config.pr_workflow?())
+      prompt = Keyword.get(opts, :prompt)
+
+      merged_opts
       |> Keyword.put(:features, [feature])
-      |> Keyword.put(:runner, runner)
+      |> inject_resume_strategy(pr_workflow?, start_phase, prompt, run_context)
       |> run()
     end
   end
 
-  defp find_feature(features, feature_id) do
+  # FR-007/008: explicit resume opt > recorded context > live Config/default.
+  # A caller-supplied :runner/:executor still wins (test seam) regardless of
+  # the effective pr_workflow — checked here rather than at run/1 since resume
+  # must choose runner vs executor based on the *reapplied* pr_workflow.
+  defp inject_resume_strategy(opts, pr_workflow?, start_phase, prompt, run_context) do
+    cond do
+      Keyword.has_key?(opts, :runner) or Keyword.has_key?(opts, :executor) ->
+        opts
+
+      pr_workflow? ->
+        Keyword.put(opts, :executor, resume_executor(start_phase, prompt, run_context))
+
+      true ->
+        Keyword.put(opts, :runner, resume_runner(start_phase, prompt, run_context))
+    end
+  end
+
+  defp log_context_fallback(_feature_id, []), do: :ok
+
+  defp log_context_fallback(feature_id, fell_back) do
+    Logger.info(
+      "feature #{feature_id} resume: no recorded context for #{inspect(fell_back)} — " <>
+        "falling back to live Config"
+    )
+  end
+
+  # FR-002/003/004: an explicit/backlog feature wins over checkpoint identity
+  # whenever both exist; else the checkpoint's own slug/path rebuilds the
+  # feature; else unknown-feature. A best-effort backlog load never raises
+  # past resume/2 — a missing/unloadable backlog is non-fatal once checkpoint
+  # identity is available (FR-004).
+  defp resolve_identity(feature_id, record, opts) do
+    features = resolve_features(opts)
+
     case Enum.find(features, &(&1.id == feature_id)) do
-      nil -> {:error, {:unknown_feature, feature_id}}
+      nil -> checkpoint_identity(feature_id, record)
       feature -> {:ok, feature}
     end
   end
+
+  defp resolve_features(opts) do
+    case Keyword.fetch(opts, :features) do
+      {:ok, features} -> features
+      :error -> best_effort_backlog()
+    end
+  end
+
+  defp best_effort_backlog do
+    load_backlog()
+  rescue
+    _ -> []
+  end
+
+  defp checkpoint_identity(feature_id, %{"slug" => slug, "path" => path})
+       when is_binary(slug) and is_binary(path) do
+    {:ok, %Feature{id: feature_id, slug: slug, path: path, status: :pending}}
+  end
+
+  defp checkpoint_identity(feature_id, _record), do: {:error, {:unknown_feature, feature_id}}
 
   defp read_checkpoint(feature_id) do
     case Checkpoint.read(feature_id) do
@@ -218,7 +303,7 @@ defmodule SpeckitOrchestrator do
   # feature never tore it down); else recreate it from the existing branch.
   # Never falls back to a fresh branch (FR-005, SC-005) — a missing branch is
   # a distinct worktree error, not silently re-created from HEAD.
-  defp resume_runner(start_phase, prompt) do
+  defp resume_runner(start_phase, prompt, run_context) do
     fn feature, notify ->
       Task.Supervisor.start_child(SpeckitOrchestrator.RunnerSup, fn ->
         case resume_worktree(feature) do
@@ -228,7 +313,37 @@ defmodule SpeckitOrchestrator do
               ledger: Ledger,
               notify: notify,
               start_phase: start_phase,
-              resume_prompt: prompt
+              resume_prompt: prompt,
+              run_context: run_context
+            )
+
+          {:error, reason} ->
+            notify.(feature.id, :failed, {:worktree, reason})
+        end
+      end)
+
+      :ok
+    end
+  end
+
+  # PR-workflow resume counterpart to resume_runner/3 — same worktree
+  # reuse/recreate logic, but shaped as an `:executor` (feature, base, notify)
+  # so run_stacked/1's stacked_runner wraps it with stacking + preflight +
+  # PR-on-:done (FR-009). `base` (the current stack top) is ignored: a resumed
+  # feature reuses/recreates its own existing worktree/branch, not a fresh one
+  # branched off the stack.
+  defp resume_executor(start_phase, prompt, run_context) do
+    fn feature, _base, notify ->
+      Task.Supervisor.start_child(SpeckitOrchestrator.RunnerSup, fn ->
+        case resume_worktree(feature) do
+          {:ok, worktree} ->
+            FeatureRunner.run(feature,
+              worktree: worktree,
+              ledger: Ledger,
+              notify: notify,
+              start_phase: start_phase,
+              resume_prompt: prompt,
+              run_context: run_context
             )
 
           {:error, reason} ->
@@ -291,11 +406,16 @@ defmodule SpeckitOrchestrator do
   # Real runner: each feature gets its own worktree, then runs the pipeline.
   # A worktree that can't be created (missing scaffold) fails the feature
   # rather than running it in an unguarded tree.
-  defp default_runner(feature, notify) do
+  defp default_runner(feature, notify, run_context) do
     Task.Supervisor.start_child(SpeckitOrchestrator.RunnerSup, fn ->
       case Worktree.create(feature) do
         {:ok, worktree} ->
-          FeatureRunner.run(feature, worktree: worktree, ledger: Ledger, notify: notify)
+          FeatureRunner.run(feature,
+            worktree: worktree,
+            ledger: Ledger,
+            notify: notify,
+            run_context: run_context
+          )
 
         {:error, reason} ->
           notify.(feature.id, :failed, {:worktree, reason})
@@ -323,6 +443,7 @@ defmodule SpeckitOrchestrator do
     opts = Keyword.put(opts, :features, [feature])
     caller_test_mode? = Keyword.has_key?(opts, :runner) or Keyword.has_key?(opts, :executor)
     pr_workflow? = Keyword.get(opts, :pr_workflow, Config.pr_workflow?())
+    run_context = RunContext.capture(opts)
 
     cond do
       caller_test_mode? ->
@@ -330,12 +451,12 @@ defmodule SpeckitOrchestrator do
 
       pr_workflow? ->
         case TargetPack.verify(Config.repo(), check_remote: Config.pr_remote()) do
-          :ok -> {:ok, Keyword.put(opts, :executor, seed_executor(description))}
+          :ok -> {:ok, Keyword.put(opts, :executor, seed_executor(description, run_context))}
           {:error, problems} -> {:error, {:preflight, problems}}
         end
 
       true ->
-        {:ok, Keyword.put(opts, :runner, seed_runner(description))}
+        {:ok, Keyword.put(opts, :runner, seed_runner(description, run_context))}
     end
   end
 
@@ -370,11 +491,11 @@ defmodule SpeckitOrchestrator do
     end
   end
 
-  defp seed_runner(description) do
+  defp seed_runner(description, run_context) do
     fn feature, notify ->
       Task.Supervisor.start_child(SpeckitOrchestrator.RunnerSup, fn ->
         case Worktree.create(feature) do
-          {:ok, worktree} -> run_seeded(feature, worktree, description, notify)
+          {:ok, worktree} -> run_seeded(feature, worktree, description, notify, run_context)
           {:error, reason} -> notify.(feature.id, :failed, {:worktree, reason})
         end
       end)
@@ -383,11 +504,11 @@ defmodule SpeckitOrchestrator do
     end
   end
 
-  defp seed_executor(description) do
+  defp seed_executor(description, run_context) do
     fn feature, base, notify ->
       Task.Supervisor.start_child(SpeckitOrchestrator.RunnerSup, fn ->
         case Worktree.create(feature, base: base) do
-          {:ok, worktree} -> run_seeded(feature, worktree, description, notify)
+          {:ok, worktree} -> run_seeded(feature, worktree, description, notify, run_context)
           {:error, reason} -> notify.(feature.id, :failed, {:worktree, reason})
         end
       end)
@@ -396,10 +517,18 @@ defmodule SpeckitOrchestrator do
     end
   end
 
-  defp run_seeded(feature, worktree, description, notify) do
+  defp run_seeded(feature, worktree, description, notify, run_context) do
     case write_seed(worktree, feature, description) do
-      :ok -> FeatureRunner.run(feature, worktree: worktree, ledger: Ledger, notify: notify)
-      {:error, reason} -> notify.(feature.id, :failed, {:seed, reason})
+      :ok ->
+        FeatureRunner.run(feature,
+          worktree: worktree,
+          ledger: Ledger,
+          notify: notify,
+          run_context: run_context
+        )
+
+      {:error, reason} ->
+        notify.(feature.id, :failed, {:seed, reason})
     end
   end
 
@@ -423,13 +552,18 @@ defmodule SpeckitOrchestrator do
   #     branch and opens the PR (default: `publish_feature/2`).
   # A `:runner` override bypasses stacking entirely (used to test cap-1 sequencing).
 
-  defp run_stacked(opts) do
+  defp run_stacked(opts, run_context) do
     test_mode? = Keyword.has_key?(opts, :runner) or Keyword.has_key?(opts, :executor)
 
     with :ok <- preflight_stacked(test_mode?) do
       {:ok, tracker} = StackTracker.start_link(Config.pr_base())
       publisher = Keyword.get(opts, :publisher, &publish_feature/2)
-      executor = Keyword.get(opts, :executor, &default_executor/3)
+
+      executor =
+        Keyword.get(opts, :executor, fn feature, base, notify ->
+          default_executor(feature, base, notify, run_context)
+        end)
+
       runner = Keyword.get(opts, :runner) || stacked_runner(tracker, publisher, executor)
 
       start_run(opts, max_concurrency: 1, runner: runner)
@@ -479,11 +613,16 @@ defmodule SpeckitOrchestrator do
     StackTracker.set_top(tracker, Worktree.locate(feature).branch)
   end
 
-  defp default_executor(feature, base, notify) do
+  defp default_executor(feature, base, notify, run_context) do
     Task.Supervisor.start_child(SpeckitOrchestrator.RunnerSup, fn ->
       case Worktree.create(feature, base: base) do
         {:ok, worktree} ->
-          FeatureRunner.run(feature, worktree: worktree, ledger: Ledger, notify: notify)
+          FeatureRunner.run(feature,
+            worktree: worktree,
+            ledger: Ledger,
+            notify: notify,
+            run_context: run_context
+          )
 
         {:error, reason} ->
           notify.(feature.id, :failed, {:worktree, reason})
