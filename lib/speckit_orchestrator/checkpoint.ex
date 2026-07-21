@@ -4,8 +4,10 @@ defmodule SpeckitOrchestrator.Checkpoint do
 
   Records the phase a feature reached when it terminated at a non-`:done`
   status (`:escalated` / `:halted` / `:failed`), the terminal status, reason,
-  session id, and the feature's identity (`slug`/`path`, so `resume/2` can
-  rebuild the work-unit from the id alone — FR-001) — one JSON file at
+  session id, the feature's identity (`slug`/`path`, so `resume/2` can
+  rebuild the work-unit from the id alone — FR-001), and the run-shaping
+  context (`RunContext`) captured at run start, so a resume re-executes under
+  the original run shape (FR-006) — one JSON file at
   `<Config.transcript_root>/<feature_id>/checkpoint.json`. Write is
   best-effort (a failure never breaks the run — FR-008); a `:done` terminal
   deletes any existing checkpoint instead of writing one (FR-005). Read
@@ -14,7 +16,7 @@ defmodule SpeckitOrchestrator.Checkpoint do
   and `specs/007-resume-self-sufficient/contracts/checkpoint.md`.
   """
 
-  alias SpeckitOrchestrator.Config
+  alias SpeckitOrchestrator.{Config, RunContext}
 
   @doc "Best-effort write; always returns `:ok` (FR-008)."
   @spec write(map()) :: :ok
@@ -27,15 +29,17 @@ defmodule SpeckitOrchestrator.Checkpoint do
           session_id: session_id
         } = input
       ) do
-    record = %{
-      feature_id: feature_id,
-      last_phase: Atom.to_string(last_phase),
-      status: Atom.to_string(status),
-      reason: inspect(reason),
-      session_id: session_id,
-      slug: Map.get(input, :slug),
-      path: Map.get(input, :path)
-    }
+    record =
+      %{
+        feature_id: feature_id,
+        last_phase: Atom.to_string(last_phase),
+        status: Atom.to_string(status),
+        reason: inspect(reason),
+        session_id: session_id,
+        slug: Map.get(input, :slug),
+        path: Map.get(input, :path)
+      }
+      |> maybe_put_context(Map.get(input, :run_context))
 
     dir = Path.join(Config.transcript_root(), feature_id)
     File.mkdir_p!(dir)
@@ -76,4 +80,9 @@ defmodule SpeckitOrchestrator.Checkpoint do
   defp checkpoint_path(feature_id) do
     Path.join([Config.transcript_root(), feature_id, "checkpoint.json"])
   end
+
+  defp maybe_put_context(record, nil), do: record
+
+  defp maybe_put_context(record, %RunContext{} = run_context),
+    do: Map.put(record, :context, RunContext.to_map(run_context))
 end

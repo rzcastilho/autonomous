@@ -124,44 +124,44 @@ stacking) despite the live default being off.
 
 ### Tests for User Story 2
 
-- [ ] T013 [P] [US2] Create `test/speckit_orchestrator/run_context_test.exs`: `capture/1`
+- [X] T013 [P] [US2] Create `test/speckit_orchestrator/run_context_test.exs`: `capture/1`
       resolves each of the six fields from `Keyword.get(opts, key, Config.<accessor>())`
       (both the opts-present and opts-absent/Config-fallback cases per field); `to_map/1`
       produces a JSON-ready string-keyed map of exactly the six settings and nothing else
       (contracts/run_context.md capture/1, to_map/1)
-- [ ] T014 [P] [US2] Add to `run_context_test.exs`: `from_map/1` returns an all-`nil`
+- [X] T014 [P] [US2] Add to `run_context_test.exs`: `from_map/1` returns an all-`nil`
       struct for `nil`/`%{}` (old/absent checkpoint); a partial map populates only present
       keys, leaving the rest `nil`; never raises on an unexpected/extra key
       (contracts/run_context.md from_map/1; data-model.md edge: partial)
-- [ ] T015 [P] [US2] Add to `run_context_test.exs`: `merge/2` — an opts-supplied key always
+- [X] T015 [P] [US2] Add to `run_context_test.exs`: `merge/2` — an opts-supplied key always
       wins over recorded (not counted as a fallback); a recorded non-`nil` value is
       injected into `merged_opts` when opts lacks the key; a key present in neither is left
       absent and reported in `fell_back_keys`; result is independent of `opts` vs
       `recorded` argument order (contracts/run_context.md merge/2)
-- [ ] T016 [P] [US2] Extend `test/speckit_orchestrator/checkpoint_test.exs`: `write/1`
+- [X] T016 [P] [US2] Extend `test/speckit_orchestrator/checkpoint_test.exs`: `write/1`
       given a `run_context: %RunContext{}` persists `RunContext.to_map/1` under the
       `"context"` key; `write/1` given `run_context: nil` omits the `"context"` key
       entirely; round-trip through `read/1` is lossless (contracts/checkpoint.md
       persisted record table)
-- [ ] T017 [US2] Add test "resume/2 routes a checkpoint recording `pr_workflow: true`
+- [X] T017 [US2] Add test "resume/2 routes a checkpoint recording `pr_workflow: true`
       through the PR-workflow path (stacking/preflight/PR-on-done, cap 1) even when live
       `Config.pr_workflow?/0` is `false`" to `test/speckit_orchestrator/resume_test.exs`
       (spec Story 2 AS1; SC-002; quickstart Scenario 2) — depends on T013–T016
-- [ ] T018 [US2] Add test "resume/2 reapplies recorded `max_concurrency`/`budget_usd`/
+- [X] T018 [US2] Add test "resume/2 reapplies recorded `max_concurrency`/`budget_usd`/
       `plan_stack`/`pr_base` over live Config defaults" (spec Story 2 AS2; quickstart
       Scenario 2 non-PR settings) — depends on T017
-- [ ] T019 [US2] Add test "resume/2 with an explicit `pr_workflow: false` resume opt wins
+- [X] T019 [US2] Add test "resume/2 with an explicit `pr_workflow: false` resume opt wins
       over a checkpoint recording `pr_workflow: true` — non-PR path runs" (spec Story 2
       AS3; FR-007; quickstart Scenario 3) — depends on T017
-- [ ] T020 [US2] Add test "resume/2 on a checkpoint with no `context` key falls back to
+- [X] T020 [US2] Add test "resume/2 on a checkpoint with no `context` key falls back to
       live Config for all six settings, succeeds without crashing, and logs a `Logger.info`
       line naming the fallen-back settings (captured via `ExUnit.CaptureLog`)" (spec Story
       2 AS4; FR-008; SC-004; quickstart Scenario 4) — depends on T017
-- [ ] T021 [US2] Add test "resume/2 on a checkpoint recording only `pr_workflow: true`
+- [X] T021 [US2] Add test "resume/2 on a checkpoint recording only `pr_workflow: true`
       (partial context) reapplies that value and falls back + logs for the other five"
       (data-model.md edge: partial context; quickstart Scenario 4 partial variant) —
       depends on T020
-- [ ] T022 [US2] Add integration test (`@tag :integration`) "a checkpoint write failure
+- [X] T022 [US2] Add integration test (`@tag :integration`) "a checkpoint write failure
       (unwritable `transcript_root`) with `slug`/`path`/`run_context` present still reaches
       the run's terminal result — `Checkpoint.write/1` returns `:ok` (rescued), no new
       break" to `test/speckit_orchestrator/checkpoint_test.exs` or `feature_runner_test.exs`
@@ -169,44 +169,44 @@ stacking) despite the live default being off.
 
 ### Implementation for User Story 2
 
-- [ ] T023 [P] [US2] Create `lib/speckit_orchestrator/run_context.ex`: pure struct
+- [X] T023 [P] [US2] Create `lib/speckit_orchestrator/run_context.ex`: pure struct
       `defstruct pr_workflow: nil, max_concurrency: nil, budget_usd: nil, plan_stack: nil,
       pr_base: nil, pr_remote: nil`; `capture/1`, `to_map/1`, `from_map/1`, `merge/2` per
       contracts/run_context.md — no IO beyond reading `Config` in `capture/1` — depends on
       T013–T015
-- [ ] T024 [US2] Extend `Checkpoint.write/1` in `lib/speckit_orchestrator/checkpoint.ex`:
+- [X] T024 [US2] Extend `Checkpoint.write/1` in `lib/speckit_orchestrator/checkpoint.ex`:
       accept an optional `run_context` key; when non-`nil`, add `context:
       RunContext.to_map(run_context)` to the encoded record; when `nil`/absent, omit the
       key — no new raising path (best-effort preserved) — depends on T023, T016
-- [ ] T025 [US2] Add a `:run_context` option to `FeatureRunner.run/2`
+- [X] T025 [US2] Add a `:run_context` option to `FeatureRunner.run/2`
       (`lib/speckit_orchestrator/feature_runner.ex`), default `nil`; pass it into the
       `checkpoint/4` call site alongside `slug`/`path` (T010) — depends on T024
-- [ ] T026 [US2] In `SpeckitOrchestrator.run/1` (`lib/speckit_orchestrator.ex`), capture
+- [X] T026 [US2] In `SpeckitOrchestrator.run/1` (`lib/speckit_orchestrator.ex`), capture
       `RunContext.capture(effective_opts)` from the opts `run/1` actually uses (post
       `:pr_workflow`/`:max_concurrency`/etc. resolution) and thread it as `run_context:`
       into every runner/executor closure that calls `FeatureRunner.run/2`:
       `default_runner/2`, `seed_runner/1`'s inner fun, `seed_executor/1`'s inner fun (via
       `run_seeded/4`), and `default_executor/3` — depends on T023, T025
-- [ ] T027 [US2] In `SpeckitOrchestrator.resume/2`, after resolving identity (US1) and
+- [X] T027 [US2] In `SpeckitOrchestrator.resume/2`, after resolving identity (US1) and
       start phase: compute `ctx = RunContext.from_map(record["context"])`, `{merged_opts,
       fell_back} = RunContext.merge(opts, ctx)`; when `fell_back != []`, emit one
       `Logger.info` naming the fallen-back settings (FR-008) — depends on T011, T023
-- [ ] T028 [US2] In `resume/2`, select the worktree strategy from `merged_opts`'s effective
+- [X] T028 [US2] In `resume/2`, select the worktree strategy from `merged_opts`'s effective
       `pr_workflow`: when `false` (unchanged), inject `:runner` = the existing
       `resume_runner/2`; when `true`, inject `:executor` = a new resume-executor variant
       (same `resume_worktree/1` reuse/recreate logic, `(feature, base, notify) -> :ok`
       shape) so the resumed run goes through `run_stacked/1`'s wrapping (stacking +
       `pr_notify` + cap 1) instead of bypassing it — a caller-supplied `:runner`/
       `:executor` still wins — depends on T027
-- [ ] T029 [US2] Thread `run_context: <captured run_context>` from `merged_opts` into the
+- [X] T029 [US2] Thread `run_context: <captured run_context>` from `merged_opts` into the
       resume-runner (T028's `resume_runner/2`) and resume-executor's `FeatureRunner.run/2`
       call, so a resumed feature's *own* checkpoint (if it diverts again) still carries the
       reapplied context forward — depends on T026, T028
-- [ ] T030 [US2] `resume/2` calls `run(merged_opts)` instead of `run(opts)` so the
+- [X] T030 [US2] `resume/2` calls `run(merged_opts)` instead of `run(opts)` so the
       reapplied context (including `pr_workflow`) reaches `run/1`'s own
       `pr_workflow`-branch dispatch (`run_stacked/1` vs `start_run/2`) consistently with
       the T028 worktree-strategy selection — depends on T027, T028
-- [ ] T031 [US2] Update the `resume/2` moduledoc and `run/1` moduledoc in
+- [X] T031 [US2] Update the `resume/2` moduledoc and `run/1` moduledoc in
       `lib/speckit_orchestrator.ex` to document run-context capture/reapply and the
       precedence rule (explicit resume opt > recorded context > live Config/default) —
       depends on T030

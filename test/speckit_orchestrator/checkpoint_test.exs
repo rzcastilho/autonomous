@@ -2,7 +2,7 @@ defmodule SpeckitOrchestrator.CheckpointTest do
   # async: false — mutates the global :transcript_root app env.
   use ExUnit.Case, async: false
 
-  alias SpeckitOrchestrator.Checkpoint
+  alias SpeckitOrchestrator.{Checkpoint, RunContext}
 
   setup do
     root = Path.join(System.tmp_dir!(), "cp_#{System.unique_integer([:positive])}")
@@ -170,5 +170,67 @@ defmodule SpeckitOrchestrator.CheckpointTest do
     assert {:ok, record} = Checkpoint.read("010")
     assert record["slug"] == nil
     assert record["path"] == nil
+  end
+
+  test "write given a run_context persists RunContext.to_map/1 under the context key", %{
+    root: root
+  } do
+    ctx = %RunContext{
+      pr_workflow: true,
+      max_concurrency: 1,
+      budget_usd: 10.0,
+      plan_stack: ["research", "plan"],
+      pr_base: "develop",
+      pr_remote: "origin"
+    }
+
+    assert :ok =
+             Checkpoint.write(%{
+               feature_id: "011",
+               last_phase: :implement,
+               status: :halted,
+               reason: "budget",
+               session_id: "s11",
+               slug: "widget",
+               path: "docs/breakdown/011-widget.md",
+               run_context: ctx
+             })
+
+    decoded = root |> checkpoint_path("011") |> File.read!() |> Jason.decode!()
+    assert decoded["context"] == RunContext.to_map(ctx)
+
+    assert {:ok, record} = Checkpoint.read("011")
+    assert record["context"] == RunContext.to_map(ctx)
+  end
+
+  test "write given run_context: nil omits the context key entirely" do
+    assert :ok =
+             Checkpoint.write(%{
+               feature_id: "012",
+               last_phase: :plan,
+               status: :halted,
+               reason: "needs human",
+               session_id: "s12",
+               slug: "widget",
+               path: "012-widget.md",
+               run_context: nil
+             })
+
+    assert {:ok, record} = Checkpoint.read("012")
+    refute Map.has_key?(record, "context")
+  end
+
+  test "write with no run_context key at all omits the context key entirely" do
+    assert :ok =
+             Checkpoint.write(%{
+               feature_id: "013",
+               last_phase: :plan,
+               status: :halted,
+               reason: "needs human",
+               session_id: "s13"
+             })
+
+    assert {:ok, record} = Checkpoint.read("013")
+    refute Map.has_key?(record, "context")
   end
 end
