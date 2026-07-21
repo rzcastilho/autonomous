@@ -222,14 +222,14 @@ including the PR workflow, without needing the environment to re-declare it (US2
 
 **Purpose**: Documentation and full-suite validation across both stories.
 
-- [ ] T032 [P] Update `docs/runbook.md`: document the id-only `resume(id)` invocation as
+- [X] T032 [P] Update `docs/runbook.md`: document the id-only `resume(id)` invocation as
       the canonical form (dropping the hand-supplied `%Feature{}` example as primary),
       note that `:features`/explicit definitions remain supported for backward
       compatibility, and document the run-context reapply + fallback log line (FR-012)
-- [ ] T033 Run `mise exec -- mix test --cover` and confirm `RunContext`, the extended
+- [X] T033 Run `mise exec -- mix test --cover` and confirm `RunContext`, the extended
       `Checkpoint`, and the reshaped `resume/2` sit above the project's >90% core coverage
       target
-- [ ] T034 Run `mise exec -- mix test --include integration` and walk quickstart.md's six
+- [X] T034 Run `mise exec -- mix test --include integration` and walk quickstart.md's six
       scenarios end-to-end against the real harness seams, confirming no regression in the
       five preserved distinct failure outcomes (FR-005; SC-003)
 
