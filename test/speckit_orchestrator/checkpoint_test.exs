@@ -133,4 +133,42 @@ defmodule SpeckitOrchestrator.CheckpointTest do
     assert record["reason"] == inspect("needs human")
     assert record["session_id"] == "s8"
   end
+
+  test "write given slug/path persists them and read/1 round-trips them losslessly", %{
+    root: root
+  } do
+    assert :ok =
+             Checkpoint.write(%{
+               feature_id: "009",
+               last_phase: :analyze,
+               status: :halted,
+               reason: "needs human",
+               session_id: "s9",
+               slug: "widget",
+               path: "docs/breakdown/009-widget.md"
+             })
+
+    decoded = root |> checkpoint_path("009") |> File.read!() |> Jason.decode!()
+    assert decoded["slug"] == "widget"
+    assert decoded["path"] == "docs/breakdown/009-widget.md"
+
+    assert {:ok, record} = Checkpoint.read("009")
+    assert record["slug"] == "widget"
+    assert record["path"] == "docs/breakdown/009-widget.md"
+  end
+
+  test "write given an old-shape map without slug/path still writes successfully" do
+    assert :ok =
+             Checkpoint.write(%{
+               feature_id: "010",
+               last_phase: :plan,
+               status: :halted,
+               reason: "needs human",
+               session_id: "s10"
+             })
+
+    assert {:ok, record} = Checkpoint.read("010")
+    assert record["slug"] == nil
+    assert record["path"] == nil
+  end
 end

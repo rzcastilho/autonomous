@@ -62,22 +62,26 @@ defmodule SpeckitOrchestrator.ResumeTest do
 
   defp feature(id), do: %Feature{id: id, slug: "resume-facade", path: "#{id}-resume-facade.md"}
 
-  defp write_checkpoint(id, last_phase, status \\ :halted) do
-    :ok =
-      Checkpoint.write(%{
-        feature_id: id,
-        last_phase: last_phase,
-        status: status,
-        reason: "test fixture",
-        session_id: "s1"
-      })
+  # `identity` is an optional keyword list (`slug:`, `path:`) merged into the
+  # write map — omitted, this produces an old-shape checkpoint carrying no
+  # identity (FR-001..004 fixtures reuse this for both shapes).
+  defp write_checkpoint(id, last_phase, status \\ :halted, identity \\ []) do
+    base = %{
+      feature_id: id,
+      last_phase: last_phase,
+      status: status,
+      reason: "test fixture",
+      session_id: "s1"
+    }
+
+    :ok = Checkpoint.write(Enum.into(identity, base))
 
     on_exit(fn -> File.rm_rf(Path.join(Config.transcript_root(), id)) end)
   end
 
   defp capturing_runner(test_pid) do
     fn feat, notify ->
-      send(test_pid, {:runner_called, feat.id})
+      send(test_pid, {:runner_called, feat})
       notify.(feat.id, :done, nil)
       :ok
     end
@@ -137,10 +141,10 @@ defmodule SpeckitOrchestrator.ResumeTest do
       refute_received {:runner_called, _}
     end
 
-    test "unknown feature id" do
+    test "no checkpoint on disk still returns {:error, :no_checkpoint}, unchanged" do
       me = self()
 
-      assert {:error, {:unknown_feature, "does-not-exist"}} =
+      assert {:error, :no_checkpoint} =
                SpeckitOrchestrator.resume("does-not-exist", features: [], runner: capturing_runner(me))
 
       refute_received {:runner_called, _}
@@ -158,6 +162,75 @@ defmodule SpeckitOrchestrator.ResumeTest do
                SpeckitOrchestrator.resume(id, features: [feature(id)], runner: capturing_runner(me))
 
       refute_received {:runner_called, _}
+    end
+  end
+
+  # ---- identity recovery from checkpoint alone (US1, FR-001..004) ---------
+
+  describe "resume/2 — identity recovery from checkpoint alone" do
+    test "reconstructs the feature from checkpoint identity when :features is empty and no explicit feature is supplied" do
+      id = unique_id()
+      write_checkpoint(id, :analyze, :halted, slug: "widget", path: "#{id}-widget.md")
+      me = self()
+
+      assert {:ok, pid} = SpeckitOrchestrator.resume(id, features: [], runner: capturing_runner(me))
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+      assert_receive {:runner_called, feat}
+      assert feat.id == id
+      assert feat.slug == "widget"
+      assert feat.path == "#{id}-widget.md"
+    end
+
+    test "explicit/backlog feature wins over checkpoint identity when both exist for the same id" do
+      id = unique_id()
+      write_checkpoint(id, :analyze, :halted, slug: "wrong-slug", path: "wrong.md")
+      me = self()
+
+      assert {:ok, pid} =
+               SpeckitOrchestrator.resume(id, features: [feature(id)], runner: capturing_runner(me))
+
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+      assert_receive {:runner_called, feat}
+      assert feat.slug == "resume-facade"
+      assert feat.path != "wrong.md"
+    end
+
+    test "neither explicit/backlog feature nor checkpoint identity resolves — {:error, {:unknown_feature, id}}, no run started" do
+      id = unique_id()
+      # old-shape checkpoint: no slug/path carried
+      write_checkpoint(id, :analyze)
+      me = self()
+
+      assert {:error, {:unknown_feature, ^id}} =
+               SpeckitOrchestrator.resume(id, features: [], runner: capturing_runner(me))
+
+      refute_received {:runner_called, _}
+    end
+
+    test "tolerates a missing/unloadable backlog when checkpoint identity is present" do
+      id = unique_id()
+      write_checkpoint(id, :analyze, :halted, slug: "widget", path: "#{id}-widget.md")
+
+      prev_repo = Application.get_env(:speckit_orchestrator, :repo)
+      Application.put_env(:speckit_orchestrator, :repo, "/nonexistent/repo-#{id}")
+
+      on_exit(fn ->
+        if prev_repo,
+          do: Application.put_env(:speckit_orchestrator, :repo, prev_repo),
+          else: Application.delete_env(:speckit_orchestrator, :repo)
+      end)
+
+      me = self()
+
+      # No :features opt at all — forces the best-effort load_backlog/0 path,
+      # which raises against a nonexistent repo; must not crash resume/2.
+      assert {:ok, pid} = SpeckitOrchestrator.resume(id, runner: capturing_runner(me))
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+      assert_receive {:runner_called, feat}
+      assert feat.slug == "widget"
     end
   end
 
@@ -208,6 +281,29 @@ defmodule SpeckitOrchestrator.ResumeTest do
                  owner: me,
                  prompt: "fixed float"
                )
+
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+      assert_receive {:run_complete, report}, 30_000
+      assert report.halted == [id]
+
+      analyze_log = File.read!(Path.join(wt.path, ".speckit_logs/05-analyze.md"))
+      assert analyze_log =~ "guidance-present"
+    end
+
+    test "delivers :prompt with identity recovered from checkpoint alone (no explicit feature)" do
+      id = unique_id()
+      repo = base_repo()
+      root = tmp_root()
+      point_config_at(repo, root)
+
+      {:ok, wt} = Worktree.create(feature(id), repo: repo, worktree_root: root)
+      write_checkpoint(id, :analyze, :halted, slug: "resume-facade", path: "#{id}-resume-facade.md")
+
+      me = self()
+
+      assert {:ok, pid} =
+               SpeckitOrchestrator.resume(id, features: [], owner: me, prompt: "fixed float")
 
       on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
 

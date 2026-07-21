@@ -204,7 +204,9 @@ defmodule SpeckitOrchestrator.FeatureRunner do
       last_phase: agent.state.phase,
       status: status,
       reason: reason,
-      session_id: agent.state.session_id
+      session_id: agent.state.session_id,
+      slug: feature.slug,
+      path: feature.path
     })
   end
 

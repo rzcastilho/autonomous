@@ -14,6 +14,7 @@ defmodule SpeckitOrchestrator do
     Config,
     Describe,
     Coordinator,
+    Feature,
     FeatureRunner,
     Ledger,
     Pipeline,
@@ -138,10 +139,16 @@ defmodule SpeckitOrchestrator do
   @doc """
   Restart a previously-escalated/halted feature at its checkpointed phase,
   reusing (or recreating from) its existing branch — the mid-pipeline
-  counterpart to `resolve/1`'s full restart. Every unsafe precondition returns
-  a distinct `{:error, …}` and starts no run: unknown feature id, missing or
-  corrupt checkpoint, or a checkpoint phase (or `:from` override) that isn't a
-  real pipeline phase.
+  counterpart to `resolve/1`'s full restart. Identity (`slug`/`path`) is
+  recovered from the checkpoint itself when no explicit/backlog feature is
+  supplied, so `resume(id)` alone is sufficient — no hand-typed `%Feature{}`,
+  no loadable backlog required (FR-001..004). An explicit/backlog feature for
+  the id still wins over checkpoint identity when both exist. Every unsafe
+  precondition returns a distinct `{:error, …}` and starts no run: unknown
+  feature id (neither an explicit/backlog feature nor checkpoint identity),
+  missing or corrupt checkpoint, or a checkpoint phase (or `:from` override)
+  that isn't a real pipeline phase.
+
   Options: same as `run/1` (`:features`, `:runner`, `:owner`,
   `:max_concurrency`, …, passed through unchanged), plus:
 
@@ -151,7 +158,8 @@ defmodule SpeckitOrchestrator do
       checkpoint's stored `last_phase`.
 
   A caller-supplied `:runner` wins over the injected resume runner. See
-  `specs/005-resume-facade/contracts/resume.md`.
+  `specs/005-resume-facade/contracts/resume.md` and
+  `specs/007-resume-self-sufficient/contracts/resume.md`.
   """
   @spec resume(String.t(), keyword()) ::
           GenServer.on_start()
@@ -160,10 +168,8 @@ defmodule SpeckitOrchestrator do
           | {:error, :corrupt_checkpoint}
           | {:error, {:unknown_phase, term()}}
   def resume(feature_id, opts \\ []) do
-    features = Keyword.get_lazy(opts, :features, &load_backlog/0)
-
-    with {:ok, feature} <- find_feature(features, feature_id),
-         {:ok, record} <- read_checkpoint(feature_id),
+    with {:ok, record} <- read_checkpoint(feature_id),
+         {:ok, feature} <- resolve_identity(feature_id, record, opts),
          {:ok, start_phase} <- resolve_start_phase(record, opts) do
       runner =
         case Keyword.fetch(opts, :runner) do
@@ -178,12 +184,39 @@ defmodule SpeckitOrchestrator do
     end
   end
 
-  defp find_feature(features, feature_id) do
+  # FR-002/003/004: an explicit/backlog feature wins over checkpoint identity
+  # whenever both exist; else the checkpoint's own slug/path rebuilds the
+  # feature; else unknown-feature. A best-effort backlog load never raises
+  # past resume/2 — a missing/unloadable backlog is non-fatal once checkpoint
+  # identity is available (FR-004).
+  defp resolve_identity(feature_id, record, opts) do
+    features = resolve_features(opts)
+
     case Enum.find(features, &(&1.id == feature_id)) do
-      nil -> {:error, {:unknown_feature, feature_id}}
+      nil -> checkpoint_identity(feature_id, record)
       feature -> {:ok, feature}
     end
   end
+
+  defp resolve_features(opts) do
+    case Keyword.fetch(opts, :features) do
+      {:ok, features} -> features
+      :error -> best_effort_backlog()
+    end
+  end
+
+  defp best_effort_backlog do
+    load_backlog()
+  rescue
+    _ -> []
+  end
+
+  defp checkpoint_identity(feature_id, %{"slug" => slug, "path" => path})
+       when is_binary(slug) and is_binary(path) do
+    {:ok, %Feature{id: feature_id, slug: slug, path: path, status: :pending}}
+  end
+
+  defp checkpoint_identity(feature_id, _record), do: {:error, {:unknown_feature, feature_id}}
 
   defp read_checkpoint(feature_id) do
     case Checkpoint.read(feature_id) do

@@ -4,31 +4,37 @@ defmodule SpeckitOrchestrator.Checkpoint do
 
   Records the phase a feature reached when it terminated at a non-`:done`
   status (`:escalated` / `:halted` / `:failed`), the terminal status, reason,
-  and session id — one JSON file at
+  session id, and the feature's identity (`slug`/`path`, so `resume/2` can
+  rebuild the work-unit from the id alone — FR-001) — one JSON file at
   `<Config.transcript_root>/<feature_id>/checkpoint.json`. Write is
   best-effort (a failure never breaks the run — FR-008); a `:done` terminal
   deletes any existing checkpoint instead of writing one (FR-005). Read
   distinguishes an absent checkpoint from a corrupt one (FR-006) and never
-  fabricates fields. See `specs/002-resume-checkpoint/contracts/checkpoint.md`.
+  fabricates fields. See `specs/002-resume-checkpoint/contracts/checkpoint.md`
+  and `specs/007-resume-self-sufficient/contracts/checkpoint.md`.
   """
 
   alias SpeckitOrchestrator.Config
 
   @doc "Best-effort write; always returns `:ok` (FR-008)."
   @spec write(map()) :: :ok
-  def write(%{
-        feature_id: feature_id,
-        last_phase: last_phase,
-        status: status,
-        reason: reason,
-        session_id: session_id
-      }) do
+  def write(
+        %{
+          feature_id: feature_id,
+          last_phase: last_phase,
+          status: status,
+          reason: reason,
+          session_id: session_id
+        } = input
+      ) do
     record = %{
       feature_id: feature_id,
       last_phase: Atom.to_string(last_phase),
       status: Atom.to_string(status),
       reason: inspect(reason),
-      session_id: session_id
+      session_id: session_id,
+      slug: Map.get(input, :slug),
+      path: Map.get(input, :path)
     }
 
     dir = Path.join(Config.transcript_root(), feature_id)
