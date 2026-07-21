@@ -129,7 +129,12 @@ SHAs deliberately.
 the snapshot as an iex table (`SpeckitOrchestrator.print_status/0`).
 `SpeckitOrchestrator.resolve/1` frees a kept worktree so a human-resolved feature
 re-runs on its existing branch (`Worktree.create` reuses an existing branch).
-Operator flow: `docs/runbook.md`.
+`SpeckitOrchestrator.resume/2` is the shipped checkpoint-driven restart path —
+resumes a halted/escalated feature at its checkpointed phase (or an earlier
+`:from` phase), optionally injecting operator `:prompt` guidance — for the local,
+single-phase-fix case; `resolve/1` remains the tool when upstream artifacts must
+be regenerated or the checkpoint is missing/corrupt. Operator flow:
+`docs/runbook.md`.
 
 **Enforcement (Phase 5).** Because the adapter runs the CLI with
 `--dangerously-skip-permissions`, containment is a committed **target-repo pack**

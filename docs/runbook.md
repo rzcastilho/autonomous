@@ -278,9 +278,71 @@ failure.
    iex> SpeckitOrchestrator.resolve("NNN")
    ```
 5. **Re-run** `SpeckitOrchestrator.run()`. The feature reuses its branch and
-   re-runs from the start (mid-pipeline resume is v2). With the decisions now in
-   the breakdown, `clarify` should default/resolve and its dependents unblock.
-   If a **new** round of questions appears, repeat 1–5.
+   re-runs from the start. For a targeted restart at the checkpointed phase
+   instead, see "Resume a halted/escalated feature (mid-pipeline)" below.
+   With the decisions now in the breakdown, `clarify` should default/resolve
+   and its dependents unblock. If a **new** round of questions appears, repeat
+   1–5.
+
+---
+
+## Resume a halted/escalated feature (mid-pipeline)
+
+`SpeckitOrchestrator.resume/2` restarts a previously-escalated or halted
+feature at its checkpointed phase, reusing (or recreating) its existing
+branch — the mid-pipeline counterpart to `resolve/1`'s full restart from
+`specify`.
+
+1. Fix the root cause on the feature branch (the same worktree/branch
+   `resolve/1` would target) and commit.
+2. Resume from the checkpointed phase:
+   ```elixir
+   iex> SpeckitOrchestrator.resume("003")
+   ```
+   By default this restarts at whichever phase was checkpointed when the
+   feature last halted or escalated — not from `specify`.
+
+### Options
+
+- `:prompt` — inject operator guidance into the resumed phase as
+  `resume_prompt`:
+  ```elixir
+  iex> SpeckitOrchestrator.resume("003", prompt: "use Decimal for money, not float")
+  ```
+- `:from` — override the start phase, restarting earlier than the checkpoint.
+  Reach for this when the fix touches an upstream artifact the checkpointed
+  phase alone won't pick back up:
+  ```elixir
+  iex> SpeckitOrchestrator.resume("003", from: :plan)
+  ```
+- Both together:
+  ```elixir
+  iex> SpeckitOrchestrator.resume("003", from: :plan, prompt: "re-plan around the money fix")
+  ```
+
+All other options (`:features`, `:runner`, `:owner`, `:max_concurrency`, …)
+pass through unchanged to `run/1`; a caller-supplied `:runner` wins over the
+injected resume runner.
+
+### `resolve/1` vs `resume/2`
+
+- Use **`resume/2`** when a checkpoint exists and the fix is local to one
+  phase's inputs — it restarts only the checkpointed (or `:from`-overridden)
+  phase, not the whole pipeline.
+- Use **`resolve/1`** when the fix must regenerate upstream artifacts (e.g.
+  `spec.md` itself, via a `docs/breakdown/NNN-slug.md` decision — see
+  "Respond to an escalation" above), or when the checkpoint is missing or
+  corrupt.
+
+`resume/2` never starts a run on an unsafe precondition — each case fails
+closed with a distinct error and no run:
+
+| Returned | Meaning |
+|----------|---------|
+| `{:error, {:unknown_feature, id}}` | feature id not in the backlog |
+| `{:error, :no_checkpoint}` | feature never checkpointed → use `resolve/1` |
+| `{:error, :corrupt_checkpoint}` | checkpoint unreadable → use `resolve/1` |
+| `{:error, {:unknown_phase, term}}` | bad `:from` (or corrupt stored phase) |
 
 ---
 

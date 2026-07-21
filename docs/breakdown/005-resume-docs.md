@@ -3,14 +3,15 @@
 ## Summary
 
 Document the human-in-the-loop mid-pipeline resume flow in the operator runbook
-and update the codebase guide, which currently calls resume a "v2 concern".
+and update the codebase guide, which previously treated resume as not yet
+implemented.
 
 ## Context
 
-`docs/runbook.md` documents `resolve/1` (full re-run from `specify`) as the only
-recovery path, and `CLAUDE.md` describes mid-pipeline resume as deferred to v2.
-Once `resume/2` ships (features 001-004), both need updating so operators use the
-correct flow.
+`docs/runbook.md` documented `resolve/1` (full re-run from `specify`) as the only
+recovery path, and `CLAUDE.md` described mid-pipeline resume as not yet
+implemented. Once `resume/2` ships (features 001-004), both need updating so
+operators use the correct flow.
 
 ## User value
 
@@ -28,7 +29,7 @@ exact `iex` calls, and the codebase guide reflects shipped reality.
   `SpeckitOrchestrator.resume(id, prompt: "...")`. Explain restart-at-halted-phase
   semantics and when to reach for `:from` to override the start phase.
 - `CLAUDE.md`: update the observability/operability paragraph — mid-pipeline
-  resume is shipped (remove the "v2 concern" framing).
+  resume is shipped (drop the old deferred-implementation framing).
 
 ## Out of scope
 
@@ -38,4 +39,5 @@ exact `iex` calls, and the codebase guide reflects shipped reality.
 
 - The runbook documents the full escalate → fix → resume loop with the exact
   `iex` calls (`resolve/1` vs `resume/2`, and the `:from` / `:prompt` opts).
-- No stale reference describing mid-pipeline resume as a future/v2 concern.
+- No stale reference implying mid-pipeline resume is still unimplemented or
+  deferred.
