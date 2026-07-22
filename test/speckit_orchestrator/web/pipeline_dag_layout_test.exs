@@ -70,4 +70,76 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLayoutTest do
     assert width > 0
     assert height > 0
   end
+
+  describe "ad_hoc_nodes/2" do
+    test "C1: live ids subset of backlog node ids -> no ad-hoc nodes" do
+      backlog = %{nodes: [%{id: "001"}, %{id: "002"}]}
+      live = %{"001" => %{slug: "a"}, "002" => %{slug: "b"}}
+
+      assert PipelineDagLayout.ad_hoc_nodes(backlog, live) == %{nodes: []}
+    end
+
+    test "C2: one live id absent from backlog -> one ad-hoc orphan node" do
+      backlog = %{nodes: [%{id: "001"}]}
+      live = %{"001" => %{slug: "a"}, "009" => %{slug: "ad-hoc-slug"}}
+
+      assert %{nodes: [node]} = PipelineDagLayout.ad_hoc_nodes(backlog, live)
+      assert node.id == "009"
+      assert node.slug == "ad-hoc-slug"
+      assert node.origin == :ad_hoc
+      assert node.depth == 0
+      assert node.prereqs == []
+    end
+
+    test "C3: N absent ids -> N nodes at distinct positions" do
+      backlog = %{nodes: [%{id: "001"}]}
+      live = %{"001" => %{}, "009" => %{}, "010" => %{}, "011" => %{}}
+
+      %{nodes: nodes} = PipelineDagLayout.ad_hoc_nodes(backlog, live)
+
+      assert length(nodes) == 3
+      assert Enum.map(nodes, & &1.id) |> Enum.sort() == ["009", "010", "011"]
+
+      positions = Enum.map(nodes, &{&1.x, &1.y})
+      assert positions == Enum.uniq(positions)
+    end
+
+    test "C4: an id present in both sets resolves to backlog-only (VR-1)" do
+      backlog = %{nodes: [%{id: "001"}, %{id: "002"}]}
+      live = %{"001" => %{}, "002" => %{}, "009" => %{}}
+
+      %{nodes: nodes} = PipelineDagLayout.ad_hoc_nodes(backlog, live)
+
+      refute Enum.any?(nodes, &(&1.id in ["001", "002"]))
+      assert Enum.map(nodes, & &1.id) == ["009"]
+    end
+
+    test "C5: id proximity to a backlog id doesn't affect classification (VR-3)" do
+      backlog = %{nodes: [%{id: "008"}]}
+      live = %{"008" => %{}, "009" => %{}}
+
+      %{nodes: nodes} = PipelineDagLayout.ad_hoc_nodes(backlog, live)
+
+      assert Enum.map(nodes, & &1.id) == ["009"]
+    end
+
+    test "C6: a nil slug is tolerated without raising (VR-4)" do
+      backlog = %{nodes: []}
+      live = %{"009" => %{slug: nil}}
+
+      assert %{nodes: [%{id: "009", slug: nil}]} = PipelineDagLayout.ad_hoc_nodes(backlog, live)
+    end
+
+    test "C7: pure function - deterministic on plain data, no process/Phoenix calls" do
+      backlog = %{nodes: [%{id: "001"}]}
+      live = %{"009" => %{slug: "x"}}
+
+      assert PipelineDagLayout.ad_hoc_nodes(backlog, live) ==
+               PipelineDagLayout.ad_hoc_nodes(backlog, live)
+    end
+
+    test "an empty live map yields no ad-hoc nodes" do
+      assert PipelineDagLayout.ad_hoc_nodes(%{nodes: []}, %{}) == %{nodes: []}
+    end
+  end
 end

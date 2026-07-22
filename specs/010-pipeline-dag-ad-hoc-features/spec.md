@@ -8,6 +8,13 @@
 
 **Input**: User description: "Pipeline DAG view must also render single-spec/ad-hoc features (run via run_spec/2) that never appear in the static docs/breakdown backlog. Currently PipelineDagLive builds its node list solely from Backlog.load!() (the persistent docs/breakdown/*.md dir), so a feature started via the Trigger console's single-spec mode — whose auto-generated seed lives only inside that feature's own git worktree, never in docs/breakdown — never shows up as a node, even while it is live, running, or has just finished with real spend. Mission Control shows it correctly (it reads Coordinator's live per_feature map directly, no backlog dependency); the DAG view should show it too, as an orphan node (no prereqs/dependents, depth 0) alongside the backlog-derived nodes, using the same status pill / spend / drawer-on-click as existing nodes. Scope: only the render/layout gap for ad-hoc single-spec features on the Pipeline DAG view — no change to run_spec/2, SingleSpec, or Backlog.load! itself."
 
+## Clarifications
+
+### Session 2026-07-22
+
+- Q: Where do orphan ad-hoc nodes sit relative to backlog nodes on the DAG? → A: Separate lane/section for ad-hoc nodes; backlog layout unchanged.
+- Q: How is an ad-hoc node distinguished from a backlog node? → A: Both — a per-node marker visible without the drawer AND a distinct legend entry.
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - See an ad-hoc run on the DAG (Priority: P1)
@@ -116,14 +123,18 @@ operator identify each without clicking in.
   the live run's per-feature state, whether or not that feature exists in
   the persistent backlog.
 - **FR-002**: An ad-hoc (non-backlog) feature's node MUST render with no
-  prerequisite or dependent edges.
+  prerequisite or dependent edges, placed in a dedicated ad-hoc lane/section
+  separate from the backlog node layout so the backlog layout is unaffected
+  whether or not ad-hoc nodes are present.
 - **FR-003**: An ad-hoc feature's node MUST show the same status indicator
   and spend value as backlog-derived nodes, sourced from the same live data
   the rest of the console already uses.
 - **FR-004**: Clicking an ad-hoc feature's node MUST open the same feature
   drawer used for backlog-derived nodes, with equivalent detail and actions.
-- **FR-005**: The DAG's legend or node styling MUST let an operator
-  distinguish an ad-hoc node from a backlog-derived node without opening it.
+- **FR-005**: The DAG MUST distinguish an ad-hoc node from a backlog-derived
+  node by BOTH a per-node visual marker recognizable without opening the
+  drawer AND a dedicated legend entry explaining that marker (distinct from
+  the lifecycle-status colors).
 - **FR-006**: When no ad-hoc feature is part of the live run, Pipeline DAG's
   rendering MUST be unchanged from its current backlog-only behavior.
 - **FR-007**: This feature MUST NOT alter, write to, or persist anything in
