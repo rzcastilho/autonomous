@@ -177,7 +177,7 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
           data-mode-button="backlog"
           class={if @mode == :backlog, do: "mode-active"}
         >
-          Backlog
+          Backlog run
         </button>
         <button
           type="button"
@@ -186,21 +186,13 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
           data-mode-button="single-spec"
           class={if @mode == :single_spec, do: "mode-active"}
         >
-          Single-spec
+          Single-spec (free text)
         </button>
       </div>
 
       <p :if={@start_error} class="field-error" data-error="start">{@start_error}</p>
 
-      <label class="pr-toggle">
-        <input type="checkbox" phx-click="toggle_pr_workflow" checked={@pr_workflow?} />
-        Stacked PR workflow
-      </label>
-      <p data-pr-workflow={to_string(@pr_workflow?)}>
-        effective concurrency: {@effective_concurrency}
-      </p>
-
-      <div :if={@mode == :backlog} class="trigger-backlog" data-mode-panel="backlog">
+      <div :if={@mode == :backlog} class="trigger-backlog form-panel" data-mode-panel="backlog">
         <dl class="backlog-preview">
           <dt>Source</dt>
           <dd>{@backlog_preview.source}</dd>
@@ -219,22 +211,25 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
         <p :if={not @backlog_preview.dag_valid?} class="field-error" data-error="dag">
           {@backlog_preview.reason}
         </p>
-
-        <button
-          type="button"
-          phx-click="start_backlog"
-          data-action="start-backlog"
-          disabled={not @backlog_preview.dag_valid?}
-        >
-          Start
-        </button>
       </div>
 
-      <div :if={@mode == :single_spec} class="trigger-single-spec" data-mode-panel="single-spec">
-        <form id="single-spec-form" phx-change="update_description" phx-submit="start_single_spec">
-          <label>
-            Description
-            <textarea name="description" phx-debounce="200">{@description}</textarea>
+      <div
+        :if={@mode == :single_spec}
+        class="trigger-single-spec form-panel"
+        data-mode-panel="single-spec"
+      >
+        <form
+          id="single-spec-form"
+          phx-change="update_description"
+          phx-submit="start_single_spec"
+        >
+          <label class="field-label">
+            Feature description (free text)
+            <textarea
+              name="description"
+              phx-debounce="200"
+              placeholder="Add a health-check endpoint that returns service status and version."
+            >{@description}</textarea>
           </label>
 
           <p :if={@field_error} class="field-error" data-error="description">{@field_error}</p>
@@ -243,10 +238,45 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
             <span>ID: {elem(@preview, 0)}</span>
             <span>Slug: {elem(@preview, 1)}</span>
           </div>
-
-          <button type="submit" data-action="start-single-spec">Start</button>
         </form>
       </div>
+
+      <div class="pr-toggle-row">
+        <label class="pr-toggle">
+          <input
+            type="checkbox"
+            phx-click="toggle_pr_workflow"
+            checked={@pr_workflow?}
+            class="switch-input"
+          />
+          <span class="switch-track"><span class="switch-knob"></span></span>
+          <span>Stacked sequential PR workflow</span>
+        </label>
+        <span class="pr-hint" data-pr-workflow={to_string(@pr_workflow?)}>
+          effective concurrency: {@effective_concurrency}
+        </span>
+      </div>
+
+      <button
+        :if={@mode == :backlog}
+        type="button"
+        phx-click="start_backlog"
+        class="btn-primary"
+        data-action="start-backlog"
+        disabled={not @backlog_preview.dag_valid?}
+      >
+        &#9656; &nbsp;Start run
+      </button>
+
+      <button
+        :if={@mode == :single_spec}
+        type="submit"
+        form="single-spec-form"
+        class="btn-primary"
+        data-action="start-single-spec"
+      >
+        &#9656; &nbsp;Start run
+      </button>
     </div>
     """
   end

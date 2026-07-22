@@ -117,50 +117,61 @@ defmodule SpeckitOrchestrator.Web.MissionControlLive do
       </div>
 
       <div :if={@view.active? and not @view.finished?} class="run-live" data-state="live">
-        <div class="status-count-strip">
-          <div :for={{status, count} <- @status_counts} class="status-count-cell" data-status={status}>
-            <.status_pill status={status} /> <span class="count">{count}</span>
+        <div class="mission-grid">
+          <div class="mission-main">
+            <div class="status-count-strip">
+              <div
+                :for={{status, count} <- @status_counts}
+                class="status-count-cell"
+                data-status={status}
+              >
+                <.status_pill status={status} /> <span class="count">{count}</span>
+              </div>
+            </div>
+
+            <table class="backlog-table">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Slug</th>
+                  <th>Status</th>
+                  <th>Progress</th>
+                  <th>Elapsed</th>
+                  <th>Spend</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr
+                  :for={{id, f} <- Enum.sort_by(@view.per_feature, fn {id, _} -> id end)}
+                  phx-click="select_feature"
+                  phx-value-id={id}
+                  data-feature-row={id}
+                >
+                  <td>{id}</td>
+                  <td>{f.slug}</td>
+                  <td><.status_pill status={f.status} /></td>
+                  <td><.phase_strip phases={f.phases} status={f.status} /></td>
+                  <td>{format_elapsed(f.elapsed_ms)}</td>
+                  <td>${format_money(f.spend)}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="mission-feed">
+            <div class="mission-feed-header">Telemetry</div>
+            <ul class="telemetry-feed">
+              <li
+                :for={entry <- @view.feed}
+                class={"feed-entry feed-#{entry.severity}"}
+                data-feature-id={entry.feature_id}
+              >
+                <span class="feed-time">{Calendar.strftime(entry.at, "%H:%M:%S")}</span>
+                <span class="feed-text">{entry.text}</span>
+              </li>
+            </ul>
           </div>
         </div>
-
-        <table class="backlog-table">
-          <thead>
-            <tr>
-              <th>ID</th>
-              <th>Slug</th>
-              <th>Status</th>
-              <th>Progress</th>
-              <th>Elapsed</th>
-              <th>Spend</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr
-              :for={{id, f} <- Enum.sort_by(@view.per_feature, fn {id, _} -> id end)}
-              phx-click="select_feature"
-              phx-value-id={id}
-              data-feature-row={id}
-            >
-              <td>{id}</td>
-              <td>{f.slug}</td>
-              <td><.status_pill status={f.status} /></td>
-              <td><.phase_strip phases={f.phases} status={f.status} /></td>
-              <td>{format_elapsed(f.elapsed_ms)}</td>
-              <td>${format_money(f.spend)}</td>
-            </tr>
-          </tbody>
-        </table>
-
-        <ul class="telemetry-feed">
-          <li
-            :for={entry <- @view.feed}
-            class={"feed-entry feed-#{entry.severity}"}
-            data-feature-id={entry.feature_id}
-          >
-            <span class="feed-time">{Calendar.strftime(entry.at, "%H:%M:%S")}</span>
-            <span class="feed-text">{entry.text}</span>
-          </li>
-        </ul>
       </div>
 
       <.feature_drawer

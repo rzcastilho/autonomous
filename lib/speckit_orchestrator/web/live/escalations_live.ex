@@ -248,78 +248,131 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
   def render(assigns) do
     ~H"""
     <div class="view-escalations" data-view="escalations">
-      <div :if={@escalations == []} class="empty-state" data-state="all-clear">
-        <p>No open escalations or halts — all gates are clear.</p>
+      <div class="escalations-intro">
+        <div class="escalations-title">Escalations &amp; halts · human-in-the-loop</div>
+        <div class="escalations-sub">
+          Each diverted feature wrote a checkpoint. Resume restarts at the checkpointed
+          phase (keeps completed work); Full restart is a full restart from specify.
+        </div>
       </div>
 
-      <div :for={e <- @escalations} id={"escalation-#{e.id}"} class="escalation-card" data-escalation={e.id}>
-        <h3>
-          {e.id} <span :if={e.feature.slug}>— {e.feature.slug}</span>
+      <div :if={@escalations == []} class="empty-state escalation-empty" data-state="all-clear">
+        <div class="empty-state-icon">&check;</div>
+        <p class="empty-state-title">No open escalations</p>
+        <p>The clarify and analyze gates are clear. All in-flight features are draining normally.</p>
+      </div>
+
+      <div
+        :for={e <- @escalations}
+        id={"escalation-#{e.id}"}
+        class="escalation-card"
+        data-escalation={e.id}
+        style={"border-color: #{status_color(e.feature.status)}40;"}
+      >
+        <div class="escalation-card-head" style={"background: #{status_color(e.feature.status)}0d;"}>
+          <span class="escalation-dot" style={"background-color: #{status_color(e.feature.status)};"}></span>
+          <span class="escalation-title">
+            {e.id} <span :if={e.feature.slug}>· {e.feature.slug}</span>
+          </span>
           <.status_pill status={e.feature.status} />
-        </h3>
+          <span :if={e.divert_reason} class="escalation-reason" data-divert-reason>
+            reason: {e.divert_reason}
+          </span>
+        </div>
 
-        <p :if={e.divert_reason} class="divert-reason" data-divert-reason>{e.divert_reason}</p>
+        <div class="escalation-card-body">
+          <div :if={match?({:ok, _}, e.checkpoint)} class="checkpoint-box" data-checkpoint="ok">
+            <% {:ok, record} = e.checkpoint %>
+            <div class="checkpoint-box-label">
+              <span class="checkpoint-dot"></span> CHECKPOINT
+            </div>
+            <dl class="checkpoint-fields">
+              <dt>last_phase</dt>
+              <dd>{record["last_phase"]}</dd>
+              <dt>status</dt>
+              <dd>{record["status"]}</dd>
+              <dt>session_id</dt>
+              <dd>{record["session_id"] || "—"}</dd>
+              <dt>reason</dt>
+              <dd>{record["reason"]}</dd>
+            </dl>
 
-        <div :if={match?({:ok, _}, e.checkpoint)} class="checkpoint-view" data-checkpoint="ok">
-          <% {:ok, record} = e.checkpoint %>
-          <dl>
-            <dt>Last phase</dt>
-            <dd>{record["last_phase"]}</dd>
-            <dt>Status</dt>
-            <dd>{record["status"]}</dd>
-            <dt>Session id</dt>
-            <dd>{record["session_id"] || "—"}</dd>
-            <dt>Reason</dt>
-            <dd>{record["reason"]}</dd>
-          </dl>
+            <div :if={record["context"]} class="run-context-label">
+              RUN_CONTEXT · resume re-executes under recorded run shape
+            </div>
+            <div :if={record["context"]} class="run-context" data-run-context>
+              <span :for={{k, v} <- record["context"]} class="run-context-chip">
+                {k}=<span>{inspect(v)}</span>
+              </span>
+            </div>
+          </div>
 
-          <div :if={record["context"]} class="run-context" data-run-context>
-            <span :for={{k, v} <- record["context"]}>{k}: {inspect(v)}</span>
+          <p
+            :if={match?({:error, _}, e.checkpoint)}
+            class="checkpoint-box checkpoint-error"
+            data-checkpoint={elem(e.checkpoint, 1)}
+          >
+            No usable checkpoint ({elem(e.checkpoint, 1)}) — full restart only.
+          </p>
+
+          <div :if={e.clarify} class="clarify-block" data-clarify>
+            <pre>{e.clarify}</pre>
+          </div>
+
+          <form
+            :if={match?({:ok, _}, e.checkpoint)}
+            id={"resume-form-#{e.id}"}
+            phx-submit="resume"
+            data-form="resume"
+            class="resume-form"
+          >
+            <input type="hidden" name="feature_id" value={e.id} />
+            <label class="field-label">
+              Guidance
+              <textarea name="prompt" phx-debounce="200" class="resume-textarea"></textarea>
+            </label>
+            <label class="field-label">
+              Start phase
+              <select name="from" class="resume-select">
+                <option :for={p <- Pipeline.phases()} value={p} selected={p == e.default_phase}>
+                  {p}
+                </option>
+              </select>
+            </label>
+            <div class="escalation-actions">
+              <button type="submit" class="btn-primary" data-action={"resume-#{e.id}"}>
+                &#9654; Resume
+              </button>
+              <button
+                type="button"
+                phx-click="full_restart"
+                phx-value-id={e.id}
+                class="btn-secondary"
+                data-action={"full-restart-#{e.id}"}
+              >
+                &#8635; Full restart
+              </button>
+              <a href={transcript_href(e)} class="btn-secondary" data-action={"transcript-#{e.id}"}>
+                &#8801; Read {phase_label(e)}.md
+              </a>
+            </div>
+          </form>
+
+          <div :if={not match?({:ok, _}, e.checkpoint)} class="escalation-actions">
+            <button
+              type="button"
+              phx-click="full_restart"
+              phx-value-id={e.id}
+              class="btn-secondary"
+              data-action={"full-restart-#{e.id}"}
+            >
+              &#8635; Full restart
+            </button>
+            <a href={transcript_href(e)} class="btn-secondary" data-action={"transcript-#{e.id}"}>
+              &#8801; Read {phase_label(e)}.md
+            </a>
           </div>
         </div>
-
-        <p
-          :if={match?({:error, _}, e.checkpoint)}
-          class="checkpoint-view"
-          data-checkpoint={elem(e.checkpoint, 1)}
-        >
-          No usable checkpoint ({elem(e.checkpoint, 1)}) — full restart only.
-        </p>
-
-        <div :if={e.clarify} class="clarify-block" data-clarify>
-          <pre>{e.clarify}</pre>
-        </div>
-
-        <form
-          :if={match?({:ok, _}, e.checkpoint)}
-          id={"resume-form-#{e.id}"}
-          phx-submit="resume"
-          data-form="resume"
-        >
-          <input type="hidden" name="feature_id" value={e.id} />
-          <label>
-            Guidance
-            <textarea name="prompt" phx-debounce="200"></textarea>
-          </label>
-          <label>
-            Start phase
-            <select name="from">
-              <option :for={p <- Pipeline.phases()} value={p} selected={p == e.default_phase}>
-                {p}
-              </option>
-            </select>
-          </label>
-          <button type="submit" data-action={"resume-#{e.id}"}>Resume</button>
-        </form>
-
-        <button
-          type="button"
-          phx-click="full_restart"
-          phx-value-id={e.id}
-          data-action={"full-restart-#{e.id}"}
-        >
-          Full restart
-        </button>
       </div>
 
       <.feature_drawer
@@ -333,4 +386,19 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
     </div>
     """
   end
+
+  defp status_color(status), do: palette() |> Map.get(status, {"", "#64748b"}) |> elem(1)
+
+  defp phase_label(e), do: e |> phase_for() |> to_string()
+
+  defp transcript_href(e), do: "/transcripts?feature=#{e.id}&phase=#{phase_for(e)}"
+
+  defp phase_for(%{checkpoint: {:ok, %{"last_phase" => phase}}} = e) do
+    case safe_phase(phase) do
+      {:ok, p} -> p
+      :error -> e.default_phase
+    end
+  end
+
+  defp phase_for(e), do: e.default_phase
 end

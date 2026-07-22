@@ -2,37 +2,86 @@
 <% escalations = SpeckitOrchestrator.Web.Layouts.escalations_count() %>
 <% ctx = SpeckitOrchestrator.Web.Layouts.context() %>
 <% run = SpeckitOrchestrator.Web.Layouts.run_view() %>
-<div class="console-shell">
-  <nav class="console-nav" aria-label="Console navigation">
-    <ul>
-      <li :for={{path, label} <- nav}>
-        <a href={path} class={if assigns[:current_path] == path, do: "nav-active"}>
-          {label}
-          <.badge :if={label == "Escalations" and escalations > 0} text={to_string(escalations)} variant={:warn} />
-        </a>
-      </li>
-    </ul>
-  </nav>
-
-  <div class="console-main">
-    <div class="console-context">
-      <span>Repo: {ctx.repo}</span>
-      <span>CLI: {ctx.cli_auth}</span>
-      <span>Runtime: {ctx.runtime}</span>
+<div class="app-frame">
+  <aside class="console-sidebar">
+    <div class="console-logo">
+      <div class="console-logo-mark"><div class="console-logo-mark-inner"></div></div>
+      <div>
+        <div class="console-brand-name">speckit_orchestrator</div>
+        <div class="console-brand-sub">CONTROL PLANE · v1</div>
+      </div>
     </div>
+
+    <nav class="console-nav" aria-label="Console navigation">
+      <a
+        :for={{path, label} <- nav}
+        href={path}
+        class={["nav-item", assigns[:current_path] == path && "nav-active"]}
+      >
+        <span class="nav-glyph">{SpeckitOrchestrator.Web.Layouts.nav_glyph(label)}</span>
+        <span class="nav-label">{label}</span>
+        <.badge
+          :if={label == "Escalations" and escalations > 0}
+          text={to_string(escalations)}
+          variant={:warn}
+        />
+      </a>
+    </nav>
+
+    <div class="console-footer">
+      <div class="console-footer-label">TARGET REPO</div>
+      <div class="console-footer-value">{ctx.repo}</div>
+      <div class="console-status-row">
+        <span class="status-dot" data-ok={ctx.cli_auth == "available"}></span>
+        <span>claude CLI · {ctx.cli_auth}</span>
+      </div>
+      <div class="console-status-row">
+        <span class="status-dot" data-ok={ctx.runtime == "up"}></span>
+        <span>BEAM · {ctx.runtime}</span>
+      </div>
+    </div>
+  </aside>
+
+  <div class="content-column console-main">
+    <header class="console-topbar" data-active={run.active?}>
+      <div class="topbar-run">
+        <%= if run.active? do %>
+          <span class="run-state-chip run-state-active">● live</span>
+          <div class="run-info">
+            <div class="run-title">{run.title}</div>
+            <div class="run-meta">{run.mode} · cap {SpeckitOrchestrator.Config.max_concurrency()}</div>
+          </div>
+        <% else %>
+          <span class="run-state-chip run-state-idle">idle</span>
+          <div class="run-info">
+            <div class="run-title run-title-empty">{run.title}</div>
+          </div>
+        <% end %>
+      </div>
+
+      <div class="topbar-divider"></div>
+
+      <%= if run.active? do %>
+        <div class="topbar-gauge">
+          <.cost_gauge
+            committed={run.committed}
+            reserved={run.reserved}
+            budget={run.budget}
+            tripped?={run.tripped?}
+          />
+        </div>
+        <span class={"breaker-chip breaker-#{if run.tripped?, do: "tripped", else: "armed"}"}>
+          {if run.tripped?, do: "breaker tripped", else: "breaker armed"}
+        </span>
+      <% end %>
+
+      <div class="topbar-clock">
+        <span id="console-clock">{run.clock}</span>
+      </div>
+    </header>
 
     <div class="console-content">
       {@inner_content}
-    </div>
-
-    <div class="console-status-bar" data-active={run.active?}>
-      <%= if run.active? do %>
-        <span class="run-title">{run.title} ({run.mode})</span>
-        <.cost_gauge committed={run.committed} reserved={run.reserved} budget={run.budget} tripped?={run.tripped?} />
-      <% else %>
-        <span class="run-title run-title-empty">No active run</span>
-      <% end %>
-      <span class="console-clock" id="console-clock">{run.clock}</span>
     </div>
 
     <div class="console-toasts" id="console-toasts">
@@ -45,7 +94,7 @@
       <.toast :for={t <- assigns[:toasts] || []} id={t.id} kind={t.kind} message={t.message} />
     </div>
 
-    <!-- Drawer slot: filled by FeatureDrawerComponent in a later phase (T028). -->
+    <!-- Drawer slot: filled by FeatureDrawerComponent in a later phase. -->
     <div class="console-drawer-slot" id="console-drawer-slot"></div>
   </div>
 </div>

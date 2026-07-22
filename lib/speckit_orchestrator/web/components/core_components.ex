@@ -12,13 +12,13 @@ defmodule SpeckitOrchestrator.Web.CoreComponents do
   alias SpeckitOrchestrator.Pipeline
 
   @palette %{
-    pending: {"Pending", "#9ca3af"},
-    blocked: {"Blocked", "#6b7280"},
-    running: {"Running", "#3b82f6"},
-    escalated: {"Escalated", "#f59e0b"},
-    halted: {"Halted", "#ef4444"},
-    failed: {"Failed", "#991b1b"},
-    done: {"Done", "#22c55e"}
+    pending: {"Pending", "#64748b"},
+    blocked: {"Blocked", "#475569"},
+    running: {"Running", "#38bdf8"},
+    escalated: {"Escalated", "#fbbf24"},
+    halted: {"Halted", "#fb7185"},
+    failed: {"Failed", "#f43f5e"},
+    done: {"Done", "#34d399"}
   }
 
   @doc "The shared lifecycle status → `{label, color}` palette (FR-034)."
@@ -28,7 +28,7 @@ defmodule SpeckitOrchestrator.Web.CoreComponents do
   attr(:status, :atom, required: true, doc: "one of Feature.status/0")
 
   def status_pill(assigns) do
-    {label, color} = Map.get(@palette, assigns.status, {to_string(assigns.status), "#9ca3af"})
+    {label, color} = Map.get(@palette, assigns.status, {to_string(assigns.status), "#64748b"})
     assigns = assign(assigns, label: label, color: color)
 
     ~H"""
@@ -90,10 +90,12 @@ defmodule SpeckitOrchestrator.Web.CoreComponents do
 
   def cost_gauge(assigns) do
     fill = gauge_fill(assigns.committed, assigns.reserved, assigns.budget)
+    committed_fill = gauge_fill(assigns.committed, 0.0, assigns.budget)
 
     assigns =
       assign(assigns,
         fill: fill,
+        committed_fill: committed_fill,
         fill_color: gauge_color(fill, assigns.tripped?),
         spent_label: money(assigns.committed + assigns.reserved),
         budget_label: money(assigns.budget)
@@ -101,7 +103,12 @@ defmodule SpeckitOrchestrator.Web.CoreComponents do
 
     ~H"""
     <div class="cost-gauge" role="meter" aria-valuenow={@fill} aria-valuemin="0" aria-valuemax="100">
-      <div class="cost-gauge-fill" style={"width: #{@fill}%; background-color: #{@fill_color};"}></div>
+      <div class="cost-gauge-reserved" style={"width: #{@fill}%;"}></div>
+      <div
+        class="cost-gauge-fill"
+        style={"width: #{@committed_fill}%; background-color: #{@fill_color};"}
+      >
+      </div>
       <span class="cost-gauge-label" data-tripped={@tripped?}>
         ${@spent_label} / ${@budget_label} ({if @tripped?, do: "tripped", else: "armed"})
       </span>
@@ -114,10 +121,10 @@ defmodule SpeckitOrchestrator.Web.CoreComponents do
   defp gauge_fill(committed, reserved, budget),
     do: min(100.0, (committed + reserved) / budget * 100.0)
 
-  defp gauge_color(_fill, true), do: "#ef4444"
-  defp gauge_color(fill, _tripped?) when fill >= 90, do: "#ef4444"
-  defp gauge_color(fill, _tripped?) when fill >= 70, do: "#f59e0b"
-  defp gauge_color(_fill, _tripped?), do: "#22c55e"
+  defp gauge_color(_fill, true), do: "#fb7185"
+  defp gauge_color(fill, _tripped?) when fill >= 90, do: "#fb7185"
+  defp gauge_color(fill, _tripped?) when fill >= 70, do: "#fbbf24"
+  defp gauge_color(_fill, _tripped?), do: "#34d399"
 
   defp money(amount), do: :erlang.float_to_binary(amount * 1.0, decimals: 2)
 

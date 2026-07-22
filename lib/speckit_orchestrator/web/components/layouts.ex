@@ -31,6 +31,19 @@ defmodule SpeckitOrchestrator.Web.Layouts do
   @spec nav_items() :: [{String.t(), String.t()}]
   def nav_items, do: @nav_items
 
+  @nav_glyphs %{
+    "Mission Control" => "◧",
+    "Pipeline DAG" => "⊟",
+    "Trigger Run" => "▷",
+    "Escalations" => "⚠",
+    "Transcripts" => "≡",
+    "Configuration" => "⚙"
+  }
+
+  @doc "Text-symbol glyph for a nav label, per contracts/design-system.md §3."
+  @spec nav_glyph(String.t()) :: String.t()
+  def nav_glyph(label), do: Map.fetch!(@nav_glyphs, label)
+
   @doc "Count of features in an escalated/halted/failed state (FR-002)."
   @spec escalations_count() :: non_neg_integer()
   def escalations_count do

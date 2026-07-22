@@ -122,60 +122,119 @@ defmodule SpeckitOrchestrator.Web.ConfigLive do
     ~H"""
     <div class="view-config" data-view="config">
       <form id="config-form" phx-submit="apply" data-form="config">
-        <fieldset class="config-models">
-          <legend>Model routing</legend>
-          <label :for={phase <- Pipeline.phases()}>
-            {phase}
-            <select name={"model_#{phase}"}>
-              <option value="opus" selected={@models[phase] == "opus"}>opus</option>
-              <option value="sonnet" selected={@models[phase] == "sonnet"}>sonnet</option>
-            </select>
-          </label>
+        <fieldset class="config-models form-panel">
+          <legend>Per-phase model routing</legend>
+          <div :for={{phase, idx} <- Enum.with_index(Pipeline.phases(), 1)} class="model-row">
+            <span class="model-row-index">{idx}</span>
+            <span class="model-row-phase">{phase}</span>
+            <div class="model-row-options">
+              <label class={[
+                "model-option",
+                @models[phase] == "opus" && "model-option-active"
+              ]}>
+                <input
+                  type="radio"
+                  name={"model_#{phase}"}
+                  value="opus"
+                  checked={@models[phase] == "opus"}
+                  class="model-option-input"
+                /> opus
+              </label>
+              <label class={[
+                "model-option",
+                @models[phase] == "sonnet" && "model-option-active"
+              ]}>
+                <input
+                  type="radio"
+                  name={"model_#{phase}"}
+                  value="sonnet"
+                  checked={@models[phase] == "sonnet"}
+                  class="model-option-input"
+                /> sonnet
+              </label>
+            </div>
+          </div>
           <p :if={@errors[:models]} class="field-error" data-error="models">{@errors[:models]}</p>
         </fieldset>
 
-        <fieldset class="config-budget">
-          <legend>Budget</legend>
-          <label>
-            Budget (USD)
-            <input type="text" name="budget_usd" value={@budget_usd} />
-          </label>
-          <p :if={@errors[:budget_usd]} class="field-error" data-error="budget_usd">
-            {@errors[:budget_usd]}
-          </p>
+        <div class="config-grid">
+          <fieldset class="config-budget form-panel">
+            <legend class="sr-only">Budget</legend>
+            <div class="range-row-head">
+              <span class="range-row-title">Cost breaker budget</span>
+              <span class="range-row-value" id="budget-range-value">${@budget_usd}</span>
+            </div>
+            <input
+              type="range"
+              name="budget_usd"
+              min="0"
+              max="500"
+              step="0.5"
+              value={@budget_usd}
+              class="range-input"
+              oninput="document.getElementById('budget-range-value').textContent = '$' + this.value"
+            />
+            <p :if={@errors[:budget_usd]} class="field-error" data-error="budget_usd">
+              {@errors[:budget_usd]}
+            </p>
+          </fieldset>
+
+          <fieldset class="config-concurrency form-panel">
+            <legend class="sr-only">Concurrency</legend>
+            <div class="range-row-head">
+              <span class="range-row-title">Max concurrency</span>
+              <span class="range-row-value" id="concurrency-range-value">{@max_concurrency}</span>
+            </div>
+            <input
+              type="range"
+              name="max_concurrency"
+              min="1"
+              max="12"
+              step="1"
+              value={@max_concurrency}
+              class="range-input"
+              oninput="document.getElementById('concurrency-range-value').textContent = this.value"
+            />
+            <p :if={@errors[:max_concurrency]} class="field-error" data-error="max_concurrency">
+              {@errors[:max_concurrency]}
+            </p>
+            <p class="range-row-hint" data-effective-concurrency={@effective_concurrency}>
+              effective concurrency: {@effective_concurrency}
+            </p>
+          </fieldset>
+        </div>
+
+        <fieldset class="config-pr form-panel">
+          <legend class="sr-only">PR workflow</legend>
+          <div class="config-toggle-row">
+            <div>
+              <div class="config-toggle-title">Stacked PR workflow</div>
+              <div class="config-toggle-sub">Forces cap 1 · one PR per feature · stacked bottom-up.</div>
+            </div>
+            <label class="pr-toggle">
+              <input
+                type="checkbox"
+                name="pr_workflow"
+                value="true"
+                checked={@pr_workflow?}
+                class="switch-input"
+              />
+              <span class="switch-track switch-track-lg"><span class="switch-knob"></span></span>
+            </label>
+          </div>
+          <div class="config-pr-fields">
+            <label>
+              PR_BASE
+              <input type="text" name="pr_base" value={@pr_base} />
+            </label>
+            <label>
+              PR_REMOTE
+              <input type="text" name="pr_remote" value={@pr_remote} />
+            </label>
+          </div>
         </fieldset>
 
-        <fieldset class="config-concurrency">
-          <legend>Concurrency</legend>
-          <label>
-            Max concurrency
-            <input type="text" name="max_concurrency" value={@max_concurrency} />
-          </label>
-          <p :if={@errors[:max_concurrency]} class="field-error" data-error="max_concurrency">
-            {@errors[:max_concurrency]}
-          </p>
-          <p data-effective-concurrency={@effective_concurrency}>
-            effective concurrency: {@effective_concurrency}
-          </p>
-        </fieldset>
-
-        <fieldset class="config-pr">
-          <legend>PR workflow</legend>
-          <label>
-            <input type="checkbox" name="pr_workflow" value="true" checked={@pr_workflow?} />
-            Stacked PR workflow
-          </label>
-          <label>
-            PR base
-            <input type="text" name="pr_base" value={@pr_base} />
-          </label>
-          <label>
-            PR remote
-            <input type="text" name="pr_remote" value={@pr_remote} />
-          </label>
-        </fieldset>
-
-        <button type="submit" data-action="apply-config">Apply</button>
+        <button type="submit" class="btn-primary" data-action="apply-config">Apply</button>
       </form>
     </div>
     """

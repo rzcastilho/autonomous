@@ -63,6 +63,8 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLiveTest do
     end
 
     assert html =~ "core-ledger"
+    assert html =~ "<svg"
+    assert html =~ "<path"
     assert html =~ ~s(data-dag-edge="001:002")
     assert html =~ ~s(data-dag-edge="002:003")
 
