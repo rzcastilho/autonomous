@@ -46,9 +46,14 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
 
     try do
       dag_layout = source |> Backlog.load!() |> PipelineDagLayout.layout()
-      assign(socket, backlog_error: nil, dag_layout: dag_layout)
+
+      assign(socket,
+        backlog_error: nil,
+        dag_layout: dag_layout,
+        canvas: PipelineDagLayout.canvas_size(dag_layout)
+      )
     rescue
-      e -> assign(socket, backlog_error: Exception.message(e), dag_layout: nil)
+      e -> assign(socket, backlog_error: Exception.message(e), dag_layout: nil, canvas: nil)
     end
   end
 
@@ -121,6 +126,42 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
       </div>
 
       <div :if={@dag_layout && @dag_layout.nodes != []} class="dag-canvas" data-state="dag">
+        <div class="dag-canvas-header">
+          <div class="dag-canvas-title">Dependency DAG</div>
+          <div class="dag-canvas-sub">release in dependency-and-cap waves</div>
+        </div>
+
+        <div class="dag-scroll">
+          <div class="dag-plane" style={"width: #{@canvas.width}px; height: #{@canvas.height}px;"}>
+            <svg class="dag-edges-svg" width="100%" height="100%">
+              <path
+                :for={edge <- @dag_layout.edges}
+                d={edge.d}
+                class="dag-edge"
+                data-dag-edge={"#{edge.from}:#{edge.to}"}
+                fill="none"
+              />
+            </svg>
+
+            <div
+              :for={node <- @dag_layout.nodes}
+              class="dag-node"
+              data-dag-node={node.id}
+              style={"left: #{node.x}px; top: #{node.y}px;"}
+              phx-click="select_feature"
+              phx-value-id={node.id}
+            >
+              <div class="dag-node-head">
+                <span class="dag-node-id">{node.id}</span>
+                <.status_pill status={node_status(@view, node.id)} />
+              </div>
+              <div class="dag-node-slug">{node.slug}</div>
+              <.phase_strip phases={node_phases(@view, node.id)} status={node_status(@view, node.id)} />
+              <div class="dag-node-spend">${format_money(node_spend(@view, node.id))}</div>
+            </div>
+          </div>
+        </div>
+
         <div class="dag-legend">
           <div
             :for={{status, {label, color}} <- palette()}
@@ -130,29 +171,6 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
             <span class="legend-swatch" style={"background-color: #{color};"}></span> {label}
           </div>
         </div>
-
-        <div class="dag-layers">
-          <div :for={depth <- dag_depths(@dag_layout)} class="dag-layer" data-layer={depth}>
-            <div
-              :for={node <- nodes_at(@dag_layout, depth)}
-              class="dag-node"
-              data-dag-node={node.id}
-              phx-click="select_feature"
-              phx-value-id={node.id}
-            >
-              <span class="dag-node-id">{node.id}</span>
-              <span class="dag-node-slug">{node.slug}</span>
-              <.status_pill status={node_status(@view, node.id)} />
-              <span class="dag-node-spend">${format_money(node_spend(@view, node.id))}</span>
-            </div>
-          </div>
-        </div>
-
-        <ul class="dag-edges">
-          <li :for={edge <- @dag_layout.edges} data-dag-edge={"#{edge.from}:#{edge.to}"}>
-            {edge.from} &rarr; {edge.to}
-          </li>
-        </ul>
       </div>
 
       <.feature_drawer
@@ -165,9 +183,7 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
     """
   end
 
-  defp dag_depths(layout), do: layout.layers |> Map.keys() |> Enum.sort()
-  defp nodes_at(layout, depth), do: Enum.filter(layout.nodes, &(&1.depth == depth))
-
   defp node_status(view, id), do: get_in(view.per_feature, [id, :status]) || :pending
   defp node_spend(view, id), do: get_in(view.per_feature, [id, :spend]) || 0.0
+  defp node_phases(view, id), do: get_in(view.per_feature, [id, :phases]) || %{}
 end

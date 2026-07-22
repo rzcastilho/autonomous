@@ -18,14 +18,31 @@ defmodule SpeckitOrchestrator.Web.Endpoint do
 
   socket("/live", Phoenix.LiveView.Socket, websocket: [connect_info: [session: @session_options]])
 
-  # Console has no asset build step (no esbuild/npm) — `app.js` is a plain
-  # script in priv/static/assets, and the LiveView JS client is served
-  # straight out of its hex package's own priv/static (both ship a UMD
-  # build there), avoiding an extra JS toolchain for six routes of chrome.
+  # Console has no asset build step (no esbuild/npm) — `app.js` and
+  # `console.css` are plain files in priv/static/assets, and the LiveView JS
+  # client is served straight out of its hex package's own priv/static (both
+  # ship a UMD build there), avoiding an extra JS toolchain for six routes of
+  # chrome.
   plug(Plug.Static,
     at: "/assets",
-    from: :speckit_orchestrator,
-    only: ~w(app.js)
+    from: {:speckit_orchestrator, "priv/static/assets"},
+    only: ~w(app.js console.css)
+  )
+
+  # Self-hosted IBM Plex woff2 files (FR-021: no fonts.googleapis.com /
+  # fonts.gstatic.com request at runtime).
+  plug(Plug.Static,
+    at: "/fonts",
+    from: {:speckit_orchestrator, "priv/static/fonts"},
+    only: ~w(
+      ibm-plex-sans-400.woff2
+      ibm-plex-sans-500.woff2
+      ibm-plex-sans-600.woff2
+      ibm-plex-sans-700.woff2
+      ibm-plex-mono-400.woff2
+      ibm-plex-mono-500.woff2
+      ibm-plex-mono-600.woff2
+    )
   )
 
   plug(Plug.Static,

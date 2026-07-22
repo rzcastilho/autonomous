@@ -101,33 +101,55 @@ defmodule SpeckitOrchestrator.Web.TranscriptsLive do
         <p>No transcripts available yet.</p>
       </div>
 
-      <form :if={@feature_ids != []} id="transcript-picker" phx-change="select" data-form="picker">
-        <label>
-          Feature
-          <select name="feature">
-            <option :for={id <- @feature_ids} value={id} selected={id == @selected_feature}>
-              {id}
-            </option>
-          </select>
-        </label>
-        <label>
-          Phase
-          <select name="phase">
-            <option :for={p <- Pipeline.phases()} value={p} selected={p == @selected_phase}>
+      <%= if @feature_ids != [] do %>
+        <div class="transcripts-sidebar" data-form="picker">
+          <div class="transcripts-sidebar-label">.speckit-transcripts/</div>
+          <button
+            :for={id <- @feature_ids}
+            type="button"
+            phx-click="select"
+            phx-value-feature={id}
+            phx-value-phase={@selected_phase}
+            data-feature-select={id}
+            class={[
+              "transcript-feature-row",
+              id == @selected_feature && "transcript-feature-row-active"
+            ]}
+          >
+            <span class="transcript-feature-dot"></span>
+            <span class="transcript-feature-id">{id}</span>
+          </button>
+        </div>
+
+        <div class="transcripts-main">
+          <div class="transcript-tabs">
+            <button
+              :for={p <- Pipeline.phases()}
+              type="button"
+              phx-click="select"
+              phx-value-feature={@selected_feature}
+              phx-value-phase={p}
+              data-phase-select={p}
+              class={["transcript-tab", p == @selected_phase && "transcript-tab-active"]}
+            >
               {p}
-            </option>
-          </select>
-        </label>
-      </form>
+            </button>
+          </div>
 
-      <div :if={@doc && @doc.exists?} class="transcript-doc" data-state="found">
-        <p class="transcript-path" data-transcript-path>{@doc.path}</p>
-        <pre class="transcript-body">{@doc.body}</pre>
-      </div>
+          <div class="transcripts-body">
+            <div :if={@doc && @doc.exists?} class="transcript-doc" data-state="found">
+              <p class="transcript-path" data-transcript-path>{@doc.path}</p>
+              <pre class="transcript-body">{@doc.body}</pre>
+            </div>
 
-      <div :if={@doc && not @doc.exists?} class="empty-state" data-state="not-yet-written">
-        <p>Phase "{@doc.phase}" has not been reached yet for {@doc.feature_id} — no transcript written.</p>
-      </div>
+            <div :if={@doc && not @doc.exists?} class="empty-state" data-state="not-yet-written">
+              <p>
+                Phase "{@doc.phase}" has not been reached yet for {@doc.feature_id} — no transcript written.
+              </p>
+            </div>
+          </div>
+        </div>
+      <% end %>
     </div>
     """
   end

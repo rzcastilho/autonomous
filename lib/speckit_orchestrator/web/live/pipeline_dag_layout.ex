@@ -9,22 +9,35 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLayout do
 
   Assumes a DAG already validated by `Backlog.load!/1` (no dangling prereqs,
   no cycles) — callers must validate before calling `layout/1`.
+
+  Nodes also carry explicit pixel coordinates (`x`, `y`) so the template can
+  draw SVG bezier edges without recomputing the wave/column math; `edges`
+  carry a precomputed `d` path string between each prereq's right edge and
+  its dependent's left edge (contracts/design-system.md §3 DAG canvas).
   """
 
   alias SpeckitOrchestrator.Feature
+
+  @node_width 168
+  @node_height 92
+  @col_gap 60
+  @row_gap 20
+  @margin 20
 
   @type dag_node :: %{
           id: String.t(),
           slug: String.t(),
           depth: non_neg_integer(),
-          prereqs: [String.t()]
+          prereqs: [String.t()],
+          x: non_neg_integer(),
+          y: non_neg_integer()
         }
-  @type edge :: %{from: String.t(), to: String.t()}
+  @type edge :: %{from: String.t(), to: String.t(), d: String.t()}
   @type t :: %{nodes: [dag_node()], edges: [edge()], layers: %{non_neg_integer() => [String.t()]}}
 
   @doc """
-  Layered layout: nodes carrying their depth, prereq→dependent edges, and
-  node ids grouped by layer.
+  Layered layout: nodes carrying their depth + pixel position, prereq→dependent
+  edges (with a precomputed SVG path), and node ids grouped by layer.
   """
   @spec layout([Feature.t()]) :: t()
   def layout(features) do
@@ -36,12 +49,59 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLayout do
         %{id: f.id, slug: f.slug, depth: Map.fetch!(depths, f.id), prereqs: f.prereqs}
       end)
       |> Enum.sort_by(&{&1.depth, &1.id})
+      |> position()
 
-    edges = for f <- features, prereq <- f.prereqs, do: %{from: prereq, to: f.id}
+    edges =
+      for f <- features, prereq <- f.prereqs, do: edge_path(%{from: prereq, to: f.id}, nodes)
 
     layers = nodes |> Enum.group_by(& &1.depth, & &1.id)
 
     %{nodes: nodes, edges: edges, layers: layers}
+  end
+
+  @doc """
+  Pixel size of the plane the nodes are positioned within, so the template
+  can size the scrollable SVG canvas. `%{width: 0, height: 0}` for an empty
+  layout.
+  """
+  @spec canvas_size(t()) :: %{width: non_neg_integer(), height: non_neg_integer()}
+  def canvas_size(%{nodes: []}), do: %{width: 0, height: 0}
+
+  def canvas_size(%{nodes: nodes}) do
+    %{
+      width: (nodes |> Enum.map(& &1.x) |> Enum.max()) + @node_width + @margin,
+      height: (nodes |> Enum.map(& &1.y) |> Enum.max()) + @node_height + @margin
+    }
+  end
+
+  defp position(nodes) do
+    nodes
+    |> Enum.group_by(& &1.depth)
+    |> Enum.flat_map(fn {depth, depth_nodes} ->
+      depth_nodes
+      |> Enum.sort_by(& &1.id)
+      |> Enum.with_index()
+      |> Enum.map(fn {node, row} ->
+        Map.merge(node, %{
+          x: @margin + depth * (@node_width + @col_gap),
+          y: @margin + row * (@node_height + @row_gap)
+        })
+      end)
+    end)
+    |> Enum.sort_by(&{&1.depth, &1.id})
+  end
+
+  defp edge_path(%{from: from_id, to: to_id}, nodes) do
+    from_node = Enum.find(nodes, &(&1.id == from_id))
+    to_node = Enum.find(nodes, &(&1.id == to_id))
+
+    x1 = from_node.x + @node_width
+    y1 = from_node.y + div(@node_height, 2)
+    x2 = to_node.x
+    y2 = to_node.y + div(@node_height, 2)
+    mx = div(x1 + x2, 2)
+
+    %{from: from_id, to: to_id, d: "M#{x1},#{y1} C#{mx},#{y1} #{mx},#{y2} #{x2},#{y2}"}
   end
 
   defp depths(features) do
