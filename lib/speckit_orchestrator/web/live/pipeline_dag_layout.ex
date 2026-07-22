@@ -35,6 +35,17 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLayout do
   @type edge :: %{from: String.t(), to: String.t(), d: String.t()}
   @type t :: %{nodes: [dag_node()], edges: [edge()], layers: %{non_neg_integer() => [String.t()]}}
 
+  @type ad_hoc_node :: %{
+          id: String.t(),
+          slug: String.t() | nil,
+          origin: :ad_hoc,
+          depth: 0,
+          prereqs: [],
+          x: non_neg_integer(),
+          y: non_neg_integer()
+        }
+  @type ad_hoc_lane :: %{nodes: [ad_hoc_node()]}
+
   @doc """
   Layered layout: nodes carrying their depth + pixel position, prereq→dependent
   edges (with a precomputed SVG path), and node ids grouped by layer.
@@ -72,6 +83,39 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLayout do
       width: (nodes |> Enum.map(& &1.x) |> Enum.max()) + @node_width + @margin,
       height: (nodes |> Enum.map(& &1.y) |> Enum.max()) + @node_height + @margin
     }
+  end
+
+  @doc """
+  Pure set-difference + lane positioning for ad-hoc (non-backlog) live
+  features (contracts/dag-ad-hoc-render.md §1). An id is ad-hoc iff it's a
+  key of `live` absent from `backlog_layout.nodes` (VR-1); positions are
+  computed in a dedicated single-row lane, independent of the backlog
+  plane's depth/column math, so backlog geometry is unchanged whether or
+  not ad-hoc nodes exist.
+  """
+  @spec ad_hoc_nodes(t(), %{String.t() => map()}) :: ad_hoc_lane()
+  def ad_hoc_nodes(%{nodes: backlog_nodes}, live) when is_map(live) do
+    backlog_ids = MapSet.new(backlog_nodes, & &1.id)
+
+    nodes =
+      live
+      |> Map.keys()
+      |> Enum.reject(&MapSet.member?(backlog_ids, &1))
+      |> Enum.sort()
+      |> Enum.with_index()
+      |> Enum.map(fn {id, index} ->
+        %{
+          id: id,
+          slug: get_in(live, [id, :slug]),
+          origin: :ad_hoc,
+          depth: 0,
+          prereqs: [],
+          x: @margin + index * (@node_width + @col_gap),
+          y: @margin
+        }
+      end)
+
+    %{nodes: nodes}
   end
 
   defp position(nodes) do

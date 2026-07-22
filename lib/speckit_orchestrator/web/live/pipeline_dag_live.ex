@@ -147,6 +147,7 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
               :for={node <- @dag_layout.nodes}
               class="dag-node"
               data-dag-node={node.id}
+              data-node-origin="backlog"
               style={"left: #{node.x}px; top: #{node.y}px;"}
               phx-click="select_feature"
               phx-value-id={node.id}
@@ -170,6 +171,35 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
           >
             <span class="legend-swatch" style={"background-color: #{color};"}></span> {label}
           </div>
+          <div
+            :if={ad_hoc_lane(@dag_layout, @view.per_feature).nodes != []}
+            class="dag-legend-item dag-legend-ad-hoc"
+            data-legend-origin="ad-hoc"
+          >
+            <span class="legend-swatch legend-swatch-ad-hoc"></span> Ad-hoc (not in backlog)
+          </div>
+        </div>
+      </div>
+
+      <% ad_hoc_lane = ad_hoc_lane(@dag_layout, @view.per_feature) %>
+
+      <div :if={ad_hoc_lane.nodes != []} class="dag-ad-hoc-lane" data-state="ad-hoc-lane">
+        <div
+          :for={node <- ad_hoc_lane.nodes}
+          class="dag-node"
+          data-dag-node={node.id}
+          data-node-origin="ad-hoc"
+          phx-click="select_feature"
+          phx-value-id={node.id}
+        >
+          <div class="dag-node-head">
+            <span class="dag-node-id">{node.id}</span>
+            <span class="dag-adhoc-badge" data-adhoc-badge>ad-hoc</span>
+            <.status_pill status={node_status(@view, node.id)} />
+          </div>
+          <div class="dag-node-slug">{node.slug}</div>
+          <.phase_strip phases={node_phases(@view, node.id)} status={node_status(@view, node.id)} />
+          <div class="dag-node-spend">${format_money(node_spend(@view, node.id))}</div>
         </div>
       </div>
 
@@ -186,4 +216,7 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
   defp node_status(view, id), do: get_in(view.per_feature, [id, :status]) || :pending
   defp node_spend(view, id), do: get_in(view.per_feature, [id, :spend]) || 0.0
   defp node_phases(view, id), do: get_in(view.per_feature, [id, :phases]) || %{}
+
+  defp ad_hoc_lane(nil, _per_feature), do: %{nodes: []}
+  defp ad_hoc_lane(dag_layout, per_feature), do: PipelineDagLayout.ad_hoc_nodes(dag_layout, per_feature)
 end

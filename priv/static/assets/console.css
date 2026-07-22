@@ -831,6 +831,37 @@ a:hover {
   display: inline-block;
 }
 
+.dag-ad-hoc-lane {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px dashed var(--border-strong);
+}
+
+.dag-ad-hoc-lane .dag-node {
+  position: static;
+}
+
+.dag-adhoc-badge {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent-2);
+  border: 1px solid var(--accent-2);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+.legend-swatch-ad-hoc {
+  border-radius: 3px;
+  background: transparent;
+  border: 1px solid var(--accent-2);
+}
+
 /* Escalations (US4 / contracts/design-system.md) */
 
 .view-escalations {
