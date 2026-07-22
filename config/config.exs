@@ -12,6 +12,32 @@ if config_env() == :test do
 end
 
 # ---------------------------------------------------------------------------
+# Control-plane console (008) — Phoenix LiveView on Bandit, loopback bind, no
+# auth pipeline (FR-035). `mix phx.server` is the only thing that actually
+# opens the TCP listener (it sets Application.put_env(:phoenix, :serve_endpoints,
+# true)); plain `mix test`/`iex -S mix` boot the endpoint's config process
+# without binding a port, so the console never competes for 4000 during the
+# hermetic test suite.
+# ---------------------------------------------------------------------------
+config :speckit_orchestrator, SpeckitOrchestrator.Web.Endpoint,
+  adapter: Bandit.PhoenixAdapter,
+  url: [host: "localhost"],
+  http: [ip: {127, 0, 0, 1}, port: 4000],
+  secret_key_base: "d95b33a1423f921b332c4b90b63972ea850e12e0a70ad8a467c73d6b59453320d95b33a",
+  live_view: [signing_salt: "sO2z3sYqCPqm9k1r"],
+  pubsub_server: SpeckitOrchestrator.PubSub,
+  render_errors: [formats: [html: SpeckitOrchestrator.Web.ErrorHTML], layout: false],
+  # quickstart.md tells the operator to open http://127.0.0.1:<port>/, but
+  # `url: [host: "localhost"]` alone makes Phoenix's default check_origin
+  # reject the LiveView socket's Origin header on that host — the page loads
+  # (dead render) but every phx-click/phx-submit is silently inert (no error
+  # banner). Both loopback spellings are the same trusted single-operator
+  # console (FR-035), so both are allowed explicitly.
+  check_origin: ["http://localhost:4000", "http://127.0.0.1:4000"]
+
+config :phoenix, :json_library, Jason
+
+# ---------------------------------------------------------------------------
 # jido_harness provider registration
 #
 # Phase 0 finding: this harness version does NOT auto-discover adapters.

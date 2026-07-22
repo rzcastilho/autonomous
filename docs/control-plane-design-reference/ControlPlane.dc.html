@@ -1,0 +1,902 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{background:#0b0d12;color:#e6e9f0;font-family:"IBM Plex Sans",system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+  a{color:#a78bfa;text-decoration:none}
+  a:hover{color:#c4b5fd}
+  ::selection{background:rgba(124,92,255,.35)}
+  ::-webkit-scrollbar{width:10px;height:10px}
+  ::-webkit-scrollbar-thumb{background:#232936;border-radius:6px;border:2px solid #0b0d12}
+  ::-webkit-scrollbar-track{background:transparent}
+  @keyframes scPulse{0%,100%{opacity:1}50%{opacity:.35}}
+  @keyframes scBlink{0%,100%{opacity:.9}50%{opacity:.25}}
+  @keyframes scSlide{from{transform:translateX(24px);opacity:0}to{transform:translateX(0);opacity:1}}
+  @keyframes scFade{from{opacity:0}to{opacity:1}}
+  @media (max-width:1120px){
+    .scMission{grid-template-columns:1fr !important}
+    .scFeed{position:static !important;max-height:none !important}
+    .scFeedList{max-height:340px !important}
+  }
+</style>
+</helmet>
+
+<div style="display:flex;height:100vh;width:100vw;overflow:hidden;font-family:'IBM Plex Sans',system-ui,sans-serif">
+
+  <!-- SIDEBAR -->
+  <aside style="width:236px;flex:0 0 236px;background:#0e1016;border-right:1px solid #1c212c;display:flex;flex-direction:column;padding:18px 14px">
+    <div style="display:flex;align-items:center;gap:10px;padding:6px 8px 18px">
+      <div style="width:30px;height:30px;border-radius:8px;background:linear-gradient(140deg,#7c5cff,#4b2fd6);display:flex;align-items:center;justify-content:center;box-shadow:0 0 0 1px #2a2350,0 6px 16px rgba(124,92,255,.35)">
+        <div style="width:12px;height:12px;border:2px solid #fff;border-radius:3px;transform:rotate(45deg)"></div>
+      </div>
+      <div>
+        <div style="font-size:13px;font-weight:700;letter-spacing:.2px;line-height:1.1">speckit_orchestrator</div>
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:#5a6274;letter-spacing:.5px">CONTROL PLANE · v1</div>
+      </div>
+    </div>
+
+    <nav style="display:flex;flex-direction:column;gap:2px">
+      <button onClick="{{ nav.mission }}" style="{{ navStyle.mission }}"><span style="width:16px;display:inline-flex">◧</span>Mission Control</button>
+      <button onClick="{{ nav.pipeline }}" style="{{ navStyle.pipeline }}"><span style="width:16px;display:inline-flex">⊟</span>Pipeline DAG</button>
+      <button onClick="{{ nav.trigger }}" style="{{ navStyle.trigger }}"><span style="width:16px;display:inline-flex">▷</span>Trigger Run</button>
+      <button onClick="{{ nav.escalations }}" style="{{ navStyle.escalations }}"><span style="width:16px;display:inline-flex">⚠</span>Escalations<sc-if value="{{ hasEscalations }}" hint-placeholder-val="{{ true }}"><span style="{{ badgeStyle }}">{{ escalationCount }}</span></sc-if></button>
+      <button onClick="{{ nav.transcripts }}" style="{{ navStyle.transcripts }}"><span style="width:16px;display:inline-flex">≡</span>Transcripts</button>
+      <button onClick="{{ nav.config }}" style="{{ navStyle.config }}"><span style="width:16px;display:inline-flex">⚙</span>Configuration</button>
+    </nav>
+
+    <div style="margin-top:auto;padding:12px 10px;border-top:1px solid #1c212c">
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:#5a6274;margin-bottom:8px;letter-spacing:.5px">TARGET REPO</div>
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#8b93a7;word-break:break-all">~/dev/ledgerlite</div>
+      <div style="display:flex;align-items:center;gap:7px;margin-top:12px">
+        <span style="width:7px;height:7px;border-radius:50%;background:#34d399;box-shadow:0 0 6px #34d399"></span>
+        <span style="font-size:11px;color:#8b93a7">claude CLI · authed</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:7px;margin-top:6px">
+        <span style="width:7px;height:7px;border-radius:50%;background:#34d399;box-shadow:0 0 6px #34d399"></span>
+        <span style="font-size:11px;color:#8b93a7">BEAM · Jido/OTP</span>
+      </div>
+    </div>
+  </aside>
+
+  <!-- MAIN -->
+  <div style="flex:1;display:flex;flex-direction:column;min-width:0">
+
+    <!-- TOPBAR -->
+    <header style="flex:0 0 auto;border-bottom:1px solid #1c212c;background:#0e1016;padding:12px 22px;display:flex;align-items:center;gap:22px">
+      <div style="display:flex;align-items:center;gap:12px;min-width:0;flex:0 1 auto">
+        <span style="{{ runStateChip }};flex:0 0 auto">{{ runStateLabel }}</span>
+        <div style="min-width:0">
+          <div style="font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ runTitle }}</div>
+          <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:#5a6274;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ runMode }} · cap {{ concurrency }}</div>
+        </div>
+      </div>
+
+      <div style="height:32px;width:1px;background:#1c212c;flex:0 0 auto"></div>
+
+      <!-- spend gauge -->
+      <div style="flex:0 0 280px">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:5px">
+          <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:#5a6274;letter-spacing:.5px">COST BREAKER</span>
+          <span style="font-family:'IBM Plex Mono',monospace;font-size:11px"><span style="color:{{ spendColor }};font-weight:600">${{ spendStr }}</span><span style="color:#5a6274"> / ${{ budgetStr }}</span></span>
+        </div>
+        <div style="height:7px;background:#171b25;border-radius:4px;overflow:hidden;position:relative;border:1px solid #232936">
+          <div style="position:absolute;left:0;top:0;bottom:0;width:{{ reservedPct }}%;background:repeating-linear-gradient(45deg,#2a3142,#2a3142 4px,#232936 4px,#232936 8px)"></div>
+          <div style="position:absolute;left:0;top:0;bottom:0;width:{{ spendPct }}%;background:{{ spendColor }};border-radius:4px"></div>
+        </div>
+      </div>
+
+      <span style="{{ breakerChip }};flex:0 0 auto;white-space:nowrap">{{ breakerLabel }}</span>
+
+      <div style="margin-left:auto;display:flex;align-items:center;gap:14px;flex:0 0 auto">
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:#8b93a7;letter-spacing:.5px">{{ clock }}</div>
+        <button onClick="{{ togglePlay }}" style="{{ playBtnStyle }}">{{ playLabel }}</button>
+      </div>
+    </header>
+
+    <!-- CONTENT -->
+    <main style="flex:1;overflow-y:auto;position:relative">
+
+      <!-- ============ MISSION CONTROL ============ -->
+      <sc-if value="{{ isMission }}" hint-placeholder-val="{{ true }}">
+      <div class="scMission" style="padding:22px;display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:20px;align-items:start">
+        <div style="min-width:0">
+          <!-- KPI strip -->
+          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(104px,1fr));gap:10px;margin-bottom:20px">
+            <sc-for list="{{ kpis }}" as="k" hint-placeholder-count="6">
+              <div style="background:#12151d;border:1px solid #232936;border-radius:10px;padding:13px 14px">
+                <div style="font-family:'IBM Plex Mono',monospace;font-size:26px;font-weight:600;line-height:1;color:{{ k.color }}">{{ k.count }}</div>
+                <div style="font-size:10px;letter-spacing:.6px;text-transform:uppercase;color:#8b93a7;margin-top:7px">{{ k.label }}</div>
+              </div>
+            </sc-for>
+          </div>
+
+          <!-- feature table -->
+          <div style="background:#12151d;border:1px solid #232936;border-radius:12px;overflow:hidden">
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid #232936;flex-wrap:wrap;gap:6px">
+              <div style="font-size:13px;font-weight:600">Backlog · run {{ runId }}</div>
+              <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#5a6274;white-space:nowrap">{{ featureCount }} features · DAG waves</div>
+            </div>
+            <div style="overflow-x:auto">
+            <div style="display:grid;grid-template-columns:150px 108px minmax(220px,1fr) 74px 78px;gap:14px;padding:9px 18px;border-bottom:1px solid #1c212c;font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.6px;color:#5a6274;min-width:640px">
+              <div>FEATURE</div><div>STATUS</div><div>PIPELINE</div><div style="text-align:right">ELAPSED</div><div style="text-align:right">SPEND</div>
+            </div>
+            <sc-for list="{{ featureRows }}" as="f" hint-placeholder-count="6">
+              <div onClick="{{ f.open }}" style="display:grid;grid-template-columns:150px 108px minmax(220px,1fr) 74px 78px;gap:14px;padding:13px 18px;border-bottom:1px solid #14181f;cursor:pointer;align-items:center;min-width:640px" style-hover="background:#161a23">
+                <div style="min-width:0">
+                  <div style="font-family:'IBM Plex Mono',monospace;font-size:13px;font-weight:600;color:#e6e9f0">{{ f.id }}</div>
+                  <div style="font-size:11px;color:#8b93a7;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ f.slug }}</div>
+                </div>
+                <div style="display:flex;align-items:center;gap:7px">
+                  <span style="width:8px;height:8px;border-radius:50%;flex:0 0 auto;background:{{ f.color }};animation:{{ f.dotAnim }}"></span>
+                  <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:{{ f.color }}">{{ f.label }}</span>
+                </div>
+                <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px">
+                  <sc-for list="{{ f.pips }}" as="p" hint-placeholder-count="7">
+                    <div title="{{ p.title }}" style="height:7px;border-radius:2px;background:{{ p.color }};animation:{{ p.anim }}"></div>
+                  </sc-for>
+                </div>
+                <div style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:#8b93a7;text-align:right">{{ f.elapsed }}</div>
+                <div style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:#c3c9d6;text-align:right">${{ f.spend }}</div>
+              </div>
+            </sc-for>
+            </div>
+          </div>
+
+          <!-- mini phase legend -->
+          <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:14px;padding:0 4px">
+            <sc-for list="{{ phaseLegend }}" as="p" hint-placeholder-count="7">
+              <div style="display:flex;align-items:center;gap:6px"><span style="width:9px;height:5px;border-radius:2px;background:#38bdf8"></span><span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:#8b93a7">{{ p.n }} · {{ p.name }}</span></div>
+            </sc-for>
+          </div>
+        </div>
+
+        <!-- event feed -->
+        <div class="scFeed" style="background:#12151d;border:1px solid #232936;border-radius:12px;overflow:hidden;position:sticky;top:0">
+          <div style="display:flex;align-items:center;gap:8px;padding:14px 16px;border-bottom:1px solid #232936">
+            <span style="width:7px;height:7px;border-radius:50%;background:#38bdf8;animation:scBlink 1.4s infinite"></span>
+            <div style="font-size:13px;font-weight:600">Telemetry</div>
+            <div style="margin-left:auto;font-family:'IBM Plex Mono',monospace;font-size:10px;color:#5a6274">[:speckit,:phase]</div>
+          </div>
+          <div class="scFeedList" style="max-height:calc(100vh - 190px);overflow-y:auto">
+            <sc-for list="{{ events }}" as="e" hint-placeholder-count="8">
+              <div style="display:flex;gap:10px;padding:9px 16px;border-bottom:1px solid #14181f;align-items:baseline">
+                <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:#5a6274;flex:0 0 auto">{{ e.time }}</span>
+                <span style="width:6px;height:6px;border-radius:50%;flex:0 0 auto;background:{{ e.color }};margin-top:5px"></span>
+                <div style="min-width:0">
+                  <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#c3c9d6">{{ e.id }}</span>
+                  <span style="font-size:11px;color:#8b93a7"> {{ e.text }}</span>
+                </div>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </div>
+      </sc-if>
+
+      <!-- ============ PIPELINE DAG ============ -->
+      <sc-if value="{{ isPipeline }}" hint-placeholder-val="{{ true }}">
+      <div style="padding:22px">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+          <div style="font-size:15px;font-weight:600">Dependency DAG</div>
+          <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#5a6274">release in dependency-and-cap waves · cap {{ concurrency }}</div>
+        </div>
+        <div style="background:#0e1016;border:1px solid #232936;border-radius:12px;position:relative;height:520px;overflow:auto;background-image:radial-gradient(#1a1f2b 1px,transparent 1px);background-size:22px 22px">
+          <div style="position:relative;width:{{ dagWidth }}px;height:480px">
+            <svg width="100%" height="100%" style="position:absolute;inset:0;pointer-events:none">
+              <sc-for list="{{ dagEdges }}" as="ed" hint-placeholder-count="6">
+                <path d="{{ ed.d }}" fill="none" stroke="{{ ed.color }}" stroke-width="1.5" stroke-dasharray="{{ ed.dash }}"></path>
+              </sc-for>
+            </svg>
+            <sc-for list="{{ dagNodes }}" as="n" hint-placeholder-count="6">
+              <div onClick="{{ n.open }}" style="position:absolute;left:{{ n.x }}px;top:{{ n.y }}px;width:168px;background:#12151d;border:1px solid {{ n.border }};border-radius:10px;padding:12px 13px;cursor:pointer;box-shadow:{{ n.shadow }}" style-hover="border-color:#7c5cff">
+                <div style="display:flex;align-items:center;justify-content:space-between">
+                  <span style="font-family:'IBM Plex Mono',monospace;font-size:13px;font-weight:600">{{ n.id }}</span>
+                  <span style="width:8px;height:8px;border-radius:50%;background:{{ n.color }};animation:{{ n.dotAnim }}"></span>
+                </div>
+                <div style="font-size:11px;color:#8b93a7;margin:4px 0 9px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ n.slug }}</div>
+                <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:3px;margin-bottom:8px">
+                  <sc-for list="{{ n.pips }}" as="p" hint-placeholder-count="7">
+                    <div style="height:5px;border-radius:2px;background:{{ p.color }};animation:{{ p.anim }}"></div>
+                  </sc-for>
+                </div>
+                <div style="display:flex;justify-content:space-between;font-family:'IBM Plex Mono',monospace;font-size:10px"><span style="color:{{ n.color }}">{{ n.label }}</span><span style="color:#5a6274">${{ n.spend }}</span></div>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+        <div style="display:flex;gap:18px;flex-wrap:wrap;margin-top:14px">
+          <sc-for list="{{ statusLegend }}" as="s" hint-placeholder-count="7">
+            <div style="display:flex;align-items:center;gap:7px"><span style="width:9px;height:9px;border-radius:50%;background:{{ s.color }}"></span><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#8b93a7">{{ s.name }}</span></div>
+          </sc-for>
+        </div>
+      </div>
+      </sc-if>
+
+      <!-- ============ TRIGGER ============ -->
+      <sc-if value="{{ isTrigger }}" hint-placeholder-val="{{ true }}">
+      <div style="padding:22px;max-width:760px">
+        <div style="font-size:15px;font-weight:600;margin-bottom:4px">Trigger a run</div>
+        <div style="font-size:12px;color:#8b93a7;margin-bottom:18px">Replaces <span style="font-family:'IBM Plex Mono',monospace;color:#a78bfa">SpeckitOrchestrator.run/0</span> and <span style="font-family:'IBM Plex Mono',monospace;color:#a78bfa">run_spec/2</span>.</div>
+
+        <div style="display:flex;gap:8px;margin-bottom:20px;background:#0e1016;border:1px solid #232936;border-radius:10px;padding:5px;width:fit-content">
+          <button onClick="{{ setBacklog }}" style="{{ tabBacklog }}">Backlog run</button>
+          <button onClick="{{ setSingle }}" style="{{ tabSingle }}">Single-spec (free text)</button>
+        </div>
+
+        <sc-if value="{{ isBacklog }}" hint-placeholder-val="{{ true }}">
+          <div style="background:#12151d;border:1px solid #232936;border-radius:12px;padding:20px">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px 22px">
+              <div><div style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.5px;color:#5a6274;margin-bottom:6px">BREAKDOWN DIR</div><div style="font-family:'IBM Plex Mono',monospace;font-size:13px">docs/breakdown/</div></div>
+              <div><div style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.5px;color:#5a6274;margin-bottom:6px">FEATURES FOUND</div><div style="font-family:'IBM Plex Mono',monospace;font-size:13px">6 · DAG validated</div></div>
+              <div><div style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.5px;color:#5a6274;margin-bottom:6px">MAX CONCURRENCY</div><div style="font-family:'IBM Plex Mono',monospace;font-size:13px">{{ concurrency }}</div></div>
+              <div><div style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.5px;color:#5a6274;margin-bottom:6px">BUDGET</div><div style="font-family:'IBM Plex Mono',monospace;font-size:13px">${{ budgetStr }}</div></div>
+            </div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ isSingle }}" hint-placeholder-val="{{ true }}">
+          <div style="background:#12151d;border:1px solid #232936;border-radius:12px;padding:20px">
+            <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.5px;color:#5a6274;margin-bottom:8px">FEATURE DESCRIPTION (free text)</div>
+            <textarea value="{{ specText }}" onInput="{{ onSpec }}" placeholder="Add a health-check endpoint that returns service status and version." style="width:100%;height:120px;resize:vertical;background:#0b0d12;border:1px solid #232936;border-radius:8px;padding:12px;color:#e6e9f0;font-family:'IBM Plex Mono',monospace;font-size:13px;line-height:1.5;outline:none"></textarea>
+            <div style="display:flex;gap:26px;margin-top:14px">
+              <div><div style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.5px;color:#5a6274;margin-bottom:4px">AUTO-ASSIGNED ID</div><div style="font-family:'IBM Plex Mono',monospace;font-size:13px;color:#a78bfa">{{ nextId }}</div></div>
+              <div style="min-width:0"><div style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.5px;color:#5a6274;margin-bottom:4px">DERIVED SLUG</div><div style="font-family:'IBM Plex Mono',monospace;font-size:13px;color:#c3c9d6">{{ derivedSlug }}</div></div>
+            </div>
+          </div>
+        </sc-if>
+
+        <!-- shared options -->
+        <div style="display:flex;align-items:center;gap:16px;margin-top:18px;flex-wrap:wrap">
+          <button onClick="{{ togglePr }}" style="display:flex;align-items:center;gap:10px;background:#12151d;border:1px solid #232936;border-radius:10px;padding:11px 14px;cursor:pointer;color:#e6e9f0">
+            <span style="width:34px;height:19px;border-radius:11px;background:{{ prTrackColor }};position:relative;transition:.15s"><span style="position:absolute;top:2px;left:{{ prKnobLeft }};width:15px;height:15px;border-radius:50%;background:#fff;transition:.15s"></span></span>
+            <span style="font-size:12px">Stacked sequential PR workflow</span>
+          </button>
+          <span style="font-size:11px;color:#5a6274;font-family:'IBM Plex Mono',monospace">{{ prHint }}</span>
+        </div>
+
+        <button onClick="{{ startRun }}" style="margin-top:22px;background:linear-gradient(140deg,#7c5cff,#5a3fe0);border:none;border-radius:10px;padding:13px 26px;color:#fff;font-size:13px;font-weight:600;cursor:pointer;box-shadow:0 6px 18px rgba(124,92,255,.35);font-family:'IBM Plex Sans',sans-serif" style-hover="filter:brightness(1.08)">▷ &nbsp;Start run</button>
+      </div>
+      </sc-if>
+
+      <!-- ============ ESCALATIONS ============ -->
+      <sc-if value="{{ isEscalations }}" hint-placeholder-val="{{ true }}">
+      <div style="padding:22px;max-width:900px">
+        <div style="font-size:15px;font-weight:600;margin-bottom:4px">Escalations &amp; halts · human-in-the-loop</div>
+        <div style="font-size:12px;color:#8b93a7;margin-bottom:20px">Each diverted feature wrote a <span style="font-family:'IBM Plex Mono',monospace;color:#a78bfa">checkpoint.json</span>. <span style="font-family:'IBM Plex Mono',monospace;color:#a78bfa">resume/2</span> restarts at the checkpointed phase (keeps completed work); <span style="font-family:'IBM Plex Mono',monospace;color:#a78bfa">resolve/1</span> is a full restart from specify.</div>
+
+        <sc-if value="{{ hasEscalations }}" hint-placeholder-val="{{ true }}">
+          <sc-for list="{{ escalations }}" as="f" hint-placeholder-count="1">
+            <div style="background:#12151d;border:1px solid {{ f.color }}40;border-radius:12px;margin-bottom:18px;overflow:hidden">
+              <div style="display:flex;align-items:center;gap:12px;padding:15px 18px;border-bottom:1px solid #232936;background:{{ f.color }}0d">
+                <span style="width:9px;height:9px;border-radius:50%;background:{{ f.color }}"></span>
+                <span style="font-family:'IBM Plex Mono',monospace;font-size:14px;font-weight:600">{{ f.id }} · {{ f.slug }}</span>
+                <span style="{{ f.chip }}">{{ f.label }}</span>
+                <span style="margin-left:auto;font-family:'IBM Plex Mono',monospace;font-size:11px;color:#5a6274">reason: {{ f.reason }}</span>
+              </div>
+              <div style="padding:18px">
+                <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#8b93a7;margin-bottom:14px">{{ f.gateNote }}</div>
+
+                <!-- CHECKPOINT POINTER -->
+                <div style="background:#0b0d12;border:1px solid #2a2350;border-radius:9px;padding:14px 15px;margin-bottom:16px">
+                  <div style="display:flex;align-items:center;gap:8px;margin-bottom:13px">
+                    <span style="width:6px;height:6px;border-radius:50%;background:#a78bfa"></span>
+                    <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.5px;color:#a78bfa">CHECKPOINT · {{ f.cpPath }}</span>
+                  </div>
+                  <div style="display:grid;grid-template-columns:auto minmax(0,1fr) auto minmax(0,1fr);gap:9px 18px;align-items:baseline">
+                    <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:#5a6274">last_phase</span>
+                    <span style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:{{ f.color }}">{{ f.cpPhaseN }} {{ f.cpPhase }}</span>
+                    <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:#5a6274">status</span>
+                    <span style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:{{ f.color }}">{{ f.cpStatus }}</span>
+                    <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:#5a6274">session_id</span>
+                    <span style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:#c3c9d6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ f.cpSession }}</span>
+                    <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:#5a6274">reason</span>
+                    <span style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:#c3c9d6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ f.reason }}</span>
+                  </div>
+                  <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.4px;color:#5a6274;margin:14px 0 8px">RUN_CONTEXT · resume re-executes under recorded run shape</div>
+                  <div style="display:flex;flex-wrap:wrap;gap:6px">
+                    <sc-for list="{{ f.ctxRows }}" as="c" hint-placeholder-count="6">
+                      <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#5a6274;background:#12151d;border:1px solid #2a3142;border-radius:6px;padding:3px 8px">{{ c.k }}=<span style="color:#c3c9d6">{{ c.v }}</span></span>
+                    </sc-for>
+                  </div>
+                </div>
+
+                <sc-for list="{{ f.questions }}" as="q" hint-placeholder-count="2">
+                  <div style="background:#0b0d12;border:1px solid #232936;border-radius:9px;padding:13px 15px;margin-bottom:10px">
+                    <div style="display:flex;gap:9px;align-items:baseline"><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#fbbf24;flex:0 0 auto">{{ q.id }}</span><span style="font-size:13px;color:#e6e9f0">{{ q.q }}</span></div>
+                    <div style="display:flex;gap:7px;flex-wrap:wrap;margin-top:10px;padding-left:2px">
+                      <sc-for list="{{ q.options }}" as="o" hint-placeholder-count="3">
+                        <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#a5b0c2;background:#161a23;border:1px solid #2a3142;border-radius:6px;padding:4px 9px">{{ o }}</span>
+                      </sc-for>
+                    </div>
+                  </div>
+                </sc-for>
+
+                <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.4px;color:#5a6274;margin:16px 0 7px">resume opt <span style="color:#a78bfa">:prompt</span> · operator guidance injected into the resumed phase</div>
+                <textarea value="{{ f.decision }}" onInput="{{ f.onDecision }}" placeholder="status defaults to a human table; add --format=json flag. add takes an optional --date, defaults to today." style="width:100%;height:82px;resize:vertical;background:#0b0d12;border:1px solid #232936;border-radius:8px;padding:12px;color:#e6e9f0;font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.6;outline:none"></textarea>
+
+                <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.4px;color:#5a6274;margin:16px 0 8px">resume opt <span style="color:#a78bfa">:from</span> · start phase override (defaults to checkpoint last_phase)</div>
+                <div style="display:flex;gap:5px;flex-wrap:wrap">
+                  <sc-for list="{{ f.fromPills }}" as="p" hint-placeholder-count="2">
+                    <button onClick="{{ p.set }}" style="{{ p.style }}">{{ p.n }} {{ p.name }}</button>
+                  </sc-for>
+                </div>
+
+                <div style="display:flex;align-items:center;gap:10px;margin-top:18px;flex-wrap:wrap">
+                  <button onClick="{{ f.resume }}" style="{{ f.resumeStyle }}" style-hover="filter:brightness(1.08)">▶ &nbsp;Resume from :{{ f.fromLabel }}</button>
+                  <button onClick="{{ f.resolve }}" style="{{ f.resolveStyle }}" style-hover="border-color:#7c5cff;color:#fff">↻ &nbsp;Full restart · resolve/1</button>
+                  <button onClick="{{ f.openTranscript }}" style="background:transparent;border:1px solid #2a3142;border-radius:9px;padding:10px 16px;color:#a5b0c2;font-size:12px;cursor:pointer;font-family:'IBM Plex Sans',sans-serif" style-hover="border-color:#7c5cff;color:#fff">Read {{ f.cpPhaseN }}-{{ f.cpPhase }}.md</button>
+                </div>
+                <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#5a6274;margin-top:11px">{{ f.resumeHint }}</div>
+              </div>
+            </div>
+          </sc-for>
+        </sc-if>
+        <sc-if value="{{ noEscalations }}" hint-placeholder-val="{{ false }}">
+          <div style="background:#12151d;border:1px solid #232936;border-radius:12px;padding:48px;text-align:center">
+            <div style="font-size:28px;color:#34d399;margin-bottom:10px">✓</div>
+            <div style="font-size:14px;font-weight:600">No open escalations</div>
+            <div style="font-size:12px;color:#8b93a7;margin-top:6px">The clarify and analyze gates are clear. All in-flight features are draining normally.</div>
+          </div>
+        </sc-if>
+      </div>
+      </sc-if>
+
+      <!-- ============ TRANSCRIPTS ============ -->
+      <sc-if value="{{ isTranscripts }}" hint-placeholder-val="{{ true }}">
+      <div style="display:flex;height:100%;">
+        <div style="width:230px;flex:0 0 230px;border-right:1px solid #1c212c;overflow-y:auto;padding:14px 10px">
+          <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.5px;color:#5a6274;padding:0 8px 10px">.speckit-transcripts/</div>
+          <sc-for list="{{ transcriptFeatures }}" as="f" hint-placeholder-count="6">
+            <button onClick="{{ f.select }}" style="{{ f.rowStyle }}">
+              <span style="width:7px;height:7px;border-radius:50%;background:{{ f.color }};flex:0 0 auto"></span>
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:12px">{{ f.id }}</span>
+              <span style="font-size:11px;color:#8b93a7;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ f.slug }}</span>
+            </button>
+          </sc-for>
+        </div>
+        <div style="flex:1;min-width:0;display:flex;flex-direction:column">
+          <div style="display:flex;gap:4px;padding:12px 16px;border-bottom:1px solid #1c212c;overflow-x:auto">
+            <sc-for list="{{ transcriptTabs }}" as="t" hint-placeholder-count="7">
+              <button onClick="{{ t.select }}" style="{{ t.style }}">{{ t.n }} {{ t.name }}</button>
+            </sc-for>
+          </div>
+          <div style="flex:1;overflow-y:auto;padding:22px 26px">
+            <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#5a6274;margin-bottom:16px">{{ transcriptPath }}</div>
+            <pre style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;line-height:1.7;color:#c3c9d6;white-space:pre-wrap;margin:0">{{ transcriptBody }}</pre>
+          </div>
+        </div>
+      </div>
+      </sc-if>
+
+      <!-- ============ CONFIG ============ -->
+      <sc-if value="{{ isConfig }}" hint-placeholder-val="{{ true }}">
+      <div style="padding:22px;max-width:820px">
+        <div style="font-size:15px;font-weight:600;margin-bottom:4px">Configuration</div>
+        <div style="font-size:12px;color:#8b93a7;margin-bottom:20px"><span style="font-family:'IBM Plex Mono',monospace;color:#a78bfa">config :speckit_orchestrator</span> · changes apply to the live run.</div>
+
+        <div style="background:#12151d;border:1px solid #232936;border-radius:12px;padding:20px;margin-bottom:18px">
+          <div style="font-size:13px;font-weight:600;margin-bottom:14px">Per-phase model routing</div>
+          <sc-for list="{{ modelRows }}" as="m" hint-placeholder-count="7">
+            <div style="display:flex;align-items:center;gap:14px;padding:9px 0;border-bottom:1px solid #171b25">
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#5a6274;width:20px">{{ m.n }}</span>
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:13px;flex:1">{{ m.phase }}</span>
+              <div style="display:flex;gap:5px">
+                <button onClick="{{ m.setOpus }}" style="{{ m.opusStyle }}">opus</button>
+                <button onClick="{{ m.setSonnet }}" style="{{ m.sonnetStyle }}">sonnet</button>
+              </div>
+            </div>
+          </sc-for>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-bottom:18px">
+          <div style="background:#12151d;border:1px solid #232936;border-radius:12px;padding:20px">
+            <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:12px"><span style="font-size:13px;font-weight:600">Cost breaker budget</span><span style="font-family:'IBM Plex Mono',monospace;font-size:15px;color:{{ spendColor }}">${{ budgetStr }}</span></div>
+            <input type="range" min="20" max="200" step="2" value="{{ budget }}" onInput="{{ onBudget }}" style="width:100%;accent-color:#7c5cff">
+            <div style="font-size:11px;color:#5a6274;margin-top:8px;font-family:'IBM Plex Mono',monospace">committed ${{ spendStr }} · {{ breakerLabel }}</div>
+          </div>
+          <div style="background:#12151d;border:1px solid #232936;border-radius:12px;padding:20px">
+            <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:12px"><span style="font-size:13px;font-weight:600">Max concurrency</span><span style="font-family:'IBM Plex Mono',monospace;font-size:15px;color:#a78bfa">{{ concurrency }}</span></div>
+            <input type="range" min="1" max="6" step="1" value="{{ concurrency }}" onInput="{{ onConc }}" style="width:100%;accent-color:#7c5cff">
+            <div style="font-size:11px;color:#5a6274;margin-top:8px;font-family:'IBM Plex Mono',monospace">wave size = cap − in-flight</div>
+          </div>
+        </div>
+
+        <div style="background:#12151d;border:1px solid #232936;border-radius:12px;padding:20px">
+          <div style="display:flex;align-items:center;justify-content:space-between">
+            <div><div style="font-size:13px;font-weight:600">Stacked PR workflow</div><div style="font-size:11px;color:#8b93a7;margin-top:4px">Forces cap 1 · one PR per feature · stacked bottom-up.</div></div>
+            <button onClick="{{ togglePr }}" style="background:none;border:none;cursor:pointer;padding:0"><span style="width:44px;height:24px;border-radius:13px;background:{{ prTrackColor }};position:relative;display:inline-block;transition:.15s"><span style="position:absolute;top:3px;left:{{ prKnobLeftLg }};width:18px;height:18px;border-radius:50%;background:#fff;transition:.15s"></span></span></button>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:16px">
+            <div><div style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:#5a6274;margin-bottom:5px">PR_BASE</div><div style="font-family:'IBM Plex Mono',monospace;font-size:13px">main</div></div>
+            <div><div style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:#5a6274;margin-bottom:5px">PR_REMOTE</div><div style="font-family:'IBM Plex Mono',monospace;font-size:13px">origin</div></div>
+          </div>
+        </div>
+      </div>
+      </sc-if>
+
+      <!-- ============ FEATURE DRAWER ============ -->
+      <sc-if value="{{ drawerOpen }}" hint-placeholder-val="{{ false }}">
+        <div onClick="{{ closeDrawer }}" style="position:absolute;inset:0;background:rgba(6,7,11,.6);animation:scFade .12s ease;z-index:20"></div>
+        <div style="position:absolute;top:0;right:0;bottom:0;width:460px;background:#0e1016;border-left:1px solid #232936;box-shadow:-20px 0 60px rgba(0,0,0,.5);animation:scSlide .18s ease;z-index:21;overflow-y:auto">
+          <div style="padding:20px 22px;border-bottom:1px solid #232936;display:flex;align-items:flex-start;gap:12px">
+            <div style="flex:1;min-width:0">
+              <div style="display:flex;align-items:center;gap:10px"><span style="font-family:'IBM Plex Mono',monospace;font-size:17px;font-weight:600">{{ sel.id }}</span><span style="{{ sel.chip }}">{{ sel.label }}</span></div>
+              <div style="font-size:13px;color:#8b93a7;margin-top:3px">{{ sel.slug }}</div>
+              <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#5a6274;margin-top:8px">feature/{{ sel.id }}-{{ sel.slug }}</div>
+            </div>
+            <button onClick="{{ closeDrawer }}" style="background:none;border:1px solid #2a3142;border-radius:7px;width:30px;height:30px;color:#8b93a7;cursor:pointer;font-size:15px" style-hover="color:#fff;border-color:#7c5cff">✕</button>
+          </div>
+
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:1px;background:#232936;border-bottom:1px solid #232936">
+            <div style="background:#0e1016;padding:14px 18px"><div style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:#5a6274">ELAPSED</div><div style="font-family:'IBM Plex Mono',monospace;font-size:15px;margin-top:4px">{{ sel.elapsed }}</div></div>
+            <div style="background:#0e1016;padding:14px 18px"><div style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:#5a6274">SPEND</div><div style="font-family:'IBM Plex Mono',monospace;font-size:15px;margin-top:4px">${{ sel.spend }}</div></div>
+            <div style="background:#0e1016;padding:14px 18px"><div style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:#5a6274">PREREQS</div><div style="font-family:'IBM Plex Mono',monospace;font-size:15px;margin-top:4px">{{ sel.prereqs }}</div></div>
+          </div>
+
+          <div style="padding:20px 22px">
+            <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.5px;color:#5a6274;margin-bottom:14px">PHASE PIPELINE</div>
+            <sc-for list="{{ sel.timeline }}" as="p" hint-placeholder-count="7">
+              <div style="display:flex;gap:14px;align-items:flex-start;position:relative;padding-bottom:16px">
+                <div style="display:flex;flex-direction:column;align-items:center;flex:0 0 auto">
+                  <div style="width:22px;height:22px;border-radius:50%;background:{{ p.dotBg }};border:2px solid {{ p.color }};display:flex;align-items:center;justify-content:center;font-size:10px;color:{{ p.color }};z-index:1">{{ p.glyph }}</div>
+                  <div style="width:2px;flex:1;min-height:14px;background:{{ p.lineColor }}"></div>
+                </div>
+                <div style="flex:1;padding-top:1px">
+                  <div style="display:flex;justify-content:space-between;align-items:baseline">
+                    <span style="font-family:'IBM Plex Mono',monospace;font-size:13px;color:{{ p.textColor }};font-weight:{{ p.weight }}">{{ p.name }}</span>
+                    <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#5a6274">{{ p.meta }}</span>
+                  </div>
+                  <div style="font-size:11px;color:#8b93a7;margin-top:2px">{{ p.note }}</div>
+                </div>
+              </div>
+            </sc-for>
+          </div>
+
+          <div style="padding:0 22px 26px;display:flex;flex-direction:column;gap:10px">
+            <button onClick="{{ sel.openTranscript }}" style="background:#161a23;border:1px solid #2a3142;border-radius:9px;padding:12px;color:#e6e9f0;font-size:12px;cursor:pointer;text-align:left;font-family:'IBM Plex Sans',sans-serif" style-hover="border-color:#7c5cff">≡ &nbsp;Open transcripts</button>
+            <sc-if value="{{ sel.canResolve }}" hint-placeholder-val="{{ false }}">
+              <div style="background:#0b0d12;border:1px solid #2a2350;border-radius:9px;padding:11px 13px;display:flex;align-items:center;gap:9px">
+                <span style="width:6px;height:6px;border-radius:50%;background:#a78bfa;flex:0 0 auto"></span>
+                <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#8b93a7;min-width:0">checkpoint · last_phase <span style="color:#c3c9d6">{{ sel.cpPhaseN }} {{ sel.cpPhase }}</span> · <span style="color:#c3c9d6">{{ sel.sessionId }}</span></span>
+              </div>
+              <button onClick="{{ sel.resume }}" style="background:linear-gradient(140deg,#7c5cff,#5a3fe0);border:none;border-radius:9px;padding:12px;color:#fff;font-size:12px;font-weight:600;cursor:pointer;font-family:'IBM Plex Sans',sans-serif" style-hover="filter:brightness(1.08)">▶ &nbsp;Resume from :{{ sel.cpPhase }}</button>
+              <button onClick="{{ sel.goResolve }}" style="background:#161a23;border:1px solid #2a3142;border-radius:9px;padding:12px;color:#a5b0c2;font-size:12px;cursor:pointer;text-align:left;font-family:'IBM Plex Sans',sans-serif" style-hover="border-color:#7c5cff;color:#fff">⚠ &nbsp;Open escalation · answer &amp; override</button>
+            </sc-if>
+            <sc-if value="{{ sel.isDone }}" hint-placeholder-val="{{ false }}">
+              <button style="background:#0f2a1c;border:1px solid #1c5c3a;border-radius:9px;padding:12px;color:#6ee7b7;font-size:12px;cursor:pointer;font-family:'IBM Plex Sans',sans-serif" style-hover="border-color:#34d399">⎇ &nbsp;View PR · branch pushed</button>
+            </sc-if>
+          </div>
+        </div>
+      </sc-if>
+
+    </main>
+  </div>
+
+  <!-- TOAST -->
+  <sc-if value="{{ hasToast }}" hint-placeholder-val="{{ false }}">
+    <div style="position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#161a23;border:1px solid #7c5cff;border-radius:10px;padding:13px 20px;box-shadow:0 12px 40px rgba(0,0,0,.5);animation:scFade .2s ease;z-index:50;display:flex;align-items:center;gap:10px">
+      <span style="width:8px;height:8px;border-radius:50%;background:#7c5cff"></span>
+      <span style="font-size:13px;color:#e6e9f0">{{ toast }}</span>
+    </div>
+  </sc-if>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1440,&quot;height&quot;:900},&quot;accentColor&quot;:{&quot;editor&quot;:&quot;color&quot;,&quot;default&quot;:&quot;#7c5cff&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Theme&quot;},&quot;simSpeed&quot;:{&quot;editor&quot;:&quot;range&quot;,&quot;default&quot;:1600,&quot;min&quot;:600,&quot;max&quot;:3000,&quot;step&quot;:100,&quot;unit&quot;:&quot;ms&quot;,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;Simulation&quot;},&quot;startPaused&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Simulation&quot;}}">
+class Component extends DCLogic {
+  PHASES = ["specify","clarify","plan","tasks","analyze","implement","converge"];
+  COLORS = { done:"#34d399", running:"#38bdf8", escalated:"#fbbf24", halted:"#fb7185", failed:"#f43f5e", pending:"#64748b", blocked:"#475569" };
+
+  state = {
+    view: "mission",
+    playing: true,
+    concurrency: 2,
+    budget: 74,
+    breakerTripped: false,
+    selectedId: null,
+    triggerMode: "backlog",
+    specText: "",
+    prWorkflow: false,
+    transFeature: "003",
+    transPhase: "tasks",
+    toast: null,
+    clockMs: 762000,
+    decisions: {},
+    resumeFrom: {},
+    models: { specify:"sonnet", clarify:"opus", plan:"sonnet", tasks:"sonnet", analyze:"opus", implement:"sonnet", converge:"sonnet" },
+    features: [
+      { id:"001", slug:"core-ledger",       prereqs:[],            status:"done",      phaseIdx:7, prog:0,  spend:11.20, elapsedMs:512000, speed:0, reason:null },
+      { id:"002", slug:"accounts",          prereqs:["001"],       status:"running",   phaseIdx:5, prog:38, spend:8.40,  elapsedMs:187000, speed:14, reason:null },
+      { id:"003", slug:"transactions",      prereqs:["001"],       status:"running",   phaseIdx:3, prog:62, spend:4.10,  elapsedMs:96000,  speed:16, reason:null },
+      { id:"004", slug:"reporting",         prereqs:["002","003"], status:"blocked",   phaseIdx:0, prog:0,  spend:0,     elapsedMs:0,      speed:0, reason:null },
+      { id:"005", slug:"cli-interface",     prereqs:["001"],       status:"escalated", phaseIdx:1, prog:0,  spend:2.10,  elapsedMs:42000,  speed:0, reason:"{:needs_human, :clarify}",
+        sessionId:"sess-019a3f2c-7b1e",
+        ctx:{ pr_workflow:false, max_concurrency:2, budget_usd:74, plan_stack:["Elixir 1.20 / OTP 28 (stdlib only)"], pr_base:"main", pr_remote:"origin" },
+        questions:[
+          { id:"H-001", q:"Should `status` output default to a human table or JSON?", options:["human table","json","--format flag (default table)"] },
+          { id:"H-002", q:"Does `add` accept a date argument, or always use now()?", options:["now() only","optional --date","required date arg"] }
+        ] },
+      { id:"006", slug:"csv-export",        prereqs:["003"],       status:"blocked",   phaseIdx:0, prog:0,  spend:0,     elapsedMs:0,      speed:0, reason:null }
+    ],
+    events: [
+      { id:"003", text:"tasks → running", color:"#38bdf8", time:"12:41:07" },
+      { id:"002", text:"implement → running", color:"#38bdf8", time:"12:40:52" },
+      { id:"005", text:"clarify → escalated · ## NEEDS HUMAN", color:"#fbbf24", time:"12:39:18" },
+      { id:"003", text:"plan → ok ($0.90)", color:"#34d399", time:"12:38:40" },
+      { id:"001", text:"converge → done · worktree removed", color:"#34d399", time:"12:36:02" },
+      { id:"002", text:"analyze → ok · 0 findings", color:"#34d399", time:"12:35:11" },
+      { id:"001", text:"implement → ok ($4.80)", color:"#34d399", time:"12:33:29" }
+    ]
+  };
+
+  componentDidMount() {
+    if (this.props.startPaused) this.setState({ playing:false });
+    this._iv = setInterval(() => this.tick(), Math.max(400, this.props.simSpeed ?? 1600));
+  }
+  componentWillUnmount() { clearInterval(this._iv); if (this._tt) clearTimeout(this._tt); }
+
+  accent() { return this.props.accentColor ?? "#7c5cff"; }
+  rand() { return 11 + Math.floor(Math.random()*10); }
+  step() { return Math.max(400, this.props.simSpeed ?? 1600); }
+
+  hhmmss(ms) { const s=Math.floor(ms/1000); const h=Math.floor(s/3600), m=Math.floor((s%3600)/60), ss=s%60; return (h?String(h).padStart(2,"0")+":":"")+String(m).padStart(2,"0")+":"+String(ss).padStart(2,"0"); }
+  mmss(ms) { if(!ms) return "—"; const s=Math.floor(ms/1000); return Math.floor(s/60)+":"+String(s%60).padStart(2,"0"); }
+  nowStr() { const d=new Date(); return [d.getHours(),d.getMinutes(),d.getSeconds()].map(n=>String(n).padStart(2,"0")).join(":"); }
+
+  tick() {
+    if (!this.state.playing) return;
+    this.setState(s => {
+      const feats = s.features.map(f => ({ ...f }));
+      let events = s.events.slice(0, 60);
+      let spend = feats.reduce((a,f)=>a+f.spend, 0);
+      let breaker = spend >= s.budget;
+      const step = this.step();
+      for (const f of feats) {
+        if (f.status !== "running") continue;
+        f.elapsedMs += step;
+        f.prog += f.speed;
+        const inc = f.speed * 0.007; f.spend += inc; spend += inc;
+        if (f.prog >= 100) {
+          f.prog = 0;
+          const donePhase = this.PHASES[f.phaseIdx];
+          f.phaseIdx++;
+          if (f.phaseIdx > 6) {
+            f.status = "done"; f.phaseIdx = 7;
+            events.unshift({ id:f.id, text:"converge → done · worktree removed", color:this.COLORS.done, time:this.nowStr() });
+          } else if (breaker) {
+            f.status = "halted"; f.reason = "breaker_drained";
+            events.unshift({ id:f.id, text:`${donePhase} → drained · breaker halt`, color:this.COLORS.halted, time:this.nowStr() });
+          } else {
+            events.unshift({ id:f.id, text:`${donePhase} → ${this.PHASES[f.phaseIdx]}`, color:this.COLORS.done, time:this.nowStr() });
+          }
+        }
+      }
+      breaker = spend >= s.budget;
+      const isDone = id => feats.find(x=>x.id===id)?.status === "done";
+      const prereqDone = f => f.prereqs.every(isDone);
+      for (const f of feats) {
+        if (f.status === "blocked" && prereqDone(f)) f.status = "pending";
+        else if (f.status === "pending" && !prereqDone(f)) f.status = "blocked";
+      }
+      let running = feats.filter(f=>f.status==="running").length;
+      if (!breaker) {
+        for (const f of feats.slice().sort((a,b)=>a.id.localeCompare(b.id))) {
+          if (running >= s.concurrency) break;
+          if (f.status === "pending" && prereqDone(f)) {
+            f.status = "running"; f.prog = 0; f.speed = this.rand();
+            events.unshift({ id:f.id, text:"specify → running", color:this.COLORS.running, time:this.nowStr() });
+            running++;
+          }
+        }
+      }
+      const anyRunning = feats.some(f=>f.status==="running");
+      return { features:feats, events, breakerTripped:breaker, clockMs: s.clockMs + (anyRunning?step:0) };
+    });
+  }
+
+  showToast(msg) { if(this._tt) clearTimeout(this._tt); this.setState({toast:msg}); this._tt=setTimeout(()=>this.setState({toast:null}),2800); }
+  slugify(t) { return (t||"").toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-+|-+$/g,"").split("-").filter(Boolean).slice(0,5).join("-"); }
+  nextId() { const max = Math.max(0, ...this.state.features.map(f=>parseInt(f.id,10))); return String(max+1).padStart(3,"0"); }
+
+  phaseCells(f, small) {
+    return this.PHASES.map((name, i) => {
+      let state, color = this.COLORS.pending, anim = "none";
+      if (f.status === "done" || i < f.phaseIdx) { state="done"; color=this.COLORS.done; }
+      else if (i === f.phaseIdx) {
+        if (f.status === "running") { state="active"; color=this.COLORS.running; anim="scPulse 1.3s infinite"; }
+        else if (f.status === "escalated") { state="escalated"; color=this.COLORS.escalated; }
+        else if (f.status === "halted") { state="halted"; color=this.COLORS.halted; }
+        else if (f.status === "failed") { state="failed"; color=this.COLORS.failed; }
+        else { state="pending"; color="#2a3142"; }
+      } else { state="pending"; color="#232936"; }
+      return { name, n:String(i+1).padStart(2,"0"), state, color, anim, title:`${i+1} ${name} · ${state}` };
+    });
+  }
+
+  transcript(fid, phase) {
+    const f = this.state.features.find(x=>x.id===fid);
+    const slug = f ? f.slug : "feature";
+    const bodies = {
+      specify: `# Feature Specification: ${slug}\n\nRan .specify/scripts/sh/create-new-feature.sh\n→ created specs/${fid}-${slug}/spec.md\n\n## User Scenarios\n- Operator invokes the command; the system responds with a deterministic result.\n\n## Functional Requirements\n- FR-001: MUST persist state durably across restarts.\n- FR-002: monetary amounts stored/computed as integer cents.\n\nresult: ok  ·  model: ${this.state.models.specify}`,
+      clarify: `# Clarify (Opus reviewer)\n\nReviewed spec.md against the project constitution.\n\n## NEEDS HUMAN\n\nH-001 — Should \`status\` output default to a human table or JSON?\n  options considered: human table · json · --format flag\n\nH-002 — Does \`add\` accept a date argument, or always use now()?\n  options considered: now() only · optional --date · required date\n\n→ material ambiguity detected · escalating\nresult: escalated  ·  model: ${this.state.models.clarify}`,
+      plan: `# Implementation Plan: ${slug}\n\nRan setup-plan.sh with plan_stack:\n  ["Elixir 1.20 / OTP 28 (stdlib only)"]\n→ wrote specs/${fid}-${slug}/plan.md, data-model.md, contracts/\n\nartifact gate: plan.md present ✓\nresult: ok  ·  $0.90  ·  model: ${this.state.models.plan}`,
+      tasks: `# Tasks: ${slug}\n\nDerived ordered task list from plan.md + contracts.\n→ wrote specs/${fid}-${slug}/tasks.md  (18 tasks)\n\nT001 [P] contract test: ledger reserve/record\nT002 [P] model: integer-cents money type\nT003     core: breaker invariant committed < budget + max_reservation\n...\nartifact gate: tasks.md present ✓\nresult: ok  ·  model: ${this.state.models.tasks}`,
+      analyze: `# Analyze (read-only, deterministic gate)\n\nChecked tasks.md + plan.md vs constitution MUSTs.\n\n{"summary":"No blocking violations. Coverage complete.",\n "findings":[]}\n\nresult: ok · 0 findings · model: ${this.state.models.analyze}`,
+      implement: `# Implement: ${slug}\n\nWriting source + tests, self-committing per task.\n\n✓ T001 contract test  ✓ T002 money type  ⣿ T003 breaker...\ngit: 14 files changed outside specs/ · artifact gate ✓\nresult: running  ·  model: ${this.state.models.implement}`,
+      converge: `# Converge\n\nFinal review of the branch for human handoff.\n\n## CONVERGE: READY\nAll acceptance criteria met; tests green.\n→ Worktree.commit → branch feature/${fid}-${slug}\nresult: ok  ·  model: ${this.state.models.converge}`
+    };
+    const done = f && (f.status === "done" || this.PHASES.indexOf(phase) < f.phaseIdx);
+    const active = f && this.PHASES.indexOf(phase) === f.phaseIdx;
+    if (!done && !active) return `# ${this.PHASES.indexOf(phase)+1} ${phase} — ${slug}\n\n(pending — phase not yet reached in this run)`;
+    return bodies[phase] || `# ${phase}\n\n(no transcript)`;
+  }
+
+  renderVals() {
+    const s = this.state;
+    const accent = this.accent();
+    const feats = s.features;
+    const totalSpend = feats.reduce((a,f)=>a+f.spend, 0);
+    const runningCount = feats.filter(f=>f.status==="running").length;
+    const reserved = runningCount * 6;
+    const spendPct = Math.min(100, totalSpend / s.budget * 100);
+    const reservedPct = Math.min(100, (totalSpend + reserved) / s.budget * 100);
+    const spendColor = s.breakerTripped ? this.COLORS.failed : (spendPct > 80 ? this.COLORS.escalated : this.COLORS.done);
+    const counts = {}; ["done","running","escalated","halted","failed","blocked","pending"].forEach(k=>counts[k]=0);
+    feats.forEach(f=>counts[f.status] = (counts[f.status]||0)+1);
+    const escalatedFeats = feats.filter(f=>f.status==="escalated"||f.status==="halted");
+
+    const chip = (color) => `display:inline-flex;align-items:center;font-family:'IBM Plex Mono',monospace;font-size:10px;font-weight:600;letter-spacing:.4px;padding:3px 8px;border-radius:5px;color:${color};background:${color}1a;border:1px solid ${color}40`;
+    const navBtn = (active) => `display:flex;align-items:center;gap:11px;width:100%;text-align:left;padding:9px 11px;border-radius:8px;border:none;cursor:pointer;font-size:13px;font-family:'IBM Plex Sans',sans-serif;transition:.12s;${active?`background:${accent}22;color:#fff;box-shadow:inset 0 0 0 1px ${accent}55`:"background:transparent;color:#8b93a7"}`;
+
+    const setView = v => () => this.setState({ view:v });
+    const navStyle = {}; const nav = {};
+    ["mission","pipeline","trigger","escalations","transcripts","config"].forEach(v => { navStyle[v]=navBtn(s.view===v); nav[v]=setView(v); });
+
+    const openFeature = id => () => this.setState({ selectedId:id });
+    const featureRows = feats.map(f => ({
+      id:f.id, slug:f.slug, color:this.COLORS[f.status], label:f.status.toUpperCase(),
+      dotAnim: f.status==="running" ? "scPulse 1.3s infinite" : "none",
+      elapsed:this.mmss(f.elapsedMs), spend:f.spend.toFixed(2),
+      pips:this.phaseCells(f), open:openFeature(f.id)
+    }));
+
+    const kpis = [
+      { label:"done", count:counts.done, color:this.COLORS.done },
+      { label:"running", count:counts.running, color:this.COLORS.running },
+      { label:"escalated", count:counts.escalated, color:this.COLORS.escalated },
+      { label:"halted", count:counts.halted, color:this.COLORS.halted },
+      { label:"blocked", count:counts.blocked, color:this.COLORS.blocked },
+      { label:"pending", count:counts.pending, color:this.COLORS.pending }
+    ];
+    const phaseLegend = this.PHASES.map((name,i)=>({ n:String(i+1).padStart(2,"0"), name }));
+    const statusLegend = ["done","running","escalated","halted","failed","blocked","pending"].map(k=>({name:k,color:this.COLORS[k]}));
+
+    // DAG layout
+    const isDone = id => feats.find(x=>x.id===id)?.status==="done";
+    const layer = f => f.prereqs.length===0 ? 0 : 1 + Math.max(...f.prereqs.map(pid => { const p=feats.find(x=>x.id===pid); return p?layer(p):0; }));
+    const byLayer = {};
+    feats.forEach(f => { const L=layer(f); (byLayer[L]=byLayer[L]||[]).push(f); });
+    const pos = {};
+    Object.keys(byLayer).forEach(L => byLayer[L].forEach((f,idx) => { pos[f.id] = { x: 40 + (+L)*230, y: 30 + idx*120 }; }));
+    const dagNodes = feats.map(f => ({
+      id:f.id, slug:f.slug, x:pos[f.id].x, y:pos[f.id].y,
+      color:this.COLORS[f.status], label:f.status.toUpperCase(),
+      dotAnim: f.status==="running"?"scPulse 1.3s infinite":"none",
+      border: f.status==="running"?this.COLORS.running+"77":(f.status==="escalated"?this.COLORS.escalated+"66":"#232936"),
+      shadow: f.status==="running"?`0 0 0 1px ${this.COLORS.running}22, 0 8px 24px ${this.COLORS.running}18`:"none",
+      spend:f.spend.toFixed(2), pips:this.phaseCells(f,true), open:openFeature(f.id)
+    }));
+    const dagEdges = [];
+    feats.forEach(f => f.prereqs.forEach(pid => {
+      const a=pos[pid], b=pos[f.id]; if(!a||!b) return;
+      const x1=a.x+168, y1=a.y+42, x2=b.x, y2=b.y+42, mx=(x1+x2)/2;
+      dagEdges.push({ d:`M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`, color:isDone(pid)?this.COLORS.done+"66":"#2a3142", dash:isDone(pid)?"none":"4 4" });
+    }));
+    const maxLayer = Math.max(...Object.keys(byLayer).map(Number));
+    const dagWidth = 40 + (maxLayer+1)*230 + 40;
+
+    // escalations
+    const escalations = escalatedFeats.map(f => {
+      const cpIdx = f.phaseIdx;
+      const si = s.resumeFrom[f.id] === undefined ? cpIdx : s.resumeFrom[f.id];
+      const ctxRows = f.ctx ? [
+        { k:"pr_workflow", v:String(f.ctx.pr_workflow) },
+        { k:"max_concurrency", v:String(f.ctx.max_concurrency) },
+        { k:"budget_usd", v:String(f.ctx.budget_usd) },
+        { k:"plan_stack", v:(f.ctx.plan_stack||[]).join(", ") },
+        { k:"pr_base", v:f.ctx.pr_base },
+        { k:"pr_remote", v:f.ctx.pr_remote }
+      ] : [];
+      const fromPills = this.PHASES.slice(0, cpIdx+1).map((name,i) => ({
+        n:String(i+1).padStart(2,"0"), name,
+        style:`padding:5px 9px;border-radius:6px;font-family:'IBM Plex Mono',monospace;font-size:10px;cursor:pointer;border:1px solid ${i===si?accent+"88":"#2a3142"};background:${i===si?accent+"22":"transparent"};color:${i===si?"#fff":"#5a6274"}`,
+        set: () => this.setState(st => ({ resumeFrom:{...st.resumeFrom, [f.id]:i} }))
+      }));
+      return {
+        id:f.id, slug:f.slug, color:this.COLORS[f.status], label:f.status.toUpperCase(),
+        chip:chip(this.COLORS[f.status]),
+        reason: f.reason || "—",
+        gateNote: f.status==="escalated" ? "clarify gate · Opus reviewer wrote ## NEEDS HUMAN — worktree kept, checkpoint written." : "analyze gate · critical constitution finding halted the pipeline — checkpoint written.",
+        questions: f.questions || [],
+        // checkpoint pointer
+        cpPath:`.speckit-transcripts/${f.id}/checkpoint.json`,
+        cpPhase:this.PHASES[cpIdx], cpPhaseN:String(cpIdx+1).padStart(2,"0"),
+        cpStatus:f.status, cpSession:f.sessionId || "null",
+        ctxRows,
+        // resume controls
+        decision: s.decisions[f.id] || "",
+        onDecision: e => { const v=e.target.value; this.setState(st=>({decisions:{...st.decisions,[f.id]:v}})); },
+        fromPills, fromLabel:this.PHASES[si], fromN:String(si+1).padStart(2,"0"),
+        resume: () => this.resumeFeature(f.id),
+        resumeStyle: `background:linear-gradient(140deg,${accent},#5a3fe0);border:none;border-radius:9px;padding:10px 18px;color:#fff;font-size:12px;font-weight:600;cursor:pointer;font-family:'IBM Plex Sans',sans-serif`,
+        resumeHint: "keeps completed phases · reuses branch + session · single-feature scope",
+        resolve: () => this.resolveFeature(f.id),
+        resolveStyle: `background:transparent;border:1px solid #2a3142;border-radius:9px;padding:10px 16px;color:#a5b0c2;font-size:12px;cursor:pointer;font-family:'IBM Plex Sans',sans-serif`,
+        openTranscript: () => this.setState({ view:"transcripts", transFeature:f.id, transPhase:this.PHASES[cpIdx] })
+      };
+    });
+
+    // transcripts
+    const transFeatures = feats.map(f => ({
+      id:f.id, slug:f.slug, color:this.COLORS[f.status],
+      rowStyle:`display:flex;align-items:center;gap:9px;width:100%;text-align:left;padding:8px 10px;border-radius:7px;border:none;cursor:pointer;font-family:'IBM Plex Sans',sans-serif;${s.transFeature===f.id?`background:${accent}1c;color:#fff`:"background:transparent;color:#c3c9d6"}`,
+      select: () => this.setState({ transFeature:f.id, transPhase: this.defaultPhase(f) })
+    }));
+    const tf = feats.find(x=>x.id===s.transFeature);
+    const transcriptTabs = this.PHASES.map((name,i)=>({
+      n:String(i+1).padStart(2,"0"), name, 
+      style:`white-space:nowrap;padding:7px 12px;border-radius:7px;border:1px solid ${s.transPhase===name?accent+"66":"transparent"};background:${s.transPhase===name?accent+"1c":"transparent"};color:${s.transPhase===name?"#fff":"#8b93a7"};font-family:'IBM Plex Mono',monospace;font-size:11px;cursor:pointer`,
+      select: () => this.setState({ transPhase:name })
+    }));
+
+    // config
+    const modelBtn = (on) => `padding:5px 12px;border-radius:6px;font-family:'IBM Plex Mono',monospace;font-size:11px;cursor:pointer;border:1px solid ${on?accent+"88":"#2a3142"};background:${on?accent+"22":"transparent"};color:${on?"#fff":"#5a6274"}`;
+    const modelRows = this.PHASES.map((phase,i)=>({
+      n:String(i+1).padStart(2,"0"), phase,
+      opusStyle:modelBtn(s.models[phase]==="opus"), sonnetStyle:modelBtn(s.models[phase]==="sonnet"),
+      setOpus: () => this.setState(st=>({models:{...st.models,[phase]:"opus"}})),
+      setSonnet: () => this.setState(st=>({models:{...st.models,[phase]:"sonnet"}}))
+    }));
+
+    // drawer
+    const sf = feats.find(x=>x.id===s.selectedId);
+    let sel = null;
+    if (sf) {
+      const cells = this.phaseCells(sf);
+      const costs = { specify:0.4, clarify:3.1, plan:0.9, tasks:0.7, analyze:0.5, implement:4.8, converge:0.3 };
+      sel = {
+        id:sf.id, slug:sf.slug, label:sf.status.toUpperCase(), chip:chip(this.COLORS[sf.status]),
+        elapsed:this.mmss(sf.elapsedMs), spend:sf.spend.toFixed(2),
+        prereqs: sf.prereqs.length?sf.prereqs.join(", "):"none",
+        canResolve: sf.status==="escalated"||sf.status==="halted"||sf.status==="failed",
+        isDone: sf.status==="done",
+        sessionId: sf.sessionId || "null",
+        cpPhase: this.PHASES[sf.phaseIdx], cpPhaseN: String(sf.phaseIdx+1).padStart(2,"0"),
+        resume: () => this.resumeFeature(sf.id),
+        timeline: cells.map((c,i) => {
+          const glyph = c.state==="done"?"✓":(c.state==="active"?"●":(c.state==="escalated"?"!":(c.state==="halted"||c.state==="failed"?"✕":(i+1))));
+          const meta = c.state==="done"?("$"+costs[c.name].toFixed(1)):(c.state==="active"?"in progress":(c.state==="escalated"?"NEEDS HUMAN":(c.state==="halted"?"halted":"—")));
+          const note = { specify:"create-new-feature.sh → spec.md", clarify:"Opus reviewer · material-ambiguity gate", plan:"setup-plan.sh + plan_stack → plan.md", tasks:"→ tasks.md", analyze:"read-only · vs constitution MUSTs", implement:"writes src + tests · self-commits", converge:"final review · commit + teardown" }[c.name];
+          return { name:c.name, color:c.color, dotBg:c.state==="pending"?"#12151d":c.color+"22", lineColor:i===6?"transparent":(c.state==="done"?this.COLORS.done+"55":"#232936"), textColor:c.state==="pending"?"#5a6274":"#e6e9f0", weight:c.state==="active"?600:400, glyph:String(glyph), meta, note };
+        }),
+        openTranscript: () => this.setState({ view:"transcripts", transFeature:sf.id, transPhase:this.defaultPhase(sf), selectedId:null }),
+        goResolve: () => this.setState({ view:"escalations", selectedId:null })
+      };
+    }
+
+    const derivedSlug = this.slugify(s.specText) || "—";
+    const runStateColor = s.breakerTripped ? this.COLORS.failed : (runningCount>0 ? this.COLORS.running : this.COLORS.done);
+    const runStateLabel = s.breakerTripped ? "BREAKER" : (runningCount>0 ? "RUNNING" : "IDLE");
+
+    return {
+      // shell
+      navStyle, nav, hasEscalations: escalatedFeats.length>0, escalationCount: escalatedFeats.length,
+      badgeStyle:`margin-left:auto;font-family:'IBM Plex Mono',monospace;font-size:10px;background:${this.COLORS.escalated};color:#1a1200;border-radius:9px;padding:1px 7px;font-weight:700`,
+      // topbar
+      runStateChip: chip(runStateColor), runStateLabel,
+      runTitle: s.prWorkflow ? "ledgerlite · stacked PR run" : "ledgerlite · backlog run",
+      runMode: s.prWorkflow ? "pr_workflow (sequential)" : "parallel waves",
+      concurrency: s.prWorkflow ? 1 : s.concurrency,
+      spendStr: totalSpend.toFixed(2), budgetStr: s.budget.toFixed(2),
+      spendPct, reservedPct, spendColor,
+      breakerChip: s.breakerTripped ? chip(this.COLORS.failed) : chip(this.COLORS.done),
+      breakerLabel: s.breakerTripped ? "BREAKER TRIPPED" : "breaker armed",
+      clock: this.hhmmss(s.clockMs),
+      togglePlay: () => this.setState(st=>({playing:!st.playing})),
+      playLabel: s.playing ? "❚❚ Pause" : "▷ Resume",
+      playBtnStyle:`background:${s.playing?"#161a23":accent};color:${s.playing?"#c3c9d6":"#fff"};border:1px solid ${s.playing?"#2a3142":accent};border-radius:8px;padding:7px 14px;font-size:12px;font-weight:600;cursor:pointer;font-family:'IBM Plex Sans',sans-serif`,
+      // views
+      isMission:s.view==="mission", isPipeline:s.view==="pipeline", isTrigger:s.view==="trigger",
+      isEscalations:s.view==="escalations", isTranscripts:s.view==="transcripts", isConfig:s.view==="config",
+      // mission
+      kpis, featureRows, phaseLegend, runId:"a7f3", featureCount:feats.length, events:s.events,
+      // pipeline
+      dagNodes, dagEdges, dagWidth, statusLegend,
+      // trigger
+      isBacklog:s.triggerMode==="backlog", isSingle:s.triggerMode==="single",
+      setBacklog: ()=>this.setState({triggerMode:"backlog"}), setSingle: ()=>this.setState({triggerMode:"single"}),
+      tabBacklog:this.trigTab(s.triggerMode==="backlog",accent), tabSingle:this.trigTab(s.triggerMode==="single",accent),
+      specText:s.specText, onSpec:e=>this.setState({specText:e.target.value}),
+      nextId:this.nextId(), derivedSlug,
+      prWorkflow:s.prWorkflow, togglePr:()=>this.setState(st=>({prWorkflow:!st.prWorkflow})),
+      prTrackColor: s.prWorkflow?accent:"#2a3142", prKnobLeft: s.prWorkflow?"17px":"2px", prKnobLeftLg: s.prWorkflow?"23px":"3px",
+      prHint: s.prWorkflow?"cap forced to 1 · PR per feature · needs origin + gh":"parallel waves · no PRs",
+      startRun: ()=>this.startRun(),
+      // escalations
+      escalations, noEscalations: escalatedFeats.length===0,
+      // transcripts
+      transcriptFeatures:transFeatures, transcriptTabs, 
+      transcriptPath:`.speckit-transcripts/${s.transFeature}/${String(this.PHASES.indexOf(s.transPhase)+1).padStart(2,"0")}-${s.transPhase}.md`,
+      transcriptBody:this.transcript(s.transFeature, s.transPhase),
+      // config
+      modelRows, budget:s.budget, onBudget:e=>this.setState({budget:+e.target.value, breakerTripped: feats.reduce((a,f)=>a+f.spend,0) >= +e.target.value}),
+      onConc:e=>this.setState({concurrency:+e.target.value}),
+      // drawer
+      drawerOpen: !!sf, sel: sel||{timeline:[],prereqs:"",elapsed:"",spend:"",id:"",slug:"",label:"",chip:"",canResolve:false,isDone:false},
+      closeDrawer: ()=>this.setState({selectedId:null}),
+      // toast
+      hasToast: !!s.toast, toast: s.toast
+    };
+  }
+
+  trigTab(on, accent){ return `padding:9px 16px;border-radius:7px;border:none;cursor:pointer;font-size:12px;font-weight:600;font-family:'IBM Plex Sans',sans-serif;${on?`background:${accent}22;color:#fff;box-shadow:inset 0 0 0 1px ${accent}55`:"background:transparent;color:#8b93a7"}`; }
+  defaultPhase(f){ if(f.status==="escalated") return "clarify"; if(f.status==="done") return "converge"; return this.PHASES[Math.min(6,f.phaseIdx)]; }
+
+  resumeFeature(id) {
+    const cur = this.state.features.find(x=>x.id===id);
+    const rf = this.state.resumeFrom[id];
+    const startIdx = rf === undefined ? cur.phaseIdx : rf;
+    const startPhase = this.PHASES[startIdx];
+    const hasPrompt = !!(this.state.decisions[id]||"").trim();
+    this.setState(st => ({
+      features: st.features.map(f => f.id===id
+        ? { ...f, status:"running", phaseIdx:startIdx, prog:0, speed:this.rand(), reason:null }
+        : { ...f }),
+      events: [{ id, text:`resume · start_phase :${startPhase}${hasPrompt?" · resume_prompt injected":""}`, color:this.COLORS.running, time:this.nowStr() }, ...st.events],
+      view:"mission", selectedId:null, playing:true
+    }));
+    this.showToast(`resume/2 "${id}" · start_phase :${startPhase}${hasPrompt?" · :prompt carried":""} · branch + session reused`);
+  }
+
+  resolveFeature(id) {
+    this.setState(st => {
+      const feats = st.features.map(f => f.id===id ? { ...f, status:"running", phaseIdx:0, prog:0, speed:this.rand(), reason:null } : { ...f });
+      const events = [{ id, text:"resolved · re-run from specify", color:this.COLORS.running, time:this.nowStr() }, ...st.events];
+      return { features:feats, events, view:"mission" };
+    });
+    this.showToast(`Resolved ${id} · worktree freed, re-running from specify`);
+  }
+
+  startRun() {
+    const s = this.state;
+    if (s.triggerMode === "single") {
+      const slug = this.slugify(s.specText);
+      if (!slug) { this.showToast("Empty description · {:error, :empty_description}"); return; }
+      const id = this.nextId();
+      this.setState(st => ({
+        features: [...st.features, { id, slug, prereqs:[], status:"running", phaseIdx:0, prog:0, spend:0, elapsedMs:0, speed:this.rand(), reason:null }],
+        events: [{ id, text:"run_spec · specify → running", color:this.COLORS.running, time:this.nowStr() }, ...st.events],
+        view:"mission", specText:"", playing:true
+      }));
+      this.showToast(`Single-spec run started · feature ${id}-${slug}`);
+    } else {
+      this.setState({ view:"mission", playing:true });
+      this.showToast(s.prWorkflow ? "Stacked PR run started · cap 1 · preflight ok" : "Backlog run started · DAG validated · first wave released");
+    }
+  }
+}
+</script>
+</body>
+</html>

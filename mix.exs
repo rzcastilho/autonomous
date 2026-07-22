@@ -42,7 +42,15 @@ defmodule SpeckitOrchestrator.MixProject do
        override: true},
       {:jido_claude,
        github: "agentjido/jido_claude", ref: "51f8b6e30cbf3839533d307399e12a136baf734f"},
-      {:stream_data, "~> 1.0", only: [:dev, :test]}
+      {:stream_data, "~> 1.0", only: [:dev, :test]},
+      # Control-plane console (008): Phoenix LiveView on Bandit. phoenix_pubsub
+      # is already present transitively via jido_signal — promoted to a direct
+      # dep since the console depends on it directly for ConsoleProjection.
+      {:phoenix, "~> 1.7"},
+      {:phoenix_live_view, "~> 1.0"},
+      {:phoenix_pubsub, "~> 2.1"},
+      {:bandit, "~> 1.0"},
+      {:lazy_html, ">= 0.1.0", only: :test}
     ]
   end
 end

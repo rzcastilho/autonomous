@@ -117,6 +117,24 @@ defmodule SpeckitOrchestrator do
     end
   end
 
+  @doc """
+  Preview the `id`/`slug` `run_spec/2` would assign for `description`, without
+  starting a run — backs the Trigger console view's single-spec live preview
+  (FR-016). Same taken-id gathering and `SingleSpec` derivation `run_spec/2`
+  uses internally; a blank description previews as `nil`.
+  """
+  @spec preview_single_spec(String.t() | nil, keyword()) :: {String.t(), String.t()} | nil
+  def preview_single_spec(description, opts \\ []) do
+    if blank?(description) do
+      nil
+    else
+      case SingleSpec.build(description, gather_taken_ids(opts), opts) do
+        {:ok, feature} -> {feature.id, feature.slug}
+        {:error, :empty_description} -> nil
+      end
+    end
+  end
+
   defp blank?(nil), do: true
   defp blank?(description) when is_binary(description), do: String.trim(description) == ""
 
