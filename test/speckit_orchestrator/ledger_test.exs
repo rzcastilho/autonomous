@@ -56,6 +56,30 @@ defmodule SpeckitOrchestrator.LedgerTest do
     refute snap.tripped?
   end
 
+  test "set_budget/2 changes the budget used by subsequent reserve/breaker_tripped? calls" do
+    l = start(10)
+    {:ok, ref} = Ledger.reserve(l, 10)
+    Ledger.record(l, ref, 10)
+    assert Ledger.breaker_tripped?(l)
+
+    assert Ledger.set_budget(l, 100) == :ok
+    refute Ledger.breaker_tripped?(l)
+    assert Ledger.snapshot(l).budget == 100
+  end
+
+  test "set_budget/2 preserves the committed < budget + max single reservation invariant" do
+    l = start(50)
+    {:ok, ref} = Ledger.reserve(l, 20)
+    Ledger.record(l, ref, 20)
+
+    assert Ledger.set_budget(l, 25) == :ok
+    # committed (20) < new budget (25) + next reservation still enforced going forward
+    {:ok, ref2} = Ledger.reserve(l, 5)
+    Ledger.record(l, ref2, 5)
+    assert Ledger.spent(l) == 25
+    assert Ledger.reserve(l, 1) == {:error, :budget_exceeded}
+  end
+
   test "server-less API targets the default-named (app-supervised) ledger" do
     # The application starts a default-named Ledger; exercise the no-server-arg
     # heads against it with a delta assertion (no absolute-spend coupling).

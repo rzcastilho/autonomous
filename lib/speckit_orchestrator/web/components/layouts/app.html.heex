@@ -1,0 +1,51 @@
+<% nav = SpeckitOrchestrator.Web.Layouts.nav_items() %>
+<% escalations = SpeckitOrchestrator.Web.Layouts.escalations_count() %>
+<% ctx = SpeckitOrchestrator.Web.Layouts.context() %>
+<% run = SpeckitOrchestrator.Web.Layouts.run_view() %>
+<div class="console-shell">
+  <nav class="console-nav" aria-label="Console navigation">
+    <ul>
+      <li :for={{path, label} <- nav}>
+        <a href={path} class={if assigns[:current_path] == path, do: "nav-active"}>
+          {label}
+          <.badge :if={label == "Escalations" and escalations > 0} text={to_string(escalations)} variant={:warn} />
+        </a>
+      </li>
+    </ul>
+  </nav>
+
+  <div class="console-main">
+    <div class="console-context">
+      <span>Repo: {ctx.repo}</span>
+      <span>CLI: {ctx.cli_auth}</span>
+      <span>Runtime: {ctx.runtime}</span>
+    </div>
+
+    <div class="console-content">
+      {@inner_content}
+    </div>
+
+    <div class="console-status-bar" data-active={run.active?}>
+      <%= if run.active? do %>
+        <span class="run-title">{run.title} ({run.mode})</span>
+        <.cost_gauge committed={run.committed} reserved={run.reserved} budget={run.budget} tripped?={run.tripped?} />
+      <% else %>
+        <span class="run-title run-title-empty">No active run</span>
+      <% end %>
+      <span class="console-clock" id="console-clock">{run.clock}</span>
+    </div>
+
+    <div class="console-toasts" id="console-toasts">
+      <.toast
+        :for={{kind, message} <- @flash}
+        id={"flash-#{kind}"}
+        kind={String.to_existing_atom(kind)}
+        message={message}
+      />
+      <.toast :for={t <- assigns[:toasts] || []} id={t.id} kind={t.kind} message={t.message} />
+    </div>
+
+    <!-- Drawer slot: filled by FeatureDrawerComponent in a later phase (T028). -->
+    <div class="console-drawer-slot" id="console-drawer-slot"></div>
+  </div>
+</div>

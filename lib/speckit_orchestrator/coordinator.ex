@@ -68,7 +68,18 @@ defmodule SpeckitOrchestrator.Coordinator do
 
   @doc "Notify the coordinator a feature reached a terminal status."
   @spec notify(GenServer.server(), String.t(), status(), term()) :: :ok
-  def notify(server, id, status, reason), do: GenServer.cast(server, {:finished, id, status, reason})
+  def notify(server, id, status, reason),
+    do: GenServer.cast(server, {:finished, id, status, reason})
+
+  @doc """
+  Live-config apply (`contracts/live_config.md`): update the wave cap for
+  subsequent releases. Forward-only — `Release.next_wave` picks up the new
+  cap at its next computation; never affects in-flight work.
+  """
+  @spec set_cap(GenServer.server(), pos_integer()) :: :ok
+  def set_cap(server \\ __MODULE__, n) when is_integer(n) and n >= 1 do
+    GenServer.call(server, {:set_cap, n})
+  end
 
   # ---- Server -------------------------------------------------------------
 
@@ -109,13 +120,20 @@ defmodule SpeckitOrchestrator.Coordinator do
     {:reply, snapshot(state), state}
   end
 
+  def handle_call({:set_cap, n}, _from, state) do
+    Application.put_env(:speckit_orchestrator, :max_concurrency, n)
+    {:reply, :ok, %{state | cap: n}}
+  end
+
   # ---- orchestration ------------------------------------------------------
 
   # Release everything the DAG + cap + breaker allow, then check for completion.
   defp advance(%__MODULE__{finished?: true} = state), do: state
 
   defp advance(state) do
-    wave = Release.next_wave(feature_list(state), state.statuses, state.cap, breaker_tripped?(state))
+    wave =
+      Release.next_wave(feature_list(state), state.statuses, state.cap, breaker_tripped?(state))
+
     state = Enum.reduce(wave, state, &spawn_feature/2)
     maybe_finish(state)
   end
@@ -135,7 +153,8 @@ defmodule SpeckitOrchestrator.Coordinator do
   # The run ends when nothing is in flight and nothing more can be released
   # (all remaining pending features are blocked, or the breaker drained them).
   defp maybe_finish(state) do
-    releasable = Release.next_wave(feature_list(state), state.statuses, state.cap, breaker_tripped?(state))
+    releasable =
+      Release.next_wave(feature_list(state), state.statuses, state.cap, breaker_tripped?(state))
 
     if MapSet.size(state.inflight) == 0 and releasable == [] do
       report = build_report(state)
@@ -149,7 +168,10 @@ defmodule SpeckitOrchestrator.Coordinator do
   # ---- report -------------------------------------------------------------
 
   defp build_report(state) do
-    grouped = Enum.group_by(state.statuses, fn {_id, status} -> classify(state, status) end, fn {id, _} -> id end)
+    grouped =
+      Enum.group_by(state.statuses, fn {_id, status} -> classify(state, status) end, fn {id, _} ->
+        id
+      end)
 
     %{
       done: ids(grouped, :done),
@@ -187,7 +209,15 @@ defmodule SpeckitOrchestrator.Coordinator do
   defp snapshot(state) do
     per_feature =
       Map.new(state.statuses, fn {id, status} ->
-        {id, %{status: status, elapsed_ms: elapsed_ms(state, id)}}
+        feature = state.features[id]
+
+        {id,
+         %{
+           status: status,
+           elapsed_ms: elapsed_ms(state, id),
+           slug: feature && feature.slug,
+           prereqs: (feature && feature.prereqs) || []
+         }}
       end)
 
     %{

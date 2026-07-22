@@ -71,6 +71,17 @@ defmodule SpeckitOrchestrator.Ledger do
   @spec spent(GenServer.server()) :: number()
   def spent(server \\ __MODULE__), do: GenServer.call(server, :spent)
 
+  @doc """
+  Live-config apply (`contracts/live_config.md`): update the run budget.
+  Forward-only — breaker decisions (`reserve/2`, `breaker_tripped?/1`) read
+  the new budget starting with the next call; never retroactively alters
+  already-committed/reserved amounts.
+  """
+  @spec set_budget(GenServer.server(), number()) :: :ok
+  def set_budget(server \\ __MODULE__, amount) when is_number(amount) and amount >= 0 do
+    GenServer.call(server, {:set_budget, amount})
+  end
+
   @doc "Full snapshot: `%{budget, committed, reserved, tripped?}`."
   @spec snapshot(GenServer.server()) :: %{
           budget: number(),
@@ -112,6 +123,10 @@ defmodule SpeckitOrchestrator.Ledger do
 
   def handle_call(:spent, _from, state) do
     {:reply, state.committed, state}
+  end
+
+  def handle_call({:set_budget, amount}, _from, state) do
+    {:reply, :ok, %{state | budget: amount}}
   end
 
   def handle_call(:snapshot, _from, state) do
