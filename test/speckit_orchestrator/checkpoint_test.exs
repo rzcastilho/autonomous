@@ -220,6 +220,29 @@ defmodule SpeckitOrchestrator.CheckpointTest do
     refute Map.has_key?(record, "context")
   end
 
+  test "write given status: :in_progress round-trips it through read/1 unchanged", %{
+    root: root
+  } do
+    assert :ok =
+             Checkpoint.write(%{
+               feature_id: "014",
+               last_phase: :plan,
+               status: :in_progress,
+               reason: nil,
+               session_id: "s14",
+               slug: "widget",
+               path: "docs/breakdown/014-widget.md"
+             })
+
+    decoded = root |> checkpoint_path("014") |> File.read!() |> Jason.decode!()
+    assert decoded["status"] == "in_progress"
+    assert decoded["last_phase"] == "plan"
+
+    assert {:ok, record} = Checkpoint.read("014")
+    assert record["status"] == "in_progress"
+    assert record["last_phase"] == "plan"
+  end
+
   test "write with no run_context key at all omits the context key entirely" do
     assert :ok =
              Checkpoint.write(%{

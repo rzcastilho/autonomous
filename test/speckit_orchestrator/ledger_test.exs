@@ -80,6 +80,40 @@ defmodule SpeckitOrchestrator.LedgerTest do
     assert Ledger.reserve(l, 1) == {:error, :budget_exceeded}
   end
 
+  test "restore/2 sets committed to the recorded figure on a fresh Ledger" do
+    l = start(100)
+    assert Ledger.restore(l, 5.0) == 5.0
+    assert Ledger.spent(l) == 5.0
+  end
+
+  test "restore/2 is monotonic — never lowers an already-higher committed" do
+    l = start(100)
+    Ledger.restore(l, 5.0)
+    assert Ledger.restore(l, 3.0) == 5.0
+    assert Ledger.spent(l) == 5.0
+  end
+
+  test "restore/2 idempotent — calling twice with the same value is a no-op" do
+    l = start(100)
+    Ledger.restore(l, 5.0)
+    assert Ledger.restore(l, 5.0) == 5.0
+  end
+
+  test "restore/2 trips the breaker when the recorded figure is at/above budget" do
+    l = start(10)
+    refute Ledger.breaker_tripped?(l)
+    assert Ledger.restore(l, 10) == 10
+    assert Ledger.breaker_tripped?(l)
+    assert Ledger.reserve(l, 1) == {:error, :budget_exceeded}
+  end
+
+  test "restore/2 does not touch reservations" do
+    l = start(100)
+    {:ok, _ref} = Ledger.reserve(l, 20)
+    Ledger.restore(l, 5.0)
+    assert Ledger.snapshot(l).reserved == 20
+  end
+
   test "server-less API targets the default-named (app-supervised) ledger" do
     # The application starts a default-named Ledger; exercise the no-server-arg
     # heads against it with a delta assertion (no absolute-spend coupling).

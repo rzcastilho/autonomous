@@ -1,0 +1,300 @@
+defmodule SpeckitOrchestrator.ResumeRunTest do
+  # async: false — real-named Coordinator/Ledger + global :transcript_root app
+  # env (mirrors coordinator_test.exs / resume_test.exs conventions).
+  use ExUnit.Case, async: false
+
+  alias SpeckitOrchestrator.{Checkpoint, Config, Coordinator, Feature, Ledger, RunContext, RunManifest}
+
+  @coordinator SpeckitOrchestrator.Coordinator
+
+  setup do
+    root = Path.join(System.tmp_dir!(), "rr_#{System.unique_integer([:positive])}")
+    prev = Application.get_env(:speckit_orchestrator, :transcript_root)
+    Application.put_env(:speckit_orchestrator, :transcript_root, root)
+
+    stop_coordinator()
+
+    on_exit(fn ->
+      stop_coordinator()
+      File.rm_rf(root)
+      if prev, do: Application.put_env(:speckit_orchestrator, :transcript_root, prev)
+    end)
+
+    %{root: root}
+  end
+
+  defp stop_coordinator do
+    case Process.whereis(@coordinator) do
+      nil -> :ok
+      pid -> GenServer.stop(pid, :normal)
+    end
+  end
+
+  defp feat(id, prereqs \\ []),
+    do: %Feature{id: id, slug: "f#{id}", path: "#{id}.md", prereqs: prereqs}
+
+  defp capturing_runner(test_pid) do
+    fn feature, notify -> send(test_pid, {:started, feature.id, notify}) end
+  end
+
+  defp write_manifest(overrides) do
+    :ok =
+      RunManifest.write(
+        Map.merge(
+          %{
+            features: [],
+            statuses: %{},
+            context: %RunContext{pr_workflow: false, max_concurrency: 2, budget_usd: 100.0},
+            spend: 1.0,
+            updated_at: 1
+          },
+          overrides
+        )
+      )
+  end
+
+  # ---- mixed-state resume (T022) --------------------------------------------
+
+  test "resume_run/1 does not re-run :done, resumes :running, releases :pending in prereq order under cap" do
+    write_manifest(%{
+      features: [feat("001"), feat("002", ["001"]), feat("003", ["002"]), feat("004", ["001"])],
+      statuses: %{"001" => :done, "002" => :running, "003" => :pending, "004" => :pending},
+      context: %RunContext{pr_workflow: false, max_concurrency: 2, budget_usd: 100.0}
+    })
+
+    me = self()
+    assert {:ok, pid} = SpeckitOrchestrator.resume_run(runner: capturing_runner(me), owner: me)
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    refute_received {:started, "001", _}
+
+    assert_receive {:started, "002", n2}, 1_000
+    assert_receive {:started, "004", n4}, 1_000
+    refute_received {:started, "003", _}
+
+    n2.("002", :done, nil)
+    n4.("004", :done, nil)
+
+    assert_receive {:started, "003", n3}, 1_000
+    n3.("003", :done, nil)
+
+    assert_receive {:run_complete, report}, 1_000
+    assert Enum.sort(report.done) == ["001", "002", "003", "004"]
+  end
+
+  # ---- fail-loud: missing/corrupt manifest (T023) ---------------------------
+
+  test "resume_run/1 with no manifest on disk returns {:error, :no_manifest} and starts no Coordinator" do
+    assert {:error, :no_manifest} = SpeckitOrchestrator.resume_run()
+    assert Process.whereis(@coordinator) == nil
+  end
+
+  test "resume_run/1 with a corrupt manifest returns {:error, :corrupt_manifest} and starts no Coordinator", %{
+    root: root
+  } do
+    File.mkdir_p!(root)
+    File.write!(Path.join(root, "run.json"), "not valid json{")
+
+    assert {:error, :corrupt_manifest} = SpeckitOrchestrator.resume_run()
+    assert Process.whereis(@coordinator) == nil
+  end
+
+  # ---- active-run guard (T024) -----------------------------------------------
+
+  test "a live unfinished Coordinator already running refuses resume_run/1 without :force, and :force proceeds" do
+    write_manifest(%{
+      features: [feat("001")],
+      statuses: %{"001" => :pending}
+    })
+
+    # Simulate an active, unfinished run: a runner that never notifies.
+    {:ok, blocking_pid} =
+      Coordinator.start_link(
+        features: [feat("999")],
+        runner: fn _feature, _notify -> :ok end,
+        name: @coordinator
+      )
+
+    assert {:error, {:active_run, ^blocking_pid}} = SpeckitOrchestrator.resume_run()
+    # not clobbered — still alive, still the same pid.
+    assert Process.alive?(blocking_pid)
+    assert Process.whereis(@coordinator) == blocking_pid
+
+    me = self()
+
+    assert {:ok, new_pid} =
+             SpeckitOrchestrator.resume_run(runner: capturing_runner(me), owner: me, force: true)
+
+    on_exit(fn -> if Process.alive?(new_pid), do: GenServer.stop(new_pid) end)
+    assert new_pid != blocking_pid
+    refute Process.alive?(blocking_pid)
+  end
+
+  # ---- recorded context reapply, not live Config (T025) ----------------------
+
+  test "the resumed run re-executes under the manifest's recorded max_concurrency, not live Config" do
+    prev_cap = Application.get_env(:speckit_orchestrator, :max_concurrency)
+    Application.put_env(:speckit_orchestrator, :max_concurrency, 5)
+
+    on_exit(fn ->
+      if prev_cap,
+        do: Application.put_env(:speckit_orchestrator, :max_concurrency, prev_cap),
+        else: Application.delete_env(:speckit_orchestrator, :max_concurrency)
+    end)
+
+    write_manifest(%{
+      features: [feat("001"), feat("002"), feat("003")],
+      statuses: %{"001" => :pending, "002" => :pending, "003" => :pending},
+      context: %RunContext{
+        pr_workflow: false,
+        max_concurrency: 1,
+        budget_usd: 100.0,
+        plan_stack: ["research", "plan"],
+        pr_base: "develop",
+        pr_remote: "upstream"
+      }
+    })
+
+    me = self()
+    assert {:ok, pid} = SpeckitOrchestrator.resume_run(runner: capturing_runner(me), owner: me)
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    assert_receive {:started, first_id, n1}, 1_000
+    refute_received {:started, _, _}
+
+    n1.(first_id, :done, nil)
+    assert_receive {:started, second_id, n2}, 1_000
+    refute_received {:started, _, _}
+    n2.(second_id, :done, nil)
+
+    assert_receive {:started, third_id, n3}, 1_000
+    n3.(third_id, :done, nil)
+
+    assert_receive {:run_complete, report}, 1_000
+    assert Enum.sort(report.done) == ["001", "002", "003"]
+  end
+
+  # ---- detect-only (T026) ----------------------------------------------------
+
+  test "resumable_run/0 reports a summary and starts no Coordinator process" do
+    write_manifest(%{
+      features: [feat("001"), feat("002", ["001"])],
+      statuses: %{"001" => :done, "002" => :running}
+    })
+
+    assert {:ok, summary} = SpeckitOrchestrator.resumable_run()
+    assert summary.statuses == %{"001" => "done", "002" => "running"}
+    assert Process.whereis(@coordinator) == nil
+  end
+
+  test "resumable_run/0 returns :none when every feature is terminal/diverted" do
+    write_manifest(%{
+      features: [feat("001"), feat("002")],
+      statuses: %{"001" => :done, "002" => :escalated}
+    })
+
+    assert :none = SpeckitOrchestrator.resumable_run()
+    assert Process.whereis(@coordinator) == nil
+  end
+
+  test "resumable_run/0 returns {:error, :no_manifest} when the slot is absent" do
+    assert {:error, :no_manifest} = SpeckitOrchestrator.resumable_run()
+  end
+
+  # ---- cost continuity across a crash (T036-T037, US3, FR-012/013) -----------
+
+  test "resume_run/1 with recorded spend >= budget trips the breaker and releases zero new features" do
+    prev_budget = Ledger.snapshot(Ledger).budget
+    on_exit(fn -> Ledger.set_budget(Ledger, prev_budget) end)
+
+    :ok = Ledger.set_budget(Ledger, 5.0)
+
+    write_manifest(%{
+      features: [feat("001")],
+      statuses: %{"001" => :pending},
+      spend: 5.0,
+      context: %RunContext{pr_workflow: false, max_concurrency: 1, budget_usd: 5.0}
+    })
+
+    me = self()
+    assert {:ok, pid} = SpeckitOrchestrator.resume_run(runner: capturing_runner(me), owner: me)
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    assert Ledger.breaker_tripped?(Ledger)
+    refute_received {:started, _, _}
+
+    assert_receive {:run_complete, report}, 1_000
+    assert report.done == []
+
+    # invariant: committed < budget + max single reservation still holds — no
+    # reservation is granted once committed already fills the (restored) budget.
+    assert Ledger.reserve(Ledger, 1) == {:error, :budget_exceeded}
+  end
+
+  test "resume_run/1 restores committed spend from the manifest's recorded figure, not zero" do
+    prev_budget = Ledger.snapshot(Ledger).budget
+    on_exit(fn -> Ledger.set_budget(Ledger, prev_budget) end)
+
+    baseline = Ledger.spent(Ledger)
+    target = baseline + 7.0
+    :ok = Ledger.set_budget(Ledger, target + 100.0)
+
+    write_manifest(%{
+      features: [feat("001")],
+      statuses: %{"001" => :pending},
+      spend: target,
+      context: %RunContext{pr_workflow: false, max_concurrency: 1, budget_usd: target + 100.0}
+    })
+
+    me = self()
+    assert {:ok, pid} = SpeckitOrchestrator.resume_run(runner: capturing_runner(me), owner: me)
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    assert Ledger.spent(Ledger) >= target
+
+    assert_receive {:started, "001", n1}, 1_000
+    n1.("001", :done, nil)
+    assert_receive {:run_complete, report}, 1_000
+    assert report.done == ["001"]
+  end
+
+  # ---- checkpointed feature with a missing branch/worktree (T027, integration) --
+
+  @tag :integration
+  test "a checkpointed feature whose branch/worktree is missing fails loud without crashing the rest of the run" do
+    id = "rr#{System.unique_integer([:positive, :monotonic])}"
+
+    :ok =
+      Checkpoint.write(%{
+        feature_id: id,
+        last_phase: :plan,
+        status: :in_progress,
+        reason: nil,
+        session_id: "s1"
+      })
+
+    on_exit(fn -> File.rm_rf(Path.join(Config.transcript_root(), id)) end)
+
+    write_manifest(%{
+      features: [feat(id)],
+      statuses: %{id => :running},
+      context: %RunContext{pr_workflow: false, max_concurrency: 1, budget_usd: 100.0}
+    })
+
+    prev_repo = Application.get_env(:speckit_orchestrator, :repo)
+    Application.put_env(:speckit_orchestrator, :repo, "/nonexistent/repo-#{id}")
+
+    on_exit(fn ->
+      if prev_repo,
+        do: Application.put_env(:speckit_orchestrator, :repo, prev_repo),
+        else: Application.delete_env(:speckit_orchestrator, :repo)
+    end)
+
+    me = self()
+    assert {:ok, pid} = SpeckitOrchestrator.resume_run(owner: me)
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    assert_receive {:run_complete, report}, 5_000
+    assert report.failed == [id]
+  end
+end

@@ -12,8 +12,12 @@ defmodule SpeckitOrchestrator.Checkpoint do
   best-effort (a failure never breaks the run — FR-008); a `:done` terminal
   deletes any existing checkpoint instead of writing one (FR-005). Read
   distinguishes an absent checkpoint from a corrupt one (FR-006) and never
-  fabricates fields. See `specs/002-resume-checkpoint/contracts/checkpoint.md`
-  and `specs/007-resume-self-sufficient/contracts/checkpoint.md`.
+  fabricates fields. Also written after **every** successful phase (not only
+  on a terminal divert) with `status: :in_progress` and `last_phase:` the
+  phase that just completed, so a crash mid-run always has a fresh restore
+  point (FR-002). See `specs/002-resume-checkpoint/contracts/checkpoint.md`,
+  `specs/007-resume-self-sufficient/contracts/checkpoint.md`, and
+  `specs/009-crash-recovery/contracts/checkpoint-progress.md`.
   """
 
   alias SpeckitOrchestrator.{Config, RunContext}

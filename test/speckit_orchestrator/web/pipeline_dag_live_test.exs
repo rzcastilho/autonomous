@@ -7,7 +7,7 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLiveTest do
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
 
-  alias SpeckitOrchestrator.{Coordinator, Feature}
+  alias SpeckitOrchestrator.{Checkpoint, Coordinator, Feature, RunManifest}
 
   @endpoint SpeckitOrchestrator.Web.Endpoint
 
@@ -17,7 +17,8 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLiveTest do
   setup do
     prior = %{
       repo: Application.get_env(:speckit_orchestrator, :repo),
-      breakdown_dir: Application.get_env(:speckit_orchestrator, :breakdown_dir)
+      breakdown_dir: Application.get_env(:speckit_orchestrator, :breakdown_dir),
+      transcript_root: Application.get_env(:speckit_orchestrator, :transcript_root)
     }
 
     on_exit(fn ->
@@ -29,7 +30,17 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLiveTest do
       if pid = Process.whereis(Coordinator), do: GenServer.stop(pid)
     end)
 
+    # :transcript_root defaults to one shared tmp path for the whole test env
+    # (config/config.exs) — clear any manifest a previous test's real
+    # Coordinator (default :manifest seam) left there, so tests asserting on
+    # last-known-status overlay (specs/009-crash-recovery) see a clean slot.
+    RunManifest.clear()
+
     {:ok, conn: Phoenix.ConnTest.build_conn()}
+  end
+
+  defp point_transcripts_at(dir) do
+    Application.put_env(:speckit_orchestrator, :transcript_root, dir)
   end
 
   defp point_backlog_at(dir) do
@@ -39,6 +50,15 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLiveTest do
 
   defp feat(id, prereqs \\ []),
     do: %Feature{id: id, slug: "slug-#{id}", path: "#{id}.md", prereqs: prereqs}
+
+  # Isolates one node's own markup (up to the next node's opening tag) so
+  # `data-status` assertions can't match a sibling node's pill by accident.
+  defp extract_node(html, id) do
+    case String.split(html, ~s(data-dag-node="#{id}")) do
+      [_before, after_id] -> after_id |> String.split("data-dag-node=") |> List.first()
+      _ -> ""
+    end
+  end
 
   test "renders a node per feature with id/slug/status/spend, edges from prereqs to dependents, and the shared-palette legend",
        %{conn: conn} do
@@ -157,6 +177,113 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLiveTest do
     assert html =~ ~s(data-state="dag-invalid")
     assert html =~ "cycle"
     refute html =~ ~s(data-state="dag")
+  end
+
+  test "after a restart with no live Coordinator, nodes reflect the last known status from the run manifest instead of defaulting to pending",
+       %{conn: conn} do
+    point_backlog_at(@valid_dir)
+    point_transcripts_at(Path.join(System.tmp_dir!(), "dag_manifest_#{System.unique_integer()}"))
+
+    :ok =
+      RunManifest.write(%{
+        features: [feat("001"), feat("002", ["001"])],
+        statuses: %{"001" => :halted, "002" => :pending},
+        context: %{},
+        spend: 3.5,
+        updated_at: 1
+      })
+
+    refute Process.whereis(Coordinator)
+
+    {:ok, _view, html} = live(conn, "/dag")
+
+    assert html =~ ~s(data-dag-node="001")
+    node_001 = html |> extract_node("001")
+    assert node_001 =~ ~s(data-status="halted")
+
+    node_002 = html |> extract_node("002")
+    assert node_002 =~ ~s(data-status="pending")
+
+    # A feature absent from the manifest (never released) still falls back
+    # to pending, not some other stale value.
+    node_003 = html |> extract_node("003")
+    assert node_003 =~ ~s(data-status="pending")
+  end
+
+  test "after a restart, a halted node's phase strip shows completed phases up to last_phase and the diverting phase highlighted",
+       %{conn: conn} do
+    point_backlog_at(@valid_dir)
+    point_transcripts_at(Path.join(System.tmp_dir!(), "dag_manifest_#{System.unique_integer()}"))
+
+    :ok =
+      RunManifest.write(%{
+        features: [feat("001")],
+        statuses: %{"001" => :halted},
+        context: %{},
+        spend: 1.0,
+        updated_at: 1
+      })
+
+    :ok =
+      Checkpoint.write(%{
+        feature_id: "001",
+        last_phase: :analyze,
+        status: :halted,
+        reason: :critical_finding,
+        session_id: "s1",
+        slug: "slug-001",
+        path: "001.md"
+      })
+
+    refute Process.whereis(Coordinator)
+
+    {:ok, _view, html} = live(conn, "/dag")
+
+    node_001 = html |> extract_node("001")
+
+    for phase <- ~w(specify clarify plan tasks) do
+      [cell] = Regex.run(~r/<span[^>]*data-phase="#{phase}"[^>]*>/, node_001)
+      assert cell =~ "phase-cell-completed"
+    end
+
+    [analyze_cell] = Regex.run(~r/<span[^>]*data-phase="analyze"[^>]*>/, node_001)
+    assert analyze_cell =~ "phase-cell-halted"
+
+    for phase <- ~w(implement converge) do
+      [cell] = Regex.run(~r/<span[^>]*data-phase="#{phase}"[^>]*>/, node_001)
+      assert cell =~ "phase-cell-pending"
+    end
+  end
+
+  test "a nonexistent breakdown dir (single-spec-only project) renders as an empty backlog, not an error",
+       %{conn: conn} do
+    point_backlog_at(Path.join(System.tmp_dir!(), "no_breakdown_here_#{System.unique_integer()}"))
+
+    {:ok, _view, html} = live(conn, "/dag")
+
+    refute html =~ ~s(data-state="dag-invalid")
+    assert html =~ ~s(data-state="empty-backlog")
+  end
+
+  test "a nonexistent breakdown dir still shows live ad-hoc features in the ad-hoc lane",
+       %{conn: conn} do
+    point_backlog_at(Path.join(System.tmp_dir!(), "no_breakdown_here_#{System.unique_integer()}"))
+
+    {:ok, pid} =
+      Coordinator.start_link(
+        name: Coordinator,
+        features: [feat("099")],
+        runner: fn _feature, _notify -> :ok end,
+        owner: self()
+      )
+
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    {:ok, _view, html} = live(conn, "/dag")
+
+    refute html =~ ~s(data-state="dag-invalid")
+    assert html =~ ~s(data-state="ad-hoc-lane")
+    assert html =~ ~s(data-dag-node="099")
   end
 
   test "clicking an ad-hoc node opens the same feature drawer as a backlog node, showing its detail",

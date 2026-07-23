@@ -31,6 +31,27 @@ defmodule SpeckitOrchestrator.PipelineTest do
     end
   end
 
+  describe "parse/1" do
+    test "returns {:ok, phase} for every member of phases/0, as a string" do
+      for phase <- Pipeline.phases() do
+        assert Pipeline.parse(Atom.to_string(phase)) == {:ok, phase}
+      end
+    end
+
+    test "returns :error for a string naming no known phase (never String.to_atom/1)" do
+      assert Pipeline.parse("bogus") == :error
+    end
+
+    test "returns :error for a string naming a real but non-ordered atom (e.g. :done)" do
+      assert Pipeline.parse("done") == :error
+    end
+
+    test "returns :error for a non-string" do
+      assert Pipeline.parse(nil) == :error
+      assert Pipeline.parse(:specify) == :error
+    end
+  end
+
   describe "step_of/1" do
     test "matches each phase's 1-indexed position in phases/0" do
       for {phase, step} <- Enum.with_index(Pipeline.phases(), 1) do

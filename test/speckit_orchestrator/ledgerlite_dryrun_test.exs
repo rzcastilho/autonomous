@@ -27,10 +27,21 @@ defmodule SpeckitOrchestrator.LedgerLiteDryRunTest do
     fn feature, notify -> send(test_pid, {:started, feature.id, notify}) end
   end
 
+  # These tests don't exercise manifest behavior; a no-op keeps them from
+  # racing on the shared default transcript_root path under `async: true`.
+  defmodule NullManifest do
+    def write(_payload), do: :ok
+  end
+
   defp start(features, opts) do
     {:ok, pid} =
       Coordinator.start_link(
-        [features: features, runner: controllable_runner(self()), owner: self()] ++ opts
+        [
+          features: features,
+          runner: controllable_runner(self()),
+          owner: self(),
+          manifest: NullManifest
+        ] ++ opts
       )
 
     on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
