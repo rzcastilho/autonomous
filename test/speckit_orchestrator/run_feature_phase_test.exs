@@ -37,6 +37,7 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhaseTest do
     base = %{
       feature: %Feature{id: "001", slug: "s", path: "p.md"},
       worktree: nil,
+      layout: nil,
       session_id: nil,
       ledger: nil,
       cost_total: 0.0,

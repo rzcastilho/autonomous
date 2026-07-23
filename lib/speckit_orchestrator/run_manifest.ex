@@ -2,15 +2,25 @@ defmodule SpeckitOrchestrator.RunManifest do
   @moduledoc """
   Single-slot durable run record, mirroring `Checkpoint`'s conventions:
   string-keyed JSON, best-effort write, three-way read, never fabricates. One
-  file at `<Config.transcript_root()>/run.json`. Owned by the `Coordinator`
-  (via an injected `:manifest` seam) — the single writer of run-level state,
-  so writes are race-free without new locking. A new `run/1` supersedes the
-  prior manifest by calling `clear/0` (single-slot rule, FR-005).
+  **fixed machine-global** file at `<Config.autonomous_root()>/transcripts/run.json`
+  — deliberately *not* scope-partitioned (resolves analyze finding I2): its
+  read callers (`resume_run/0`, `resumable_run/0`, the LiveViews) have no
+  `%Layout{}` on a fresh boot, so a fixed path lets them locate it with zero
+  identity IO. Owned by the `Coordinator` (via an injected `:manifest` seam) —
+  the single writer of run-level state, so writes are race-free without new
+  locking. A new `run/1` supersedes the prior manifest by calling `clear/0`
+  (single-slot rule, FR-005).
 
-  See `specs/009-crash-recovery/contracts/run_manifest.md`.
+  When the run carries a `%Layout{}`, `write/1` also records `segment` and
+  `scope` (`"ad-hoc"` or `%{"breakdown" => slug}`) so a resume can rebuild a
+  `%Layout{}` (`Layout.build/3`) to reach the scope-partitioned per-feature
+  checkpoints/transcripts — see `scope_of/1`/`segment_of/1`.
+
+  See `specs/009-crash-recovery/contracts/run_manifest.md` and
+  `specs/012-run-directory-layout/data-model.md` ("RunManifest locality").
   """
 
-  alias SpeckitOrchestrator.{Config, Feature, RunContext}
+  alias SpeckitOrchestrator.{Config, Feature, Layout, RunContext}
 
   @doc "Best-effort write; always returns `:ok` (mirrors `Checkpoint.write/1`)."
   @spec write(map()) :: :ok
@@ -20,16 +30,19 @@ defmodule SpeckitOrchestrator.RunManifest do
         context: context,
         spend: spend,
         updated_at: updated_at
-      }) do
-    record = %{
-      "features" => Enum.map(features, &feature_map/1),
-      "statuses" => Map.new(statuses, fn {id, status} -> {to_string(id), status_string(status)} end),
-      "context" => context_map(context),
-      "spend" => spend,
-      "updated_at" => updated_at
-    }
+      } = input) do
+    record =
+      %{
+        "features" => Enum.map(features, &feature_map/1),
+        "statuses" =>
+          Map.new(statuses, fn {id, status} -> {to_string(id), status_string(status)} end),
+        "context" => context_map(context),
+        "spend" => spend,
+        "updated_at" => updated_at
+      }
+      |> maybe_put_layout(Map.get(input, :layout))
 
-    File.mkdir_p!(Config.transcript_root())
+    File.mkdir_p!(Path.dirname(manifest_path()))
     File.write!(manifest_path(), Jason.encode!(record))
     :ok
   rescue
@@ -93,7 +106,39 @@ defmodule SpeckitOrchestrator.RunManifest do
     {feature_structs, reconstructed}
   end
 
+  @doc """
+  Rebuild the `%Layout{}` a manifest `record` was written under, from its
+  recorded `"segment"`/`"scope"` fields (resolves I2). `nil` when the record
+  predates this feature (no `"segment"`) or the rebuild fails — callers fall
+  back to re-resolving identity fresh, same as pre-012 behavior.
+  """
+  @spec rebuild_layout(map(), String.t()) :: Layout.t() | nil
+  def rebuild_layout(%{"segment" => segment} = record, repo) when is_binary(segment) do
+    case Layout.build(repo, segment, scope_of(record)) do
+      {:ok, layout} -> layout
+      {:error, _reason} -> nil
+    end
+  end
+
+  def rebuild_layout(_record, _repo), do: nil
+
+  defp scope_of(%{"scope" => %{"breakdown" => slug}}) when is_binary(slug), do: {:breakdown, slug}
+  defp scope_of(_record), do: :ad_hoc
+
   # ---- helpers --------------------------------------------------------------
+
+  defp maybe_put_layout(record, nil), do: record
+
+  defp maybe_put_layout(record, %Layout{worktree_root: worktree_root} = layout) do
+    record
+    |> Map.put("segment", Path.basename(worktree_root))
+    |> Map.put("scope", scope_json(layout))
+  end
+
+  defp scope_json(%Layout{breakdown_root: nil}), do: "ad-hoc"
+
+  defp scope_json(%Layout{in_repo_rel: rel}),
+    do: %{"breakdown" => rel |> Path.split() |> List.last()}
 
   defp feature_map(%Feature{id: id, slug: slug, path: path, prereqs: prereqs}) do
     %{"id" => id, "slug" => slug, "path" => path, "prereqs" => prereqs}
@@ -120,5 +165,5 @@ defmodule SpeckitOrchestrator.RunManifest do
   defp reconstruct_status("pending"), do: :pending
   defp reconstruct_status(_other), do: :pending
 
-  defp manifest_path, do: Path.join(Config.transcript_root(), "run.json")
+  defp manifest_path, do: Path.join([Config.autonomous_root(), "transcripts", "run.json"])
 end

@@ -3,7 +3,7 @@ defmodule SpeckitOrchestrator.ResumeRunTest do
   # env (mirrors coordinator_test.exs / resume_test.exs conventions).
   use ExUnit.Case, async: false
 
-  alias SpeckitOrchestrator.{Checkpoint, Config, Coordinator, Feature, Ledger, RunContext, RunManifest}
+  alias SpeckitOrchestrator.{Checkpoint, Config, Coordinator, Feature, Layout, Ledger, RunContext, RunManifest}
 
   @coordinator SpeckitOrchestrator.Coordinator
 
@@ -12,12 +12,22 @@ defmodule SpeckitOrchestrator.ResumeRunTest do
     prev = Application.get_env(:speckit_orchestrator, :transcript_root)
     Application.put_env(:speckit_orchestrator, :transcript_root, root)
 
+    # RunManifest now lives under Config.autonomous_root/0 (012, resolves I2),
+    # not :transcript_root — isolate it too so this file's manifest state
+    # never leaks across tests (globally shared :autonomous_root otherwise).
+    prev_autonomous = Application.get_env(:speckit_orchestrator, :autonomous_root)
+    Application.put_env(:speckit_orchestrator, :autonomous_root, root)
+
     stop_coordinator()
 
     on_exit(fn ->
       stop_coordinator()
       File.rm_rf(root)
       if prev, do: Application.put_env(:speckit_orchestrator, :transcript_root, prev)
+
+      if prev_autonomous,
+        do: Application.put_env(:speckit_orchestrator, :autonomous_root, prev_autonomous),
+        else: Application.delete_env(:speckit_orchestrator, :autonomous_root)
     end)
 
     %{root: root}
@@ -92,8 +102,8 @@ defmodule SpeckitOrchestrator.ResumeRunTest do
   test "resume_run/1 with a corrupt manifest returns {:error, :corrupt_manifest} and starts no Coordinator", %{
     root: root
   } do
-    File.mkdir_p!(root)
-    File.write!(Path.join(root, "run.json"), "not valid json{")
+    File.mkdir_p!(Path.join(root, "transcripts"))
+    File.write!(Path.join([root, "transcripts", "run.json"]), "not valid json{")
 
     assert {:error, :corrupt_manifest} = SpeckitOrchestrator.resume_run()
     assert Process.whereis(@coordinator) == nil
@@ -261,7 +271,8 @@ defmodule SpeckitOrchestrator.ResumeRunTest do
   # ---- checkpointed feature with a missing branch/worktree (T027, integration) --
 
   @tag :integration
-  test "a checkpointed feature whose branch/worktree is missing fails loud without crashing the rest of the run" do
+  test "a checkpointed feature whose branch/worktree is missing fails loud without crashing the rest of the run",
+       %{root: root} do
     id = "rr#{System.unique_integer([:positive, :monotonic])}"
 
     :ok =
@@ -275,10 +286,22 @@ defmodule SpeckitOrchestrator.ResumeRunTest do
 
     on_exit(fn -> File.rm_rf(Path.join(Config.transcript_root(), id)) end)
 
+    # A recorded layout (012, T033) lets resume_run/1 skip re-resolving repo
+    # identity — exactly the point of this test: the repo itself has since
+    # become unreachable, but the crash-recovery resume must not need it to
+    # exist just to locate the checkpoint; only the feature's own worktree
+    # lookup (against the now-broken :repo) should fail.
+    layout = %Layout{
+      worktree_root: Path.join(root, "worktrees"),
+      transcript_root: root,
+      in_repo_rel: "specs/autonomous/ad-hoc"
+    }
+
     write_manifest(%{
       features: [feat(id)],
       statuses: %{id => :running},
-      context: %RunContext{pr_workflow: false, max_concurrency: 1, budget_usd: 100.0}
+      context: %RunContext{pr_workflow: false, max_concurrency: 1, budget_usd: 100.0},
+      layout: layout
     })
 
     prev_repo = Application.get_env(:speckit_orchestrator, :repo)

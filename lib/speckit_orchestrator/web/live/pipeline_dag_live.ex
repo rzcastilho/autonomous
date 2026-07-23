@@ -25,6 +25,7 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
     ConsoleReadModel,
     Coordinator,
     Ledger,
+    RepoIdentity,
     RunManifest
   }
 
@@ -36,22 +37,56 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
       Phoenix.PubSub.subscribe(SpeckitOrchestrator.PubSub, ConsoleProjection.topic())
     end
 
+    repo = Config.repo()
+    segment = resolve_segment(repo)
+    packages = package_slugs(Path.join([repo, Config.specs_root(), "breakdown"]))
+    selected_package = default_package(packages, manifest_record(), segment)
+
     {:ok,
      socket
-     |> assign(page_title: "Pipeline DAG", current_path: "/dag", selected_feature_id: nil)
+     |> assign(
+       page_title: "Pipeline DAG",
+       current_path: "/dag",
+       selected_feature_id: nil,
+       repo: repo,
+       segment: segment,
+       packages: packages,
+       selected_package: selected_package
+     )
      |> load_layout()
      |> seed()}
   end
 
-  defp load_layout(socket) do
-    source = Path.join(Config.repo(), Config.breakdown_dir())
+  # Default the drawn wave to the active/last run's package (manifest scope,
+  # gated on a matching segment so a stale manifest from another repo can't
+  # steer this view); otherwise the first alphabetical package (U2, FR-012).
+  defp default_package(packages, record, segment) do
+    with true <- matching_segment?(record, segment),
+         %{"breakdown" => slug} <- record["scope"],
+         true <- slug in packages do
+      slug
+    else
+      _ -> List.first(packages)
+    end
+  end
 
+  # Best-effort — a repo with no origin (or not yet a git repo) still renders
+  # the DAG from the backlog; it simply never overlays a manifest (no segment
+  # to match against, U2).
+  defp resolve_segment(repo) do
+    case RepoIdentity.resolve(repo) do
+      {:ok, segment} -> segment
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp load_layout(socket) do
     try do
-      # A missing breakdown dir is a valid empty backlog (e.g. a project run
-      # only via single-spec/ad-hoc mode never creates one) — not a parse
+      # A missing/empty breakdown dir is a valid empty backlog (e.g. a project
+      # run only via single-spec/ad-hoc mode never creates one) — not a parse
       # error; only an existing-but-invalid backlog (dangling prereq, cycle,
       # unreadable file) should surface as backlog_error.
-      features = if File.dir?(source), do: Backlog.load!(source), else: []
+      features = load_features(socket.assigns.repo, socket.assigns.selected_package)
       dag_layout = PipelineDagLayout.layout(features)
 
       assign(socket,
@@ -64,22 +99,57 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
     end
   end
 
+  # Per-package breakdown dir (FR-012, 012): the operator-selected package under
+  # specs/autonomous/breakdown/ is shown (defaulting to the active run's wave,
+  # see default_package/3); zero packages falls back to the pre-012 flat
+  # Config.breakdown_dir/0 (an old-layout repo, or one that hasn't adopted
+  # packages yet).
+  defp load_features(repo, nil), do: legacy_features(repo)
+
+  defp load_features(repo, slug) do
+    Backlog.load!(Path.join([repo, Config.specs_root(), "breakdown", slug]))
+  end
+
+  defp legacy_features(repo) do
+    source = Path.join(repo, Config.breakdown_dir())
+    if File.dir?(source), do: Backlog.load!(source), else: []
+  end
+
+  defp package_slugs(dir) do
+    case File.ls(dir) do
+      {:ok, names} -> names |> Enum.filter(&File.dir?(Path.join(dir, &1))) |> Enum.sort()
+      {:error, _reason} -> []
+    end
+  end
+
   defp seed(socket) do
     view =
       ConsoleReadModel.merge(coordinator_status(), ledger_snapshot(), ConsoleProjection.read())
 
-    assign(socket, view: overlay_manifest(view))
+    assign(socket, view: overlay_manifest(socket, view))
   end
 
   # No live Coordinator (fresh boot, no resume yet) — fall back to the
   # durable run manifest (specs/009-crash-recovery) so the DAG reflects the
   # last known status instead of every node defaulting to :pending, and each
   # feature's own checkpoint so its phase timeline shows what actually ran
-  # rather than looking like nothing happened.
-  defp overlay_manifest(view) do
+  # rather than looking like nothing happened. Only overlays when the
+  # manifest's recorded segment matches the repo this DAG is viewing (resolves
+  # analyze finding U2) — a stale manifest from a different target repo must
+  # not paint this DAG.
+  defp overlay_manifest(socket, view) do
     record = manifest_record()
-    ConsoleReadModel.overlay_last_known_statuses(view, record, checkpoints_for(record))
+
+    if matching_segment?(record, socket.assigns.segment) do
+      layout = RunManifest.rebuild_layout(record, socket.assigns.repo)
+      ConsoleReadModel.overlay_last_known_statuses(view, record, checkpoints_for(record, layout))
+    else
+      view
+    end
   end
+
+  defp matching_segment?(%{"segment" => segment}, segment) when is_binary(segment), do: true
+  defp matching_segment?(_record, _segment), do: false
 
   defp manifest_record do
     case RunManifest.read() do
@@ -88,11 +158,11 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
     end
   end
 
-  defp checkpoints_for(%{"statuses" => statuses}) when is_map(statuses) do
-    Map.new(statuses, fn {id, _status} -> {id, Checkpoint.read(id)} end)
+  defp checkpoints_for(%{"statuses" => statuses}, layout) when is_map(statuses) do
+    Map.new(statuses, fn {id, _status} -> {id, Checkpoint.read(id, layout)} end)
   end
 
-  defp checkpoints_for(_record), do: %{}
+  defp checkpoints_for(_record, _layout), do: %{}
 
   defp coordinator_status do
     if Process.whereis(Coordinator), do: Coordinator.status(Coordinator)
@@ -120,7 +190,7 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
         socket
       ) do
     view = ConsoleReadModel.merge(coordinator_status, ledger_snapshot, ConsoleProjection.read())
-    {:noreply, assign(socket, view: overlay_manifest(view))}
+    {:noreply, assign(socket, view: overlay_manifest(socket, view))}
   end
 
   def handle_info({:console, :run_finished, report}, socket) do
@@ -131,6 +201,14 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
   # ---- drawer ---------------------------------------------------------------
 
   @impl true
+  def handle_event("select_package", %{"slug" => slug}, socket) do
+    {:noreply,
+     socket
+     |> assign(selected_package: slug, selected_feature_id: nil)
+     |> load_layout()
+     |> seed()}
+  end
+
   def handle_event("select_feature", %{"id" => id}, socket) do
     {:noreply, assign(socket, selected_feature_id: id)}
   end
@@ -157,8 +235,27 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
 
       <div :if={@dag_layout && @dag_layout.nodes != []} class="dag-canvas" data-state="dag">
         <div class="dag-canvas-header">
-          <div class="dag-canvas-title">Dependency DAG</div>
-          <div class="dag-canvas-sub">release in dependency-and-cap waves</div>
+          <div>
+            <div class="dag-canvas-title">Dependency DAG</div>
+            <div class="dag-canvas-sub">release in dependency-and-cap waves</div>
+          </div>
+          <form
+            :if={length(@packages) > 1}
+            id="wave-picker-form"
+            phx-change="select_package"
+            class="dag-wave-picker"
+            data-form="wave-picker"
+          >
+            <select name="slug" data-package-select>
+              <option
+                :for={slug <- @packages}
+                value={slug}
+                selected={slug == @selected_package}
+              >
+                {slug}
+              </option>
+            </select>
+          </form>
         </div>
 
         <div class="dag-scroll">

@@ -112,6 +112,9 @@ defmodule SpeckitOrchestrator.ResumeTest do
     git!(repo, ["init", "-q", "-b", "main"])
     git!(repo, ["config", "user.email", "t@e.com"])
     git!(repo, ["config", "user.name", "T"])
+    # The 012 facade preflight resolves repository identity from `origin` —
+    # every real (non-bare-hermetic) throwaway repo needs one.
+    git!(repo, ["remote", "add", "origin", "git@example.com:test/#{Path.basename(repo)}.git"])
     git!(repo, ["add", "-A"])
     git!(repo, ["commit", "-q", "-m", "base"])
     on_exit(fn -> File.rm_rf(repo) end)
@@ -242,8 +245,12 @@ defmodule SpeckitOrchestrator.ResumeTest do
       id = unique_id()
       write_checkpoint(id, :analyze, :halted, slug: "widget", path: "#{id}-widget.md")
 
+      # A real repo (so 012's identity preflight resolves) with no breakdown
+      # dir at all — best_effort_backlog/0 must still tolerate the unloadable
+      # backlog.
+      repo = base_repo()
       prev_repo = Application.get_env(:speckit_orchestrator, :repo)
-      Application.put_env(:speckit_orchestrator, :repo, "/nonexistent/repo-#{id}")
+      Application.put_env(:speckit_orchestrator, :repo, repo)
 
       on_exit(fn ->
         if prev_repo,
@@ -254,7 +261,8 @@ defmodule SpeckitOrchestrator.ResumeTest do
       me = self()
 
       # No :features opt at all — forces the best-effort load_backlog/0 path,
-      # which raises against a nonexistent repo; must not crash resume/2.
+      # which raises against a repo with no breakdown dir; must not crash
+      # resume/2.
       assert {:ok, pid} = SpeckitOrchestrator.resume(id, runner: capturing_runner(me))
       on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
 

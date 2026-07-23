@@ -221,13 +221,15 @@ defmodule SpeckitOrchestrator.CoordinatorTest do
   end
 
   test "the default manifest seam (when :manifest is omitted) is RunManifest" do
+    # RunManifest.write/1 resolves the fixed run.json under Config.autonomous_root
+    # (012, resolves I2) — not :transcript_root.
     root = Path.join(System.tmp_dir!(), "coord_rm_#{System.unique_integer([:positive])}")
-    prev = Application.get_env(:speckit_orchestrator, :transcript_root)
-    Application.put_env(:speckit_orchestrator, :transcript_root, root)
+    prev = Application.get_env(:speckit_orchestrator, :autonomous_root)
+    Application.put_env(:speckit_orchestrator, :autonomous_root, root)
 
     on_exit(fn ->
       File.rm_rf(root)
-      if prev, do: Application.put_env(:speckit_orchestrator, :transcript_root, prev)
+      if prev, do: Application.put_env(:speckit_orchestrator, :autonomous_root, prev)
     end)
 
     features = [feat("001")]
@@ -236,6 +238,6 @@ defmodule SpeckitOrchestrator.CoordinatorTest do
     n1.("001", :done, nil)
 
     assert_receive {:run_complete, _report}, 1_000
-    assert File.exists?(Path.join(root, "run.json"))
+    assert File.exists?(Path.join([root, "transcripts", "run.json"]))
   end
 end
