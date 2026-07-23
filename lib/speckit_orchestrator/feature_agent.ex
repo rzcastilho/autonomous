@@ -6,6 +6,9 @@ defmodule SpeckitOrchestrator.FeatureAgent do
   `Jido.AgentServer.call/3`, one signal per phase. State fields:
 
     * `feature` / `worktree` / `ledger` — seeded by `feature.init`.
+    * `layout` — the run's resolved `%Layout{}` (FR-011, 012), seeded by
+      `feature.init`; threaded into `PhaseRequest.build/3` for the
+      worktree-relative breakdown ref.
     * `phase` — the phase last run.
     * `resume_phase` — the phase the run started at (fixed at init, unlike
       `phase` which advances); `resume_prompt` — an optional operator note
@@ -27,6 +30,7 @@ defmodule SpeckitOrchestrator.FeatureAgent do
       feature: [type: :any, default: nil],
       worktree: [type: :any, default: nil],
       ledger: [type: :any, default: nil],
+      layout: [type: :any, default: nil],
       phase: [type: :atom, default: nil],
       resume_phase: [type: :atom, default: nil],
       resume_prompt: [type: :string, default: nil],

@@ -3,7 +3,7 @@ defmodule SpeckitOrchestrator.RunSpecTest do
   # app env (repo/worktree_root), and the fixed-name Coordinator.
   use ExUnit.Case, async: false
 
-  alias SpeckitOrchestrator.{Coordinator, Ledger, SingleSpec}
+  alias SpeckitOrchestrator.{Coordinator, Ledger, RepoIdentity, SingleSpec}
 
   # Fake SDK, scenario-selected via app env (mirrors feature_runner_test.exs /
   # facade_e2e_test.exs) — no CLI, no spend, drives every phase deterministically.
@@ -59,6 +59,7 @@ defmodule SpeckitOrchestrator.RunSpecTest do
     git!(repo, ["init", "-q", "-b", "main"])
     git!(repo, ["config", "user.email", "t@e.com"])
     git!(repo, ["config", "user.name", "T"])
+    git!(repo, ["remote", "add", "origin", "git@example.com:test/#{Path.basename(repo)}.git"])
     File.mkdir_p!(Path.join(repo, ".specify/memory"))
     File.write!(Path.join(repo, ".specify/memory/constitution.md"), "# C\n")
     File.mkdir_p!(Path.join(repo, ".claude/skills"))
@@ -76,14 +77,20 @@ defmodule SpeckitOrchestrator.RunSpecTest do
     root
   end
 
-  # Point the real single-feature run at a throwaway repo/worktree_root, exactly
-  # as a caller would via config — run/1 and run_spec/2 never take these as
-  # per-call opts (matching the codebase-wide convention: only the pure
-  # taken-id scan honors opts[:repo]/[:breakdown_dir]).
+  # Point the real single-feature run at a throwaway repo/autonomous_root,
+  # exactly as a caller would via config — run/1 and run_spec/2 never take
+  # these as per-call opts (matching the codebase-wide convention: only the
+  # pure taken-id scan honors opts[:repo]/[:ad_hoc_dir]). :worktree_root is
+  # the pre-012 legacy default (unused once a real %Layout{} resolves), kept
+  # isolated too so nothing falls back to it by accident.
   defp point_config_at(repo, root) do
-    prev = for k <- [:repo, :worktree_root], do: {k, Application.get_env(:speckit_orchestrator, k)}
+    prev =
+      for k <- [:repo, :worktree_root, :autonomous_root],
+        do: {k, Application.get_env(:speckit_orchestrator, k)}
+
     Application.put_env(:speckit_orchestrator, :repo, repo)
     Application.put_env(:speckit_orchestrator, :worktree_root, root)
+    Application.put_env(:speckit_orchestrator, :autonomous_root, root)
 
     on_exit(fn ->
       for {k, v} <- prev do
@@ -141,10 +148,13 @@ defmodule SpeckitOrchestrator.RunSpecTest do
       assert report.done == ["001"]
     end
 
-    test "auto-assigned id skips past existing breakdown ids and feature branches" do
+    test "auto-assigned id skips past existing ad-hoc ids and feature branches" do
       repo = base_repo()
-      File.mkdir_p!(Path.join(repo, "docs/breakdown"))
-      File.write!(Path.join(repo, "docs/breakdown/001-existing.md"), "# 001\n\n## Prerequisites\n\nNone\n")
+      File.mkdir_p!(Path.join(repo, "specs/autonomous/ad-hoc"))
+      File.write!(
+        Path.join(repo, "specs/autonomous/ad-hoc/001-existing.md"),
+        "# 001\n\n## Prerequisites\n\nNone\n"
+      )
       git!(repo, ["branch", "feature/002-also-existing"])
 
       me = self()
@@ -173,8 +183,9 @@ defmodule SpeckitOrchestrator.RunSpecTest do
       assert report.done == ["001"]
 
       slug = SingleSpec.slug("Add a health check endpoint")
-      worktree_path = Path.join(root, "001-#{slug}")
-      seed_rel = "docs/breakdown/001-#{slug}.md"
+      {:ok, segment} = RepoIdentity.resolve(repo)
+      worktree_path = Path.join([root, "worktrees", segment, "001-#{slug}"])
+      seed_rel = "specs/autonomous/ad-hoc/001-#{slug}.md"
 
       # worktree removed on :done
       refute File.dir?(worktree_path)
@@ -188,10 +199,9 @@ defmodule SpeckitOrchestrator.RunSpecTest do
       assert show =~ "## Prerequisites"
       assert show =~ "None"
 
-      # durable transcripts survive teardown, keyed by feature id (the test
-      # suite pins :transcript_root to a fixed absolute path — see config.exs —
-      # so this is NOT under the per-test repo).
-      transcript_dir = Path.join(SpeckitOrchestrator.Config.transcript_root(), "001")
+      # durable transcripts survive teardown, keyed by feature id, under the
+      # run's Layout-resolved (segment/ad-hoc-scoped) transcript root.
+      transcript_dir = Path.join([root, "transcripts", segment, "ad-hoc", "001"])
       assert File.dir?(transcript_dir)
       assert File.exists?(Path.join(transcript_dir, "01-specify.md"))
     end
@@ -199,10 +209,11 @@ defmodule SpeckitOrchestrator.RunSpecTest do
     test "seed-write failure fails the feature and keeps the worktree (never runs the pipeline)" do
       repo = base_repo()
       # Shadow the seed's parent directory with a plain file so mkdir_p for
-      # docs/breakdown fails inside the worktree — a real, unmocked failure.
-      File.write!(Path.join(repo, "docs"), "not a directory")
+      # specs/autonomous/ad-hoc fails inside the worktree — a real, unmocked
+      # failure.
+      File.write!(Path.join(repo, "specs"), "not a directory")
       git!(repo, ["add", "-A"])
-      git!(repo, ["commit", "-q", "-m", "shadow docs"])
+      git!(repo, ["commit", "-q", "-m", "shadow specs"])
       root = tmp_root()
       point_config_at(repo, root)
 
@@ -213,8 +224,9 @@ defmodule SpeckitOrchestrator.RunSpecTest do
       assert report.failed == ["001"]
 
       slug = SingleSpec.slug("Trigger seed failure")
+      {:ok, segment} = RepoIdentity.resolve(repo)
       # the worktree exists but was never touched by FeatureRunner (kept, not removed)
-      assert File.dir?(Path.join(root, "001-#{slug}"))
+      assert File.dir?(Path.join([root, "worktrees", segment, "001-#{slug}"]))
     end
   end
 
@@ -234,7 +246,8 @@ defmodule SpeckitOrchestrator.RunSpecTest do
       assert report.escalated == ["001"]
 
       slug = SingleSpec.slug("An ambiguous feature")
-      assert File.dir?(Path.join(root, "001-#{slug}"))
+      {:ok, segment} = RepoIdentity.resolve(repo)
+      assert File.dir?(Path.join([root, "worktrees", segment, "001-#{slug}"]))
     end
 
     test "analyze halt: the feature halts and its worktree is kept" do
@@ -250,7 +263,8 @@ defmodule SpeckitOrchestrator.RunSpecTest do
       assert report.halted == ["001"]
 
       slug = SingleSpec.slug("A non-compliant feature")
-      assert File.dir?(Path.join(root, "001-#{slug}"))
+      {:ok, segment} = RepoIdentity.resolve(repo)
+      assert File.dir?(Path.join([root, "worktrees", segment, "001-#{slug}"]))
     end
 
     test "breaker drain-not-kill: a single-spec feature releases no new work once tripped" do

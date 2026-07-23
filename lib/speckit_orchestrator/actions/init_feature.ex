@@ -11,6 +11,7 @@ defmodule SpeckitOrchestrator.Actions.InitFeature do
       feature: [type: :any, required: true],
       worktree: [type: :any, default: nil],
       ledger: [type: :any, default: nil],
+      layout: [type: :any, default: nil],
       phase: [type: :atom, default: nil],
       # `type: :string, default: nil` fails Jido's schema validation on an
       # omitted key — it fills the default in and then validates it against
@@ -30,6 +31,7 @@ defmodule SpeckitOrchestrator.Actions.InitFeature do
        feature: params.feature,
        worktree: params.worktree,
        ledger: Map.get(params, :ledger),
+       layout: Map.get(params, :layout),
        phase: phase,
        resume_phase: phase,
        resume_prompt: params.resume_prompt,

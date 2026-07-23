@@ -22,6 +22,8 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
 
   @impl true
   def mount(_params, _session, socket) do
+    packages = list_packages()
+
     {:ok,
      socket
      |> assign(
@@ -32,9 +34,23 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
        description: "",
        preview: nil,
        field_error: nil,
-       start_error: nil
+       start_error: nil,
+       packages: packages,
+       selected_package: List.first(packages),
+       expected_breakdown_dir: Path.join([Config.repo(), Config.specs_root(), "breakdown"])
      )
      |> refresh_backlog_preview()}
+  end
+
+  # ---- breakdown package selection (FR-012, 012) -----------------------------
+
+  defp list_packages do
+    dir = Path.join([Config.repo(), Config.specs_root(), "breakdown"])
+
+    case File.ls(dir) do
+      {:ok, names} -> names |> Enum.filter(&File.dir?(Path.join(dir, &1))) |> Enum.sort()
+      {:error, _reason} -> []
+    end
   end
 
   # ---- mode toggle ----------------------------------------------------------
@@ -49,6 +65,10 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
 
   def handle_event("toggle_pr_workflow", _params, socket) do
     {:noreply, assign(socket, pr_workflow?: not socket.assigns.pr_workflow?)}
+  end
+
+  def handle_event("select_package", %{"slug" => slug}, socket) do
+    {:noreply, socket |> assign(selected_package: slug) |> refresh_backlog_preview()}
   end
 
   # ---- single-spec live preview ---------------------------------------------
@@ -125,6 +145,7 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
   defp start_opts(socket) do
     Application.put_env(:speckit_orchestrator, :pr_workflow, socket.assigns.pr_workflow?)
     base = [pr_workflow: socket.assigns.pr_workflow?]
+    base = maybe_put_slug(base, socket.assigns[:selected_package])
 
     case Application.get_env(:speckit_orchestrator, :console_test_runner) do
       nil -> base
@@ -132,18 +153,31 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
     end
   end
 
+  defp maybe_put_slug(opts, nil), do: opts
+  defp maybe_put_slug(opts, slug), do: Keyword.put(opts, :slug, slug)
+
   defp format_start_error({:preflight, problems}), do: "Preflight failed: #{inspect(problems)}"
   defp format_start_error(reason), do: "Failed to start: #{inspect(reason)}"
 
   # ---- backlog preview --------------------------------------------------
 
   defp refresh_backlog_preview(socket) do
-    assign(socket, backlog_preview: backlog_preview())
+    assign(socket, backlog_preview: backlog_preview(socket.assigns[:selected_package]))
   end
 
-  defp backlog_preview do
-    source = Path.join(Config.repo(), Config.breakdown_dir())
+  # A selected package (FR-012, 012) previews its own per-package dir. No
+  # packages found falls back to the flat Config.breakdown_dir/0 preview (an
+  # old-layout/pre-012 repo, still supported); the render also shows a
+  # `data-hint="no-packages"` empty-state naming the standard
+  # `specs/autonomous/breakdown` location so a misconfigured repo isn't left
+  # staring at the legacy `docs/breakdown` path.
+  defp backlog_preview(nil), do: backlog_preview_at(Path.join(Config.repo(), Config.breakdown_dir()))
 
+  defp backlog_preview(slug) do
+    backlog_preview_at(Path.join([Config.repo(), Config.specs_root(), "breakdown", slug]))
+  end
+
+  defp backlog_preview_at(source) do
     try do
       features = Backlog.load!(source)
       %{source: source, count: length(features), dag_valid?: true, reason: nil}
@@ -155,6 +189,21 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
 
   defp effective_concurrency(true, _max_concurrency), do: 1
   defp effective_concurrency(false, max_concurrency), do: max_concurrency
+
+  # Show the meaningful tail of the source path, anchored at the `autonomous`
+  # namespace segment (…/autonomous/breakdown/<slug>) on one line; the full path
+  # is exposed via the dd's `title` tooltip on hover. Paths with no `autonomous`
+  # segment (legacy docs/breakdown fallback) fall back to a last-N-chars window.
+  @path_display_max 40
+  defp truncate_path(path) when is_binary(path) do
+    case String.split(path, "/autonomous/", parts: 2) do
+      [_prefix, rest] -> "…/autonomous/" <> rest
+      [_] when byte_size(path) > @path_display_max -> "…" <> String.slice(path, -@path_display_max, @path_display_max)
+      [_] -> path
+    end
+  end
+
+  defp truncate_path(path), do: path
 
   # ---- render -----------------------------------------------------------
 
@@ -193,9 +242,31 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
       <p :if={@start_error} class="field-error" data-error="start">{@start_error}</p>
 
       <div :if={@mode == :backlog} class="trigger-backlog form-panel" data-mode-panel="backlog">
+        <p :if={@packages == []} class="backlog-empty" data-hint="no-packages">
+          No breakdown packages found. The standardized layout expects them under
+          <code>{@expected_breakdown_dir}/&lt;slug&gt;/</code>
+          (files named <code>NNN-*.md</code>).
+        </p>
+
         <dl class="backlog-preview">
+          <dt :if={@packages != []}>Breakdown package</dt>
+          <dd :if={@packages != []}>
+            <form id="package-picker-form" phx-change="select_package" data-form="package-picker">
+              <select name="slug" data-package-select>
+                <option
+                  :for={slug <- @packages}
+                  value={slug}
+                  selected={slug == @selected_package}
+                >
+                  {slug}
+                </option>
+              </select>
+            </form>
+          </dd>
           <dt>Source</dt>
-          <dd>{@backlog_preview.source}</dd>
+          <dd class="preview-path" title={@backlog_preview.source}>
+            {truncate_path(@backlog_preview.source)}
+          </dd>
           <dt>Feature count</dt>
           <dd>{@backlog_preview.count}</dd>
           <dt>DAG validated?</dt>

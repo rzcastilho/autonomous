@@ -56,6 +56,32 @@ defmodule SpeckitOrchestrator.Web.TriggerLiveTest do
     refute html =~ ~s(data-action="start-backlog" disabled)
   end
 
+  test "Backlog mode: changing the breakdown package recalculates the preview (count + source)",
+       %{conn: conn} do
+    src = Path.expand("../../fixtures/breakdown_packages", __DIR__)
+    repo = Path.join(System.tmp_dir!(), "trigger_waves_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(Path.join(repo, "specs/autonomous/breakdown"))
+    File.cp_r!(src, Path.join(repo, "specs/autonomous/breakdown"))
+    on_exit(fn -> File.rm_rf(repo) end)
+    Application.put_env(:speckit_orchestrator, :repo, repo)
+
+    {:ok, view, html} = live(conn, "/trigger")
+
+    # Defaults to the first alphabetical package (alpha), 1 feature.
+    assert html =~ "alpha"
+    assert html =~ ">1<"
+
+    # Switching the wrapped-in-a-form select delivers %{"slug" => ...} and the
+    # preview recomputes for beta (also 1 feature, different source path).
+    html =
+      view
+      |> element(~s(form[data-form="package-picker"]))
+      |> render_change(%{"slug" => "beta"})
+
+    assert html =~ "breakdown/beta"
+    assert html =~ ~s(data-dag-valid="true")
+  end
+
   test "Backlog mode disables Start and surfaces the reason when Backlog.load!/1 raises (cycle)",
        %{conn: conn} do
     point_backlog_at(@cyclic_dir)
@@ -65,6 +91,24 @@ defmodule SpeckitOrchestrator.Web.TriggerLiveTest do
     assert html =~ ~s(data-dag-valid="false")
     assert html =~ ~s(data-action="start-backlog" disabled)
     assert html =~ "cycle"
+  end
+
+  test "Backlog mode with no packages names the standard specs/autonomous/breakdown location",
+       %{conn: conn} do
+    tmp = System.tmp_dir!() |> Path.join("trigger-empty-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(tmp)
+    on_exit(fn -> File.rm_rf(tmp) end)
+    # No specs/autonomous/breakdown packages and no legacy breakdown dir — the
+    # fallback also finds nothing, so the empty-state hint must lead the operator
+    # to the standardized location rather than the legacy docs/breakdown path.
+    Application.put_env(:speckit_orchestrator, :repo, tmp)
+    Application.put_env(:speckit_orchestrator, :breakdown_dir, "docs/breakdown")
+
+    {:ok, _view, html} = live(conn, "/trigger")
+
+    assert html =~ ~s(data-hint="no-packages")
+    assert html =~ "specs/autonomous/breakdown"
+    assert html =~ ~s(data-action="start-backlog" disabled)
   end
 
   test "Single-spec mode previews auto-assigned id + derived slug as the operator types",

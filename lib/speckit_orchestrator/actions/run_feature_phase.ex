@@ -57,7 +57,8 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhase do
     request =
       PhaseRequest.build(state.feature, phase,
         cwd: worktree_path(state.worktree),
-        resume_prompt: resume_prompt_for(state, phase)
+        resume_prompt: resume_prompt_for(state, phase),
+        layout: state.layout
       )
 
     case Jido.Harness.run_request(:claude, request, []) do

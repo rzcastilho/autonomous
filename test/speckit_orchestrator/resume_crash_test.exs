@@ -66,6 +66,8 @@ defmodule SpeckitOrchestrator.ResumeCrashTest do
     git!(repo, ["init", "-q", "-b", "main"])
     git!(repo, ["config", "user.email", "t@e.com"])
     git!(repo, ["config", "user.name", "T"])
+    # The 012 facade preflight resolves repository identity from `origin`.
+    git!(repo, ["remote", "add", "origin", "git@example.com:test/#{Path.basename(repo)}.git"])
     git!(repo, ["add", "-A"])
     git!(repo, ["commit", "-q", "-m", "base"])
     on_exit(fn -> File.rm_rf(repo) end)

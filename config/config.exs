@@ -6,9 +6,13 @@ if config_env() == :test do
 
   # Durable transcripts default to a repo-relative sibling dir; in tests pin them
   # to a tmp path so runs that drive FeatureRunner/Transcripts don't write into
-  # the real ../.speckit-transcripts.
+  # the real ../.speckit-transcripts. `autonomous_root` (012) is the
+  # machine-global base for the new Layout-resolved worktree/transcript roots —
+  # pin it too, or every facade-preflight test would create real dirs under the
+  # developer's actual `~/.autonomous`.
   config :speckit_orchestrator,
-    transcript_root: Path.join(System.tmp_dir!(), "speckit_test_transcripts")
+    transcript_root: Path.join(System.tmp_dir!(), "speckit_test_transcripts"),
+    autonomous_root: Path.join(System.tmp_dir!(), "speckit_test_autonomous")
 end
 
 # ---------------------------------------------------------------------------

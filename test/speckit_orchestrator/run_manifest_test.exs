@@ -1,23 +1,25 @@
 defmodule SpeckitOrchestrator.RunManifestTest do
-  # async: false — mutates the global :transcript_root app env.
+  # async: false — mutates the global :autonomous_root app env.
   use ExUnit.Case, async: false
 
   alias SpeckitOrchestrator.{Feature, RunContext, RunManifest}
 
   setup do
     root = Path.join(System.tmp_dir!(), "rm_#{System.unique_integer([:positive])}")
-    prev = Application.get_env(:speckit_orchestrator, :transcript_root)
-    Application.put_env(:speckit_orchestrator, :transcript_root, root)
+    # RunManifest resolves the fixed run.json under Config.autonomous_root/0
+    # (012, resolves I2) — not :transcript_root.
+    prev = Application.get_env(:speckit_orchestrator, :autonomous_root)
+    Application.put_env(:speckit_orchestrator, :autonomous_root, root)
 
     on_exit(fn ->
       File.rm_rf(root)
-      if prev, do: Application.put_env(:speckit_orchestrator, :transcript_root, prev)
+      if prev, do: Application.put_env(:speckit_orchestrator, :autonomous_root, prev)
     end)
 
     %{root: root}
   end
 
-  defp manifest_path(root), do: Path.join(root, "run.json")
+  defp manifest_path(root), do: Path.join([root, "transcripts", "run.json"])
 
   defp feat(id, prereqs \\ []),
     do: %Feature{id: id, slug: "f#{id}", path: "#{id}.md", prereqs: prereqs}
@@ -65,13 +67,13 @@ defmodule SpeckitOrchestrator.RunManifestTest do
   end
 
   test "read/0 returns {:error, :corrupt} on undecodable JSON", %{root: root} do
-    File.mkdir_p!(root)
+    File.mkdir_p!(Path.dirname(manifest_path(root)))
     File.write!(manifest_path(root), "not valid json{")
     assert {:error, :corrupt} = RunManifest.read()
   end
 
   test "read/0 returns {:error, :corrupt} on a JSON array (not an object)", %{root: root} do
-    File.mkdir_p!(root)
+    File.mkdir_p!(Path.dirname(manifest_path(root)))
     File.write!(manifest_path(root), Jason.encode!([1, 2, 3]))
     assert {:error, :corrupt} = RunManifest.read()
   end
@@ -94,8 +96,8 @@ defmodule SpeckitOrchestrator.RunManifestTest do
     assert :ok = RunManifest.clear()
   end
 
-  test "write/1 to an unwritable transcript root is swallowed and returns :ok" do
-    Application.put_env(:speckit_orchestrator, :transcript_root, "/proc/nonexistent/deny")
+  test "write/1 to an unwritable autonomous root is swallowed and returns :ok" do
+    Application.put_env(:speckit_orchestrator, :autonomous_root, "/proc/nonexistent/deny")
     assert :ok = RunManifest.write(base_payload())
   end
 

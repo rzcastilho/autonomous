@@ -2,7 +2,7 @@ defmodule SpeckitOrchestrator.TranscriptsTest do
   # async: false — mutates the global :transcript_root app env.
   use ExUnit.Case, async: false
 
-  alias SpeckitOrchestrator.{PhaseResult, Transcripts, Worktree}
+  alias SpeckitOrchestrator.{Layout, PhaseResult, Transcripts, Worktree}
 
   defp result,
     do: %PhaseResult{
@@ -34,16 +34,40 @@ defmodule SpeckitOrchestrator.TranscriptsTest do
 
     wt = %Worktree{path: wt_path, branch: "feature/001-core-ledger", repo: ".", feature_id: "001"}
 
-    assert {:ok, in_tree} = Transcripts.write(wt, 5, :plan, result())
+    assert {:ok, in_tree} = Transcripts.write(wt, nil, 5, :plan, result())
 
     # in-worktree copy
     assert in_tree == Path.join([wt_path, ".speckit_logs", "05-plan.md"])
     assert File.read!(in_tree) =~ "plan written to specs/001/plan.md"
 
-    # durable copy, keyed by feature id, outside the worktree
+    # durable copy, keyed by feature id, outside the worktree (nil layout ->
+    # legacy Config.transcript_root/0 fallback)
     durable = Path.join([root, "001", "05-plan.md"])
     assert File.exists?(durable)
     assert File.read!(durable) =~ "plan written to specs/001/plan.md"
+  end
+
+  test "an explicit %Layout{} routes the durable copy under its transcript_root", %{root: root} do
+    wt_path = Path.join(System.tmp_dir!(), "wt_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(wt_path)
+    on_exit(fn -> File.rm_rf(wt_path) end)
+
+    layout_root = Path.join(root, "layout-root")
+
+    layout = %Layout{
+      worktree_root: Path.join(layout_root, "worktrees"),
+      transcript_root: Path.join(layout_root, "transcripts"),
+      in_repo_rel: "specs/autonomous/breakdown/core"
+    }
+
+    wt = %Worktree{path: wt_path, branch: "feature/001-core-ledger", repo: ".", feature_id: "001"}
+
+    assert {:ok, _in_tree} = Transcripts.write(wt, layout, 5, :plan, result())
+
+    durable = Path.join([layout_root, "transcripts", "001", "05-plan.md"])
+    assert File.exists?(durable)
+    # legacy Config.transcript_root/0 root untouched by a layout-routed write
+    refute File.exists?(Path.join([root, "001", "05-plan.md"]))
   end
 
   test "durable write is best-effort and never breaks the in-worktree write" do
@@ -55,11 +79,11 @@ defmodule SpeckitOrchestrator.TranscriptsTest do
     Application.put_env(:speckit_orchestrator, :transcript_root, "/proc/nonexistent/deny")
     wt = %Worktree{path: wt_path, branch: "b", repo: ".", feature_id: "001"}
 
-    assert {:ok, in_tree} = Transcripts.write(wt, 1, :specify, result())
+    assert {:ok, in_tree} = Transcripts.write(wt, nil, 1, :specify, result())
     assert File.exists?(in_tree)
   end
 
   test "no worktree is a no-op" do
-    assert Transcripts.write(nil, 1, :specify, result()) == :ok
+    assert Transcripts.write(nil, nil, 1, :specify, result()) == :ok
   end
 end

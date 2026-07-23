@@ -7,7 +7,7 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLiveTest do
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
 
-  alias SpeckitOrchestrator.{Checkpoint, Coordinator, Feature, RunManifest}
+  alias SpeckitOrchestrator.{Checkpoint, Coordinator, Feature, Layout, RepoIdentity, RunManifest}
 
   @endpoint SpeckitOrchestrator.Web.Endpoint
 
@@ -46,6 +46,33 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLiveTest do
   defp point_backlog_at(dir) do
     Application.put_env(:speckit_orchestrator, :repo, dir)
     Application.put_env(:speckit_orchestrator, :breakdown_dir, "")
+  end
+
+  defp git!(repo, args), do: {_, 0} = System.cmd("git", ["-C", repo | args], stderr_to_stdout: true)
+
+  # A real git repo (with `origin`) carrying the same 001/002 breakdown files
+  # as @valid_dir, so RepoIdentity.resolve/1 succeeds and the manifest overlay
+  # (U2 segment match) actually engages — @valid_dir itself is a plain
+  # fixture dir, not a git checkout.
+  defp real_repo_with_backlog do
+    repo = Path.join(System.tmp_dir!(), "dag_repo_#{System.unique_integer([:positive])}")
+    dest = Path.join(repo, "specs/autonomous/breakdown/core")
+    File.mkdir_p!(dest)
+
+    for name <- ["001-core-ledger.md", "002-categories.md", "003-budgets.md"] do
+      File.cp!(Path.join(@valid_dir, name), Path.join(dest, name))
+    end
+
+    git!(repo, ["init", "-q", "-b", "main"])
+    git!(repo, ["remote", "add", "origin", "git@example.com:test/#{Path.basename(repo)}.git"])
+    on_exit(fn -> File.rm_rf(repo) end)
+    repo
+  end
+
+  defp layout_for(repo) do
+    {:ok, segment} = RepoIdentity.resolve(repo)
+    {:ok, layout} = Layout.build(repo, segment, {:breakdown, "core"})
+    layout
   end
 
   defp feat(id, prereqs \\ []),
@@ -91,6 +118,33 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLiveTest do
     for status <- ~w(pending blocked running escalated halted failed done) do
       assert html =~ ~s(data-legend-status="#{status}")
     end
+  end
+
+  test "with 2 breakdown packages the DAG defaults to the first wave and the picker switches waves",
+       %{conn: conn} do
+    src = Path.expand("../../fixtures/breakdown_packages", __DIR__)
+    repo = Path.join(System.tmp_dir!(), "dag_waves_#{System.unique_integer([:positive])}")
+    dest = Path.join(repo, "specs/autonomous/breakdown")
+    File.mkdir_p!(dest)
+    File.cp_r!(src, dest)
+    on_exit(fn -> File.rm_rf(repo) end)
+    Application.put_env(:speckit_orchestrator, :repo, repo)
+
+    {:ok, view, html} = live(conn, "/dag")
+
+    # Two packages → the wave picker renders, defaulting to the first
+    # alphabetical wave (alpha) since there is no matching-segment manifest.
+    assert html =~ ~s(data-form="wave-picker")
+    assert html =~ "widget"
+    refute html =~ "gadget"
+
+    html =
+      view
+      |> element(~s(form[data-form="wave-picker"]))
+      |> render_change(%{"slug" => "beta"})
+
+    assert html =~ "gadget"
+    refute html =~ "widget"
   end
 
   test "clicking a node opens the same FeatureDrawerComponent as Mission Control", %{conn: conn} do
@@ -181,7 +235,8 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLiveTest do
 
   test "after a restart with no live Coordinator, nodes reflect the last known status from the run manifest instead of defaulting to pending",
        %{conn: conn} do
-    point_backlog_at(@valid_dir)
+    repo = real_repo_with_backlog()
+    point_backlog_at(repo)
     point_transcripts_at(Path.join(System.tmp_dir!(), "dag_manifest_#{System.unique_integer()}"))
 
     :ok =
@@ -190,7 +245,8 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLiveTest do
         statuses: %{"001" => :halted, "002" => :pending},
         context: %{},
         spend: 3.5,
-        updated_at: 1
+        updated_at: 1,
+        layout: layout_for(repo)
       })
 
     refute Process.whereis(Coordinator)
@@ -212,7 +268,9 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLiveTest do
 
   test "after a restart, a halted node's phase strip shows completed phases up to last_phase and the diverting phase highlighted",
        %{conn: conn} do
-    point_backlog_at(@valid_dir)
+    repo = real_repo_with_backlog()
+    layout = layout_for(repo)
+    point_backlog_at(repo)
     point_transcripts_at(Path.join(System.tmp_dir!(), "dag_manifest_#{System.unique_integer()}"))
 
     :ok =
@@ -221,7 +279,8 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLiveTest do
         statuses: %{"001" => :halted},
         context: %{},
         spend: 1.0,
-        updated_at: 1
+        updated_at: 1,
+        layout: layout
       })
 
     :ok =
@@ -232,7 +291,8 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLiveTest do
         reason: :critical_finding,
         session_id: "s1",
         slug: "slug-001",
-        path: "001.md"
+        path: "001.md",
+        layout: layout
       })
 
     refute Process.whereis(Coordinator)

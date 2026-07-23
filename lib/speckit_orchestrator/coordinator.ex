@@ -42,7 +42,8 @@ defmodule SpeckitOrchestrator.Coordinator do
             finished?: false,
             report: nil,
             manifest: nil,
-            context: %{}
+            context: %{},
+            layout: nil
 
   # ---- Client API ---------------------------------------------------------
 
@@ -65,6 +66,10 @@ defmodule SpeckitOrchestrator.Coordinator do
       best-effort, never affects wave logic.
     * `:context` — the run-shaping context (`RunContext.t()` or its map)
       recorded into the manifest alongside each write (FR-007).
+    * `:layout` — the run's resolved `%Layout{}` (`RepoIdentity` + `Layout`,
+      FR-011), resolved once at facade preflight and held here so every
+      runner spawned for this run carries it (optional; `nil` for tests
+      without one).
   """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -108,6 +113,7 @@ defmodule SpeckitOrchestrator.Coordinator do
       owner: Keyword.get(opts, :owner),
       manifest: Keyword.get(opts, :manifest, RunManifest),
       context: Keyword.get(opts, :context, %{}),
+      layout: Keyword.get(opts, :layout),
       self_pid: self()
     }
 
@@ -249,7 +255,8 @@ defmodule SpeckitOrchestrator.Coordinator do
       spend: spend(state),
       breaker_tripped: breaker_tripped?(state),
       finished?: state.finished?,
-      report: state.report
+      report: state.report,
+      layout: state.layout
     }
   end
 
@@ -279,7 +286,8 @@ defmodule SpeckitOrchestrator.Coordinator do
       statuses: state.statuses,
       context: state.context,
       spend: spend(state),
-      updated_at: System.system_time()
+      updated_at: System.system_time(),
+      layout: state.layout
     })
 
     state

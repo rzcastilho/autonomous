@@ -62,6 +62,10 @@ defmodule SpeckitOrchestrator.FeatureRunner do
     * `:run_context` — a `RunContext.t()` captured by the facade for this run;
       threaded into a diverted-terminal checkpoint write so a resume reapplies
       the original run shape. Defaults to `nil` (tests and non-context callers).
+    * `:layout` — the run's resolved `%Layout{}` (`RepoIdentity` + `Layout`,
+      FR-011), threaded alongside `:run_context` into checkpoint writes for
+      scope-partitioned lookup once `Checkpoint` reads it (Phase 4). Defaults
+      to `nil` (tests and non-layout callers).
   """
   @spec run(SpeckitOrchestrator.Feature.t(), keyword()) :: result() | {:error, term()}
   def run(feature, opts \\ []) do
@@ -72,6 +76,7 @@ defmodule SpeckitOrchestrator.FeatureRunner do
     start_phase = Keyword.get(opts, :start_phase, Pipeline.first())
     resume_prompt = Keyword.get(opts, :resume_prompt)
     run_context = Keyword.get(opts, :run_context)
+    layout = Keyword.get(opts, :layout)
 
     with {:ok, pid} <- start_agent(feature, opts) do
       try do
@@ -83,6 +88,7 @@ defmodule SpeckitOrchestrator.FeatureRunner do
               feature: feature,
               worktree: worktree,
               ledger: ledger,
+              layout: layout,
               phase: start_phase,
               resume_prompt: resume_prompt
             },
@@ -98,12 +104,13 @@ defmodule SpeckitOrchestrator.FeatureRunner do
             timeout,
             ledger,
             worktree,
-            run_context
+            run_context,
+            layout
           )
 
         call(pid, "feature.finalize", %{status: status, reason: reason}, timeout)
-        checkpoint(feature, status, reason, agent, run_context)
-        handle_worktree(feature, status, worktree)
+        checkpoint(feature, status, reason, agent, run_context, layout)
+        handle_worktree(feature, status, worktree, layout)
         emit_terminal(feature, status, reason, agent.state.cost_total)
         notify(notify, feature.id, status, reason)
         stop_agent(pid)
@@ -116,7 +123,7 @@ defmodule SpeckitOrchestrator.FeatureRunner do
         }
       catch
         kind, err ->
-          handle_worktree(feature, :failed, worktree)
+          handle_worktree(feature, :failed, worktree, layout)
           notify(notify, feature.id, :failed, {kind, err})
           stop_agent(pid)
           %{feature_id: feature.id, status: :failed, reason: {kind, err}, cost_total: nil}
@@ -126,7 +133,7 @@ defmodule SpeckitOrchestrator.FeatureRunner do
 
   # ---- loop ---------------------------------------------------------------
 
-  defp loop(pid, feature, phase, step, timeout, ledger, worktree, run_context) do
+  defp loop(pid, feature, phase, step, timeout, ledger, worktree, run_context, layout) do
     agent =
       run_phase_with_retry(
         pid,
@@ -135,6 +142,7 @@ defmodule SpeckitOrchestrator.FeatureRunner do
         step,
         timeout,
         worktree,
+        layout,
         Config.phase_max_retries()
       )
 
@@ -153,7 +161,8 @@ defmodule SpeckitOrchestrator.FeatureRunner do
           session_id: st.session_id,
           slug: feature.slug,
           path: feature.path,
-          run_context: run_context
+          run_context: run_context,
+          layout: layout
         })
 
         if worktree,
@@ -163,7 +172,8 @@ defmodule SpeckitOrchestrator.FeatureRunner do
         # tripped, halt before starting the next phase rather than mid-phase.
         if breaker_tripped?(ledger),
           do: {:halted, :breaker, agent},
-          else: loop(pid, feature, next, step + 1, timeout, ledger, worktree, run_context)
+          else:
+            loop(pid, feature, next, step + 1, timeout, ledger, worktree, run_context, layout)
 
       {:done, :done} ->
         {:done, :done, agent}
@@ -183,8 +193,8 @@ defmodule SpeckitOrchestrator.FeatureRunner do
   # up to `retries` times before giving up — a single dropped stream should not
   # fail an expensive feature. Real errors and the gate outcomes (`:escalated` /
   # `:halted`, which are signals, not `:error`) fall straight through.
-  defp run_phase_with_retry(pid, feature, phase, step, timeout, worktree, retries) do
-    agent = run_phase(pid, feature, phase, step, timeout, worktree)
+  defp run_phase_with_retry(pid, feature, phase, step, timeout, worktree, layout, retries) do
+    agent = run_phase(pid, feature, phase, step, timeout, worktree, layout)
     st = agent.state
 
     if retries > 0 and st.last_outcome == :error and PhaseResult.transient?(st.last_result) do
@@ -192,7 +202,7 @@ defmodule SpeckitOrchestrator.FeatureRunner do
         "feature #{feature.id} phase #{phase} failed transiently — retrying (#{retries} left)"
       )
 
-      run_phase_with_retry(pid, feature, phase, step, timeout, worktree, retries - 1)
+      run_phase_with_retry(pid, feature, phase, step, timeout, worktree, layout, retries - 1)
     else
       agent
     end
@@ -200,13 +210,13 @@ defmodule SpeckitOrchestrator.FeatureRunner do
 
   # Run one phase inside a telemetry span, write its transcript, and log the
   # transition.
-  defp run_phase(pid, feature, phase, step, timeout, worktree) do
+  defp run_phase(pid, feature, phase, step, timeout, worktree, layout) do
     meta = %{feature_id: feature.id, phase: phase, model: Config.model_for(phase), step: step}
 
     :telemetry.span([:speckit, :phase], meta, fn ->
       {:ok, agent} = call(pid, "phase.run", %{phase: phase}, timeout)
       entry = List.first(agent.state.history) || %{}
-      Transcripts.write(worktree, step, phase, agent.state.last_result)
+      Transcripts.write(worktree, layout, step, phase, agent.state.last_result)
       Logger.info("feature #{feature.id} phase #{phase} -> #{inspect(Map.get(entry, :outcome))}")
 
       {agent,
@@ -226,10 +236,10 @@ defmodule SpeckitOrchestrator.FeatureRunner do
 
   # Best-effort resume pointer for a diverted terminal (FR-010). Delete-on-:done
   # (US2) is wired separately once Checkpoint.delete/1 is implemented.
-  defp checkpoint(feature, :done, _reason, _agent, _run_context),
-    do: Checkpoint.delete(feature.id)
+  defp checkpoint(feature, :done, _reason, _agent, _run_context, layout),
+    do: Checkpoint.delete(feature.id, layout)
 
-  defp checkpoint(feature, status, reason, agent, run_context) do
+  defp checkpoint(feature, status, reason, agent, run_context, layout) do
     Checkpoint.write(%{
       feature_id: feature.id,
       last_phase: agent.state.phase,
@@ -238,7 +248,8 @@ defmodule SpeckitOrchestrator.FeatureRunner do
       session_id: agent.state.session_id,
       slug: feature.slug,
       path: feature.path,
-      run_context: run_context
+      run_context: run_context,
+      layout: layout
     })
   end
 
@@ -251,7 +262,7 @@ defmodule SpeckitOrchestrator.FeatureRunner do
     AgentServer.call(pid, Signal.new!(type, data, source: "/runner"), timeout)
   end
 
-  defp handle_worktree(_feature, _status, nil), do: :ok
+  defp handle_worktree(_feature, _status, nil, _layout), do: :ok
 
   # Commit whatever the pipeline generated onto the feature branch BEFORE the
   # worktree is torn down — otherwise a successful run's spec/plan/tasks/code is
@@ -259,14 +270,19 @@ defmodule SpeckitOrchestrator.FeatureRunner do
   # commit message + PR text from the real diff first (best-effort; falls back to
   # the template). Commit on kept terminals too, so a later `resolve/1` (which
   # removes the worktree) doesn't lose them either.
-  defp handle_worktree(feature, :done, %Worktree{feature_id: id, repo: repo, branch: branch} = wt) do
-    {message, pr} = authored_or_template(feature, wt)
+  defp handle_worktree(
+         feature,
+         :done,
+         %Worktree{feature_id: id, repo: repo, branch: branch} = wt,
+         layout
+       ) do
+    {message, pr} = authored_or_template(feature, wt, layout)
     _ = Worktree.squash(wt, merge_base(repo, branch), message)
-    if pr, do: Describe.write_pr(id, pr)
+    if pr, do: Describe.write_pr(id, pr, layout)
     Worktree.remove(wt)
   end
 
-  defp handle_worktree(feature, status, %Worktree{} = wt) do
+  defp handle_worktree(feature, status, %Worktree{} = wt, _layout) do
     _ = Worktree.commit(wt, "speckit: feature #{feature.id} pipeline artifacts (#{status})")
     Worktree.keep_for_inspection(wt)
   end
@@ -288,11 +304,11 @@ defmodule SpeckitOrchestrator.FeatureRunner do
 
   # Claude-authored commit message + PR text when the PR workflow is on; else the
   # mechanical template. A describe failure logs and falls back — never blocks.
-  defp authored_or_template(feature, wt) do
+  defp authored_or_template(feature, wt, layout) do
     fallback = "speckit: feature #{feature.id} pipeline artifacts (done)"
 
     if Config.pr_workflow?() do
-      case Describe.run(feature, wt) do
+      case Describe.run(feature, wt, layout) do
         {:ok, d} ->
           message = if d.commit_message == "", do: fallback, else: d.commit_message
           {message, %{pr_title: d.pr_title, pr_body: d.pr_body}}

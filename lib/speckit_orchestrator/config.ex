@@ -27,24 +27,55 @@ defmodule SpeckitOrchestrator.Config do
   @spec repo() :: String.t()
   def repo, do: get(:repo, ".")
 
-  @doc "Directory holding `NNN-*.md` breakdown files, relative to `repo/0`."
+  @doc """
+  **Legacy (pre-012).** Directory holding `NNN-*.md` breakdown files, relative
+  to `repo/0` — the flat, single-package layout `Layout`/`specs_root/0`
+  superseded (`specs/autonomous/breakdown/<slug>`, FR-005/FR-007). No new
+  write path resolves through this function; it survives only as the
+  `layout: nil` fallback in `PhaseRequest`, the facade's own placeholder/
+  legacy-package-detection scope, `SingleSpec`, and the read-only LiveViews —
+  every one of them a backward-compatibility path for a repo that hasn't
+  adopted `specs/autonomous/breakdown/` yet (FR-013).
+  """
   @spec breakdown_dir() :: String.t()
   def breakdown_dir, do: get(:breakdown_dir, "docs/breakdown")
 
-  @doc "Root under which per-feature git worktrees are created."
+  @doc """
+  **Legacy (pre-012).** Root under which per-feature git worktrees are
+  created — the sibling-of-repo default `Layout.worktree_root` (machine-global,
+  keyed by repository identity, FR-003) superseded. No new write path resolves
+  through this function; `Worktree.create/2`'s `layout: nil` (test/legacy)
+  fallback is its only remaining caller.
+  """
   @spec worktree_root() :: String.t()
   def worktree_root, do: get(:worktree_root, "../.speckit-worktrees")
 
   @doc """
-  Root for durable per-phase transcripts, resolved relative to `repo/0`. Defaults
-  to `<repo>/.speckit-transcripts` — **inside the target repo** so different
-  targets never share a transcript dir (a sibling default keyed by feature id
-  mixes `001/` across every target). These survive worktree teardown on `:done`
-  (the in-worktree `.speckit_logs` copy does not), so plan/tasks/implement output
-  stays inspectable. Gitignore `.speckit-transcripts/` in the target repo.
+  **Legacy (pre-012).** Root for durable per-phase transcripts, resolved
+  relative to `repo/0`. Defaults to `<repo>/.speckit-transcripts` — the
+  in-repo-per-target default `Layout.transcript_root` (machine-global,
+  keyed by repository identity + run scope, FR-004) superseded. No new write
+  path resolves through this function; `Transcripts`/`Checkpoint`/`Describe`'s
+  `layout: nil` (test/legacy) fallback is its only remaining caller. Gitignore
+  `.speckit-transcripts/` in the target repo if still relied on.
   """
   @spec transcript_root() :: String.t()
   def transcript_root, do: Path.expand(get(:transcript_root, ".speckit-transcripts"), repo())
+
+  @doc """
+  Machine-global base for worktrees + durable transcripts, keyed by repository
+  identity (`RepoIdentity.segment/1`). Default `~/.autonomous`, expanded at read
+  time; overridable via `Application.put_env/3` (tests point it at a tmp dir).
+  """
+  @spec autonomous_root() :: String.t()
+  def autonomous_root, do: get(:autonomous_root, "~/.autonomous") |> Path.expand()
+
+  @doc """
+  In-repo root for committed breakdown/ad-hoc feature files, relative to
+  `repo/0`. Default `specs/autonomous`.
+  """
+  @spec specs_root() :: String.t()
+  def specs_root, do: get(:specs_root, "specs/autonomous")
 
   @doc "Full per-phase model routing map."
   @spec models() :: %{atom() => String.t()}

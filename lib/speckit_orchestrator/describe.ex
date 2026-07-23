@@ -9,17 +9,22 @@ defmodule SpeckitOrchestrator.Describe do
   mechanical templates, so a describe hiccup never blocks a commit or PR.
   """
 
-  alias SpeckitOrchestrator.{Config, PhaseRequest, PhaseResult}
+  alias SpeckitOrchestrator.{Config, Layout, PhaseRequest, PhaseResult}
 
   @type description :: %{commit_message: String.t(), pr_title: String.t(), pr_body: String.t()}
 
   @doc """
   Run the describe step in `worktree` (which must still hold the feature's files
-  and git history). Returns `{:ok, description}` or `{:error, reason}`.
+  and git history). `layout` (optional) threads the run's `%Layout{}` into the
+  breakdown-ref prompt (T014); `nil` falls back to `Config.breakdown_dir/0`.
+  Returns `{:ok, description}` or `{:error, reason}`.
   """
-  @spec run(SpeckitOrchestrator.Feature.t(), map()) :: {:ok, description()} | {:error, term()}
-  def run(feature, %{path: path}) do
-    request = PhaseRequest.build(feature, :describe, cwd: path)
+  @spec run(SpeckitOrchestrator.Feature.t(), map(), Layout.t() | nil) ::
+          {:ok, description()} | {:error, term()}
+  def run(feature, worktree, layout \\ nil)
+
+  def run(feature, %{path: path}, layout) do
+    request = PhaseRequest.build(feature, :describe, cwd: path, layout: layout)
 
     case Jido.Harness.run_request(:claude, request, []) do
       {:ok, stream} -> parse(PhaseResult.reduce(stream).final_text)
@@ -27,7 +32,7 @@ defmodule SpeckitOrchestrator.Describe do
     end
   end
 
-  def run(_feature, _no_worktree), do: {:error, :no_worktree}
+  def run(_feature, _no_worktree, _layout), do: {:error, :no_worktree}
 
   @doc """
   Recover the description JSON from a transcript. Prefers the last fenced ```json
@@ -63,19 +68,25 @@ defmodule SpeckitOrchestrator.Describe do
   # still exists); the facade opens the PR later (after teardown). The PR title/
   # body travel between them via a small file under the durable transcript dir.
 
-  @doc "Persist the PR title/body for `feature_id` under the transcript dir."
-  @spec write_pr(String.t(), %{pr_title: String.t(), pr_body: String.t()}) :: :ok
-  def write_pr(feature_id, %{pr_title: title, pr_body: body}) do
-    dir = Path.join(Config.transcript_root(), feature_id)
+  @doc """
+  Persist the PR title/body for `feature_id` under the run's `%Layout{}`
+  transcript dir (scope-keyed); `layout: nil` falls back to the pre-012 flat
+  `Config.transcript_root/0`.
+  """
+  @spec write_pr(String.t(), %{pr_title: String.t(), pr_body: String.t()}, Layout.t() | nil) :: :ok
+  def write_pr(feature_id, description, layout \\ nil)
+
+  def write_pr(feature_id, %{pr_title: title, pr_body: body}, layout) do
+    dir = Path.join(durable_root(layout), feature_id)
     File.mkdir_p!(dir)
     File.write!(Path.join(dir, "pr.json"), Jason.encode!(%{pr_title: title, pr_body: body}))
     :ok
   end
 
   @doc "Read a previously-written PR title/body, or `:error` if absent/malformed."
-  @spec read_pr(String.t()) :: {:ok, %{pr_title: String.t(), pr_body: String.t()}} | :error
-  def read_pr(feature_id) do
-    path = Path.join([Config.transcript_root(), feature_id, "pr.json"])
+  @spec read_pr(String.t(), Layout.t() | nil) :: {:ok, %{pr_title: String.t(), pr_body: String.t()}} | :error
+  def read_pr(feature_id, layout \\ nil) do
+    path = Path.join([durable_root(layout), feature_id, "pr.json"])
 
     with {:ok, raw} <- File.read(path),
          {:ok, %{"pr_title" => t, "pr_body" => b}} when is_binary(t) and is_binary(b) <-
@@ -85,6 +96,9 @@ defmodule SpeckitOrchestrator.Describe do
       _ -> :error
     end
   end
+
+  defp durable_root(nil), do: Config.transcript_root()
+  defp durable_root(%Layout{transcript_root: root}), do: root
 
   # ---- JSON recovery ------------------------------------------------------
 

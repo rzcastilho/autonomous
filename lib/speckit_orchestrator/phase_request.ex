@@ -16,7 +16,7 @@ defmodule SpeckitOrchestrator.PhaseRequest do
   """
 
   alias Jido.Harness.RunRequest
-  alias SpeckitOrchestrator.{Config, Feature, Prompts}
+  alias SpeckitOrchestrator.{Config, Feature, Layout, Prompts}
 
   @slash %{
     specify: "/speckit.specify",
@@ -35,11 +35,18 @@ defmodule SpeckitOrchestrator.PhaseRequest do
     * `:session_id` — resume an existing Claude session (nil = fresh).
     * `:resume_prompt` — operator's free-text guidance for a resumed phase;
       appended as a trailing section to the built prompt. `nil`/blank = no-op.
+    * `:layout` — the run's resolved `%Layout{}` (FR-011), used to resolve the
+      **worktree-relative** breakdown ref (`Layout.in_repo_rel/1` — resolves
+      analyze finding I1). `nil` (tests, non-layout callers) falls back to
+      `Config.breakdown_dir/0`, the pre-012 flat layout.
   """
   @spec build(Feature.t(), atom(), keyword()) :: RunRequest.t()
   def build(%Feature{} = feature, phase, opts \\ []) when is_atom(phase) do
+    layout = Keyword.get(opts, :layout)
+
     %{
-      prompt: append_resume_prompt(prompt(feature, phase), Keyword.get(opts, :resume_prompt)),
+      prompt:
+        append_resume_prompt(prompt(feature, phase, layout), Keyword.get(opts, :resume_prompt)),
       cwd: Keyword.get(opts, :cwd, Config.repo()),
       model: Config.model_for(phase)
     }
@@ -61,19 +68,19 @@ defmodule SpeckitOrchestrator.PhaseRequest do
   # feature.json/branch-name — a divergent spec dir silently orphans it, so
   # spec.md gets written but plan/tasks/implementation never do (see
   # specs/001-single-spec-run — manual validation caught this in production).
-  defp prompt(feature, :specify) do
-    "#{@slash.specify} Implement the feature specified in #{breakdown_ref(feature)} " <>
+  defp prompt(feature, :specify, layout) do
+    "#{@slash.specify} Implement the feature specified in #{breakdown_ref(feature, layout)} " <>
       "(id #{feature.id}, #{feature.slug}). Use SPECIFY_FEATURE_DIRECTORY=specs/#{feature.id}-#{feature.slug}. " <>
       "Follow the constitution."
   end
 
-  defp prompt(feature, :clarify) do
+  defp prompt(feature, :clarify, layout) do
     Prompts.load("clarify") <>
       "\n\n---\nFeature under review: #{feature.id} #{feature.slug} " <>
-      "(#{breakdown_ref(feature)})."
+      "(#{breakdown_ref(feature, layout)})."
   end
 
-  defp prompt(feature, :plan) do
+  defp prompt(feature, :plan, _layout) do
     case Config.plan_stack() do
       [] ->
         @slash.plan
@@ -83,21 +90,22 @@ defmodule SpeckitOrchestrator.PhaseRequest do
     end
   end
 
-  defp prompt(_feature, :tasks), do: @slash.tasks
+  defp prompt(_feature, :tasks, _layout), do: @slash.tasks
 
-  defp prompt(_feature, :analyze), do: "#{@slash.analyze}\n\n" <> Prompts.load("analyze")
+  defp prompt(_feature, :analyze, _layout), do: "#{@slash.analyze}\n\n" <> Prompts.load("analyze")
 
-  defp prompt(_feature, :implement), do: @slash.implement
+  defp prompt(_feature, :implement, _layout), do: @slash.implement
 
-  defp prompt(feature, :converge), do: Prompts.load("converge") <> "\n\n" <> feature_tag(feature)
+  defp prompt(feature, :converge, _layout),
+    do: Prompts.load("converge") <> "\n\n" <> feature_tag(feature)
 
-  defp prompt(feature, :describe) do
+  defp prompt(feature, :describe, layout) do
     Prompts.load("describe") <>
       "\n\n---\nFeature just built: #{feature.id} #{feature.slug} " <>
-      "(#{breakdown_ref(feature)})."
+      "(#{breakdown_ref(feature, layout)})."
   end
 
-  defp prompt(_feature, phase) do
+  defp prompt(_feature, phase, _layout) do
     raise ArgumentError, "no prompt defined for phase #{inspect(phase)}"
   end
 
@@ -114,8 +122,16 @@ defmodule SpeckitOrchestrator.PhaseRequest do
   defp blank?(nil), do: true
   defp blank?(str) when is_binary(str), do: String.trim(str) == ""
 
-  defp breakdown_ref(%Feature{path: path}) do
+  # Worktree-relative (resolves analyze finding I1): a phase runs with
+  # `cwd = <worktree>`, so this is joined onto the worktree by the CLI, never
+  # an absolute base-repo path. `nil` layout (tests, non-012 callers) falls
+  # back to the pre-012 flat `Config.breakdown_dir/0`.
+  defp breakdown_ref(%Feature{path: path}, nil) do
     Path.join(Config.breakdown_dir(), Path.basename(path))
+  end
+
+  defp breakdown_ref(%Feature{path: path}, layout) do
+    Path.join(Layout.in_repo_rel(layout), Path.basename(path))
   end
 
   defp feature_tag(%Feature{id: id, slug: slug}), do: "Feature #{id} (#{slug})."

@@ -29,6 +29,47 @@ Everything here was validated against the LedgerLite Phase 7 target — see
 
 ---
 
+## Run directory layout (012)
+
+Working data lives in two places, keyed by **repository identity**
+(`<repo-name>-<shorthash>`, derived from the target's `origin` remote — a repo
+with no `origin` is refused at preflight) and **run scope** (a breakdown
+package slug, or the literal `ad-hoc`):
+
+```text
+~/.autonomous/                                  # config :autonomous_root (machine-global; default ~/.autonomous)
+├── worktrees/<repo-name>-<shorthash>/<feature_id>-<slug>/   # per-feature git worktrees
+└── transcripts/
+    ├── run.json                                # single-slot crash-recovery manifest
+    └── <repo-name>-<shorthash>/
+        ├── <breakdown-slug>/<feature_id>/{NN-<phase>.md, checkpoint.json, pr.json}
+        └── ad-hoc/<feature_id>/ ...
+
+<target_repo>/specs/autonomous/                 # config :specs_root (in-repo, committed)
+├── breakdown/<breakdown-slug>/NNN-slug.md       # feature files, one dir per package (§3)
+└── ad-hoc/NNN-slug.md                           # single-spec-run seeds
+```
+
+A **breakdown run** (`SpeckitOrchestrator.run/1`) selects one package by
+`:slug`/`:package` opt, or — with none given — the sole package directory
+under `specs/autonomous/breakdown/`; two or more with no selection is refused
+loud (`{:error, {:preflight, {:ambiguous_breakdown_package, slugs}}}`). The
+Trigger console view (`/trigger`) lists available packages and lets the
+operator pick one before starting. A package literally named `ad-hoc` is
+rejected (it would collide with the ad-hoc transcript segment).
+
+A **single-spec run** (`SpeckitOrchestrator.run_spec/2`) is always ad-hoc
+scope — its seed lands under `specs/autonomous/ad-hoc/`, never inside any
+breakdown package, and its transcripts key off the literal `ad-hoc` segment.
+
+**Migration note.** Nothing under the old paths (`../.speckit-worktrees`,
+`<repo>/.speckit-transcripts`, `docs/breakdown`) is moved, copied, or deleted —
+the new layout applies only to runs started after upgrading. **Drain
+in-flight runs before upgrading**: a checkpoint written under the old
+transcript path cannot be resumed once the layout changes.
+
+---
+
 ## First run — detailed step by step
 
 ### 1. Bootstrap the target repo (once)
@@ -62,10 +103,11 @@ floating-point money forbidden"). Vague principles cannot gate anything.
 
 ### 3. Add the feature breakdown
 
-Put `docs/breakdown/NNN-slug.md` files in the target under its `:breakdown_dir`.
-Each needs a `## Prerequisites` section (drives the DAG). **A breakdown that
-delegates a decision the sources can't answer will stall `plan`/`clarify` — see
-"Decide the tech stack" below.**
+Put `NNN-slug.md` files in the target under `specs/autonomous/breakdown/<slug>/`
+— `<slug>` is the package directory name (`run/1` selects a package by this
+slug; see "Run directory layout" above). Each needs a `## Prerequisites`
+section (drives the DAG). **A breakdown that delegates a decision the sources
+can't answer will stall `plan`/`clarify` — see "Decide the tech stack" below.**
 
 ### 4. Commit the target and preflight
 
@@ -112,7 +154,8 @@ the run drains.
 ## Single-spec run (no backlog required)
 
 To drive **exactly one** feature from a free-text description — no
-`docs/breakdown/NNN-slug.md` file to author, no prerequisites to declare — use
+`specs/autonomous/breakdown/<slug>/NNN-slug.md` file to author, no
+prerequisites to declare — use
 `SpeckitOrchestrator.run_spec/2` instead of `run/1`:
 
 ```elixir
@@ -208,12 +251,13 @@ state:  running
   under `[:speckit, :phase, …]` and `[:speckit, :feature, :terminal]`.
 - **Transcripts (two locations):**
   - Live, in-worktree: `<worktree>/.speckit_logs/NN-<phase>.md`.
-  - **Durable**: `<transcript_root>/<feature_id>/NN-<phase>.md`
-    (`config :transcript_root`, default `<repo>/.speckit-transcripts` — **inside
-    the target repo** so different targets never share a transcript dir; gitignore
-    `.speckit-transcripts/`). These survive worktree teardown on `:done`, so a
-    completed run's plan/tasks/implement transcripts stay inspectable. Read these
-    to diagnose any phase.
+  - **Durable**: `~/.autonomous/transcripts/<repo-name>-<shorthash>/<scope>/<feature_id>/NN-<phase>.md`
+    (`config :autonomous_root`, default `~/.autonomous` — **machine-global**,
+    keyed by repository identity, so different targets never share a
+    transcript dir). These survive worktree teardown on `:done`, so a
+    completed run's plan/tasks/implement transcripts stay inspectable. Read
+    these to diagnose any phase, or browse them in the console's Transcripts
+    view (`/transcripts`).
 - Rough cost: a full 7-phase feature build runs **~$10–12** (`clarify` and
   `implement` dominate). `config :budget_usd` (default 74.0) is the breaker cap.
 
@@ -244,7 +288,7 @@ git -C $T worktree remove --force /tmp/verify
 ```
 
 If plan/tasks/implement produced nothing, read
-`<transcript_root>/<feature_id>/03-plan.md` (etc.) for the blocker — usually a
+`~/.autonomous/transcripts/<repo-name>-<shorthash>/<scope>/<feature_id>/03-plan.md` (etc.) for the blocker — usually a
 missing tech stack or a Bash approval denial.
 
 ---
@@ -260,18 +304,18 @@ expose the next round's second-order questions (e.g. deciding a date sort key
 opens "does `add` take a date input?"). This is the gate converging, not a
 failure.
 
-1. **Read the escalation.** `<transcript_root>/<feature_id>/02-clarify.md` (or the
+1. **Read the escalation.** `~/.autonomous/transcripts/<repo-name>-<shorthash>/<scope>/<feature_id>/02-clarify.md` (or the
    kept worktree's `.speckit_logs/02-clarify.md`) and the spec's `## NEEDS HUMAN`
    section. Each item lists a precise question and the options considered.
 2. **Answer in the BREAKDOWN, not just the spec.** A re-run's `specify`
    regenerates `spec.md` from the breakdown, so spec-only edits are discarded.
-   Put the decisions in `docs/breakdown/NNN-slug.md` under a `## Decisions`
+   Put the decisions in `specs/autonomous/breakdown/<slug>/NNN-slug.md` under a `## Decisions`
    section (the parser ignores everything but `## Prerequisites`, so this is
    safe). Make each decision specific and testable.
 3. **Commit on the feature branch** (`feature/NNN-slug`) — the kept worktree is
    already on it:
    ```bash
-   git -C <kept-worktree> add docs/breakdown/NNN-slug.md && git commit -m "resolve H-… for NNN"
+   git -C <kept-worktree> add specs/autonomous/breakdown/<slug>/NNN-slug.md && git commit -m "resolve H-… for NNN"
    ```
 4. **Free the worktree** (the branch commit is preserved):
    ```elixir
@@ -369,7 +413,7 @@ because identity/checkpoint/phase is invalid (see the table below).
   phase's inputs — it restarts only the checkpointed (or `:from`-overridden)
   phase, not the whole pipeline.
 - Use **`resolve/1`** when the fix must regenerate upstream artifacts (e.g.
-  `spec.md` itself, via a `docs/breakdown/NNN-slug.md` decision — see
+  `spec.md` itself, via a `specs/autonomous/breakdown/<slug>/NNN-slug.md` decision — see
   "Respond to an escalation" above), or when the checkpoint is missing or
   corrupt.
 
@@ -394,7 +438,7 @@ rest still `:pending`. That's what `SpeckitOrchestrator.resume_run/1` and
 `resumable_run/0` are for — see `specs/009-crash-recovery`.
 
 Recovery relies only on durable on-disk state — git commits in each feature's
-worktree/branch plus two small JSON files under `Config.transcript_root()`
+worktree/branch plus two small JSON files under the run's `%Layout{}.transcript_root`
 (`<feature_id>/checkpoint.json` per feature, `run.json` for the run as a
 whole). No datastore, no in-memory state required (SC-005, SC-007).
 
@@ -472,7 +516,7 @@ drained features under `not_started`. Raise the budget and re-run to continue.
 `:failed` means a phase errored, the runner crashed/timed out, or the worktree
 couldn't be created (missing scaffold — run `TargetPack.verify/1`). The worktree
 is kept and its generated artifacts are committed to the branch. Inspect
-`<transcript_root>/<feature_id>/` (or the worktree's `.speckit_logs/`), fix the
+`~/.autonomous/transcripts/<repo-name>-<shorthash>/<scope>/<feature_id>/` (or the worktree's `.speckit_logs/`), fix the
 cause, and re-run (`resolve/1` first if a worktree/branch is in the way).
 
 Common `:failed` / no-output causes seen in practice:
@@ -498,7 +542,7 @@ Two deterministic gates close this:
 
 | Gate | Check | Terminal |
 |------|-------|----------|
-| artifact | after `plan` → some `specs/**/plan.md` exists; after `tasks` → `specs/**/tasks.md`; after `implement` → the worktree has changes **outside** `specs/`, `docs/breakdown/`, `.specify/`, and the log dirs | `:failed`, reason `{:missing_artifact, phase, what}` |
+| artifact | after `plan` → some `specs/**/plan.md` exists; after `tasks` → `specs/**/tasks.md`; after `implement` → the worktree has changes **outside** `specs/`, `.specify/`, and the log dirs | `:failed`, reason `{:missing_artifact, phase, what}` |
 | converge | converge's last line is `## CONVERGE: NOT READY` | `:failed`, reason `:converge_not_ready` |
 
 Both keep the worktree for post-mortem. `analyze` also escalates on a `high`
@@ -515,4 +559,4 @@ stack open:
 export SPECKIT_PLAN_STACK="Python 3 (standard library only: argparse, unittest)"
 ```
 
-Read `<transcript_root>/<feature_id>/03-plan.md` to see exactly what plan said.
+Read `~/.autonomous/transcripts/<repo-name>-<shorthash>/<scope>/<feature_id>/03-plan.md` to see exactly what plan said.
