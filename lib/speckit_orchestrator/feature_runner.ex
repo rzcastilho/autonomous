@@ -97,7 +97,8 @@ defmodule SpeckitOrchestrator.FeatureRunner do
             Pipeline.step_of(start_phase),
             timeout,
             ledger,
-            worktree
+            worktree,
+            run_context
           )
 
         call(pid, "feature.finalize", %{status: status, reason: reason}, timeout)
@@ -125,7 +126,7 @@ defmodule SpeckitOrchestrator.FeatureRunner do
 
   # ---- loop ---------------------------------------------------------------
 
-  defp loop(pid, feature, phase, step, timeout, ledger, worktree) do
+  defp loop(pid, feature, phase, step, timeout, ledger, worktree, run_context) do
     agent =
       run_phase_with_retry(
         pid,
@@ -141,11 +142,28 @@ defmodule SpeckitOrchestrator.FeatureRunner do
 
     case Pipeline.next(phase, st.last_outcome, st.last_signals) do
       {:cont, next} ->
+        # Durable resume pointer for this boundary (FR-001) — before recursing,
+        # not after, so a crash mid-next-phase still finds the checkpoint/commit
+        # for the phase that already completed.
+        Checkpoint.write(%{
+          feature_id: feature.id,
+          last_phase: phase,
+          status: :in_progress,
+          reason: nil,
+          session_id: st.session_id,
+          slug: feature.slug,
+          path: feature.path,
+          run_context: run_context
+        })
+
+        if worktree,
+          do: Worktree.commit(worktree, "speckit: #{feature.id} checkpoint after #{phase}")
+
         # Drain-don't-kill: the current phase finished; if the breaker has since
         # tripped, halt before starting the next phase rather than mid-phase.
         if breaker_tripped?(ledger),
           do: {:halted, :breaker, agent},
-          else: loop(pid, feature, next, step + 1, timeout, ledger, worktree)
+          else: loop(pid, feature, next, step + 1, timeout, ledger, worktree, run_context)
 
       {:done, :done} ->
         {:done, :done, agent}
@@ -241,9 +259,9 @@ defmodule SpeckitOrchestrator.FeatureRunner do
   # commit message + PR text from the real diff first (best-effort; falls back to
   # the template). Commit on kept terminals too, so a later `resolve/1` (which
   # removes the worktree) doesn't lose them either.
-  defp handle_worktree(feature, :done, %Worktree{feature_id: id} = wt) do
+  defp handle_worktree(feature, :done, %Worktree{feature_id: id, repo: repo, branch: branch} = wt) do
     {message, pr} = authored_or_template(feature, wt)
-    _ = Worktree.commit(wt, message)
+    _ = Worktree.squash(wt, merge_base(repo, branch), message)
     if pr, do: Describe.write_pr(id, pr)
     Worktree.remove(wt)
   end
@@ -251,6 +269,21 @@ defmodule SpeckitOrchestrator.FeatureRunner do
   defp handle_worktree(feature, status, %Worktree{} = wt) do
     _ = Worktree.commit(wt, "speckit: feature #{feature.id} pipeline artifacts (#{status})")
     Worktree.keep_for_inspection(wt)
+  end
+
+  # The branch's fork point, for squash/3's --soft reset target: the commit
+  # where the feature branch diverged from Config.pr_base() (the plain
+  # workflow's implicit base — its worktree is created from "HEAD" of the
+  # currently checked-out branch, which is pr_base by default — and the
+  # stacked workflow's explicit stack-base). Falls back to "HEAD" (a no-op
+  # reset) if the merge-base lookup itself fails.
+  defp merge_base(repo, branch) do
+    case System.cmd("git", ["-C", repo, "merge-base", branch, Config.pr_base()],
+           stderr_to_stdout: true
+         ) do
+      {out, 0} -> String.trim(out)
+      {_, _} -> "HEAD"
+    end
   end
 
   # Claude-authored commit message + PR text when the PR workflow is on; else the

@@ -72,6 +72,17 @@ defmodule SpeckitOrchestrator.Ledger do
   def spent(server \\ __MODULE__), do: GenServer.call(server, :spent)
 
   @doc """
+  Restore committed spend from a recorded figure on resume (FR-012).
+  Sets `committed = max(committed, recorded)` — idempotent and monotonic
+  (never lowers an already-higher live value); does not touch `reservations`
+  or `budget`. See `specs/009-crash-recovery/contracts/ledger-restore.md`.
+  """
+  @spec restore(GenServer.server(), number()) :: number()
+  def restore(server \\ __MODULE__, recorded) when is_number(recorded) and recorded >= 0 do
+    GenServer.call(server, {:restore, recorded})
+  end
+
+  @doc """
   Live-config apply (`contracts/live_config.md`): update the run budget.
   Forward-only — breaker decisions (`reserve/2`, `breaker_tripped?/1`) read
   the new budget starting with the next call; never retroactively alters
@@ -108,6 +119,11 @@ defmodule SpeckitOrchestrator.Ledger do
       ref = make_ref()
       {:reply, {:ok, ref}, put_in(state.reservations[ref], amount)}
     end
+  end
+
+  def handle_call({:restore, recorded}, _from, state) do
+    committed = max(state.committed, recorded)
+    {:reply, committed, %{state | committed: committed}}
   end
 
   def handle_call({:record, ref, amount}, _from, state) do

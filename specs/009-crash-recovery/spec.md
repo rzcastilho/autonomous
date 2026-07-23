@@ -37,6 +37,17 @@ not the UI.
 
 ## Clarifications
 
+### Session 2026-07-22
+
+- Q: How are the per-phase checkpoint commits reconciled at feature completion
+  (FR-004 / commit-noise edge case)? → A: **Squash** — all per-phase commits are
+  squashed into a single feature commit at completion, so the final branch/PR shows
+  one clean reviewable commit and no intermediate checkpoint commits.
+- Q: Does the system track one run's manifest at a time, or can multiple crashed
+  runs coexist on disk (FR-005 / FR-008 / FR-017)? → A: **Single manifest slot** —
+  one run is tracked at a time; starting a new run supersedes/clears the prior
+  manifest, so "is there a resumable run?" is an unambiguous single-slot check.
+
 ### Session 2026-07-21
 
 - Q: What is the atomic unit of resume — can a run resume mid-phase? → A: The
@@ -179,7 +190,7 @@ pre-crash value rather than zero, and that the resumed run still honors the budg
   US1 scenario 3).
 - **Commit noise**: per-phase commits accumulate on the feature branch; the recovery
   design MUST NOT let intermediate phase commits corrupt the final branch/PR outcome
-  (e.g. they may be squashed or otherwise reconciled at feature completion).
+  — they are squashed into a single feature commit at feature completion.
 - **Stale manifest vs a fresh run**: a leftover manifest from a completed or
   abandoned run MUST NOT be silently resumed over a new run (see US2 scenario 4).
 
@@ -199,16 +210,18 @@ pre-crash value rather than zero, and that the resumed run still honors the budg
 - **FR-003**: The system MUST commit the feature's worktree at each phase boundary so
   that every completed phase is a clean, restorable state; a resume MUST restore the
   worktree to the last such commit before re-running the interrupted phase.
-- **FR-004**: Per-phase commits MUST be reconciled at feature completion so the final
-  branch (and any PR opened under the PR workflow) reflects the feature's completed
-  work without being broken by intermediate phase commits.
+- **FR-004**: Per-phase commits MUST be squashed into a single feature commit at
+  feature completion so the final branch (and any PR opened under the PR workflow)
+  reflects the feature's completed work as one clean reviewable commit, with no
+  intermediate checkpoint commits remaining in the branch history.
 
 **Run manifest & run-level resume**
 
 - **FR-005**: The system MUST record a durable run manifest capturing the run's
   feature set, each feature's last-known lifecycle status, and the run-shaping
   context, updated as features change state, so a run can be reconstructed after a
-  crash.
+  crash. The system tracks a single active manifest at a time (one run tracked
+  concurrently); starting a new run supersedes/clears the prior manifest.
 - **FR-006**: The operator MUST be able to resume a crashed run from the manifest and
   per-feature checkpoints alone: already-`:done` features are not re-run, interrupted
   features resume at their last completed phase, and pending features release in
@@ -216,8 +229,9 @@ pre-crash value rather than zero, and that the resumed run still honors the budg
 - **FR-007**: A resumed run MUST re-execute under the run-shaping context recorded at
   the original run's start (concurrency, budget, PR workflow, PR base/remote, plan
   stack), consistent with the existing resume-context reapply behavior.
-- **FR-008**: The system MUST detect and report whether a resumable run exists (a
-  manifest with unfinished work) without starting any work on its own.
+- **FR-008**: The system MUST detect and report whether a resumable run exists (the
+  single active manifest holding unfinished work) without starting any work on its
+  own.
 
 **Feature resume**
 
@@ -264,7 +278,8 @@ pre-crash value rather than zero, and that the resumed run still honors the budg
   phase completes, serving as the clean restore point for that phase boundary.
 - **Run manifest**: the durable record of a run — its feature set, per-feature
   last-known status, and run-shaping context — used to reconstruct and continue a
-  crashed run.
+  crashed run. A single active manifest is tracked at a time; starting a new run
+  supersedes the prior one.
 - **Recorded spend**: the durable committed-spend figure used to restore the cost
   breaker on resume.
 - **Resume operation**: an operator-initiated action that reconstructs a feature (or

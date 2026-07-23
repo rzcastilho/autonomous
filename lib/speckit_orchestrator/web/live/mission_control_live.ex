@@ -15,7 +15,14 @@ defmodule SpeckitOrchestrator.Web.MissionControlLive do
 
   use SpeckitOrchestrator.Web, :live_view
 
-  alias SpeckitOrchestrator.{ConsoleProjection, ConsoleReadModel, Coordinator, Ledger}
+  alias SpeckitOrchestrator.{
+    Checkpoint,
+    ConsoleProjection,
+    ConsoleReadModel,
+    Coordinator,
+    Ledger,
+    RunManifest
+  }
 
   @status_order [:pending, :blocked, :running, :escalated, :halted, :failed, :done]
 
@@ -35,8 +42,32 @@ defmodule SpeckitOrchestrator.Web.MissionControlLive do
     view =
       ConsoleReadModel.merge(coordinator_status(), ledger_snapshot(), ConsoleProjection.read())
 
-    assign(socket, view: view)
+    assign(socket, view: overlay_manifest(view))
   end
+
+  # No live Coordinator (fresh boot, no resume yet) — fall back to the
+  # durable run manifest (specs/009-crash-recovery) so Mission Control shows
+  # last-known per-feature state instead of the blank "no active run" empty
+  # state, even though a crashed feature's status is sitting right there in
+  # checkpoint.json/run.json — including its phase timeline, so the operator
+  # can see what actually ran before the crash, not just the terminal status.
+  defp overlay_manifest(view) do
+    record = manifest_record()
+    ConsoleReadModel.overlay_last_known_statuses(view, record, checkpoints_for(record))
+  end
+
+  defp manifest_record do
+    case RunManifest.read() do
+      {:ok, record} -> record
+      _ -> nil
+    end
+  end
+
+  defp checkpoints_for(%{"statuses" => statuses}) when is_map(statuses) do
+    Map.new(statuses, fn {id, _status} -> {id, Checkpoint.read(id)} end)
+  end
+
+  defp checkpoints_for(_record), do: %{}
 
   defp coordinator_status do
     if Process.whereis(Coordinator), do: Coordinator.status(Coordinator)
@@ -66,7 +97,7 @@ defmodule SpeckitOrchestrator.Web.MissionControlLive do
         socket
       ) do
     view = ConsoleReadModel.merge(coordinator_status, ledger_snapshot, ConsoleProjection.read())
-    {:noreply, assign(socket, view: view)}
+    {:noreply, assign(socket, view: overlay_manifest(view))}
   end
 
   def handle_info({:console, :run_finished, report}, socket) do
@@ -89,13 +120,24 @@ defmodule SpeckitOrchestrator.Web.MissionControlLive do
 
   @impl true
   def render(assigns) do
-    assigns = assign(assigns, :status_counts, status_counts(assigns.view))
+    assigns =
+      assigns
+      |> assign(:status_counts, status_counts(assigns.view))
+      |> assign(:recovered?, not assigns.view.active? and assigns.view.per_feature != %{})
 
     ~H"""
     <div class="view-mission-control" data-view="mission-control">
-      <div :if={not @view.active?} class="empty-state" data-state="no-active-run">
+      <div :if={not @view.active? and not @recovered?} class="empty-state" data-state="no-active-run">
         <p>No active run.</p>
         <p>Start one from <a href="/trigger">Trigger Run</a>.</p>
+      </div>
+
+      <div :if={@recovered?} class="recovered-banner" data-state="recovered-run">
+        <p>Showing last known state from before a restart — not live.</p>
+        <p>
+          Resume it from <code>iex</code>: <code>SpeckitOrchestrator.resume_run/1</code>,
+          or start a new one from <a href="/trigger">Trigger Run</a>.
+        </p>
       </div>
 
       <div :if={@view.active? and @view.finished?} class="run-finished" data-state="finished">
@@ -116,7 +158,7 @@ defmodule SpeckitOrchestrator.Web.MissionControlLive do
         </dl>
       </div>
 
-      <div :if={@view.active? and not @view.finished?} class="run-live" data-state="live">
+      <div :if={(@view.active? or @recovered?) and not @view.finished?} class="run-live" data-state="live">
         <div class="mission-grid">
           <div class="mission-main">
             <div class="status-count-strip">

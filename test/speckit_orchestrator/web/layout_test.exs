@@ -7,11 +7,17 @@ defmodule SpeckitOrchestrator.Web.LayoutTest do
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
 
-  alias SpeckitOrchestrator.{Coordinator, Feature, Pipeline}
+  alias SpeckitOrchestrator.{Coordinator, Feature, Pipeline, RunManifest}
 
   @endpoint SpeckitOrchestrator.Web.Endpoint
 
   setup do
+    # :transcript_root is pinned to one shared tmp path for the whole test env
+    # (config/config.exs) — a previous test's real Coordinator (default
+    # :manifest seam) may have left a run manifest there, which the
+    # crash-recovery overlay (specs/009-crash-recovery) would otherwise read
+    # into this test's "no active run" assertions.
+    RunManifest.clear()
     {:ok, conn: Phoenix.ConnTest.build_conn()}
   end
 

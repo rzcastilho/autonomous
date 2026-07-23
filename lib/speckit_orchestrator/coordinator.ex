@@ -26,7 +26,7 @@ defmodule SpeckitOrchestrator.Coordinator do
 
   use GenServer
 
-  alias SpeckitOrchestrator.{Feature, Ledger, Release}
+  alias SpeckitOrchestrator.{Feature, Ledger, Release, RunManifest}
 
   @type status :: Feature.status()
 
@@ -40,7 +40,9 @@ defmodule SpeckitOrchestrator.Coordinator do
             owner: nil,
             self_pid: nil,
             finished?: false,
-            report: nil
+            report: nil,
+            manifest: nil,
+            context: %{}
 
   # ---- Client API ---------------------------------------------------------
 
@@ -54,6 +56,15 @@ defmodule SpeckitOrchestrator.Coordinator do
       arranges for `notify.(id, status, reason)` on terminal. Required.
     * `:owner` — pid to receive `{:run_complete, report}` (optional).
     * `:name` — process name (optional).
+    * `:statuses` — seed `%{feature_id => status}` map (default: all
+      `:pending`) — lets a crash-recovered run reconstruct which features are
+      already `:done`/diverted so they are never re-released (FR-006, SC-002).
+    * `:manifest` — module implementing `RunManifest`'s `write/1` (default
+      `RunManifest`; tests inject a fake). Written on `init`, each
+      `spawn_feature`, and each feature's `{:finished, ...}` notification —
+      best-effort, never affects wave logic.
+    * `:context` — the run-shaping context (`RunContext.t()` or its map)
+      recorded into the manifest alongside each write (FR-007).
   """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -90,13 +101,17 @@ defmodule SpeckitOrchestrator.Coordinator do
 
     state = %__MODULE__{
       features: Map.new(features, &{&1.id, &1}),
-      statuses: Map.new(features, &{&1.id, :pending}),
+      statuses: Keyword.get(opts, :statuses, Map.new(features, &{&1.id, :pending})),
       cap: Keyword.get(opts, :max_concurrency, default_cap()),
       ledger: Keyword.get(opts, :ledger),
       runner: runner,
       owner: Keyword.get(opts, :owner),
+      manifest: Keyword.get(opts, :manifest, RunManifest),
+      context: Keyword.get(opts, :context, %{}),
       self_pid: self()
     }
+
+    write_manifest(state)
 
     {:ok, state, {:continue, :release}}
   end
@@ -111,6 +126,8 @@ defmodule SpeckitOrchestrator.Coordinator do
       | statuses: Map.put(state.statuses, id, status),
         inflight: MapSet.delete(state.inflight, id)
     }
+
+    write_manifest(state)
 
     {:noreply, advance(state)}
   end
@@ -142,12 +159,16 @@ defmodule SpeckitOrchestrator.Coordinator do
     notify = fn fid, status, reason -> notify(state.self_pid, fid, status, reason) end
     state.runner.(feature, notify)
 
-    %{
+    new_state = %{
       state
       | statuses: Map.put(state.statuses, id, :running),
         inflight: MapSet.put(state.inflight, id),
         started_at: Map.put(state.started_at, id, now_ms())
     }
+
+    write_manifest(new_state)
+
+    new_state
   end
 
   # The run ends when nothing is in flight and nothing more can be released
@@ -248,6 +269,21 @@ defmodule SpeckitOrchestrator.Coordinator do
 
   defp spend(%__MODULE__{ledger: nil}), do: 0.0
   defp spend(%__MODULE__{ledger: ledger}), do: Ledger.spent(ledger)
+
+  # Best-effort manifest write (Principle I — the seam keeps the wave/DAG/
+  # breaker scheduler unit-testable without disk); a write failure never
+  # affects wave logic (data-model.md Entity 3).
+  defp write_manifest(state) do
+    state.manifest.write(%{
+      features: feature_list(state),
+      statuses: state.statuses,
+      context: state.context,
+      spend: spend(state),
+      updated_at: System.system_time()
+    })
+
+    state
+  end
 
   defp default_cap, do: SpeckitOrchestrator.Config.max_concurrency()
 end

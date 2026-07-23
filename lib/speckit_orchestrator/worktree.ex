@@ -128,6 +128,62 @@ defmodule SpeckitOrchestrator.Worktree do
   end
 
   @doc """
+  Collapse the per-phase checkpoint commits made since `base_ref` into one
+  commit (FR-004). `git reset --soft base_ref` moves the branch pointer back to
+  the fork point while keeping the working tree and index untouched, so the
+  post-squash tree is byte-identical to pre-squash `HEAD` — only history
+  changes. Returns `:noop` when nothing is staged after the reset (a feature
+  that produced no changes beyond `base_ref`), `{:error, term}` on a git
+  failure.
+
+  Called on `:done`, replacing the per-phase `Worktree.commit/2` calls with one
+  clean terminal commit. Never called on a kept terminal
+  (`:escalated`/`:halted`/`:failed`) — the per-phase commits remain as the
+  post-mortem trail.
+
+  See `specs/009-crash-recovery/contracts/worktree-squash-restore.md`.
+  """
+  @spec squash(t(), String.t(), String.t()) :: :ok | :noop | {:error, term()}
+  def squash(%__MODULE__{path: path}, base_ref, message) do
+    with {:ok, _} <- git(path, ["reset", "--soft", base_ref]) do
+      case git(path, ["diff", "--cached", "--quiet"]) do
+        {:ok, _} ->
+          :noop
+
+        {:error, _} ->
+          case git(path, [
+                 "-c",
+                 "user.name=speckit-orchestrator",
+                 "-c",
+                 "user.email=orchestrator@speckit.local",
+                 "commit",
+                 "-m",
+                 message
+               ]) do
+            {:ok, _} -> :ok
+            {:error, _} = err -> err
+          end
+      end
+    end
+  end
+
+  @doc """
+  Discard any uncommitted output before a resumed phase re-runs (FR-003):
+  `git reset --hard HEAD` then `git clean -fd`, returning the worktree to the
+  last phase-boundary commit. `clean -fd` respects `.gitignore`, so
+  `.speckit_logs/` transcripts (the audit trail) survive.
+
+  See `specs/009-crash-recovery/contracts/worktree-squash-restore.md`.
+  """
+  @spec restore(t()) :: :ok | {:error, term()}
+  def restore(%__MODULE__{path: path}) do
+    with {:ok, _} <- git(path, ["reset", "--hard", "HEAD"]),
+         {:ok, _} <- git(path, ["clean", "-fd"]) do
+      :ok
+    end
+  end
+
+  @doc """
   Push the feature branch to `remote`, setting upstream (`push -u`). Used by the
   stacked PR workflow after the terminal commit so a PR can be opened against it.
   Runs against the base repo (works whether or not the worktree still exists).

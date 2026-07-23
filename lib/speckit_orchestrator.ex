@@ -21,6 +21,7 @@ defmodule SpeckitOrchestrator do
     PullRequest,
     Report,
     RunContext,
+    RunManifest,
     SingleSpec,
     StackTracker,
     TargetPack,
@@ -59,6 +60,9 @@ defmodule SpeckitOrchestrator do
   """
   @spec run(keyword()) :: GenServer.on_start() | {:error, term()}
   def run(opts \\ []) do
+    # Single-slot rule (FR-005): a new run supersedes the prior manifest — the
+    # fresh Coordinator's first write (from `init/1`) replaces it immediately.
+    RunManifest.clear()
     run_context = RunContext.capture(opts)
 
     if Keyword.get(opts, :pr_workflow, Config.pr_workflow?()) do
@@ -66,6 +70,7 @@ defmodule SpeckitOrchestrator do
     else
       start_run(opts,
         max_concurrency: Keyword.get(opts, :max_concurrency, Config.max_concurrency()),
+        context: run_context,
         runner:
           Keyword.get(opts, :runner, fn feature, notify ->
             default_runner(feature, notify, run_context)
@@ -228,6 +233,195 @@ defmodule SpeckitOrchestrator do
     end
   end
 
+  @doc """
+  Detect & report a resumable run without starting any work (FR-008, SC-006).
+  Safe to call on boot. Reads the single-slot run manifest and classifies it:
+  a summary map when at least one feature is `:running`/`:pending` (an
+  interrupted or never-released feature), `:none` when every feature is
+  `:done` or a gate divert, or a loud error on a missing/corrupt manifest.
+
+  See `specs/009-crash-recovery/contracts/resume_run.md`.
+  """
+  @spec resumable_run() ::
+          {:ok, %{features: list(), statuses: map(), spend: number(), context: map()}}
+          | :none
+          | {:error, :no_manifest}
+          | {:error, :corrupt_manifest}
+  def resumable_run do
+    case read_manifest() do
+      {:error, _} = err ->
+        err
+
+      {:ok, record} ->
+        if RunManifest.resumable?() do
+          {:ok,
+           %{
+             features: record["features"],
+             statuses: record["statuses"],
+             spend: record["spend"],
+             context: record["context"]
+           }}
+        else
+          :none
+        end
+    end
+  end
+
+  @doc """
+  Reconstruct and continue a crashed run from the durable run manifest
+  (FR-006/007). `:done` and gate-diverted (`:escalated`/`:halted`/`:failed`)
+  features are kept as-is and never re-run (SC-002, FR-015); `:running`
+  (interrupted) and `:pending` (never released) features are reset to
+  `:pending` and released in dependency-and-cap order — a checkpointed
+  feature resumes at the phase after its `last_phase` (reusing feature 007's
+  `resume/2` machinery); a never-started feature runs fresh from
+  `Pipeline.first()`.
+
+  Restores the `Ledger`'s committed spend from the manifest's recorded figure
+  (FR-012) before any wave releases, and reapplies the manifest's run-shaping
+  context (`RunContext.merge/2` precedence: explicit opt > recorded > live
+  Config) so the resumed run continues under its original shape (FR-007).
+
+  Options: same as `run/1`, plus:
+    * `:force` — proceed even if a different `Coordinator` is already alive
+      with an unfinished run (default `false` — refuses without it, FR-017).
+
+  Returns `{:error, :no_manifest}` / `{:error, :corrupt_manifest}` on a
+  missing/corrupt manifest, or `{:error, {:active_run, pid}}` when a live
+  unfinished run is present and `:force` was not given — every failure starts
+  no work (Principle II).
+
+  See `specs/009-crash-recovery/contracts/resume_run.md`.
+  """
+  @spec resume_run(keyword()) ::
+          GenServer.on_start()
+          | {:error, :no_manifest}
+          | {:error, :corrupt_manifest}
+          | {:error, {:active_run, pid()}}
+  def resume_run(opts \\ []) do
+    with :ok <- guard_active_run(opts),
+         {:ok, record} <- read_manifest() do
+      {features, statuses} = RunManifest.reconstruct(record)
+      Ledger.restore(Ledger, record["spend"] || 0)
+
+      {merged_opts, fell_back} = RunContext.merge(opts, RunContext.from_map(record["context"]))
+      log_context_fallback("run", fell_back)
+
+      run_context = RunContext.capture(merged_opts)
+      pr_workflow? = Keyword.get(merged_opts, :pr_workflow, Config.pr_workflow?())
+
+      merged_opts
+      |> Keyword.put(:features, features)
+      |> Keyword.put(:statuses, statuses)
+      |> inject_resume_run_strategy(pr_workflow?, run_context)
+      |> run()
+    end
+  end
+
+  defp guard_active_run(opts) do
+    if Keyword.get(opts, :force, false) do
+      :ok
+    else
+      case Process.whereis(@coordinator) do
+        nil -> :ok
+        pid -> if Coordinator.status(pid).finished?, do: :ok, else: {:error, {:active_run, pid}}
+      end
+    end
+  end
+
+  defp read_manifest do
+    case RunManifest.read() do
+      {:ok, record} -> {:ok, record}
+      {:error, :no_manifest} -> {:error, :no_manifest}
+      {:error, :corrupt} -> {:error, :corrupt_manifest}
+    end
+  end
+
+  # A caller-supplied :runner/:executor still wins (test seam), same
+  # precedence as inject_resume_strategy/5 below.
+  defp inject_resume_run_strategy(opts, pr_workflow?, run_context) do
+    cond do
+      Keyword.has_key?(opts, :runner) or Keyword.has_key?(opts, :executor) ->
+        opts
+
+      pr_workflow? ->
+        Keyword.put(opts, :executor, resume_run_executor(run_context))
+
+      true ->
+        Keyword.put(opts, :runner, resume_run_runner(run_context))
+    end
+  end
+
+  defp resume_run_runner(run_context) do
+    fn feature, notify ->
+      Task.Supervisor.start_child(SpeckitOrchestrator.RunnerSup, fn ->
+        dispatch_resume(feature, nil, notify, run_context)
+      end)
+
+      :ok
+    end
+  end
+
+  # Executor shape for the PR workflow — `base` (the stack's current top) is
+  # used only for a never-started :pending feature; a checkpointed feature
+  # ignores it and reuses/recreates its own existing worktree/branch.
+  defp resume_run_executor(run_context) do
+    fn feature, base, notify ->
+      Task.Supervisor.start_child(SpeckitOrchestrator.RunnerSup, fn ->
+        dispatch_resume(feature, base, notify, run_context)
+      end)
+
+      :ok
+    end
+  end
+
+  defp dispatch_resume(feature, base, notify, run_context) do
+    case Checkpoint.read(feature.id) do
+      {:ok, record} -> run_from_checkpoint(feature, record, notify, run_context)
+      {:error, :no_checkpoint} -> run_fresh(feature, base, notify, run_context)
+      {:error, :corrupt} -> notify.(feature.id, :failed, {:checkpoint, :corrupt})
+    end
+  end
+
+  defp run_from_checkpoint(feature, record, notify, run_context) do
+    case resolve_start_phase(record, []) do
+      {:ok, start_phase} ->
+        case resume_worktree(feature) do
+          {:ok, worktree} ->
+            FeatureRunner.run(feature,
+              worktree: worktree,
+              ledger: Ledger,
+              notify: notify,
+              start_phase: start_phase,
+              run_context: run_context
+            )
+
+          {:error, reason} ->
+            notify.(feature.id, :failed, {:worktree, reason})
+        end
+
+      {:error, reason} ->
+        notify.(feature.id, :failed, reason)
+    end
+  end
+
+  defp run_fresh(feature, base, notify, run_context) do
+    create_opts = if base, do: [base: base], else: []
+
+    case Worktree.create(feature, create_opts) do
+      {:ok, worktree} ->
+        FeatureRunner.run(feature,
+          worktree: worktree,
+          ledger: Ledger,
+          notify: notify,
+          run_context: run_context
+        )
+
+      {:error, reason} ->
+        notify.(feature.id, :failed, {:worktree, reason})
+    end
+  end
+
   # FR-007/008: explicit resume opt > recorded context > live Config/default.
   # A caller-supplied :runner/:executor still wins (test seam) regardless of
   # the effective pr_workflow — checked here rather than at run/1 since resume
@@ -300,10 +494,10 @@ defmodule SpeckitOrchestrator do
   # same way). Never String.to_atom/1 on file contents (atom-table safety) —
   # guarded by Pipeline.phase?/1, catching the case where the stored string
   # never was a real atom at all (a hand-corrupted checkpoint).
-  defp resolve_start_phase(%{"last_phase" => last_phase}, opts) do
+  defp resolve_start_phase(%{"last_phase" => last_phase} = record, opts) do
     case Keyword.fetch(opts, :from) do
       {:ok, from} -> validate_phase(from)
-      :error -> parse_checkpoint_phase(last_phase)
+      :error -> parse_checkpoint_phase(last_phase, Map.get(record, "status"))
     end
   end
 
@@ -311,11 +505,27 @@ defmodule SpeckitOrchestrator do
     if Pipeline.phase?(phase), do: {:ok, phase}, else: {:error, {:unknown_phase, phase}}
   end
 
-  defp parse_checkpoint_phase(last_phase) do
-    validate_phase(String.to_existing_atom(last_phase))
+  defp parse_checkpoint_phase(last_phase, status) do
+    with {:ok, phase} <- validate_phase(String.to_existing_atom(last_phase)) do
+      resume_from_phase(phase, status)
+    end
   rescue
     ArgumentError -> {:error, {:unknown_phase, last_phase}}
   end
+
+  # An "in_progress" checkpoint records the phase that already completed
+  # cleanly (FR-001) — resume continues at the *next* phase, not a re-run of
+  # one already done. A divert checkpoint (escalated/halted/failed, or an
+  # old-shape record with no status at all) records the phase that needs
+  # re-running itself — unchanged from feature 007.
+  defp resume_from_phase(phase, "in_progress") do
+    case Pipeline.next(phase, :ok, %{}) do
+      {:cont, next} -> {:ok, next}
+      {:done, :done} -> {:ok, phase}
+    end
+  end
+
+  defp resume_from_phase(phase, _status), do: {:ok, phase}
 
   # Reuse the kept worktree if one exists (a prior resolve/1 froze it, or the
   # feature never tore it down); else recreate it from the existing branch.
@@ -373,13 +583,22 @@ defmodule SpeckitOrchestrator do
     end
   end
 
+  # Restores the located/recreated worktree before the caller re-runs the
+  # interrupted phase (FR-003) — discards any uncommitted partial output a
+  # crash left behind. A harmless no-op on a freshly created worktree.
   defp resume_worktree(feature) do
     worktree = Worktree.locate(feature)
 
-    cond do
-      File.dir?(worktree.path) -> {:ok, worktree}
-      branch_exists?(worktree.repo, worktree.branch) -> Worktree.create(feature)
-      true -> {:error, :branch_missing}
+    result =
+      cond do
+        File.dir?(worktree.path) -> {:ok, worktree}
+        branch_exists?(worktree.repo, worktree.branch) -> Worktree.create(feature)
+        true -> {:error, :branch_missing}
+      end
+
+    with {:ok, wt} <- result do
+      _ = Worktree.restore(wt)
+      {:ok, wt}
     end
   end
 
@@ -400,14 +619,22 @@ defmodule SpeckitOrchestrator do
     # any prior one first — re-running replaces the previous run.
     stop_previous_run()
 
-    Coordinator.start_link(
-      [
-        features: Keyword.get_lazy(opts, :features, &load_backlog/0),
-        ledger: Ledger,
-        owner: Keyword.get(opts, :owner, self()),
-        name: @coordinator
-      ] ++ extra
-    )
+    base = [
+      features: Keyword.get_lazy(opts, :features, &load_backlog/0),
+      ledger: Ledger,
+      owner: Keyword.get(opts, :owner, self()),
+      name: @coordinator
+    ]
+
+    # Only forwarded when the caller (resume_run/1) supplied it — an absent key
+    # preserves Coordinator.init/1's own all-:pending default (FR-006).
+    base =
+      case Keyword.fetch(opts, :statuses) do
+        {:ok, statuses} -> Keyword.put(base, :statuses, statuses)
+        :error -> base
+      end
+
+    Coordinator.start_link(base ++ extra)
   end
 
   defp stop_previous_run do
@@ -584,7 +811,7 @@ defmodule SpeckitOrchestrator do
 
       runner = Keyword.get(opts, :runner) || stacked_runner(tracker, publisher, executor)
 
-      start_run(opts, max_concurrency: 1, runner: runner)
+      start_run(opts, max_concurrency: 1, context: run_context, runner: runner)
     end
   end
 

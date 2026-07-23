@@ -19,11 +19,13 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
 
   alias SpeckitOrchestrator.{
     Backlog,
+    Checkpoint,
     Config,
     ConsoleProjection,
     ConsoleReadModel,
     Coordinator,
-    Ledger
+    Ledger,
+    RunManifest
   }
 
   alias SpeckitOrchestrator.Web.PipelineDagLayout
@@ -45,7 +47,12 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
     source = Path.join(Config.repo(), Config.breakdown_dir())
 
     try do
-      dag_layout = source |> Backlog.load!() |> PipelineDagLayout.layout()
+      # A missing breakdown dir is a valid empty backlog (e.g. a project run
+      # only via single-spec/ad-hoc mode never creates one) — not a parse
+      # error; only an existing-but-invalid backlog (dangling prereq, cycle,
+      # unreadable file) should surface as backlog_error.
+      features = if File.dir?(source), do: Backlog.load!(source), else: []
+      dag_layout = PipelineDagLayout.layout(features)
 
       assign(socket,
         backlog_error: nil,
@@ -61,8 +68,31 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
     view =
       ConsoleReadModel.merge(coordinator_status(), ledger_snapshot(), ConsoleProjection.read())
 
-    assign(socket, view: view)
+    assign(socket, view: overlay_manifest(view))
   end
+
+  # No live Coordinator (fresh boot, no resume yet) — fall back to the
+  # durable run manifest (specs/009-crash-recovery) so the DAG reflects the
+  # last known status instead of every node defaulting to :pending, and each
+  # feature's own checkpoint so its phase timeline shows what actually ran
+  # rather than looking like nothing happened.
+  defp overlay_manifest(view) do
+    record = manifest_record()
+    ConsoleReadModel.overlay_last_known_statuses(view, record, checkpoints_for(record))
+  end
+
+  defp manifest_record do
+    case RunManifest.read() do
+      {:ok, record} -> record
+      _ -> nil
+    end
+  end
+
+  defp checkpoints_for(%{"statuses" => statuses}) when is_map(statuses) do
+    Map.new(statuses, fn {id, _status} -> {id, Checkpoint.read(id)} end)
+  end
+
+  defp checkpoints_for(_record), do: %{}
 
   defp coordinator_status do
     if Process.whereis(Coordinator), do: Coordinator.status(Coordinator)
@@ -90,7 +120,7 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
         socket
       ) do
     view = ConsoleReadModel.merge(coordinator_status, ledger_snapshot, ConsoleProjection.read())
-    {:noreply, assign(socket, view: view)}
+    {:noreply, assign(socket, view: overlay_manifest(view))}
   end
 
   def handle_info({:console, :run_finished, report}, socket) do

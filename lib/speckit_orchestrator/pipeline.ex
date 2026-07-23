@@ -69,6 +69,22 @@ defmodule SpeckitOrchestrator.Pipeline do
   @spec phase?(atom()) :: boolean()
   def phase?(phase), do: phase in @ordered
 
+  @doc """
+  Safely parse a phase name string (e.g. from a checkpoint/manifest file) into
+  its atom — never `String.to_atom/1` on file-sourced content (atom-table
+  safety). `:error` for anything not naming a real ordered phase, including a
+  garbled or unrecognized value.
+  """
+  @spec parse(String.t()) :: {:ok, phase()} | :error
+  def parse(phase) when is_binary(phase) do
+    atom = String.to_existing_atom(phase)
+    if phase?(atom), do: {:ok, atom}, else: :error
+  rescue
+    ArgumentError -> :error
+  end
+
+  def parse(_phase), do: :error
+
   @doc "The 1-indexed step number of `phase` in the run order."
   @spec step_of(phase()) :: pos_integer()
   def step_of(phase), do: Enum.find_index(@ordered, &(&1 == phase)) + 1

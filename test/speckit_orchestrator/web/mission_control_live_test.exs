@@ -7,12 +7,31 @@ defmodule SpeckitOrchestrator.Web.MissionControlLiveTest do
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
 
-  alias SpeckitOrchestrator.{ConsoleProjection, Coordinator, Feature}
+  alias SpeckitOrchestrator.{Checkpoint, ConsoleProjection, Coordinator, Feature, RunManifest}
 
   @endpoint SpeckitOrchestrator.Web.Endpoint
 
   setup do
+    prior_transcript_root = Application.get_env(:speckit_orchestrator, :transcript_root)
+
+    on_exit(fn ->
+      case prior_transcript_root do
+        nil -> Application.delete_env(:speckit_orchestrator, :transcript_root)
+        v -> Application.put_env(:speckit_orchestrator, :transcript_root, v)
+      end
+    end)
+
+    # :transcript_root is pinned to one shared tmp path for the whole test env
+    # (config/config.exs) — any earlier test's real Coordinator (default
+    # :manifest seam) may have left a run manifest there. Clear it so this
+    # test's "no live Coordinator" assertions see a clean slot, not another
+    # test's leftover state (specs/009-crash-recovery overlay).
+    RunManifest.clear()
     {:ok, conn: Phoenix.ConnTest.build_conn()}
+  end
+
+  defp point_transcripts_at(dir) do
+    Application.put_env(:speckit_orchestrator, :transcript_root, dir)
   end
 
   defp feat(id, prereqs \\ []),
@@ -126,5 +145,75 @@ defmodule SpeckitOrchestrator.Web.MissionControlLiveTest do
 
     assert html =~ ~s(data-state="no-active-run")
     assert html =~ "No active run"
+  end
+
+  test "after a restart with no live Coordinator, shows last-known status from the run manifest via the recovered-run banner",
+       %{conn: conn} do
+    refute Process.whereis(Coordinator)
+
+    :ok =
+      RunManifest.write(%{
+        features: [feat("mc5"), feat("mc6", ["mc5"])],
+        statuses: %{"mc5" => :halted, "mc6" => :pending},
+        context: %{},
+        spend: 2.0,
+        updated_at: 1
+      })
+
+    {:ok, _view, html} = live(conn, "/")
+
+    refute html =~ ~s(data-state="no-active-run")
+    assert html =~ ~s(data-state="recovered-run")
+    assert html =~ "SpeckitOrchestrator.resume_run/1"
+    assert html =~ ~s(data-feature-row="mc5")
+    assert html =~ ~s(data-feature-row="mc6")
+
+    [halted_cell] =
+      Regex.run(~r/<div class="status-count-cell" data-status="halted">.*?<\/div>/s, html)
+
+    assert halted_cell =~ ">1<"
+  end
+
+  test "after a restart, a halted feature's row shows its phase progress from the checkpoint, and clicking it opens a drawer with the same timeline",
+       %{conn: conn} do
+    point_transcripts_at(Path.join(System.tmp_dir!(), "mc_checkpoint_#{System.unique_integer()}"))
+    refute Process.whereis(Coordinator)
+
+    :ok =
+      RunManifest.write(%{
+        features: [feat("mc7")],
+        statuses: %{"mc7" => :halted},
+        context: %{},
+        spend: 1.0,
+        updated_at: 1
+      })
+
+    :ok =
+      Checkpoint.write(%{
+        feature_id: "mc7",
+        last_phase: :analyze,
+        status: :halted,
+        reason: :critical_finding,
+        session_id: "s1",
+        slug: "slug-mc7",
+        path: "mc7.md"
+      })
+
+    {:ok, view, html} = live(conn, "/")
+
+    row = Regex.run(~r/<tr[^>]*data-feature-row="mc7".*?<\/tr>/s, html) |> hd()
+
+    for phase <- ~w(specify clarify plan tasks) do
+      [cell] = Regex.run(~r/<span[^>]*data-phase="#{phase}"[^>]*>/, row)
+      assert cell =~ "phase-cell-completed"
+    end
+
+    [analyze_cell] = Regex.run(~r/<span[^>]*data-phase="analyze"[^>]*>/, row)
+    assert analyze_cell =~ "phase-cell-halted"
+
+    html = render_click(view, "select_feature", %{"id" => "mc7"})
+    [drawer] = Regex.run(~r/<aside class="feature-drawer".*?<\/aside>/s, html)
+    assert drawer =~ ~s(data-phase="analyze" data-phase-state="halted")
+    assert drawer =~ "/transcripts?feature=mc7&amp;phase=analyze"
   end
 end

@@ -129,6 +129,68 @@ defmodule SpeckitOrchestrator.WorktreeTest do
     assert before == after_
   end
 
+  @tag :integration
+  test "squash/3 collapses N per-phase commits into one at the fork point" do
+    repo = base_repo()
+    {:ok, wt} = Worktree.create(feature(), with_root(repo))
+    {base_sha, 0} = System.cmd("git", ["-C", repo, "rev-parse", "HEAD"])
+    base_sha = String.trim(base_sha)
+
+    for n <- 1..3 do
+      File.write!(Path.join(wt.path, "file#{n}.txt"), "phase #{n}\n")
+      git!(wt.path, ["add", "-A"])
+      git!(wt.path, ["commit", "-q", "-m", "speckit: 001 checkpoint after phase#{n}"])
+    end
+
+    {pre_squash_head, 0} = System.cmd("git", ["-C", repo, "rev-parse", wt.branch])
+    pre_squash_head = String.trim(pre_squash_head)
+
+    assert :ok = Worktree.squash(wt, base_sha, "speckit: 001 pipeline artifacts (done)")
+
+    {count, 0} =
+      System.cmd("git", ["-C", repo, "rev-list", "--count", "#{base_sha}..#{wt.branch}"])
+
+    assert String.trim(count) == "1"
+
+    {diff, 0} = System.cmd("git", ["-C", repo, "diff", pre_squash_head, wt.branch])
+    assert diff == ""
+  end
+
+  @tag :integration
+  test "squash/3 returns :noop when nothing is staged after the reset" do
+    repo = base_repo()
+    {:ok, wt} = Worktree.create(feature(), with_root(repo))
+    {head, 0} = System.cmd("git", ["-C", repo, "rev-parse", wt.branch])
+    head = String.trim(head)
+
+    assert :noop = Worktree.squash(wt, head, "nothing to squash")
+  end
+
+  @tag :integration
+  test "restore/1 discards an uncommitted partial file and preserves gitignored transcripts" do
+    repo = base_repo()
+    {:ok, wt} = Worktree.create(feature(), with_root(repo))
+
+    File.mkdir_p!(Path.join(wt.path, "lib"))
+    File.write!(Path.join(wt.path, "lib/ledger.ex"), "defmodule Ledger do\nend\n")
+    git!(wt.path, ["add", "-A"])
+    git!(wt.path, ["commit", "-q", "-m", "clean commit"])
+
+    File.write!(Path.join(wt.path, ".gitignore"), ".speckit_logs/\n")
+    File.mkdir_p!(Path.join(wt.path, ".speckit_logs"))
+    File.write!(Path.join(wt.path, ".speckit_logs/01-specify.md"), "transcript\n")
+    git!(wt.path, ["add", ".gitignore"])
+    git!(wt.path, ["commit", "-q", "-m", "gitignore"])
+
+    File.write!(Path.join(wt.path, "lib/partial.ex"), "defmodule Partial do\nend\n")
+
+    assert :ok = Worktree.restore(wt)
+
+    refute File.exists?(Path.join(wt.path, "lib/partial.ex"))
+    assert File.exists?(Path.join(wt.path, "lib/ledger.ex"))
+    assert File.exists?(Path.join(wt.path, ".speckit_logs/01-specify.md"))
+  end
+
   test "push/2 sends the feature branch to the configured remote" do
     repo = base_repo()
     {:ok, wt} = Worktree.create(feature(), with_root(repo))

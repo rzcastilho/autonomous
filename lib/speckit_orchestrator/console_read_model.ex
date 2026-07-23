@@ -11,6 +11,8 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
   reconcile.
   """
 
+  alias SpeckitOrchestrator.Pipeline
+
   @feed_limit 200
 
   @type event_entry :: %{
@@ -157,6 +159,98 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
       feed: feed
     }
   end
+
+  @doc """
+  Overlay a durable run manifest's last-known per-feature statuses (and, where
+  available, each feature's checkpointed phase progress) onto an
+  otherwise-empty `per_feature` (no live `Coordinator` — fresh boot, crash not
+  yet resumed). `ConsoleProjection` never persists (FR-036,
+  `specs/008-control-plane`), so without this a restarted node's Mission
+  Control/Pipeline DAG would default every feature to `:pending`, silently
+  hiding e.g. a feature that halted before the crash — and, even once the
+  status is shown, its phase timeline would render as if nothing had run at
+  all. A no-op when the view is `active?` (a live `Coordinator` always wins)
+  or `manifest_record` is `nil`/missing `"statuses"` (no manifest, or a
+  corrupt one — the caller already logged/handled that).
+
+  `checkpoints` maps `feature_id => Checkpoint.read/1`'s result (or is simply
+  omitted/absent for an id — e.g. a `:pending` feature never released has no
+  checkpoint). Its `"last_phase"` becomes the boundary between `:completed`
+  cells (every phase before it) and the current one: `:active` colored by the
+  diverted status when the checkpoint's own `"status"` is
+  `:escalated`/`:halted`/`:failed` (mirrors `FeatureDrawerComponent`'s/
+  `phase_strip`'s existing status-coloring rule), or `:completed` when the
+  checkpoint is an in-progress crash pointer (`last_phase` is the phase that
+  had just *finished*, per `Checkpoint`'s write-timing contract). See
+  `specs/009-crash-recovery`.
+  """
+  @spec overlay_last_known_statuses(map(), map() | nil, %{String.t() => term()}) :: map()
+  def overlay_last_known_statuses(view, manifest_record, checkpoints \\ %{})
+
+  def overlay_last_known_statuses(%{active?: true} = view, _manifest_record, _checkpoints),
+    do: view
+
+  def overlay_last_known_statuses(view, %{"statuses" => statuses}, checkpoints)
+      when is_map(statuses) do
+    per_feature =
+      Enum.reduce(statuses, view.per_feature, fn {id, status}, acc ->
+        last_known_status = last_known_status(status)
+
+        Map.put_new(acc, id, %{
+          status: last_known_status,
+          elapsed_ms: nil,
+          slug: nil,
+          prereqs: [],
+          current_phase: checkpoint_phase(checkpoints, id),
+          phases: checkpoint_phases(checkpoints, id, last_known_status),
+          spend: 0.0
+        })
+      end)
+
+    %{view | per_feature: per_feature}
+  end
+
+  def overlay_last_known_statuses(view, _manifest_record, _checkpoints), do: view
+
+  defp checkpoint_phase(checkpoints, id) do
+    with {:ok, record} <- Map.get(checkpoints, id),
+         {:ok, phase} <- Pipeline.parse(record["last_phase"]) do
+      phase
+    else
+      _ -> nil
+    end
+  end
+
+  defp checkpoint_phases(checkpoints, id, status) do
+    case checkpoint_phase(checkpoints, id) do
+      nil ->
+        %{}
+
+      last_phase ->
+        {before, [_ | _after]} = Enum.split_while(Pipeline.phases(), &(&1 != last_phase))
+
+        completed = Map.new(before, &{&1, %{state: :completed, outcome: nil, cost: nil, model: nil}})
+        Map.put(completed, last_phase, last_phase_cell(status))
+    end
+  end
+
+  defp last_phase_cell(status) when status in [:escalated, :halted, :failed],
+    do: %{state: :active, outcome: status, cost: nil, model: nil}
+
+  defp last_phase_cell(_status), do: %{state: :completed, outcome: nil, cost: nil, model: nil}
+
+  # Explicit mapping over the fixed, known status vocabulary — never
+  # `String.to_atom/1` on file-sourced content (atom-table safety; mirrors
+  # `RunManifest.reconstruct/1`'s guard), but unlike `reconstruct/1` this is
+  # display-only, so "running"/"pending" are shown as-is rather than reset.
+  defp last_known_status("pending"), do: :pending
+  defp last_known_status("running"), do: :running
+  defp last_known_status("done"), do: :done
+  defp last_known_status("escalated"), do: :escalated
+  defp last_known_status("halted"), do: :halted
+  defp last_known_status("failed"), do: :failed
+  defp last_known_status("blocked"), do: :blocked
+  defp last_known_status(_other), do: :pending
 
   defp merge_per_feature(coordinator_per_feature, projection_features) do
     Map.new(coordinator_per_feature, fn {id, status_slice} ->

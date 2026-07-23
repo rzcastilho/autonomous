@@ -153,4 +153,89 @@ defmodule SpeckitOrchestrator.CoordinatorTest do
       assert Application.get_env(:speckit_orchestrator, :max_concurrency) == 5
     end)
   end
+
+  # ---- :statuses init option (crash recovery, T020) ------------------------
+
+  test "a supplied :statuses init option seeds state.statuses instead of the all-:pending default — a :done feature is never released even when its prereqs are also :done" do
+    features = [feat("001"), feat("002", ["001"])]
+
+    start(features,
+      max_concurrency: 2,
+      statuses: %{"001" => :done, "002" => :done}
+    )
+
+    refute_received {:started, _, _}
+    assert_receive {:run_complete, report}, 1_000
+    assert report.done == ["001", "002"]
+  end
+
+  test "a feature seeded :pending in :statuses releases normally through Release.next_wave/4" do
+    features = [feat("001"), feat("002", ["001"])]
+
+    start(features,
+      max_concurrency: 2,
+      statuses: %{"001" => :done, "002" => :pending}
+    )
+
+    n2 = await_started("002")
+    n2.("002", :done, nil)
+
+    assert_receive {:run_complete, report}, 1_000
+    assert report.done == ["001", "002"]
+  end
+
+  # ---- :manifest seam (crash recovery, T021) --------------------------------
+
+  defmodule FakeManifest do
+    use Agent
+
+    def start_link(test_pid), do: Agent.start_link(fn -> test_pid end, name: __MODULE__)
+
+    def write(payload) do
+      __MODULE__ |> Agent.get(& &1) |> send({:manifest_write, payload})
+      :ok
+    end
+  end
+
+  defp start_fake_manifest(test_pid) do
+    {:ok, pid} = FakeManifest.start_link(test_pid)
+    on_exit(fn -> if Process.alive?(pid), do: Agent.stop(pid) end)
+  end
+
+  test "a fake injected via :manifest receives write/1 on init, each spawn_feature, and each finish" do
+    start_fake_manifest(self())
+    features = [feat("001")]
+    start(features, max_concurrency: 2, manifest: FakeManifest)
+
+    assert_receive {:manifest_write, init_payload}, 1_000
+    assert init_payload.statuses == %{"001" => :pending}
+
+    assert_receive {:manifest_write, spawn_payload}, 1_000
+    assert spawn_payload.statuses == %{"001" => :running}
+
+    n1 = await_started("001")
+    n1.("001", :done, nil)
+
+    assert_receive {:manifest_write, finish_payload}, 1_000
+    assert finish_payload.statuses == %{"001" => :done}
+  end
+
+  test "the default manifest seam (when :manifest is omitted) is RunManifest" do
+    root = Path.join(System.tmp_dir!(), "coord_rm_#{System.unique_integer([:positive])}")
+    prev = Application.get_env(:speckit_orchestrator, :transcript_root)
+    Application.put_env(:speckit_orchestrator, :transcript_root, root)
+
+    on_exit(fn ->
+      File.rm_rf(root)
+      if prev, do: Application.put_env(:speckit_orchestrator, :transcript_root, prev)
+    end)
+
+    features = [feat("001")]
+    start(features, max_concurrency: 2)
+    n1 = await_started("001")
+    n1.("001", :done, nil)
+
+    assert_receive {:run_complete, _report}, 1_000
+    assert File.exists?(Path.join(root, "run.json"))
+  end
 end

@@ -3,7 +3,17 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
   use ExUnit.Case, async: false
 
   alias Jido.{AgentServer, Signal}
-  alias SpeckitOrchestrator.{Describe, Feature, FeatureAgent, FeatureRunner, Ledger, Worktree}
+
+  alias SpeckitOrchestrator.{
+    Checkpoint,
+    Describe,
+    Feature,
+    FeatureAgent,
+    FeatureRunner,
+    Ledger,
+    RunContext,
+    Worktree
+  }
 
   # Fake SDK that branches on the prompt so a single fake drives every phase.
   # The scenario is read from app env so each test picks happy/escalate/halt.
@@ -382,6 +392,91 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
     # worktree kept on escalation -> transcripts present
     assert File.exists?(Path.join(wt.path, ".speckit_logs/01-specify.md"))
     assert File.read!(Path.join(wt.path, ".speckit_logs/02-clarify.md")) =~ "# clarify"
+  end
+
+  test "per-phase checkpoint written after each successful phase — overwritten (not appended) as the pipeline advances" do
+    wt = scaffolded_worktree()
+    run_context = %RunContext{pr_workflow: false, max_concurrency: 1}
+
+    test_pid = self()
+    handler = "checkpoint-tele-#{System.unique_integer([:positive])}"
+
+    :telemetry.attach(
+      handler,
+      [:speckit, :phase, :start],
+      fn _event, _meas, %{phase: phase}, _ ->
+        if phase in [:clarify, :plan] do
+          send(test_pid, {:checkpoint_at, phase, Checkpoint.read("001")})
+        end
+      end,
+      nil
+    )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+
+    FeatureRunner.run(feature(), worktree: wt, notify: self(), run_context: run_context)
+
+    assert_received {:checkpoint_at, :clarify, {:ok, record}}
+    assert record["last_phase"] == "specify"
+    assert record["status"] == "in_progress"
+    assert is_map(record["context"])
+
+    assert_received {:checkpoint_at, :plan, {:ok, record2}}
+    assert record2["last_phase"] == "clarify"
+    assert record2["status"] == "in_progress"
+  end
+
+  @tag :integration
+  test "commits the worktree once per phase — a phase-boundary commit exists after each successful phase" do
+    Application.put_env(:speckit_orchestrator, :test_fake_scenario, :halt)
+    wt = scaffolded_worktree()
+
+    FeatureRunner.run(feature(), worktree: wt, notify: self())
+
+    {log, 0} = System.cmd("git", ["-C", wt.repo, "log", "--format=%s", wt.branch])
+
+    assert log =~ "speckit: 001 checkpoint after specify"
+    assert log =~ "speckit: 001 checkpoint after clarify"
+    assert log =~ "speckit: 001 checkpoint after plan"
+    assert log =~ "speckit: 001 checkpoint after tasks"
+    refute log =~ "speckit: 001 checkpoint after analyze"
+  end
+
+  @tag :integration
+  test "on :done, handle_worktree squashes per-phase commits into exactly one commit since the fork point" do
+    wt = scaffolded_worktree()
+    {base_sha, 0} = System.cmd("git", ["-C", wt.repo, "rev-parse", "main"])
+    base_sha = String.trim(base_sha)
+
+    result = FeatureRunner.run(feature(), worktree: wt, notify: self())
+    assert result.status == :done
+
+    {count, 0} =
+      System.cmd("git", ["-C", wt.repo, "rev-list", "--count", "#{base_sha}..#{wt.branch}"])
+
+    assert String.trim(count) == "1"
+
+    {log, 0} = System.cmd("git", ["-C", wt.repo, "log", "--format=%s", wt.branch])
+    refute log =~ "checkpoint after"
+  end
+
+  @tag :integration
+  test "on a kept terminal (:escalated), per-phase checkpoint commits remain — squash is not called" do
+    Application.put_env(:speckit_orchestrator, :test_fake_scenario, :escalate)
+    wt = scaffolded_worktree()
+    {base_sha, 0} = System.cmd("git", ["-C", wt.repo, "rev-parse", "main"])
+    base_sha = String.trim(base_sha)
+
+    result = FeatureRunner.run(feature(), worktree: wt, notify: self())
+    assert result.status == :escalated
+
+    {count, 0} =
+      System.cmd("git", ["-C", wt.repo, "rev-list", "--count", "#{base_sha}..#{wt.branch}"])
+
+    assert String.to_integer(String.trim(count)) > 1
+
+    {log, 0} = System.cmd("git", ["-C", wt.repo, "log", "--format=%s", wt.branch])
+    assert log =~ "speckit: 001 checkpoint after specify"
   end
 
   test "breaker tripping mid-run halts the feature (drain, not kill)" do

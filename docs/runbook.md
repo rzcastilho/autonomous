@@ -385,6 +385,79 @@ closed with a distinct error and no run:
 
 ---
 
+## Resume a whole crashed run
+
+`resume/2` above fixes one feature. If the orchestrator process itself
+crashed (BEAM node died, machine restarted) mid-run, the whole backlog needs
+reconstructing: some features `:done`, one `:running` when the crash hit, the
+rest still `:pending`. That's what `SpeckitOrchestrator.resume_run/1` and
+`resumable_run/0` are for — see `specs/009-crash-recovery`.
+
+Recovery relies only on durable on-disk state — git commits in each feature's
+worktree/branch plus two small JSON files under `Config.transcript_root()`
+(`<feature_id>/checkpoint.json` per feature, `run.json` for the run as a
+whole). No datastore, no in-memory state required (SC-005, SC-007).
+
+**Per-phase checkpoint + commit.** Since feature 009, `FeatureRunner` writes a
+checkpoint (`status: :in_progress`, `last_phase:` the phase that just
+finished) and commits the worktree after **every** phase, not only on a gate
+divert. On `:done` those per-phase commits are squashed into one clean commit
+(`Worktree.squash/3`); a kept terminal (`:escalated`/`:halted`/`:failed`)
+keeps them as the post-mortem trail.
+
+**Operator flow (boot → detect → resume):**
+
+1. **Detect.** After a crash, before touching anything, check whether a run
+   is resumable — this starts no work:
+   ```elixir
+   iex> SpeckitOrchestrator.resumable_run()
+   {:ok, %{features: [...], statuses: %{...}, spend: 12.4, context: %{...}}}
+   # or :none — every feature was already terminal/diverted, nothing to resume
+   # or {:error, :no_manifest} / {:error, :corrupt_manifest}
+   ```
+2. **Resume explicitly.** Recovery is operator-initiated — it is never
+   triggered automatically on boot, because resuming spends money (FR-014):
+   ```elixir
+   iex> SpeckitOrchestrator.resume_run()
+   {:ok, coordinator_pid}
+   ```
+   This reconstructs `{features, statuses}` from the manifest — `:done` and
+   gate-diverted features are kept as-is and never re-run; `:running`
+   (interrupted) and `:pending` (never released) features reset to `:pending`
+   and release in the normal dependency-and-cap order. A checkpointed feature
+   resumes at the phase after its `last_phase` (reusing `resume/2`'s
+   machinery internally, including `Worktree.restore/1` to discard any
+   uncommitted partial output the crash left behind); a never-started feature
+   runs fresh from `specify`.
+3. **Cost continuity.** Before any wave releases, `resume_run/1` restores the
+   `Ledger`'s committed spend from the manifest's recorded figure (FR-012) —
+   never from zero. If the restored figure is already at/above budget, the
+   breaker is treated as tripped and the resumed run releases **zero** new
+   features (drain, not kill — same invariant as a live breaker trip).
+4. **Run-shaping context.** The resumed run re-executes under the manifest's
+   recorded `pr_workflow`/`max_concurrency`/`budget_usd`/`plan_stack`/
+   `pr_base`/`pr_remote`, not live `Config` defaults — same
+   explicit-opt > recorded > live-Config precedence as `resume/2` (FR-007).
+5. **Guard against clobbering a live run.** If a `Coordinator` is already
+   alive and unfinished, `resume_run/1` refuses:
+   ```elixir
+   iex> SpeckitOrchestrator.resume_run()
+   {:error, {:active_run, #PID<0.123.0>}}
+   ```
+   Pass `force: true` only when you're certain the live process is stuck, not
+   genuinely still working.
+
+**Single-manifest-slot rule.** Only one run's manifest exists at a time —
+`run/1` calls `RunManifest.clear/0` before starting, so a fresh run
+supersedes whatever a prior crashed run left behind. There is no history of
+past runs to resume from; resume only ever targets the most recent one.
+
+For the single-feature case (one feature stuck, rest of the run fine), reach
+for `resume/2` (previous section) instead of `resume_run/1` — restarting the
+whole run to fix one feature is unnecessary churn.
+
+---
+
 ## Cost breaker
 
 If spend reaches `config :budget_usd`, the breaker trips: no new features are
