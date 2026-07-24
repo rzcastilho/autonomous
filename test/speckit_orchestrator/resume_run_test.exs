@@ -73,13 +73,77 @@ defmodule SpeckitOrchestrator.ResumeRunTest do
       )
   end
 
+  # ---- 014-recovery-reconciliation: durable evidence for a recorded `:done`
+  # feature -------------------------------------------------------------------
+  #
+  # resume_run/1 now reconciles against repository ground truth
+  # (`Recovery.reconcile_run/2`) before dispatching, so a feature recorded
+  # `:done` in these fixtures needs a real committed branch + converge marker
+  # to corroborate — a bare `:done` status with zero durable evidence
+  # reconciles to `{:conflict, :done_without_artifacts}` (US3), same as a real
+  # crash-recovery run would. `resume_run/1`'s own preflight also requires a
+  # real `origin` remote, so the fixture resolves a real repo-identity segment
+  # and `%Layout{}` (mirrors `recovery_test.exs`'s `base_repo`/seed helpers) —
+  # the converge marker is written under that layout's `transcript_root` and
+  # the same `%Layout{}` is threaded into `write_manifest/1` so the persisted
+  # manifest's segment/scope matches exactly what was written to disk.
+  defp git!(repo, args),
+    do: {_, 0} = System.cmd("git", ["-C", repo | args], stderr_to_stdout: true)
+
+  defp put_repo(repo) do
+    prev = Application.get_env(:speckit_orchestrator, :repo)
+    Application.put_env(:speckit_orchestrator, :repo, repo)
+
+    on_exit(fn ->
+      if prev,
+        do: Application.put_env(:speckit_orchestrator, :repo, prev),
+        else: Application.delete_env(:speckit_orchestrator, :repo)
+    end)
+  end
+
+  # Builds a real git repo + `%Layout{}`, commits a boundary + converge
+  # marker for `id` proving it finished, and points `Config.repo/0` at it.
+  # Returns the `%Layout{}` for `write_manifest/1`'s `:layout` override.
+  defp done_layout(id) do
+    repo = Path.join(System.tmp_dir!(), "rr_repo_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(repo)
+    git!(repo, ["init", "-q", "-b", "main"])
+    git!(repo, ["config", "user.email", "t@example.com"])
+    git!(repo, ["config", "user.name", "Tester"])
+    File.write!(Path.join(repo, "README.md"), "base\n")
+    git!(repo, ["add", "-A"])
+    git!(repo, ["commit", "-q", "-m", "base"])
+    git!(repo, ["remote", "add", "origin", "https://example.com/resume-run.git"])
+    git!(repo, ["checkout", "-q", "-b", "feature/#{id}-f#{id}"])
+    File.write!(Path.join(repo, "work.txt"), "done\n")
+    git!(repo, ["add", "-A"])
+    git!(repo, ["commit", "-q", "-m", "speckit: #{id} checkpoint after converge"])
+    git!(repo, ["checkout", "-q", "main"])
+    on_exit(fn -> File.rm_rf(repo) end)
+
+    put_repo(repo)
+
+    {:ok, segment} = RepoIdentity.resolve(repo)
+    {:ok, layout} = Layout.build(repo, segment, :ad_hoc)
+
+    dir = Path.join(layout.transcript_root, id)
+    File.mkdir_p!(dir)
+    File.write!(Path.join(dir, "07-converge.md"), "Tests green.\n\n## CONVERGE: READY\n")
+
+    layout
+  end
+
   # ---- mixed-state resume (T022) --------------------------------------------
 
   test "resume_run/1 does not re-run :done, resumes :running, releases :pending in prereq order under cap" do
+    layout = done_layout("001")
+    on_exit(fn -> File.rm_rf(layout.worktree_root) end)
+
     write_manifest(%{
       features: [feat("001"), feat("002", ["001"]), feat("003", ["002"]), feat("004", ["001"])],
       statuses: %{"001" => :done, "002" => :running, "003" => :pending, "004" => :pending},
-      context: %RunContext{pr_workflow: false, max_concurrency: 2, budget_usd: 100.0}
+      context: %RunContext{pr_workflow: false, max_concurrency: 2, budget_usd: 100.0},
+      layout: layout
     })
 
     me = self()
@@ -210,14 +274,27 @@ defmodule SpeckitOrchestrator.ResumeRunTest do
 
   # ---- detect-only (T026) ----------------------------------------------------
 
-  test "resumable_run/0 reports a summary and starts no Coordinator process" do
+  test "resumable_run/0 reports the reconciled summary and starts no Coordinator process" do
+    layout = done_layout("001")
+    on_exit(fn -> File.rm_rf(layout.worktree_root) end)
+
     write_manifest(%{
       features: [feat("001"), feat("002", ["001"])],
-      statuses: %{"001" => :done, "002" => :running}
+      statuses: %{"001" => :done, "002" => :running},
+      layout: layout
     })
 
+    # 014-recovery-reconciliation: resumable_run/0 now returns
+    # Recovery.reconcile_run/2's reconciled picture (atom statuses), not the
+    # raw manifest dump. `001` corroborates via the fixture's committed branch
+    # + converge marker (US3 clause 3 — a recorded `:done` with zero durable
+    # evidence would otherwise reconcile to a conflict). `002` has no
+    # durable evidence at all (no git branch/checkpoint), so it reconciles to
+    # :pending — same "never actually progressed" conclusion the pre-014
+    # crash-recovery mapping reached, now derived from repository evidence
+    # instead of assumed from the status string alone.
     assert {:ok, summary} = SpeckitOrchestrator.resumable_run()
-    assert summary.statuses == %{"001" => "done", "002" => "running"}
+    assert summary.statuses == %{"001" => :done, "002" => :pending}
     assert Process.whereis(@coordinator) == nil
   end
 

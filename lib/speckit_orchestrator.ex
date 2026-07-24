@@ -20,6 +20,7 @@ defmodule SpeckitOrchestrator do
     Ledger,
     Pipeline,
     PullRequest,
+    Recovery,
     Report,
     RepoIdentity,
     RunContext,
@@ -366,10 +367,16 @@ defmodule SpeckitOrchestrator do
   See `specs/009-crash-recovery/contracts/resume_run.md`.
   """
   @spec resumable_run() ::
-          {:ok, %{features: list(), statuses: map(), spend: number(), context: map()}}
+          {:ok,
+           %{
+             report: Recovery.Report.t(),
+             statuses: %{String.t() => Feature.status()},
+             resume_phases: %{String.t() => Pipeline.phase()}
+           }}
           | :none
           | {:error, :no_manifest}
           | {:error, :corrupt_manifest}
+          | {:error, term()}
   def resumable_run do
     case read_manifest() do
       {:error, _} = err ->
@@ -377,13 +384,7 @@ defmodule SpeckitOrchestrator do
 
       {:ok, record} ->
         if RunManifest.resumable?() do
-          {:ok,
-           %{
-             features: record["features"],
-             statuses: record["statuses"],
-             spend: record["spend"],
-             context: record["context"]
-           }}
+          Recovery.reconcile_run(record)
         else
           :none
         end
@@ -423,8 +424,10 @@ defmodule SpeckitOrchestrator do
           | {:error, {:active_run, pid()}}
   def resume_run(opts \\ []) do
     with :ok <- guard_active_run(opts),
-         {:ok, record} <- read_manifest() do
-      {features, statuses} = RunManifest.reconstruct(record)
+         {:ok, record} <- read_manifest(),
+         {:ok, %{statuses: statuses, resume_phases: resume_phases}} <-
+           Recovery.reconcile_run(record) do
+      {features, _legacy_statuses} = RunManifest.reconstruct(record)
       Ledger.restore(Ledger, record["spend"] || 0)
 
       layout =
@@ -442,10 +445,23 @@ defmodule SpeckitOrchestrator do
       merged_opts
       |> maybe_put_layout(layout)
       |> Keyword.put(:features, features)
-      |> Keyword.put(:statuses, statuses)
-      |> inject_resume_run_strategy(pr_workflow?, run_context, layout)
+      |> Keyword.put(:statuses, dispatch_statuses(statuses, resume_phases))
+      |> inject_resume_run_strategy(pr_workflow?, run_context, layout, resume_phases)
       |> run()
     end
+  end
+
+  # Recovery.reconcile_run/2's `statuses` map persists a `{:resume, phase}`
+  # feature as `:running` (the manifest's human-facing/report value — the
+  # feature genuinely is mid-run, not never-started). The Coordinator's own
+  # `Release.next_wave/4`, however, only releases `:pending` features
+  # (`:running` counts as already in-flight and is never (re-)dispatched) —
+  # so the *seed* fed to the Coordinator flips every `resume_phases` feature
+  # to `:pending` here, letting it release normally while `dispatch_resume/6`
+  # (via `resume_phases`) still starts it at the reconciled phase, not
+  # `Pipeline.first()`.
+  defp dispatch_statuses(statuses, resume_phases) do
+    Enum.reduce(resume_phases, statuses, fn {id, _phase}, acc -> Map.put(acc, id, :pending) end)
   end
 
   defp guard_active_run(opts) do
@@ -469,23 +485,23 @@ defmodule SpeckitOrchestrator do
 
   # A caller-supplied :runner/:executor still wins (test seam), same
   # precedence as inject_resume_strategy/6 below.
-  defp inject_resume_run_strategy(opts, pr_workflow?, run_context, layout) do
+  defp inject_resume_run_strategy(opts, pr_workflow?, run_context, layout, resume_phases) do
     cond do
       Keyword.has_key?(opts, :runner) or Keyword.has_key?(opts, :executor) ->
         opts
 
       pr_workflow? ->
-        Keyword.put(opts, :executor, resume_run_executor(run_context, layout))
+        Keyword.put(opts, :executor, resume_run_executor(run_context, layout, resume_phases))
 
       true ->
-        Keyword.put(opts, :runner, resume_run_runner(run_context, layout))
+        Keyword.put(opts, :runner, resume_run_runner(run_context, layout, resume_phases))
     end
   end
 
-  defp resume_run_runner(run_context, layout) do
+  defp resume_run_runner(run_context, layout, resume_phases) do
     fn feature, notify ->
       Task.Supervisor.start_child(SpeckitOrchestrator.RunnerSup, fn ->
-        dispatch_resume(feature, nil, notify, run_context, layout)
+        dispatch_resume(feature, nil, notify, run_context, layout, resume_phases)
       end)
 
       :ok
@@ -495,21 +511,31 @@ defmodule SpeckitOrchestrator do
   # Executor shape for the PR workflow — `base` (the stack's current top) is
   # used only for a never-started :pending feature; a checkpointed feature
   # ignores it and reuses/recreates its own existing worktree/branch.
-  defp resume_run_executor(run_context, layout) do
+  defp resume_run_executor(run_context, layout, resume_phases) do
     fn feature, base, notify ->
       Task.Supervisor.start_child(SpeckitOrchestrator.RunnerSup, fn ->
-        dispatch_resume(feature, base, notify, run_context, layout)
+        dispatch_resume(feature, base, notify, run_context, layout, resume_phases)
       end)
 
       :ok
     end
   end
 
-  defp dispatch_resume(feature, base, notify, run_context, layout) do
+  # `resume_phases` is `Recovery.reconcile_run/2`'s corrected `{:resume,
+  # phase}` map (FR-004/005) — a reconciled mid-run feature resumes at the
+  # phase *after* its latest committed boundary, overriding whatever the
+  # checkpoint's own `last_phase` would otherwise resolve to (never resumes
+  # within a phase, always at a full phase boundary).
+  defp dispatch_resume(feature, base, notify, run_context, layout, resume_phases) do
     case find_checkpoint(feature.id, layout) do
-      {:ok, record} -> run_from_checkpoint(feature, record, notify, run_context, layout)
-      {:error, :no_checkpoint} -> run_fresh(feature, base, notify, run_context, layout)
-      {:error, :corrupt} -> notify.(feature.id, :failed, {:checkpoint, :corrupt})
+      {:ok, record} ->
+        run_from_checkpoint(feature, record, notify, run_context, layout, resume_phases)
+
+      {:error, :no_checkpoint} ->
+        run_fresh(feature, base, notify, run_context, layout)
+
+      {:error, :corrupt} ->
+        notify.(feature.id, :failed, {:checkpoint, :corrupt})
     end
   end
 
@@ -525,8 +551,14 @@ defmodule SpeckitOrchestrator do
     end
   end
 
-  defp run_from_checkpoint(feature, record, notify, run_context, layout) do
-    case resolve_start_phase(record, []) do
+  defp run_from_checkpoint(feature, record, notify, run_context, layout, resume_phases) do
+    from_opts =
+      case Map.get(resume_phases, feature.id) do
+        nil -> []
+        phase -> [from: phase]
+      end
+
+    case resolve_start_phase(record, from_opts) do
       {:ok, start_phase} ->
         case resume_worktree(feature, layout) do
           {:ok, worktree} ->
