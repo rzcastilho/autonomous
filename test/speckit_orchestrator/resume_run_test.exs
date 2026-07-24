@@ -3,7 +3,17 @@ defmodule SpeckitOrchestrator.ResumeRunTest do
   # env (mirrors coordinator_test.exs / resume_test.exs conventions).
   use ExUnit.Case, async: false
 
-  alias SpeckitOrchestrator.{Checkpoint, Config, Coordinator, Feature, Layout, Ledger, RunContext, RunManifest}
+  alias SpeckitOrchestrator.{
+    Checkpoint,
+    Config,
+    Coordinator,
+    Feature,
+    Layout,
+    Ledger,
+    RepoIdentity,
+    RunContext,
+    RunManifest
+  }
 
   @coordinator SpeckitOrchestrator.Coordinator
 
@@ -99,14 +109,28 @@ defmodule SpeckitOrchestrator.ResumeRunTest do
     assert Process.whereis(@coordinator) == nil
   end
 
-  test "resume_run/1 with a corrupt manifest returns {:error, :corrupt_manifest} and starts no Coordinator", %{
-    root: root
-  } do
-    File.mkdir_p!(Path.join(root, "transcripts"))
-    File.write!(Path.join([root, "transcripts", "run.json"]), "not valid json{")
+  test "resume_run/1 with a corrupt manifest returns {:error, :corrupt_manifest} and starts no Coordinator",
+       %{
+         root: root
+       } do
+    # Written to the current repo's segment-scoped slot — the path resume_run/1
+    # actually reads (RunManifest partitions by repo identity).
+    path = manifest_path(root)
+    File.mkdir_p!(Path.dirname(path))
+    File.write!(path, "not valid json{")
 
     assert {:error, :corrupt_manifest} = SpeckitOrchestrator.resume_run()
     assert Process.whereis(@coordinator) == nil
+  end
+
+  # Mirrors RunManifest's own segment resolution (Config.repo() → origin
+  # segment, nil → the legacy flat bucket) so this file writes/reads the same
+  # slot the module does, regardless of the ambient origin.
+  defp manifest_path(root) do
+    case RepoIdentity.resolve(Config.repo()) do
+      {:ok, segment} -> Path.join([root, "transcripts", segment, "run.json"])
+      {:error, _} -> Path.join([root, "transcripts", "run.json"])
+    end
   end
 
   # ---- active-run guard (T024) -----------------------------------------------
