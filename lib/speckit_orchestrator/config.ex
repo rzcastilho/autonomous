@@ -100,6 +100,10 @@ defmodule SpeckitOrchestrator.Config do
 
   @valid_models ~w(opus sonnet)
 
+  @doc "The CLI model aliases accepted by `remediation_model/2`'s `override` arg."
+  @spec valid_models() :: [String.t()]
+  def valid_models, do: @valid_models
+
   @doc """
   Resolve the model for a pre-phase remediation step: an explicit `override`
   alias wins; `nil` defaults to `model_for(target_phase)` (FR-011). An unknown

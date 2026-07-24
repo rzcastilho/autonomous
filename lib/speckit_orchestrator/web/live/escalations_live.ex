@@ -24,6 +24,7 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
 
   alias SpeckitOrchestrator.{
     Checkpoint,
+    Config,
     ConsoleProjection,
     ConsoleReadModel,
     Coordinator,
@@ -47,7 +48,12 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
 
     {:ok,
      socket
-     |> assign(page_title: "Escalations", current_path: "/escalations", selected_feature_id: nil)
+     |> assign(
+       page_title: "Escalations",
+       current_path: "/escalations",
+       selected_feature_id: nil,
+       remediation_models: Config.valid_models()
+     )
      |> refresh()}
   end
 
@@ -58,7 +64,9 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
   def handle_info({:console, _kind, _payload}, socket), do: {:noreply, refresh(socket)}
 
   defp refresh(socket) do
-    view = ConsoleReadModel.merge(coordinator_status(), ledger_snapshot(), ConsoleProjection.read())
+    view =
+      ConsoleReadModel.merge(coordinator_status(), ledger_snapshot(), ConsoleProjection.read())
+
     assign(socket, escalations: build_escalations(view))
   end
 
@@ -157,7 +165,11 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
   # ---- recovery actions (FR-022, FR-023) -----------------------------------
 
   @impl true
-  def handle_event("resume", %{"feature_id" => id, "prompt" => prompt, "from" => from}, socket) do
+  def handle_event(
+        "resume",
+        %{"feature_id" => id, "prompt" => prompt, "from" => from} = params,
+        socket
+      ) do
     case Enum.find(socket.assigns.escalations, &(&1.id == id)) do
       nil ->
         {:noreply, socket}
@@ -168,14 +180,15 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
           |> Keyword.put(:features, [escalation.identity])
           |> Keyword.put(:prompt, blank_to_nil(prompt))
           |> Keyword.put(:from, safe_phase!(from, escalation.default_phase))
+          |> Keyword.put(:remediation_prompt, blank_to_nil(Map.get(params, "remediation_prompt")))
+          |> Keyword.put(:remediation_model, blank_to_nil(Map.get(params, "remediation_model")))
 
         case run_unlinked(fn -> SpeckitOrchestrator.resume(id, opts) end) do
           {:ok, _pid} ->
             {:noreply, socket |> put_flash(:info, "Feature #{id} resumed") |> refresh()}
 
           {:error, reason} ->
-            {:noreply,
-             put_flash(socket, :error, "Resume failed: #{format_resume_error(reason)}")}
+            {:noreply, put_flash(socket, :error, "Resume failed: #{format_resume_error(reason)}")}
         end
     end
   end
@@ -230,6 +243,7 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
   defp format_resume_error(:corrupt_checkpoint), do: "corrupt checkpoint"
   defp format_resume_error({:unknown_phase, p}), do: "unknown phase #{inspect(p)}"
   defp format_resume_error({:unknown_feature, id}), do: "unknown feature #{id}"
+  defp format_resume_error({:unknown_model, alias}), do: "unknown model #{inspect(alias)}"
   defp format_resume_error(other), do: inspect(other)
 
   # See TriggerLive's `run_unlinked/1` for why: `run/1` (via `resume/2`)
@@ -337,6 +351,22 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
                 <option :for={p <- Pipeline.phases()} value={p} selected={p == e.default_phase}>
                   {p}
                 </option>
+              </select>
+            </label>
+            <label class="field-label">
+              Remediation (runs once, before the start phase — leave blank to skip)
+              <textarea
+                name="remediation_prompt"
+                phx-debounce="200"
+                class="resume-textarea"
+                data-field="remediation-prompt"
+              ></textarea>
+            </label>
+            <label class="field-label">
+              Remediation model
+              <select name="remediation_model" class="resume-select" data-field="remediation-model">
+                <option value="">Default ({e.default_phase}'s own model)</option>
+                <option :for={m <- @remediation_models} value={m}>{m}</option>
               </select>
             </label>
             <div class="escalation-actions">

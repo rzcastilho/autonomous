@@ -196,6 +196,9 @@ defmodule SpeckitOrchestrator.Web.EscalationsLiveTest do
     {:ok, view, html} = live(conn, "/escalations")
     assert html =~ ~s(data-escalation="e5")
     assert html =~ ~s(data-form="resume")
+    assert html =~ ~s(data-field="remediation-prompt")
+    assert html =~ ~s(data-field="remediation-model")
+    assert html =~ "Default (clarify"
 
     html =
       render_submit(view, "resume", %{
@@ -206,6 +209,42 @@ defmodule SpeckitOrchestrator.Web.EscalationsLiveTest do
 
     assert html =~ "Feature e5 resumed"
     refute html =~ ~s(data-escalation="e5")
+    assert Process.whereis(Coordinator)
+  end
+
+  test "remediation prompt + model submit alongside guidance calls resume/2 and clears the escalation",
+       %{conn: conn} do
+    Checkpoint.write(%{
+      feature_id: "e9",
+      last_phase: :analyze,
+      status: :halted,
+      reason: "critical finding",
+      session_id: "sess-9",
+      slug: "slug-e9",
+      path: "e9.md"
+    })
+
+    pid = start_coordinator([feat("e9", "slug-e9")], %{"e9" => {:halted, "critical finding"}})
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    Application.put_env(:speckit_orchestrator, :console_test_runner, fn _feature, _notify ->
+      :ok
+    end)
+
+    {:ok, view, html} = live(conn, "/escalations")
+    assert html =~ ~s(data-escalation="e9")
+
+    html =
+      render_submit(view, "resume", %{
+        "feature_id" => "e9",
+        "prompt" => "",
+        "from" => "analyze",
+        "remediation_prompt" => "Fix the money-type Critical.",
+        "remediation_model" => "opus"
+      })
+
+    assert html =~ "Feature e9 resumed"
+    refute html =~ ~s(data-escalation="e9")
     assert Process.whereis(Coordinator)
   end
 
