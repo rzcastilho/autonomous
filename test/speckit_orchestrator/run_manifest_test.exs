@@ -2,12 +2,12 @@ defmodule SpeckitOrchestrator.RunManifestTest do
   # async: false — mutates the global :autonomous_root app env.
   use ExUnit.Case, async: false
 
-  alias SpeckitOrchestrator.{Feature, RunContext, RunManifest}
+  alias SpeckitOrchestrator.{Config, Feature, RepoIdentity, RunContext, RunManifest}
 
   setup do
     root = Path.join(System.tmp_dir!(), "rm_#{System.unique_integer([:positive])}")
-    # RunManifest resolves the fixed run.json under Config.autonomous_root/0
-    # (012, resolves I2) — not :transcript_root.
+    # RunManifest resolves run.json under Config.autonomous_root/0 (012) — not
+    # :transcript_root — partitioned by the current repo's identity segment.
     prev = Application.get_env(:speckit_orchestrator, :autonomous_root)
     Application.put_env(:speckit_orchestrator, :autonomous_root, root)
 
@@ -19,7 +19,22 @@ defmodule SpeckitOrchestrator.RunManifestTest do
     %{root: root}
   end
 
-  defp manifest_path(root), do: Path.join([root, "transcripts", "run.json"])
+  # Mirrors RunManifest's own path resolution: a no-layout write resolves the
+  # segment from Config.repo() (this repo, has an origin) — both the module and
+  # this helper call the same resolver, so they agree regardless of the ambient
+  # origin (nil → the legacy flat bucket).
+  defp resolved_segment do
+    case RepoIdentity.resolve(Config.repo()) do
+      {:ok, segment} -> segment
+      {:error, _} -> nil
+    end
+  end
+
+  defp manifest_path(root), do: manifest_path(root, resolved_segment())
+  defp manifest_path(root, nil), do: Path.join([root, "transcripts", "run.json"])
+
+  defp manifest_path(root, segment) when is_binary(segment),
+    do: Path.join([root, "transcripts", segment, "run.json"])
 
   defp feat(id, prereqs \\ []),
     do: %Feature{id: id, slug: "f#{id}", path: "#{id}.md", prereqs: prereqs}
@@ -111,6 +126,28 @@ defmodule SpeckitOrchestrator.RunManifestTest do
     :ok = RunManifest.write(base_payload(%{context: nil}))
     decoded = root |> manifest_path() |> File.read!() |> Jason.decode!()
     assert decoded["context"] == %{}
+  end
+
+  # ---- per-repo partitioning (per-repo run.json) ----------------------------
+
+  test "write/1 partitions the slot under the segment dir (:segment override)", %{root: root} do
+    :ok = RunManifest.write(base_payload(%{segment: "quickpoll-73a62a"}))
+
+    expected = Path.join([root, "transcripts", "quickpoll-73a62a", "run.json"])
+    assert File.exists?(expected)
+    assert Jason.decode!(File.read!(expected))["segment"] == "quickpoll-73a62a"
+  end
+
+  test "a manifest written under one segment is not visible to a read resolving another segment",
+       %{root: root} do
+    # Segment A's slot exists on disk...
+    :ok = RunManifest.write(base_payload(%{segment: "repo-a-aaaaaa"}))
+    assert File.exists?(Path.join([root, "transcripts", "repo-a-aaaaaa", "run.json"]))
+
+    # ...but a read for THIS repo (a different segment) never sees it — the old
+    # machine-global flat slot bled across repos; the per-segment slot does not.
+    refute File.exists?(manifest_path(root))
+    assert {:error, :no_manifest} = RunManifest.read()
   end
 
   # ---- resumable?/0 (T017) ---------------------------------------------------

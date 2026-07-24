@@ -3,7 +3,7 @@ defmodule SpeckitOrchestrator.CoordinatorTest do
   # by Coordinator.set_cap/2), same convention as run_context_test.exs.
   use ExUnit.Case, async: false
 
-  alias SpeckitOrchestrator.{Coordinator, Feature, Ledger}
+  alias SpeckitOrchestrator.{Config, Coordinator, Feature, Ledger, RepoIdentity}
 
   defp feat(id, prereqs \\ []),
     do: %Feature{id: id, slug: "f#{id}", path: "#{id}.md", prereqs: prereqs}
@@ -221,8 +221,9 @@ defmodule SpeckitOrchestrator.CoordinatorTest do
   end
 
   test "the default manifest seam (when :manifest is omitted) is RunManifest" do
-    # RunManifest.write/1 resolves the fixed run.json under Config.autonomous_root
-    # (012, resolves I2) — not :transcript_root.
+    # RunManifest.write/1 resolves run.json under Config.autonomous_root (012),
+    # partitioned by this repo's identity segment (no layout here → segment
+    # resolved from Config.repo()) — not :transcript_root.
     root = Path.join(System.tmp_dir!(), "coord_rm_#{System.unique_integer([:positive])}")
     prev = Application.get_env(:speckit_orchestrator, :autonomous_root)
     Application.put_env(:speckit_orchestrator, :autonomous_root, root)
@@ -238,6 +239,15 @@ defmodule SpeckitOrchestrator.CoordinatorTest do
     n1.("001", :done, nil)
 
     assert_receive {:run_complete, _report}, 1_000
-    assert File.exists?(Path.join([root, "transcripts", "run.json"]))
+    assert File.exists?(manifest_path(root))
+  end
+
+  # Mirrors RunManifest's segment resolution (Config.repo() → origin segment,
+  # nil → flat bucket) so this assertion targets the same slot the module wrote.
+  defp manifest_path(root) do
+    case RepoIdentity.resolve(Config.repo()) do
+      {:ok, segment} -> Path.join([root, "transcripts", segment, "run.json"])
+      {:error, _} -> Path.join([root, "transcripts", "run.json"])
+    end
   end
 end

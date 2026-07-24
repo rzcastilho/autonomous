@@ -26,6 +26,13 @@ defmodule SpeckitOrchestrator.PhaseRequest do
     implement: "/speckit.implement"
   }
 
+  # Tools that must be pre-approved (via `--allowedTools`) so the headless CLI
+  # runs them non-interactively — Bash is required because the Spec Kit phase
+  # scripts (`.specify/scripts/*.sh`, e.g. setup-plan.sh) run under Bash; without
+  # this they hit "This command requires approval" and the phase produces no
+  # files (plan.md/tasks.md), silently no-opping everything downstream.
+  @write_bash_tools ~w(Read Write Edit Bash Grep Glob)
+
   @doc """
   Build the RunRequest for `feature` at `phase`.
 
@@ -54,6 +61,39 @@ defmodule SpeckitOrchestrator.PhaseRequest do
     |> maybe_put(:session_id, Keyword.get(opts, :session_id))
     |> Map.merge(permissions(phase))
     |> RunRequest.new!()
+  end
+
+  @doc """
+  Build the RunRequest for a pre-phase remediation step (feature 013) — a
+  discrete, write-capable execution that runs **before** the target phase on
+  resume, distinct from `build/3`'s per-phase prompts.
+
+  Options:
+    * `:cwd` — the feature worktree (defaults to `Config.repo/0`).
+    * `:layout` — the run's resolved `%Layout{}`, for the worktree-relative
+      breakdown ref (same as `build/3`).
+    * `:prompt` — the operator's verbatim remediation instruction, appended
+      after a short framing header.
+
+  No `session_id` (fresh session, like every phase).
+  """
+  @spec build_remediation(Feature.t(), String.t(), keyword()) :: RunRequest.t()
+  def build_remediation(%Feature{} = feature, model, opts \\ []) when is_binary(model) do
+    layout = Keyword.get(opts, :layout)
+
+    %{
+      prompt: remediation_prompt(feature, layout, Keyword.get(opts, :prompt)),
+      cwd: Keyword.get(opts, :cwd, Config.repo()),
+      model: model,
+      permission_mode: :accept_edits,
+      allowed_tools: @write_bash_tools
+    }
+    |> RunRequest.new!()
+  end
+
+  defp remediation_prompt(feature, layout, prompt) do
+    "Remediation for feature #{feature.id} (#{feature.slug}), " <>
+      "#{breakdown_ref(feature, layout)}.\n\n---\n" <> (prompt || "")
   end
 
   # ---- prompt assembly ----------------------------------------------------
@@ -140,13 +180,6 @@ defmodule SpeckitOrchestrator.PhaseRequest do
 
   defp max_turns(:implement), do: Config.implement_max_turns()
   defp max_turns(_), do: nil
-
-  # Tools that must be pre-approved (via `--allowedTools`) so the headless CLI
-  # runs them non-interactively — Bash is required because the Spec Kit phase
-  # scripts (`.specify/scripts/*.sh`, e.g. setup-plan.sh) run under Bash; without
-  # this they hit "This command requires approval" and the phase produces no
-  # files (plan.md/tasks.md), silently no-opping everything downstream.
-  @write_bash_tools ~w(Read Write Edit Bash Grep Glob)
 
   # analyze is read-only. The phases that run Spec Kit scripts and/or write repo
   # files (specify, plan, tasks, implement, converge) get non-interactive

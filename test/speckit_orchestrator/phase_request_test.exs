@@ -136,4 +136,37 @@ defmodule SpeckitOrchestrator.PhaseRequestTest do
     assert r.prompt =~ "Elixir, SQLite"
     assert r.prompt =~ "Feature 001"
   end
+
+  describe "build_remediation/3" do
+    test "model passed through verbatim (caller-resolved, no re-routing)" do
+      r = PhaseRequest.build_remediation(feature(), "opus", prompt: "fix the money type")
+      assert r.model == "opus"
+
+      r2 = PhaseRequest.build_remediation(feature(), "sonnet", prompt: "fix the money type")
+      assert r2.model == "sonnet"
+    end
+
+    test "write-capable, contained permissions — same set as a write phase" do
+      r = PhaseRequest.build_remediation(feature(), "sonnet", prompt: "fix it")
+      assert r.permission_mode == :accept_edits
+      assert r.allowed_tools == ~w(Read Write Edit Bash Grep Glob)
+    end
+
+    test "prompt: framing header (feature id/slug + breakdown ref) + operator text verbatim" do
+      r =
+        PhaseRequest.build_remediation(feature(), "sonnet",
+          prompt: "Fix the money-type Critical the analyze gate flagged."
+        )
+
+      assert r.prompt =~ "001"
+      assert r.prompt =~ "core-ledger"
+      assert r.prompt =~ "docs/breakdown/001-core-ledger.md"
+      assert r.prompt =~ "Fix the money-type Critical the analyze gate flagged."
+    end
+
+    test "no session_id — fresh session" do
+      r = PhaseRequest.build_remediation(feature(), "sonnet", prompt: "fix it")
+      assert r.session_id == nil
+    end
+  end
 end

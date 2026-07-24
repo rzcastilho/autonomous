@@ -1,36 +1,51 @@
 defmodule SpeckitOrchestrator.RunManifest do
   @moduledoc """
-  Single-slot durable run record, mirroring `Checkpoint`'s conventions:
-  string-keyed JSON, best-effort write, three-way read, never fabricates. One
-  **fixed machine-global** file at `<Config.autonomous_root()>/transcripts/run.json`
-  — deliberately *not* scope-partitioned (resolves analyze finding I2): its
-  read callers (`resume_run/0`, `resumable_run/0`, the LiveViews) have no
-  `%Layout{}` on a fresh boot, so a fixed path lets them locate it with zero
-  identity IO. Owned by the `Coordinator` (via an injected `:manifest` seam) —
-  the single writer of run-level state, so writes are race-free without new
-  locking. A new `run/1` supersedes the prior manifest by calling `clear/0`
-  (single-slot rule, FR-005).
+  Single-slot-per-repo durable run record, mirroring `Checkpoint`'s
+  conventions: string-keyed JSON, best-effort write, three-way read, never
+  fabricates. Partitioned by repository-identity segment at
+  `<Config.autonomous_root()>/transcripts/<segment>/run.json` so two target
+  repos never share a slot — a stale run for repo A can never resurface while
+  viewing repo B (the machine-global `transcripts/run.json` it used to live at
+  did exactly that). Owned by the `Coordinator` (via an injected `:manifest`
+  seam) — the single writer of run-level state, so writes are race-free without
+  new locking. A new `run/1` supersedes the prior manifest **for its own repo**
+  by calling `clear/0` (single-slot-per-repo rule, FR-005).
 
-  When the run carries a `%Layout{}`, `write/1` also records `segment` and
-  `scope` (`"ad-hoc"` or `%{"breakdown" => slug}`) so a resume can rebuild a
-  `%Layout{}` (`Layout.build/3`) to reach the scope-partitioned per-feature
-  checkpoints/transcripts — see `scope_of/1`/`segment_of/1`.
+  Segment resolution: `write/1` takes it from the run's `%Layout{}` when present
+  (no git call on the Coordinator's per-phase write path — the layout already
+  carries it) else resolves `Config.repo()` via `RepoIdentity.resolve/1`;
+  `read/0`/`clear/0`/`resumable?/0` resolve `Config.repo()` (one identity read
+  on a LiveView mount / resume — infrequent). A repo with no `origin`
+  (`{:error, :no_origin}`) has no segment and falls back to the legacy flat
+  `transcripts/run.json` — the identity-less bucket, matching pre-012 behavior.
+  There is **no** flat-path fallback on a segment-scoped read: an orphaned
+  pre-partition `run.json` from an earlier build is simply ignored, not bled
+  back into an unrelated repo's view.
+
+  `write/1` also records `segment` and (from a `%Layout{}`) `scope` (`"ad-hoc"`
+  or `%{"breakdown" => slug}`) so a resume can rebuild a `%Layout{}`
+  (`Layout.build/3`) to reach the scope-partitioned per-feature
+  checkpoints/transcripts — see `rebuild_layout/2`/`scope_of/1`.
 
   See `specs/009-crash-recovery/contracts/run_manifest.md` and
   `specs/012-run-directory-layout/data-model.md` ("RunManifest locality").
   """
 
-  alias SpeckitOrchestrator.{Config, Feature, Layout, RunContext}
+  alias SpeckitOrchestrator.{Config, Feature, Layout, RepoIdentity, RunContext}
 
   @doc "Best-effort write; always returns `:ok` (mirrors `Checkpoint.write/1`)."
   @spec write(map()) :: :ok
-  def write(%{
-        features: features,
-        statuses: statuses,
-        context: context,
-        spend: spend,
-        updated_at: updated_at
-      } = input) do
+  def write(
+        %{
+          features: features,
+          statuses: statuses,
+          context: context,
+          spend: spend,
+          updated_at: updated_at
+        } = input
+      ) do
+    segment = write_segment(input)
+
     record =
       %{
         "features" => Enum.map(features, &feature_map/1),
@@ -40,19 +55,21 @@ defmodule SpeckitOrchestrator.RunManifest do
         "spend" => spend,
         "updated_at" => updated_at
       }
-      |> maybe_put_layout(Map.get(input, :layout))
+      |> maybe_put("segment", segment)
+      |> maybe_put_scope(Map.get(input, :layout))
 
-    File.mkdir_p!(Path.dirname(manifest_path()))
-    File.write!(manifest_path(), Jason.encode!(record))
+    path = manifest_path(segment)
+    File.mkdir_p!(Path.dirname(path))
+    File.write!(path, Jason.encode!(record))
     :ok
   rescue
     _ -> :ok
   end
 
-  @doc "Three-way read: record, absent, or corrupt."
+  @doc "Three-way read for the current repo's slot: record, absent, or corrupt."
   @spec read() :: {:ok, map()} | {:error, :no_manifest} | {:error, :corrupt}
   def read do
-    case File.read(manifest_path()) do
+    case File.read(manifest_path(resolved_segment())) do
       {:ok, contents} ->
         case Jason.decode(contents) do
           {:ok, %{} = record} -> {:ok, record}
@@ -67,10 +84,10 @@ defmodule SpeckitOrchestrator.RunManifest do
     end
   end
 
-  @doc "Removes the slot if present; a no-op on a missing file."
+  @doc "Removes the current repo's slot if present; a no-op on a missing file."
   @spec clear() :: :ok
   def clear do
-    File.rm(manifest_path())
+    File.rm(manifest_path(resolved_segment()))
     :ok
   rescue
     _ -> :ok
@@ -127,13 +144,34 @@ defmodule SpeckitOrchestrator.RunManifest do
 
   # ---- helpers --------------------------------------------------------------
 
-  defp maybe_put_layout(record, nil), do: record
-
-  defp maybe_put_layout(record, %Layout{worktree_root: worktree_root} = layout) do
-    record
-    |> Map.put("segment", Path.basename(worktree_root))
-    |> Map.put("scope", scope_json(layout))
+  # Segment for the write path: prefer the run's %Layout{} (already carries it,
+  # so the Coordinator's per-phase write does no git IO), then an explicit
+  # `:segment` override (tests), then resolve Config.repo(). `nil` (no origin)
+  # → the legacy flat path.
+  defp write_segment(input) do
+    segment_of_layout(Map.get(input, :layout)) || Map.get(input, :segment) || resolved_segment()
   end
+
+  defp segment_of_layout(%Layout{worktree_root: worktree_root}), do: Path.basename(worktree_root)
+  defp segment_of_layout(_), do: nil
+
+  # The one identity read on the read/clear/resumable? path — `Config.repo()`'s
+  # `origin`-derived segment, or `nil` for a repo with no usable origin (pre-012
+  # / identity-less: falls back to the flat bucket).
+  defp resolved_segment do
+    case RepoIdentity.resolve(Config.repo()) do
+      {:ok, segment} -> segment
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp maybe_put(record, _key, nil), do: record
+  defp maybe_put(record, key, value), do: Map.put(record, key, value)
+
+  defp maybe_put_scope(record, %Layout{} = layout),
+    do: Map.put(record, "scope", scope_json(layout))
+
+  defp maybe_put_scope(record, _), do: record
 
   defp scope_json(%Layout{breakdown_root: nil}), do: "ad-hoc"
 
@@ -165,5 +203,12 @@ defmodule SpeckitOrchestrator.RunManifest do
   defp reconstruct_status("pending"), do: :pending
   defp reconstruct_status(_other), do: :pending
 
-  defp manifest_path, do: Path.join([Config.autonomous_root(), "transcripts", "run.json"])
+  # Per-repo slot under the segment dir (`reset-target.sh` wipes it with the
+  # rest of the segment's transcripts); `nil` segment → the legacy flat bucket
+  # for identity-less repos.
+  defp manifest_path(nil),
+    do: Path.join([Config.autonomous_root(), "transcripts", "run.json"])
+
+  defp manifest_path(segment) when is_binary(segment),
+    do: Path.join([Config.autonomous_root(), "transcripts", segment, "run.json"])
 end

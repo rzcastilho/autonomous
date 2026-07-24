@@ -267,6 +267,16 @@ defmodule SpeckitOrchestrator do
       `resume_prompt`; omitted/`nil` runs the phase with no note.
     * `:from` — override the start phase; takes precedence over the
       checkpoint's stored `last_phase`.
+    * `:remediation_prompt` — operator correction instruction (feature 013).
+      **Non-blank** ⇒ a single remediation step runs and completes before the
+      target phase, letting the model fix what a read-only gate (e.g.
+      `analyze`) only evaluates. **Blank**/absent (default) ⇒ no step; the
+      resume is byte-identical to today's.
+    * `:remediation_model` — model alias (`"opus"`/`"sonnet"`) for the
+      remediation step only; `nil` defaults to `Config.model_for(start_phase)`.
+      An unknown alias returns `{:error, {:unknown_model, alias}}` and starts
+      no run. Independent of the target phase's own model routing and of
+      `:prompt` (FR-010/FR-011).
 
   Also reapplies the run-shaping context (`pr_workflow`, `max_concurrency`,
   `budget_usd`, `plan_stack`, `pr_base`, `pr_remote`) the checkpoint recorded
@@ -290,21 +300,34 @@ defmodule SpeckitOrchestrator do
           | {:error, :no_checkpoint}
           | {:error, :corrupt_checkpoint}
           | {:error, {:unknown_phase, term()}}
+          | {:error, {:unknown_model, String.t()}}
   def resume(feature_id, opts \\ []) do
+    remediation_model = Keyword.get(opts, :remediation_model)
+
     with {:ok, record, layout} <- read_checkpoint(feature_id, layout_from_manifest(opts)),
          {:ok, feature} <- resolve_identity(feature_id, record, opts),
-         {:ok, start_phase} <- resolve_start_phase(record, opts) do
+         {:ok, start_phase} <- resolve_start_phase(record, opts),
+         {:ok, _resolved} <- Config.remediation_model(start_phase, remediation_model) do
       {merged_opts, fell_back} = RunContext.merge(opts, RunContext.from_map(record["context"]))
       log_context_fallback(feature_id, fell_back)
 
       run_context = RunContext.capture(merged_opts)
       pr_workflow? = Keyword.get(merged_opts, :pr_workflow, Config.pr_workflow?())
       prompt = Keyword.get(opts, :prompt)
+      remediation_prompt = Keyword.get(opts, :remediation_prompt)
 
       merged_opts
       |> maybe_put_layout(layout)
       |> Keyword.put(:features, [feature])
-      |> inject_resume_strategy(pr_workflow?, start_phase, prompt, run_context, layout)
+      |> inject_resume_strategy(
+        pr_workflow?,
+        start_phase,
+        prompt,
+        remediation_prompt,
+        remediation_model,
+        run_context,
+        layout
+      )
       |> run()
     end
   end
@@ -548,16 +571,47 @@ defmodule SpeckitOrchestrator do
   # A caller-supplied :runner/:executor still wins (test seam) regardless of
   # the effective pr_workflow — checked here rather than at run/1 since resume
   # must choose runner vs executor based on the *reapplied* pr_workflow.
-  defp inject_resume_strategy(opts, pr_workflow?, start_phase, prompt, run_context, layout) do
+  defp inject_resume_strategy(
+         opts,
+         pr_workflow?,
+         start_phase,
+         prompt,
+         remediation_prompt,
+         remediation_model,
+         run_context,
+         layout
+       ) do
     cond do
       Keyword.has_key?(opts, :runner) or Keyword.has_key?(opts, :executor) ->
         opts
 
       pr_workflow? ->
-        Keyword.put(opts, :executor, resume_executor(start_phase, prompt, run_context, layout))
+        Keyword.put(
+          opts,
+          :executor,
+          resume_executor(
+            start_phase,
+            prompt,
+            remediation_prompt,
+            remediation_model,
+            run_context,
+            layout
+          )
+        )
 
       true ->
-        Keyword.put(opts, :runner, resume_runner(start_phase, prompt, run_context, layout))
+        Keyword.put(
+          opts,
+          :runner,
+          resume_runner(
+            start_phase,
+            prompt,
+            remediation_prompt,
+            remediation_model,
+            run_context,
+            layout
+          )
+        )
     end
   end
 
@@ -667,7 +721,7 @@ defmodule SpeckitOrchestrator do
   # feature never tore it down); else recreate it from the existing branch.
   # Never falls back to a fresh branch (FR-005, SC-005) — a missing branch is
   # a distinct worktree error, not silently re-created from HEAD.
-  defp resume_runner(start_phase, prompt, run_context, layout) do
+  defp resume_runner(start_phase, prompt, remediation_prompt, remediation_model, run_context, layout) do
     fn feature, notify ->
       Task.Supervisor.start_child(SpeckitOrchestrator.RunnerSup, fn ->
         case resume_worktree(feature, layout) do
@@ -678,6 +732,8 @@ defmodule SpeckitOrchestrator do
               notify: notify,
               start_phase: start_phase,
               resume_prompt: prompt,
+              remediation_prompt: remediation_prompt,
+              remediation_model: remediation_model,
               run_context: run_context,
               layout: layout
             )
@@ -697,7 +753,14 @@ defmodule SpeckitOrchestrator do
   # PR-on-:done (FR-009). `base` (the current stack top) is ignored: a resumed
   # feature reuses/recreates its own existing worktree/branch, not a fresh one
   # branched off the stack.
-  defp resume_executor(start_phase, prompt, run_context, layout) do
+  defp resume_executor(
+         start_phase,
+         prompt,
+         remediation_prompt,
+         remediation_model,
+         run_context,
+         layout
+       ) do
     fn feature, _base, notify ->
       Task.Supervisor.start_child(SpeckitOrchestrator.RunnerSup, fn ->
         case resume_worktree(feature, layout) do
@@ -708,6 +771,8 @@ defmodule SpeckitOrchestrator do
               notify: notify,
               start_phase: start_phase,
               resume_prompt: prompt,
+              remediation_prompt: remediation_prompt,
+              remediation_model: remediation_model,
               run_context: run_context,
               layout: layout
             )
