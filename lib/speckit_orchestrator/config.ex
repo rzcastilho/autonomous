@@ -98,6 +98,24 @@ defmodule SpeckitOrchestrator.Config do
     end
   end
 
+  @valid_models ~w(opus sonnet)
+
+  @doc """
+  Resolve the model for a pre-phase remediation step: an explicit `override`
+  alias wins; `nil` defaults to `model_for(target_phase)` (FR-011). An unknown
+  override alias is rejected loudly rather than silently defaulted (Principle
+  II) — the pinned SDK catalog only accepts `opus`/`sonnet`.
+  """
+  @spec remediation_model(atom(), String.t() | nil) ::
+          {:ok, String.t()} | {:error, {:unknown_model, String.t()}}
+  def remediation_model(target_phase, nil) when is_atom(target_phase),
+    do: {:ok, model_for(target_phase)}
+
+  def remediation_model(_target_phase, override) when override in @valid_models,
+    do: {:ok, override}
+
+  def remediation_model(_target_phase, override), do: {:error, {:unknown_model, override}}
+
   @doc "Ordered plan stack passed to the plan phase."
   @spec plan_stack() :: [String.t()]
   def plan_stack, do: get(:plan_stack, [])
@@ -150,7 +168,8 @@ defmodule SpeckitOrchestrator.Config do
     tasks: 0.30,
     analyze: 0.40,
     implement: 2.50,
-    converge: 0.30
+    converge: 0.30,
+    remediation: 0.30
   }
 
   @doc "Fallback per-phase USD cost estimate (used when the run surfaces no cost)."

@@ -73,11 +73,17 @@ Given that feature description, do this:
      - "Create a dashboard for analytics" → "analytics-dashboard"
      - "Fix payment processing timeout bug" → "fix-payment-timeout"
 
-2. **Branch creation** (optional, via hook):
+2. **Branch creation**:
 
    If a `before_specify` hook ran successfully in the Pre-Execution Checks above, it will have created/switched to a git branch and output JSON containing `BRANCH_NAME` and `FEATURE_NUM`. Note these values for reference, but the branch name does **not** dictate the spec directory name.
 
    If the user explicitly provided `GIT_BRANCH_NAME`, pass it through to the hook so the branch script uses the exact value as the branch name (bypassing all prefix/suffix generation).
+
+   **Fallback (no hook, or hook didn't create a branch)**: after step 3 below resolves `SPECIFY_FEATURE_DIRECTORY`, check `git rev-parse --git-dir` succeeds (skip silently in a non-git checkout). If so, before writing any files:
+   - `BRANCH_NAME` = the basename of `SPECIFY_FEATURE_DIRECTORY` (e.g. `013-resume-pre-phase-prompt`) — identical to the spec dir name, no separate numbering pass.
+   - If a local branch named `BRANCH_NAME` already exists, `git checkout BRANCH_NAME` (reuse — this is a re-run of specify on an existing feature).
+   - Otherwise `git checkout -b BRANCH_NAME` from the current branch. Uncommitted changes in the working tree follow the switch; this is safe.
+   - If `git checkout` fails for any reason (detached HEAD conflicts, dirty index blocking a file that differs between branches, etc.), do not abort the whole command — warn the user inline that the spec will be created on the current branch instead, and continue.
 
 3. **Create the spec feature directory**:
 
@@ -94,6 +100,7 @@ Given that feature description, do this:
       - If `branch_numbering` was used (and `feature_numbering` was absent), emit a one-line warning: "⚠️ `branch_numbering` in init-options.json is deprecated. Rename to `feature_numbering`."
 
    **Create the directory and spec file**:
+   - Now that `SPECIFY_FEATURE_DIRECTORY` is resolved, run step 2's branch-creation fallback (if it hasn't already run via a hook) — do this before `mkdir`
    - `mkdir -p SPECIFY_FEATURE_DIRECTORY`
    - Resolve the active `spec-template` through the Spec Kit preset/template resolution stack (equivalent to `specify preset resolve spec-template`)
    - Copy the resolved `spec-template` file to `SPECIFY_FEATURE_DIRECTORY/spec.md` as the starting point

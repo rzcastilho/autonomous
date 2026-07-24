@@ -59,6 +59,13 @@ defmodule SpeckitOrchestrator.FeatureRunner do
     * `:resume_prompt` — optional operator note carried into agent state
       alongside the fixed `resume_phase` anchor; does not alter any phase
       request in this feature.
+    * `:remediation_prompt` — optional operator correction instruction (feature
+      013). Non-blank ⇒ a single remediation step runs once, before
+      `start_phase`, and a genuine post-retry failure stops the run (`:failed`,
+      worktree kept) without entering the phase loop. Blank/absent ⇒ no step,
+      byte-identical to a resume with no remediation.
+    * `:remediation_model` — model alias override for the remediation step
+      only (`nil` ⇒ `Config.model_for(start_phase)`).
     * `:run_context` — a `RunContext.t()` captured by the facade for this run;
       threaded into a diverted-terminal checkpoint write so a resume reapplies
       the original run shape. Defaults to `nil` (tests and non-context callers).
@@ -75,6 +82,8 @@ defmodule SpeckitOrchestrator.FeatureRunner do
     notify = Keyword.get(opts, :notify)
     start_phase = Keyword.get(opts, :start_phase, Pipeline.first())
     resume_prompt = Keyword.get(opts, :resume_prompt)
+    remediation_prompt = Keyword.get(opts, :remediation_prompt)
+    remediation_model = Keyword.get(opts, :remediation_model)
     run_context = Keyword.get(opts, :run_context)
     layout = Keyword.get(opts, :layout)
 
@@ -90,23 +99,31 @@ defmodule SpeckitOrchestrator.FeatureRunner do
               ledger: ledger,
               layout: layout,
               phase: start_phase,
-              resume_prompt: resume_prompt
+              resume_prompt: resume_prompt,
+              remediation_prompt: remediation_prompt,
+              remediation_model: remediation_model
             },
             timeout
           )
 
         {status, reason, agent} =
-          loop(
-            pid,
-            feature,
-            start_phase,
-            Pipeline.step_of(start_phase),
-            timeout,
-            ledger,
-            worktree,
-            run_context,
-            layout
-          )
+          case maybe_run_remediation(pid, feature, worktree, layout, timeout, remediation_prompt) do
+            {:error, agent} ->
+              {:failed, :remediation_failed, agent}
+
+            :ok ->
+              loop(
+                pid,
+                feature,
+                start_phase,
+                Pipeline.step_of(start_phase),
+                timeout,
+                ledger,
+                worktree,
+                run_context,
+                layout
+              )
+          end
 
         call(pid, "feature.finalize", %{status: status, reason: reason}, timeout)
         checkpoint(feature, status, reason, agent, run_context, layout)
@@ -130,6 +147,65 @@ defmodule SpeckitOrchestrator.FeatureRunner do
       end
     end
   end
+
+  # ---- pre-phase remediation (feature 013) ---------------------------------
+
+  # Runs once, outside `loop/…`, before the phase loop begins — structurally
+  # guarantees "at most once, before the target phase only" (FR-005/SC-003).
+  # Blank prompt = zero overhead (FR-004/SC-002): no signal, no telemetry span,
+  # no cost.
+  defp maybe_run_remediation(pid, feature, worktree, layout, timeout, remediation_prompt) do
+    if blank?(remediation_prompt) do
+      :ok
+    else
+      agent =
+        remediation_with_retry(pid, feature, timeout, worktree, layout, Config.phase_max_retries())
+
+      if agent.state.last_outcome == :error, do: {:error, agent}, else: :ok
+    end
+  end
+
+  # Same transient-retry policy as a phase (FR-006): a server/API drop is
+  # retried up to Config.phase_max_retries() times before it counts as a
+  # genuine failure.
+  defp remediation_with_retry(pid, feature, timeout, worktree, layout, retries) do
+    agent = run_remediation(pid, feature, timeout, worktree, layout)
+    st = agent.state
+
+    if retries > 0 and st.last_outcome == :error and PhaseResult.transient?(st.last_result) do
+      Logger.warning(
+        "feature #{feature.id} remediation failed transiently — retrying (#{retries} left)"
+      )
+
+      remediation_with_retry(pid, feature, timeout, worktree, layout, retries - 1)
+    else
+      agent
+    end
+  end
+
+  # Same [:speckit, :phase] span every phase uses (meta.phase = :remediation,
+  # FR-012) and the same durable-transcript machinery at step 0
+  # (00-remediation.md), so it precedes the target phase's 01-<phase>.md in
+  # any listing.
+  defp run_remediation(pid, feature, timeout, worktree, layout) do
+    meta = %{feature_id: feature.id, phase: :remediation, step: 0}
+
+    :telemetry.span([:speckit, :phase], meta, fn ->
+      {:ok, agent} = call(pid, "remediation.run", %{}, timeout)
+      entry = List.first(agent.state.history) || %{}
+      Transcripts.write(worktree, layout, 0, :remediation, agent.state.last_result)
+
+      Logger.info(
+        "feature #{feature.id} remediation -> #{inspect(Map.get(entry, :outcome))}"
+      )
+
+      {agent,
+       Map.merge(meta, %{outcome: Map.get(entry, :outcome), cost: Map.get(entry, :cost, 0.0)})}
+    end)
+  end
+
+  defp blank?(nil), do: true
+  defp blank?(str) when is_binary(str), do: String.trim(str) == ""
 
   # ---- loop ---------------------------------------------------------------
 

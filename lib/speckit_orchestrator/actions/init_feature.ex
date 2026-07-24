@@ -17,7 +17,9 @@ defmodule SpeckitOrchestrator.Actions.InitFeature do
       # omitted key — it fills the default in and then validates it against
       # the declared type, so `nil` (a valid, intended default) trips
       # "expected string, got: nil". `{:or, [nil, :string]}` accepts both.
-      resume_prompt: [type: {:or, [nil, :string]}, default: nil]
+      resume_prompt: [type: {:or, [nil, :string]}, default: nil],
+      remediation_prompt: [type: {:or, [nil, :string]}, default: nil],
+      remediation_model: [type: {:or, [nil, :string]}, default: nil]
     ]
 
   alias SpeckitOrchestrator.Pipeline
@@ -35,6 +37,8 @@ defmodule SpeckitOrchestrator.Actions.InitFeature do
        phase: phase,
        resume_phase: phase,
        resume_prompt: params.resume_prompt,
+       remediation_prompt: params.remediation_prompt,
+       remediation_model: params.remediation_model,
        status: :running,
        history: []
      }}

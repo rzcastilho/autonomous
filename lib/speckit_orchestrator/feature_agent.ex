@@ -34,6 +34,8 @@ defmodule SpeckitOrchestrator.FeatureAgent do
       phase: [type: :atom, default: nil],
       resume_phase: [type: :atom, default: nil],
       resume_prompt: [type: :string, default: nil],
+      remediation_prompt: [type: {:or, [nil, :string]}, default: nil],
+      remediation_model: [type: {:or, [nil, :string]}, default: nil],
       session_id: [type: :string, default: nil],
       status: [type: :atom, default: :pending],
       last_outcome: [type: :atom, default: nil],
@@ -46,6 +48,7 @@ defmodule SpeckitOrchestrator.FeatureAgent do
     signal_routes: [
       {"feature.init", SpeckitOrchestrator.Actions.InitFeature},
       {"phase.run", SpeckitOrchestrator.Actions.RunFeaturePhase},
+      {"remediation.run", SpeckitOrchestrator.Actions.RunRemediation},
       {"feature.finalize", SpeckitOrchestrator.Actions.FinalizeFeature}
     ]
 end

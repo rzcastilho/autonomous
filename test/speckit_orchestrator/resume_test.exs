@@ -13,23 +13,35 @@ defmodule SpeckitOrchestrator.ResumeTest do
   defmodule FakeSDK do
     alias ClaudeAgentSDK.Message
 
-    def query(prompt, _options) do
-      text =
-        if String.contains?(prompt, "/speckit.analyze") do
-          # Mirror whether the built prompt carries the appended resume-guidance
-          # line (PhaseRequest.append_resume_prompt/2) into the JSON `summary`
-          # so tests can assert on it via the durable transcript, without a
-          # separate capture channel. analyze is the only phase these tests use
-          # for a real FakeSDK run — it has no artifact-gate requirement, unlike
-          # :plan/:tasks/:implement.
-          note =
-            if String.contains?(prompt, "Operator guidance (resume):"),
-              do: "guidance-present",
-              else: "guidance-absent"
+    def query(prompt, options) do
+      model = Map.get(options, :model)
 
-          ~s({"summary":"#{note}","findings":[{"severity":"critical","title":"bad"}]})
-        else
-          "Phase completed."
+      text =
+        cond do
+          # Mirrors the model a remediation/analyze request carried into the
+          # JSON/text response itself (no separate capture channel) — the
+          # durable transcript is the only cross-process-safe way to read it
+          # back, since the harness call runs inside a spawned runner Task,
+          # not the test process.
+          String.contains?(prompt, "Remediation for feature") ->
+            "Remediation ran with model=#{model}. prompt=#{prompt}"
+
+          String.contains?(prompt, "/speckit.analyze") ->
+            # Mirror whether the built prompt carries the appended resume-guidance
+            # line (PhaseRequest.append_resume_prompt/2) into the JSON `summary`
+            # so tests can assert on it via the durable transcript, without a
+            # separate capture channel. analyze is the only phase these tests use
+            # for a real FakeSDK run — it has no artifact-gate requirement, unlike
+            # :plan/:tasks/:implement.
+            note =
+              if String.contains?(prompt, "Operator guidance (resume):"),
+                do: "guidance-present",
+                else: "guidance-absent"
+
+            ~s({"summary":"#{note} model=#{model}","findings":[{"severity":"critical","title":"bad"}]})
+
+          true ->
+            "Phase completed."
         end
 
       [
@@ -373,6 +385,139 @@ defmodule SpeckitOrchestrator.ResumeTest do
 
       analyze_log = File.read!(Path.join(wt.path, ".speckit_logs/05-analyze.md"))
       assert analyze_log =~ "guidance-absent"
+    end
+  end
+
+  # ---- pre-phase remediation passthrough (feature 013) ----------------------
+
+  describe "resume/2 — pre-phase remediation passthrough" do
+    test ":remediation_prompt reaches FeatureRunner.run/2 and runs before the target phase" do
+      id = unique_id()
+      repo = base_repo()
+      root = tmp_root()
+      point_config_at(repo, root)
+
+      {:ok, wt} = Worktree.create(feature(id), repo: repo, worktree_root: root)
+      write_checkpoint(id, :analyze)
+
+      me = self()
+
+      assert {:ok, pid} =
+               SpeckitOrchestrator.resume(id,
+                 features: [feature(id)],
+                 owner: me,
+                 remediation_prompt: "Fix the money-type Critical the analyze gate flagged."
+               )
+
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+      assert_receive {:run_complete, report}, 30_000
+      assert report.halted == [id]
+
+      remediation_log = File.read!(Path.join(wt.path, ".speckit_logs/00-remediation.md"))
+      assert remediation_log =~ "Fix the money-type Critical the analyze gate flagged."
+
+      # the target phase still ran, after remediation
+      assert File.exists?(Path.join(wt.path, ".speckit_logs/05-analyze.md"))
+    end
+
+    test ":remediation_model override applies only to the remediation request — the target phase's own model routing is unchanged" do
+      id = unique_id()
+      repo = base_repo()
+      root = tmp_root()
+      point_config_at(repo, root)
+
+      {:ok, wt} = Worktree.create(feature(id), repo: repo, worktree_root: root)
+      write_checkpoint(id, :analyze)
+
+      me = self()
+
+      assert {:ok, pid} =
+               SpeckitOrchestrator.resume(id,
+                 features: [feature(id)],
+                 owner: me,
+                 remediation_prompt: "Fix it.",
+                 remediation_model: "sonnet"
+               )
+
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+      assert_receive {:run_complete, report}, 30_000
+      assert report.halted == [id]
+
+      remediation_log = File.read!(Path.join(wt.path, ".speckit_logs/00-remediation.md"))
+      assert remediation_log =~ "model=sonnet"
+
+      # analyze's own model routing (Config.model_for(:analyze) == "opus") is untouched
+      analyze_log = File.read!(Path.join(wt.path, ".speckit_logs/05-analyze.md"))
+      assert analyze_log =~ "model=opus"
+    end
+
+    test "with no :remediation_prompt, no remediation step runs — byte-identical to a plain resume" do
+      id = unique_id()
+      repo = base_repo()
+      root = tmp_root()
+      point_config_at(repo, root)
+
+      {:ok, wt} = Worktree.create(feature(id), repo: repo, worktree_root: root)
+      write_checkpoint(id, :analyze)
+
+      me = self()
+      assert {:ok, pid} = SpeckitOrchestrator.resume(id, features: [feature(id)], owner: me)
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+      assert_receive {:run_complete, report}, 30_000
+      assert report.halted == [id]
+
+      refute File.exists?(Path.join(wt.path, ".speckit_logs/00-remediation.md"))
+    end
+
+    test "FR-010: :prompt and :remediation_prompt are independent — both apply, neither suppresses the other" do
+      id = unique_id()
+      repo = base_repo()
+      root = tmp_root()
+      point_config_at(repo, root)
+
+      {:ok, wt} = Worktree.create(feature(id), repo: repo, worktree_root: root)
+      write_checkpoint(id, :analyze)
+
+      me = self()
+
+      assert {:ok, pid} =
+               SpeckitOrchestrator.resume(id,
+                 features: [feature(id)],
+                 owner: me,
+                 prompt: "fixed float",
+                 remediation_prompt: "Fix the money-type Critical the analyze gate flagged."
+               )
+
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+      assert_receive {:run_complete, report}, 30_000
+      assert report.halted == [id]
+
+      remediation_log = File.read!(Path.join(wt.path, ".speckit_logs/00-remediation.md"))
+      assert remediation_log =~ "Fix the money-type Critical the analyze gate flagged."
+
+      # the target phase's own :prompt (feature-004 note) still carries through
+      analyze_log = File.read!(Path.join(wt.path, ".speckit_logs/05-analyze.md"))
+      assert analyze_log =~ "guidance-present"
+    end
+
+    test "an unknown :remediation_model alias returns {:error, {:unknown_model, _}}, no run started" do
+      id = unique_id()
+      write_checkpoint(id, :analyze)
+      me = self()
+
+      assert {:error, {:unknown_model, "not-a-model"}} =
+               SpeckitOrchestrator.resume(id,
+                 features: [feature(id)],
+                 runner: capturing_runner(me),
+                 remediation_prompt: "Fix it.",
+                 remediation_model: "not-a-model"
+               )
+
+      refute_received {:runner_called, _}
     end
   end
 

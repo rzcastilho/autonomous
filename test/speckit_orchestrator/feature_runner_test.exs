@@ -33,41 +33,71 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
 
       scenario = Application.get_env(:speckit_orchestrator, :test_fake_scenario, :happy)
 
-      if scenario == :transient_once and first_call?() do
-        # First call drops mid-response: an error result carrying a server-drop
-        # signature. Must be retried, not fail the feature.
-        [
-          %Message{type: :system, subtype: :init, data: %{session_id: "s"}, raw: %{}},
-          %Message{
-            type: :result,
-            subtype: :error,
-            data: %{
-              session_id: "s",
-              result: "API Error: Server error mid-response.",
-              is_error: true,
-              total_cost_usd: nil
-            },
-            raw: %{}
-          }
-        ]
-      else
-        text = response_text(prompt)
+      cond do
+        scenario == :transient_once and first_call?() ->
+          transient_drop_messages()
 
-        [
-          %Message{type: :system, subtype: :init, data: %{session_id: "s"}, raw: %{}},
-          %Message{
-            type: :assistant,
-            data: %{session_id: "s", message: %{"content" => text}},
-            raw: %{}
-          },
-          %Message{
-            type: :result,
-            subtype: :success,
-            data: %{session_id: "s", result: text, is_error: false, total_cost_usd: 0.10},
-            raw: %{}
-          }
-        ]
+        scenario == :remediation_transient_once and remediation_prompt?(prompt) and
+            first_call?() ->
+          transient_drop_messages()
+
+        # A genuine (non-transient) remediation failure — never retried, stops
+        # the resume before the target phase runs (FR-006/SC-005).
+        scenario == :remediation_error and remediation_prompt?(prompt) ->
+          [
+            %Message{type: :system, subtype: :init, data: %{session_id: "s"}, raw: %{}},
+            %Message{
+              type: :result,
+              subtype: :error,
+              data: %{
+                session_id: "s",
+                result: "Remediation failed: unresolvable conflict in plan.md.",
+                is_error: true,
+                total_cost_usd: nil
+              },
+              raw: %{}
+            }
+          ]
+
+        true ->
+          text = response_text(prompt)
+
+          [
+            %Message{type: :system, subtype: :init, data: %{session_id: "s"}, raw: %{}},
+            %Message{
+              type: :assistant,
+              data: %{session_id: "s", message: %{"content" => text}},
+              raw: %{}
+            },
+            %Message{
+              type: :result,
+              subtype: :success,
+              data: %{session_id: "s", result: text, is_error: false, total_cost_usd: 0.10},
+              raw: %{}
+            }
+          ]
       end
+    end
+
+    defp remediation_prompt?(prompt), do: String.contains?(prompt, "Remediation for feature")
+
+    # First call drops mid-response: an error result carrying a server-drop
+    # signature. Must be retried, not fail the feature.
+    defp transient_drop_messages do
+      [
+        %Message{type: :system, subtype: :init, data: %{session_id: "s"}, raw: %{}},
+        %Message{
+          type: :result,
+          subtype: :error,
+          data: %{
+            session_id: "s",
+            result: "API Error: Server error mid-response.",
+            is_error: true,
+            total_cost_usd: nil
+          },
+          raw: %{}
+        }
+      ]
     end
 
     # True exactly once (the first query call), via a test-provided counter Agent.
@@ -589,5 +619,189 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
     assert agent.state.resume_phase == :plan
 
     GenServer.stop(pid, :normal)
+  end
+
+  # --- pre-phase remediation (feature 013) -----------------------------------
+
+  describe "pre-phase remediation" do
+    test "runs exactly once, before the target phase, which then observes the remediated artifacts" do
+      Application.put_env(:speckit_orchestrator, :test_fake_scenario, :halt)
+      wt = scaffolded_worktree()
+
+      hook = fn prompt, options ->
+        cwd =
+          case options do
+            %{cwd: cwd} -> cwd
+            list when is_list(list) -> Keyword.get(list, :cwd)
+            _ -> nil
+          end
+
+        if cwd && String.contains?(prompt, "Remediation for feature") do
+          File.write!(Path.join(cwd, "REMEDIATED.marker"), "fixed\n")
+        else
+          SpeckitOrchestrator.FakeArtifacts.write(prompt, options)
+        end
+      end
+
+      Application.put_env(:speckit_orchestrator, :test_artifact_hook, hook)
+      on_exit(fn -> Application.delete_env(:speckit_orchestrator, :test_artifact_hook) end)
+
+      test_pid = self()
+      handler = "remediation-order-#{System.unique_integer([:positive])}"
+
+      :telemetry.attach(
+        handler,
+        [:speckit, :phase, :start],
+        fn _event, _meas, %{phase: phase}, _ -> send(test_pid, {:phase_start, phase}) end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach(handler) end)
+
+      result =
+        FeatureRunner.run(feature(),
+          worktree: wt,
+          notify: self(),
+          remediation_prompt: "Fix the money-type Critical."
+        )
+
+      assert result.status == :halted
+
+      # remediation started (and thus completed) before the target phase
+      assert_received {:phase_start, :remediation}
+      assert_received {:phase_start, :specify}
+
+      assert File.exists?(Path.join(wt.path, ".speckit_logs/00-remediation.md"))
+      assert File.exists?(Path.join(wt.path, ".speckit_logs/01-specify.md"))
+
+      # the marker remediation wrote is still there — the target phase (and
+      # every phase after it) ran against the artifacts remediation left
+      assert File.exists?(Path.join(wt.path, "REMEDIATED.marker"))
+    end
+
+    test "a transient remediation failure is auto-retried and the resume proceeds" do
+      {:ok, counter} = Agent.start_link(fn -> 0 end)
+      Application.put_env(:speckit_orchestrator, :test_transient_counter, counter)
+      Application.put_env(:speckit_orchestrator, :test_fake_scenario, :remediation_transient_once)
+
+      on_exit(fn ->
+        Application.delete_env(:speckit_orchestrator, :test_transient_counter)
+        if Process.alive?(counter), do: Agent.stop(counter)
+      end)
+
+      wt = scaffolded_worktree()
+
+      result =
+        FeatureRunner.run(feature(),
+          worktree: wt,
+          notify: self(),
+          remediation_prompt: "Fix the money-type Critical."
+        )
+
+      # First remediation call dropped mid-response; retried once, then the
+      # whole pipeline still reaches :done.
+      assert result.status == :done
+      assert Agent.get(counter, & &1) == 2
+    end
+
+    test "a genuine remediation failure stops the resume before the target phase runs" do
+      Application.put_env(:speckit_orchestrator, :test_fake_scenario, :remediation_error)
+      wt = scaffolded_worktree()
+
+      result =
+        FeatureRunner.run(feature(),
+          worktree: wt,
+          notify: self(),
+          remediation_prompt: "Fix the money-type Critical."
+        )
+
+      assert result.status == :failed
+      assert result.reason == :remediation_failed
+      assert_received {:feature_finished, "001", :failed, :remediation_failed}
+      # worktree kept for post-mortem, never removed
+      assert File.dir?(wt.path)
+      # the target phase (specify) never ran
+      refute File.exists?(Path.join(wt.path, ".speckit_logs/01-specify.md"))
+    end
+
+    test "an absent, blank, or whitespace-only remediation_prompt runs no remediation step (FR-004/SC-002)" do
+      for prompt <- [nil, "", "   \n\t "] do
+        wt = scaffolded_worktree()
+        {:ok, ledger} = Ledger.start_link(budget: 100, name: nil)
+
+        test_pid = self()
+        handler = "no-remediation-tele-#{System.unique_integer([:positive])}"
+
+        :telemetry.attach(
+          handler,
+          [:speckit, :phase, :start],
+          fn _event, _meas, %{phase: phase}, _ -> send(test_pid, {:phase_start, phase}) end,
+          nil
+        )
+
+        result =
+          FeatureRunner.run(feature(),
+            worktree: wt,
+            ledger: ledger,
+            notify: self(),
+            remediation_prompt: prompt
+          )
+
+        :telemetry.detach(handler)
+
+        assert result.status == :done
+        refute_received {:phase_start, :remediation}
+        refute File.exists?(Path.join(wt.path, ".speckit_logs/00-remediation.md"))
+        assert Ledger.spent(ledger) == result.cost_total
+      end
+    end
+  end
+
+  # --- pre-phase remediation is scoped to this one resume (feature 013, US3) -
+
+  test "a remediation step at one target phase never re-fires as the pipeline advances to a later phase" do
+    # :happy (default) scenario clears the analyze gate, so the pipeline keeps
+    # advancing past :analyze into :implement and beyond — proving remediation
+    # ran exactly once, before :analyze only, and never again for any
+    # subsequent phase (FR-005/SC-003).
+    wt = scaffolded_worktree()
+
+    test_pid = self()
+    handler = "remediation-scope-#{System.unique_integer([:positive])}"
+
+    :telemetry.attach(
+      handler,
+      [:speckit, :phase, :start],
+      fn _event, _meas, %{phase: phase}, _ -> send(test_pid, {:phase_start, phase}) end,
+      nil
+    )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+
+    result =
+      FeatureRunner.run(feature(),
+        start_phase: :analyze,
+        worktree: wt,
+        notify: self(),
+        remediation_prompt: "Fix the money-type Critical."
+      )
+
+    assert result.status == :done
+
+    starts = collect_phase_starts([])
+    assert Enum.count(starts, &(&1 == :remediation)) == 1
+
+    # remediation precedes only the target phase (:analyze) — first in the
+    # recorded order, immediately followed by :analyze, and does not recur
+    # before :implement or any phase after it
+    assert starts == [:remediation, :analyze, :implement, :converge]
+  end
+
+  defp collect_phase_starts(acc) do
+    receive do
+      {:phase_start, phase} -> collect_phase_starts([phase | acc])
+    after
+      0 -> Enum.reverse(acc)
+    end
   end
 end
