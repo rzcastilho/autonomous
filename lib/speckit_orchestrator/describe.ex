@@ -79,7 +79,10 @@ defmodule SpeckitOrchestrator.Describe do
   def write_pr(feature_id, %{pr_title: title, pr_body: body}, layout) do
     dir = Path.join(durable_root(layout), feature_id)
     File.mkdir_p!(dir)
-    File.write!(Path.join(dir, "pr.json"), Jason.encode!(%{pr_title: title, pr_body: body}))
+    File.write!(
+      Path.join(dir, "pr.json"),
+      Jason.encode!(%{pr_title: title, pr_body: body}, pretty: true)
+    )
     :ok
   end
 

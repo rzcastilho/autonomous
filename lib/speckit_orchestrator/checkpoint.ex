@@ -50,7 +50,7 @@ defmodule SpeckitOrchestrator.Checkpoint do
 
     path = checkpoint_path(feature_id, Map.get(input, :layout))
     File.mkdir_p!(Path.dirname(path))
-    File.write!(path, Jason.encode!(record))
+    File.write!(path, Jason.encode!(record, pretty: true))
     :ok
   rescue
     _ -> :ok
