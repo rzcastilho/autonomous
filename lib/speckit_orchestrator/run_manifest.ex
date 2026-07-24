@@ -60,7 +60,7 @@ defmodule SpeckitOrchestrator.RunManifest do
 
     path = manifest_path(segment)
     File.mkdir_p!(Path.dirname(path))
-    File.write!(path, Jason.encode!(record))
+    File.write!(path, Jason.encode!(record, pretty: true))
     :ok
   rescue
     _ -> :ok
