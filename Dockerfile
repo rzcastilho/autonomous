@@ -82,7 +82,18 @@ ENV LANG=C.UTF-8 \
     # whole release at boot ("port_exited_with_status 4") if $SHELL is unset —
     # discovered smoke-testing this image under the real --user/--read-only
     # isolation flags, where no login shell sets it for you.
-    SHELL=/bin/bash
+    SHELL=/bin/bash \
+    # vm.args binds distribution to 127.0.0.1 only (FR-025 — never reachable
+    # over the container's network interface). RELEASE_NODE left at its
+    # release-name-only default resolves its own hostname via gethostname(),
+    # which Docker maps to the container's bridge IP, not loopback — so
+    # `bin/speckit_orchestrator rpc`/`remote` (a fresh ephemeral node
+    # connecting to this same name) could never actually reach it: sname mode
+    # also rejects a numeric "127.0.0.1" host part outright ("Can't set short
+    # node name!"), so pin the literal short hostname "localhost" instead,
+    # which every container's own /etc/hosts already resolves to 127.0.0.1 —
+    # discovered exercising `remote`/`rpc` for real under this same isolation.
+    RELEASE_NODE=speckit_orchestrator@localhost
 
 # git (System.cmd call sites in lib/), python3 (the scope-guard hook is
 # invoked as `python3`), ca-certificates/curl (tool installers below),
@@ -153,6 +164,15 @@ ENV PATH="/root/.local/bin:${PATH}"
 # claude (Claude Code CLI) — native installer, pinned version.
 RUN curl -fsSL https://claude.ai/install.sh | bash -s "${CLAUDE_CODE_VERSION}"
 ENV PATH="/root/.local/bin:${PATH}"
+
+# Both installers above put their payload under /root (build-time HOME).
+# --read-only + --user <uid>:<gid> (the documented, security-model-mandated
+# invocation — contracts/container-run.md §1) run as an unprivileged UID with
+# no relation to root, and /root itself is 0700 — traversable by its owner
+# only, regardless of the 0755 permissions on everything inside it. Without
+# this, `claude`/`specify` are on $PATH but unreachable, and tool_claude/
+# tool_specify fail preflight for every non-root invocation.
+RUN chmod 755 /root
 
 # FR-003: no build tooling leaked into the runtime stage.
 RUN ! command -v mix >/dev/null 2>&1

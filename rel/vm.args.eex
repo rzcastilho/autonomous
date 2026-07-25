@@ -3,15 +3,20 @@
 ## reachable only via `docker exec ... bin/speckit_orchestrator remote`
 ## (FR-025), never over the container's network interface.
 ##
-## ${RELEASE_DISTRIBUTION}/${RELEASE_NODE}/${RELEASE_COOKIE} are substituted at
-## boot by the release's env.sh from the identically-named env vars — see
-## https://hexdocs.pm/mix/Mix.Tasks.Release.html#module-vm-args-and-environment-variables
+## Deliberately does NOT set -sname/-setcookie here: those come from
+## `bin/RELEASE_NAME`'s own `--cookie "$RELEASE_COOKIE"` /
+## `$(release_distribution "$RELEASE_NODE")` flags, which are genuine shell
+## substitution and always correct. A `${RELEASE_COOKIE}`-style token written
+## directly in this file is NOT substituted at boot — proven live: it reaches
+## erl as the *literal* string "${RELEASE_COOKIE}", silently overriding the
+## correct `-setcookie` already set by the flags above (args are order-applied,
+## last wins) and rejecting every real distributed connection with "Invalid
+## challenge reply" (an apparent cookie mismatch, cookie strings verified
+## byte-identical between processes — the actual mismatch is this file's own
+## unexpanded placeholder against the real generated cookie).
 ##
 ## (No explicit -mode here: the release runner script already passes
 ## `--erl "-mode $RELEASE_MODE"` unconditionally, so one here would just be a
 ## harmless-but-noisy duplicate.)
-
--${RELEASE_DISTRIBUTION} ${RELEASE_NODE}
--setcookie ${RELEASE_COOKIE}
 
 -kernel inet_dist_use_interface '{127,0,0,1}'

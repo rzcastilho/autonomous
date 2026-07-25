@@ -69,6 +69,14 @@ defmodule SpeckitOrchestrator.Boot do
     :exit, _ -> :ok
   end
 
+  # Preflight's tool probes (`System.cmd/3` in `handle_continue/2` below) spawn
+  # ports linked to this process; trapping exits (for the shutdown flush above)
+  # means their ordinary `:normal` exit arrives here as a message instead of
+  # crashing anything — swallow it rather than logging 8 fake `[error]` lines
+  # on every boot, on the exact channel (`docker logs`) FR-028 relies on.
+  @impl true
+  def handle_info({:EXIT, port, _reason}, opts) when is_port(port), do: {:noreply, opts}
+
   @impl true
   def handle_continue(:boot, opts) do
     env = Keyword.get_lazy(opts, :env, &Env.load!/0)

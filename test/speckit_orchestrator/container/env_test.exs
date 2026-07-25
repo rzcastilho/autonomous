@@ -236,6 +236,11 @@ defmodule SpeckitOrchestrator.Container.EnvTest do
       assert env.autostart == {:breakdown, "003-recovery-reconciliation"}
     end
 
+    test "a breakdown package slug with no numeric prefix yields {:breakdown, slug}" do
+      env = Env.parse!(Map.put(@required, "AUTONOMOUS_AUTOSTART", "first-wave"))
+      assert env.autostart == {:breakdown, "first-wave"}
+    end
+
     test "an unrecognised value raises" do
       assert_raise ArgumentError, ~r/AUTONOMOUS_AUTOSTART is neither empty/, fn ->
         Env.parse!(Map.put(@required, "AUTONOMOUS_AUTOSTART", "not a slug!"))

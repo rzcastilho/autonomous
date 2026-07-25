@@ -55,11 +55,15 @@ defmodule SpeckitOrchestrator.Integration.ContainerRunTest do
     repo = require_env!("AUTONOMOUS_TEST_REPO")
     slug = require_env!("AUTONOMOUS_TEST_SLUG")
     home = require_env!("AUTONOMOUS_TEST_HOME")
+    # Path A is "already required to run anything" (moduledoc) — fail fast
+    # here rather than let every test below burn its full wait_until timeout
+    # waiting on a run that preflight's credential_agent check never let start.
+    api_key = require_env!("ANTHROPIC_API_KEY")
     claude_home = System.get_env("AUTONOMOUS_TEST_CLAUDE_HOME")
 
     File.mkdir_p!(Path.join(home, ".autonomous"))
 
-    %{image: image, repo: repo, slug: slug, home: home, claude_home: claude_home}
+    %{image: image, repo: repo, slug: slug, home: home, api_key: api_key, claude_home: claude_home}
   end
 
   setup %{home: home} do
@@ -89,13 +93,23 @@ defmodule SpeckitOrchestrator.Integration.ContainerRunTest do
     port = Keyword.get(opts, :port, 4100)
     env_pairs = Keyword.get(opts, :env, [])
     claude_home = Keyword.get(opts, :claude_home)
+    # `:api_key` (default) — Path A, "already required to run anything"
+    # (moduledoc). `:none` — omit it entirely, for a test proving Path B
+    # (mounted ~/.claude) suffices on its own.
+    credential = Keyword.get(opts, :credential, :api_key)
 
     docker_rm_f(name)
 
     claude_mount =
       if claude_home, do: ["-v", "#{claude_home}:/run/secrets/claude:ro"], else: []
 
-    env_flags = Enum.flat_map(env_pairs, fn {k, v} -> ["-e", "#{k}=#{v}"] end)
+    credential_env =
+      case credential do
+        :api_key -> [{"ANTHROPIC_API_KEY", System.get_env("ANTHROPIC_API_KEY") || flunk("set ANTHROPIC_API_KEY")}]
+        :none -> []
+      end
+
+    env_flags = Enum.flat_map(credential_env ++ env_pairs, fn {k, v} -> ["-e", "#{k}=#{v}"] end)
 
     args =
       [
@@ -259,12 +273,12 @@ defmodule SpeckitOrchestrator.Integration.ContainerRunTest do
       System.get_env("ANTHROPIC_API_KEY") ||
         flunk("set ANTHROPIC_API_KEY to exercise credential path A")
 
-    # Path A — ANTHROPIC_API_KEY.
+    # Path A — ANTHROPIC_API_KEY (start_container!'s default credential).
     start_container!(
       image: image,
       repo: repo,
       home: home,
-      env: [{"AUTONOMOUS_AUTOSTART", slug}, {"ANTHROPIC_API_KEY", api_key}]
+      env: [{"AUTONOMOUS_AUTOSTART", slug}]
     )
 
     wait_until(600_000, fn -> run_drained?(run_state_root, repo) end)
@@ -277,12 +291,14 @@ defmodule SpeckitOrchestrator.Integration.ContainerRunTest do
       File.rm_rf!(run_state_root)
       File.mkdir_p!(run_state_root)
 
-      # Path B — mounted pre-authenticated ~/.claude.
+      # Path B — mounted pre-authenticated ~/.claude, with Path A deliberately
+      # omitted so this genuinely proves Path B suffices on its own.
       start_container!(
         image: image,
         repo: repo,
         home: home,
         claude_home: claude_home,
+        credential: :none,
         env: [{"AUTONOMOUS_AUTOSTART", slug}]
       )
 

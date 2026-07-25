@@ -379,7 +379,7 @@ the report is a trustworthy, reproducible diagnostic artifact.
 independent test, since every story validates against a locally-built image)
 and final end-to-end verification.
 
-- [ ] T036 [P] Create `.github/workflows/image.yml` per
+- [X] T036 [P] Create `.github/workflows/image.yml` per
       `contracts/image-publishing.md` §6 — triggers on `v*` tag push and
       `workflow_dispatch`; derives and validates the `v<semver>` version;
       **immutability guard** (`docker buildx imagetools inspect
@@ -391,7 +391,7 @@ and final end-to-end verification.
       preflight report is produced and `/etc/autonomous/image.json` matches the
       build args); push `v<semver>`, `sha-<short-sha>`, and `latest`; record the
       digest in the job summary and release notes (FR-008, SC-011).
-- [ ] T037 [P] Verify the local build path documented in T023 against the same
+- [X] T037 [P] Verify the local build path documented in T023 against the same
       `Dockerfile`/build-args T020/T036 use (`docker build --build-arg
       SOURCE_REVISION="$(git rev-parse HEAD)" -t autonomous:dev .`); confirm
       `autonomous:dev` carries no version identity and `docs/container.md`

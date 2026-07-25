@@ -119,9 +119,7 @@ defmodule SpeckitOrchestrator.Preflight do
         :error
 
       _path ->
-        args = if tool == "claude", do: ["--help"], else: ["--version"]
-
-        case System.cmd(tool, args, stderr_to_stdout: true) do
+        case System.cmd(tool, ["--version"], stderr_to_stdout: true) do
           {out, 0} -> {:ok, extract_version(out)}
           _ -> :error
         end
@@ -285,28 +283,35 @@ defmodule SpeckitOrchestrator.Preflight do
             "install the Spec Kit CLI (`uv tool install --from git+https://github.com/github/spec-kit.git specify-cli`) or use the published image"
         )
 
-      {:ok, version} when version == facts.speckit_version ->
-        Check.new(
-          id: :tool_specify,
-          category: :tool,
-          status: :ok,
-          detail: "specify resolved on PATH (#{version})",
-          expected: facts.speckit_version,
-          observed: version
-        )
-
       {:ok, version} ->
-        Check.new(
-          id: :tool_specify,
-          category: :tool,
-          status: :warn,
-          detail: "specify version differs from the pinned Spec Kit tag",
-          expected: facts.speckit_version,
-          observed: version,
-          fix: "reinstall specify at #{facts.speckit_version} (SPECKIT_VERSION)"
-        )
+        if strip_v(version) == strip_v(facts.speckit_version) do
+          Check.new(
+            id: :tool_specify,
+            category: :tool,
+            status: :ok,
+            detail: "specify resolved on PATH (#{version})",
+            expected: facts.speckit_version,
+            observed: version
+          )
+        else
+          Check.new(
+            id: :tool_specify,
+            category: :tool,
+            status: :warn,
+            detail: "specify version differs from the pinned Spec Kit tag",
+            expected: facts.speckit_version,
+            observed: version,
+            fix: "reinstall specify at #{facts.speckit_version} (SPECKIT_VERSION)"
+          )
+        end
     end
   end
+
+  # The pinned tag (`SPECKIT_VERSION`, e.g. "v0.12.11") and `specify
+  # --version`'s own self-report ("0.12.11") differ only by the "v" the git
+  # ref needs and the CLI doesn't print — compare on the number, not the ref.
+  defp strip_v("v" <> rest), do: rest
+  defp strip_v(version), do: version
 
   defp gh_check(facts) do
     case {Map.fetch!(facts.tools, "gh"), facts.pr_workflow?} do

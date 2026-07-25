@@ -205,7 +205,12 @@ defmodule SpeckitOrchestrator.Container.Env do
     end
   end
 
-  @autostart_slug ~r/^\d{3}-[a-z0-9]+(-[a-z0-9]+)*$/
+  # A breakdown *package* slug (Layout.breakdown_rel/1 — specs_root/breakdown/
+  # <slug>/) is an arbitrary directory name, not the NNN-slug pattern of the
+  # feature files inside it (Backlog's own @file_pattern) — "alpha"/"beta" in
+  # test/fixtures/breakdown_packages and a real backlog's "first-wave" are
+  # both valid package slugs with no numeric prefix.
+  @autostart_slug ~r/^[a-z0-9]+(-[a-z0-9]+)*$/
 
   defp parse_autostart!(env) do
     case get(env, "AUTONOMOUS_AUTOSTART") do
@@ -218,8 +223,8 @@ defmodule SpeckitOrchestrator.Container.Env do
 
   defp raise_autostart!(value) do
     raise ArgumentError,
-          "AUTONOMOUS_AUTOSTART is neither empty, \"ad-hoc\", nor a breakdown slug " <>
-            "(NNN-slug): #{inspect(value)}"
+          "AUTONOMOUS_AUTOSTART is neither empty, \"ad-hoc\", nor a breakdown package slug " <>
+            "(lowercase, digits, hyphens): #{inspect(value)}"
   end
 
   # ---- SPECKIT_MODEL_<PHASE> ----------------------------------------------
