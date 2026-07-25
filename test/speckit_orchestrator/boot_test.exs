@@ -145,4 +145,51 @@ defmodule SpeckitOrchestrator.BootTest do
     assert elapsed_us < 50_000
     assert_receive {:runner_called, _}, 500
   end
+
+  # ---- terminate/2 shutdown flush wiring (FR-027, T027) ---------------------
+
+  test "terminate/2 explicitly stops the configured :coordinator_name and :ledger_name", %{
+    repo: repo,
+    state_root: state_root
+  } do
+    coord_name = unique_name()
+    ledger_name = unique_name()
+    {:ok, _} = Agent.start_link(fn -> :ok end, name: coord_name)
+    {:ok, _} = Agent.start_link(fn -> :ok end, name: ledger_name)
+
+    env = %Env{repo: repo}
+
+    {:ok, pid} =
+      Boot.start_link(
+        name: unique_name(),
+        env: env,
+        preflight_opts: base_preflight_opts(repo, state_root) ++ [env: env],
+        runner: fn _ -> :ok end,
+        coordinator_name: coord_name,
+        ledger_name: ledger_name
+      )
+
+    assert Process.whereis(coord_name)
+    assert Process.whereis(ledger_name)
+
+    GenServer.stop(pid)
+
+    refute Process.whereis(coord_name)
+    refute Process.whereis(ledger_name)
+  end
+
+  test "terminate/2 is a no-op when :coordinator_name/:ledger_name are not configured (the default every other test in this file relies on)",
+       %{repo: repo, state_root: state_root} do
+    env = %Env{repo: repo}
+
+    {:ok, pid} =
+      Boot.start_link(
+        name: unique_name(),
+        env: env,
+        preflight_opts: base_preflight_opts(repo, state_root) ++ [env: env],
+        runner: fn _ -> :ok end
+      )
+
+    assert GenServer.stop(pid) == :ok
+  end
 end

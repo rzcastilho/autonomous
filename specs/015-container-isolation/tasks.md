@@ -216,7 +216,7 @@ per-feature terminal statuses, branches, and artifacts as an on-machine run.
 repository — once on-machine, once containerized — and diff per-feature
 terminal statuses, produced branches, and artifacts.
 
-- [ ] T022 [US1] Create `test/integration/container_run_test.exs`
+- [X] T022 [US1] Create `test/integration/container_run_test.exs`
       (`@tag :integration`) covering: **SC-001 run parity** — the reference
       backlog run in-container reaches the same per-feature terminal statuses
       and the same `feature/NNN-slug` branch set as an on-machine run against the
@@ -229,7 +229,7 @@ terminal statuses, produced branches, and artifacts.
       AS5** — with `AUTONOMOUS_AUTOSTART` set and preflight passing, the run
       launches with no operator action and the container stays up after it
       drains, with the report/transcripts/worktrees inspectable from the host.
-- [ ] T023 [US1] Create `docs/container.md` — the FR-036 start-to-finish
+- [X] T023 [US1] Create `docs/container.md` — the FR-036 start-to-finish
       operator path (pull, start, preflight, run, observe, stop) for a
       first-time operator on a Linux host with only a container engine and
       credentials, matching quickstart.md Scenario A exactly; separately
@@ -257,7 +257,7 @@ privilege escalation, home-directory writes, system-path package installs)
 inside the container with the guard hook disabled, and confirm every attempt
 fails and the host filesystem is unchanged.
 
-- [ ] T024 [US2] Create `test/integration/container_red_team_test.exs`
+- [X] T024 [US2] Create `test/integration/container_red_team_test.exs`
       (`@tag :integration`) — checksum the host tree outside the two declared
       mounts before the run; with the in-repo guard hook removed, execute ≥10
       hostile commands (write outside `$SPECKIT_REPO` and
@@ -268,11 +268,11 @@ fails and the host filesystem is unchanged.
       fail (SC-002) and the host checksum is byte-for-byte unchanged
       afterwards; assert the container is still healthy afterwards (US2 AS1,
       AS2, AS4).
-- [ ] T025 [US2] Extend `test/integration/container_run_test.exs` (T022) — after
+- [X] T025 [US2] Extend `test/integration/container_run_test.exs` (T022) — after
       a normal (non-hostile) run, assert every file it created under `$REPO` is
       owned on the host by the invoking UID/GID (`stat -c %u:%g`) and requires
       no elevation to edit or delete (SC-004, US2 AS3).
-- [ ] T026 [US2] Modify `docs/enforcement.md` — replace the current advisory
+- [X] T026 [US2] Modify `docs/enforcement.md` — replace the current advisory
       "Container isolation (optional)" section with an accurate one per FR-037:
       state plainly that the container is the **third**, outermost containment
       layer (never a replacement for the scope-guard hook or per-phase
@@ -298,24 +298,24 @@ accounting or the run manifest.
 the host while in flight, stop and restart the container, and confirm run state
 and transcripts are intact and the run can be resumed.
 
-- [ ] T027 [US3] Modify `lib/speckit_orchestrator/coordinator.ex` — `trap_exit`
+- [X] T027 [US3] Modify `lib/speckit_orchestrator/coordinator.ex` — `trap_exit`
       and a `terminate/2` callback that flushes the run manifest on shutdown; an
       in-flight phase that does not finish within the stop grace period is
       recorded as `interrupted` with its `Ledger` reservation left intact, so
       the manifest never misreports spend (FR-027).
-- [ ] T028 [US3] Modify `lib/speckit_orchestrator/ledger.ex` — `trap_exit` and a
+- [X] T028 [US3] Modify `lib/speckit_orchestrator/ledger.ex` — `trap_exit` and a
       `terminate/2` callback that flushes the committed/reserved cost tally on
       shutdown, so a `docker stop` never loses or double-counts spend (FR-027,
       Constitution IV).
-- [ ] T029 [P] [US3] Extend `test/speckit_orchestrator/coordinator_test.exs` —
+- [X] T029 [P] [US3] Extend `test/speckit_orchestrator/coordinator_test.exs` —
       unit tests for `terminate/2`: a normal drain flushes the manifest as
       today; a forced shutdown mid-phase records that feature `interrupted`
       with its reservation intact.
-- [ ] T030 [P] [US3] Extend `test/speckit_orchestrator/ledger_test.exs` — unit
+- [X] T030 [P] [US3] Extend `test/speckit_orchestrator/ledger_test.exs` — unit
       tests for `terminate/2`: shutdown flushes the current committed/reserved
       totals; the invariant `committed < budget + max_single_reservation`
       still holds on the flushed value.
-- [ ] T031 [US3] Extend `test/integration/container_run_test.exs` (T022) with
+- [X] T031 [US3] Extend `test/integration/container_run_test.exs` (T022) with
       three more scenarios: **SC-006 stop/restart** — `docker stop --time
       900` mid-run then `docker start`; transcripts, run manifests,
       checkpoints, and per-feature worktrees from that run are all present and
@@ -327,7 +327,7 @@ and transcripts are intact and the run can be resumed.
       behaving as on-machine; **FR-028** — `docker logs -f autonomous` carries
       `[:speckit, :phase, ...]` and `[:speckit, :feature, :terminal]` events
       with no interactive session required.
-- [ ] T032 [US3] Modify `docs/runbook.md` — add a containerized-operation
+- [X] T032 [US3] Modify `docs/runbook.md` — add a containerized-operation
       cross-reference: console URL and loopback-only exposure, the remote
       console command and its `print_status`/`resolve`/`resume` usage,
       `docker logs -f` for following a run headlessly, and stop/restart
@@ -349,7 +349,7 @@ records the resolved versions for later diagnosis.
 turn and confirm preflight fails, names the missing piece and its fix, and does
 not begin any feature work.
 
-- [ ] T033 [US4] Extend `test/speckit_orchestrator/preflight_test.exs` (T016) —
+- [X] T033 [US4] Extend `test/speckit_orchestrator/preflight_test.exs` (T016) —
       the SC-007 completeness matrix: one test per check id's `:fail` condition
       (and `:warn` condition where one exists) from data-model.md §2 /
       `contracts/preflight-report.md` §3, asserting the message names the
@@ -357,13 +357,13 @@ not begin any feature work.
       cross-cutting assertion that no `detail`/`expected`/`observed`/`fix`
       value ever contains a credential value, prefix, suffix, or length —
       credential checks record `source` only (FR-035).
-- [ ] T034 [US4] Extend `test/speckit_orchestrator/preflight_test.exs` (T016) —
+- [X] T034 [US4] Extend `test/speckit_orchestrator/preflight_test.exs` (T016) —
       FR-034: a `:pass`/`:warn` report's persisted JSON includes
       `resolved_versions` for every resolved tool/runtime; two `evaluate/1`
       calls over identical collected facts produce byte-identical `checks`
       ordering (category then id), proving the report is reproducible and later
       drift diagnosable.
-- [ ] T035 [US4] Extend `docs/container.md` (T023) with the full FR-033/SC-007
+- [X] T035 [US4] Extend `docs/container.md` (T023) with the full FR-033/SC-007
       rejection-matrix table from quickstart.md Scenario G (omit each
       requirement in turn → named check id, message, and fix), so an operator
       resolves any seeded failure without reading source code.

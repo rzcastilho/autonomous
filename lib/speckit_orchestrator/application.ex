@@ -44,8 +44,14 @@ defmodule SpeckitOrchestrator.Application do
   if @boot? do
     # Idle by default; preflights then optionally auto-starts (FR-029/030/031).
     # Last in the list — it depends on nothing else here, and its own work is
-    # deferred to `handle_continue/2` regardless of ordering.
-    defp boot_children, do: [SpeckitOrchestrator.Boot]
+    # deferred to `handle_continue/2` regardless of ordering. `:coordinator_name`/
+    # `:ledger_name` opt Boot into the FR-027 shutdown flush (Boot's terminate/2)
+    # for the real, well-known-named processes only — see `Boot`'s moduledoc.
+    defp boot_children,
+      do: [
+        {SpeckitOrchestrator.Boot,
+         coordinator_name: SpeckitOrchestrator.Coordinator, ledger_name: SpeckitOrchestrator.Ledger}
+      ]
   else
     defp boot_children, do: []
   end

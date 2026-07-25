@@ -9,6 +9,27 @@ defmodule SpeckitOrchestrator.Boot do
   report logs and leaves the container idle: no run starts, and no success is
   reported (FR-031). `Boot` never stops the VM itself; the container stays up
   after a launched run drains (FR-030) until the operator stops it.
+
+  ## Shutdown flush (FR-027, container isolation)
+
+  `Boot` is the one component in this chain that is genuinely supervised
+  (a normal child of `SpeckitOrchestrator.Application`'s top supervisor), so
+  it is also the one that traps exits: on a container's `docker stop`
+  (`SIGTERM` → `init:stop`), the supervisor's own shutdown signal reliably
+  reaches `Boot`'s `terminate/2` regardless of `trap_exit`. From there it
+  explicitly `GenServer.stop/1`s `:coordinator_name` (if a run is
+  registered) and then `:ledger_name` — the ordinary `GenServer.stop/1`
+  protocol always invokes their `terminate/2` regardless of *their*
+  `trap_exit`, so neither `Coordinator` nor `Ledger` needs to trap exits
+  itself. `Coordinator` is stopped first so its flush can still read
+  `Ledger`'s spend while it's alive.
+
+  These two names are `nil` by default — a deliberate opt-in
+  (`SpeckitOrchestrator.Application` passes the real
+  `SpeckitOrchestrator.Coordinator`/`SpeckitOrchestrator.Ledger` names) so
+  that a `Boot` started directly by a test (there are several, none of which
+  intend to touch the shared app-supervised `Ledger`) is a shutdown no-op by
+  default.
   """
 
   use GenServer
@@ -26,7 +47,26 @@ defmodule SpeckitOrchestrator.Boot do
 
   @impl true
   def init(opts) do
+    Process.flag(:trap_exit, true)
     {:ok, opts, {:continue, :boot}}
+  end
+
+  @impl true
+  def terminate(_reason, opts) do
+    stop_if_alive(Keyword.get(opts, :coordinator_name))
+    stop_if_alive(Keyword.get(opts, :ledger_name))
+    :ok
+  end
+
+  defp stop_if_alive(nil), do: :ok
+
+  defp stop_if_alive(name) do
+    case Process.whereis(name) do
+      nil -> :ok
+      pid -> if Process.alive?(pid), do: GenServer.stop(pid)
+    end
+  catch
+    :exit, _ -> :ok
   end
 
   @impl true
