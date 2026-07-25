@@ -22,6 +22,23 @@ defmodule SpeckitOrchestrator.Coordinator do
   drain (finish their current phase, then halt — enforced in `FeatureRunner`).
   When the in-flight set empties with nothing releasable, the run finalizes;
   undelivered `:pending` features are reported as `blocked` or `not_started`.
+
+  ## Shutdown flush (FR-027, container isolation)
+
+  `terminate/2` writes one final manifest snapshot: any feature still
+  `:running` is recorded `:interrupted` rather than left claiming to still be
+  in flight, so a restart's manifest read reports the truth. Its `Ledger`
+  reservation is left untouched — this module never cancels or commits it —
+  so the reported spend (`Ledger.spent/1`, `committed` only) never misreports
+  (Constitution IV). This module does **not** itself trap exits — a
+  container's `docker stop` (`SIGTERM` → `init:stop` → supervision tree
+  terminating in order) reaches it via `SpeckitOrchestrator.Boot`, the one
+  properly-supervised component in this chain, explicitly calling
+  `GenServer.stop/1` on it (and then on `Ledger`) from Boot's own
+  `terminate/2` — the ordinary `GenServer.stop/1` protocol always invokes
+  `terminate/2` regardless of `trap_exit`, so this module needs none of that
+  machinery itself, and every test that starts one directly keeps behaving
+  exactly as it always has.
   """
 
   use GenServer
@@ -146,6 +163,12 @@ defmodule SpeckitOrchestrator.Coordinator do
   def handle_call({:set_cap, n}, _from, state) do
     Application.put_env(:speckit_orchestrator, :max_concurrency, n)
     {:reply, :ok, %{state | cap: n}}
+  end
+
+  @impl true
+  def terminate(_reason, state) do
+    flush_interrupted(state)
+    :ok
   end
 
   # ---- orchestration ------------------------------------------------------
@@ -281,16 +304,32 @@ defmodule SpeckitOrchestrator.Coordinator do
   # breaker scheduler unit-testable without disk); a write failure never
   # affects wave logic (data-model.md Entity 3).
   defp write_manifest(state) do
+    do_write_manifest(state, state.statuses)
+    state
+  end
+
+  # FR-027: on shutdown, any feature still `:running` is recorded
+  # `:interrupted` in the flushed manifest rather than left claiming to still
+  # be in flight — `state.statuses`/`state.inflight` themselves are not
+  # touched, since the process is exiting regardless.
+  defp flush_interrupted(state) do
+    statuses =
+      Enum.reduce(state.inflight, state.statuses, fn id, acc ->
+        Map.put(acc, id, :interrupted)
+      end)
+
+    do_write_manifest(state, statuses)
+  end
+
+  defp do_write_manifest(state, statuses) do
     state.manifest.write(%{
       features: feature_list(state),
-      statuses: state.statuses,
+      statuses: statuses,
       context: state.context,
       spend: spend(state),
       updated_at: System.system_time(),
       layout: state.layout
     })
-
-    state
   end
 
   defp default_cap, do: SpeckitOrchestrator.Config.max_concurrency()

@@ -1,0 +1,5 @@
+22 0 259:1 / / rw,relatime - ext4 /dev/sda1 rw,errors=remount-ro
+100 22 0:20 / /proc rw,nosuid,nodev,noexec,relatime - proc proc rw
+200 22 8:1 / /home/alice/code/ledgerlite rw,relatime - ext4 /dev/sdb1 rw
+400 22 0:41 / /home/alice rw,nosuid,nodev,relatime - tmpfs tmpfs rw,size=1048576k,uid=1000,gid=1000,inode64
+401 400 8:2 / /home/alice/.autonomous rw,relatime master:12 - ext4 /dev/sdb2 rw

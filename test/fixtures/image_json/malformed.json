@@ -1,0 +1,9 @@
+{
+  "source_revision": "b17f0ea1234567890abcdef1234567890abcdef",
+  "orchestrator_version": "0.1.0",
+  "image_ref": "ghcr.io/rzcastilho/autonomous:v0.1.0",
+  "built_at": "2026-07-24T18:40:00Z",
+  "elixir": "1.20.2",
+  "otp": "28",
+  "base_digests": {},
+  "tools": {}

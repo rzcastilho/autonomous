@@ -13,7 +13,7 @@ Containment is three overlapping layers:
    `permission_mode`/`allowed_tools`/`disallowed_tools` per phase (analyze
    read-only via `:plan`; implement scoped writes via `:accept_edits`). The
    adapter forwards these (Phase 0 finding). Belt-and-suspenders with the hook.
-3. **Container isolation (optional, defense in depth)** — see below.
+3. **Container isolation (the outermost layer, OS-level)** — see below.
 
 ## Installing the pack in a target repo
 
@@ -52,17 +52,35 @@ without losing enforcement:
 5. `specify self check` to confirm the CLI version, and record the tag in
    `config.exs` (`:speckit_version`).
 
-## Container isolation (optional)
+## Container isolation (feature 015)
 
-The scope-guard hook has known enforcement gaps on some CLI versions. For
-defense in depth, run the whole orchestrator + CLI inside a devcontainer/Docker
-with only the repo mounted:
+The scope-guard hook has known enforcement gaps on some CLI versions, and
+per-phase permissions are the adapter's own cooperative contract, not an OS
+boundary. The orchestrator can also run as a published container image
+(`docs/container.md`) — the **third and outermost** containment layer, and
+the only one that holds regardless of hook coverage or adapter behavior:
+`--user <uid>:<gid>` (unprivileged), `--read-only` root filesystem,
+`--cap-drop ALL`, `--security-opt no-new-privileges`, and exactly two durable
+writable mounts — the target repository and the run-state root, each at its
+identical host path. Proven independently of the in-repo hook by a red-team
+suite that runs with the hook disabled (`test/integration/container_red_team_test.exs`,
+SC-002): every hostile command the OS layer can refuse — writes outside the
+two mounts, privilege escalation, system-directory writes, package installs
+into system paths — fails, and the host filesystem outside the two mounts is
+byte-for-byte unchanged.
 
-- Mount the target repo (and worktree root) read-write; mount nothing else
-  writable.
-- Drop network egress except the Anthropic API host (the constitution's
-  "no network access" MUST is about the *product*, not the agent's API calls).
-- Run as a non-root user so `sudo`/system writes fail at the OS layer even if the
-  hook is bypassed.
+**It is never a replacement** for the scope-guard hook or per-phase
+permissions — the container is one more layer, not a substitute for the
+other two, and all three run together in a containerized deployment.
 
-This bounds blast radius to the mounted repo regardless of hook coverage.
+**What it protects**: filesystem writes (only the two declared mounts are
+writable and durable; everything else is read-only or ephemeral tmpfs),
+process privileges (unprivileged user, no capabilities, no privilege
+escalation), and process scope (`--pids-limit` bounds a runaway fork bomb).
+
+**What it explicitly does not protect**: network egress. The container
+intentionally emits no `--network` restriction — the agent's outbound API
+calls are unrestricted, same as an on-machine run. (An earlier draft of this
+section stated egress was dropped except to the Anthropic API host; that was
+never implemented and is corrected here — see `contracts/container-run.md`
+§4 in the feature's spec folder for the authoritative privilege posture.)

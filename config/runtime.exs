@@ -10,37 +10,35 @@ import Config
 # MUST be set explicitly (no fallback).
 # ---------------------------------------------------------------------------
 if config_env() == :prod do
-  # "1" / "true" / "yes" / "on" (case-insensitive) → true; anything else → default.
-  truthy = fn name, default ->
-    case System.get_env(name) do
-      nil -> default
-      v -> String.downcase(v) in ~w(1 true yes on)
-    end
-  end
+  # Single configuration surface (FR-020): SpeckitOrchestrator.Container.Env
+  # parses and validates the whole boot environment, raising loudly (naming
+  # the variable, and the value for numeric/enum fields) on anything required-
+  # but-absent or present-but-invalid — see
+  # specs/015-container-isolation/contracts/environment.md.
+  env = SpeckitOrchestrator.Container.Env.load!()
 
-  # Target Spec Kit repo the orchestrator drives. Required in :prod — raises at
-  # boot if unset, so a production run can never silently point at the wrong repo.
   config :speckit_orchestrator,
-    repo: System.fetch_env!("SPECKIT_REPO"),
+    repo: env.repo,
     # Stacked sequential PR workflow (docs/runbook.md → "Stacked sequential PR
     # workflow"). SPECKIT_PR_WORKFLOW=true forces cap 1, preflights the remote,
     # and opens a stacked PR per feature on :done.
-    pr_workflow: truthy.("SPECKIT_PR_WORKFLOW", false),
+    pr_workflow: env.pr_workflow?,
     # Root base branch for the first feature's PR (later features stack on the
     # prior branch).
-    pr_base: System.get_env("SPECKIT_PR_BASE") || "main",
+    pr_base: env.pr_base,
     # Remote to push feature branches to and to preflight.
-    pr_remote: System.get_env("SPECKIT_PR_REMOTE") || "origin"
-
-  # Optional numeric overrides — only applied when the env var is set, so the
-  # compile-time defaults (config/config.exs) stand otherwise.
-  if v = System.get_env("SPECKIT_MAX_CONCURRENCY") do
-    config :speckit_orchestrator, max_concurrency: String.to_integer(v)
-  end
-
-  if v = System.get_env("SPECKIT_BUDGET_USD") do
-    config :speckit_orchestrator, budget_usd: elem(Float.parse(v), 0)
-  end
+    pr_remote: env.pr_remote,
+    max_concurrency: env.max_concurrency,
+    budget_usd: env.budget_usd,
+    implement_max_turns: env.implement_max_turns,
+    phase_max_retries: env.phase_max_retries,
+    # Machine-global base for worktrees + durable transcripts + the preflight
+    # report (FR-023) — must resolve onto the durable run-state mount.
+    autonomous_root: env.autonomous_root,
+    # In-repo root for committed breakdown/ad-hoc feature files.
+    specs_root: env.specs_root,
+    # Pinned Spec Kit CLI tag — drift diagnosis (tool_specify preflight check).
+    speckit_version: env.speckit_version
 
   # Preferred stack handed to the plan phase. Unset/empty (the default) means
   # plan derives the stack from the target's constitution and manifest, which is
@@ -49,15 +47,32 @@ if config_env() == :prod do
   #   SPECKIT_PLAN_STACK="Python 3 (standard library only: argparse, unittest)"
   # A value contradicting the target makes plan refuse and ask a question no one
   # can answer headlessly — see the note in config/config.exs.
-  case System.get_env("SPECKIT_PLAN_STACK") do
-    nil -> :ok
-    "" -> :ok
-    stack -> config :speckit_orchestrator, plan_stack: [stack]
+  if env.plan_stack != [] do
+    config :speckit_orchestrator, plan_stack: env.plan_stack
   end
 
-  # Model pin: the ClaudeAgentSDK catalog accepts aliases (opus/sonnet); pin the
-  # alias -> full-model mapping via these env vars for reproducibility (see
-  # docs/harness-contract.md). Set them in the run environment, e.g.:
-  #   ANTHROPIC_DEFAULT_OPUS_MODEL=claude-opus-4-8
-  #   ANTHROPIC_DEFAULT_SONNET_MODEL=claude-sonnet-5
+  # Per-phase model routing. Values are CLI aliases (opus/sonnet) — the pinned
+  # ClaudeAgentSDK catalog rejects full model strings; pin reproducibility via
+  # ANTHROPIC_DEFAULT_*_MODEL (forwarded to the CLI unchanged, see
+  # docs/harness-contract.md). Only overrides the phases actually set,
+  # layering onto config.exs's compile-time defaults.
+  if map_size(env.models) > 0 do
+    config :speckit_orchestrator,
+      models: Map.merge(SpeckitOrchestrator.Config.models(), env.models)
+  end
+
+  # `mix phx.server` doesn't exist in a release — `server: true` is what opens
+  # the TCP listener. Bind inside the container is 0.0.0.0 by default (a
+  # loopback bind inside a network namespace is unreachable from the host);
+  # host exposure is the launcher's `-p 127.0.0.1:<port>:<port>` (FR-024).
+  # check_origin matches both spellings at the SAME configured port so the
+  # LiveView socket isn't silently rejected regardless of which the operator
+  # opens (research.md §R12).
+  config :speckit_orchestrator, SpeckitOrchestrator.Web.Endpoint,
+    server: true,
+    http: [ip: env.console_ip, port: env.console_port],
+    check_origin: [
+      "http://localhost:#{env.console_port}",
+      "http://127.0.0.1:#{env.console_port}"
+    ]
 end
