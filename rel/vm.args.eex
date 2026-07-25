@@ -1,0 +1,17 @@
+## Release vm.args — extends the default mix release template with Erlang
+## distribution bound to loopback (research.md §R11/§R12), so the node is
+## reachable only via `docker exec ... bin/speckit_orchestrator remote`
+## (FR-025), never over the container's network interface.
+##
+## ${RELEASE_DISTRIBUTION}/${RELEASE_NODE}/${RELEASE_COOKIE} are substituted at
+## boot by the release's env.sh from the identically-named env vars — see
+## https://hexdocs.pm/mix/Mix.Tasks.Release.html#module-vm-args-and-environment-variables
+##
+## (No explicit -mode here: the release runner script already passes
+## `--erl "-mode $RELEASE_MODE"` unconditionally, so one here would just be a
+## harmless-but-noisy duplicate.)
+
+-${RELEASE_DISTRIBUTION} ${RELEASE_NODE}
+-setcookie ${RELEASE_COOKIE}
+
+-kernel inet_dist_use_interface '{127,0,0,1}'
