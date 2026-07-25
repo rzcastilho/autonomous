@@ -200,10 +200,6 @@ defmodule SpeckitOrchestrator.RunManifest do
   defp reconstruct_status("halted"), do: :halted
   defp reconstruct_status("failed"), do: :failed
   defp reconstruct_status("running"), do: :pending
-  # A `Coordinator` shutdown flush (FR-027, container isolation) records an
-  # in-flight feature `"interrupted"` rather than leaving it `"running"` —
-  # same crash-recovery treatment either way: never released, resets fresh.
-  defp reconstruct_status("interrupted"), do: :pending
   defp reconstruct_status("pending"), do: :pending
   defp reconstruct_status(_other), do: :pending
 

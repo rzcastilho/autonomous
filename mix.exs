@@ -9,21 +9,7 @@ defmodule SpeckitOrchestrator.MixProject do
       start_permanent: Mix.env() == :prod,
       elixirc_options: [warnings_as_errors: true],
       elixirc_paths: elixirc_paths(Mix.env()),
-      deps: deps(),
-      releases: releases()
-    ]
-  end
-
-  # ERTS-embedded release (FR-003): the runtime stage carries no orchestrator
-  # source, no `mix`/Hex/rebar3, and no standalone Elixir/Erlang install —
-  # `include_erts: true` means the target host needs nothing but the image's
-  # own runtime tools (research.md §R1).
-  defp releases do
-    [
-      speckit_orchestrator: [
-        include_executables_for: [:unix],
-        include_erts: true
-      ]
+      deps: deps()
     ]
   end
 

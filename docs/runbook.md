@@ -9,33 +9,6 @@ Everything here was validated against the LedgerLite Phase 7 target — see
 
 ---
 
-## Running containerized (015)
-
-Everything below in this runbook applies unchanged to a containerized run
-(`docs/container.md` is the first-time operator path — pull, configure, start,
-preflight; this section is the day-to-day cross-reference once one is already
-in flight):
-
-| Need | On-machine | Containerized |
-|---|---|---|
-| Watch a run | `iex> SpeckitOrchestrator.print_status()` | Console at `http://127.0.0.1:<port>/` (loopback-only publish, FR-024 — the container never exposes it beyond the operator's own machine) |
-| Interactive session | `iex -S mix` | `docker exec -it autonomous bin/speckit_orchestrator remote`, then the exact same `SpeckitOrchestrator.print_status/0`, `resolve/1`, `resume/2` calls documented throughout this file (FR-025) |
-| Follow a run headlessly | tail the durable transcripts, or attach the logger | `docker logs -f autonomous` — carries the same `[:speckit, :phase, …]` and `[:speckit, :feature, :terminal]` telemetry with no interactive session required (FR-028) |
-| Stop | `Ctrl-C`/kill the BEAM | `scripts/autonomous-container.sh stop` (or `docker stop --time <seconds> autonomous`) — sends `SIGTERM`, giving the release up to `--stop-timeout` (launcher default 900s) to drain: `Coordinator` and `Ledger` flush the run manifest and the cost tally on shutdown, and an in-flight phase either finishes within the grace period or is recorded `interrupted` with its `Ledger` reservation intact, so spend is never misreported (FR-027) |
-| Restart | re-run `iex -S mix` | `docker start autonomous` — transcripts, run manifests, checkpoints, and per-feature worktrees from before the stop are all still present and readable from the host (identical host-path mounts, FR-018/FR-019) |
-
-**Prefer draining from the console over a hard stop** where possible — a
-console-driven stop lets in-flight features reach a natural checkpoint before
-the grace period runs out, rather than racing it. `docker kill` is not
-supported: it is the one path that can lose an in-flight phase's record.
-
-Because the target repository and the run-state root are mounted at their
-identical host paths, every command elsewhere in this runbook that reads
-`~/.autonomous/…` or inspects the target repo with `git`/`find` works
-identically whether the run that produced it was containerized or not.
-
----
-
 ## Prerequisites
 
 1. **Toolchain.** Elixir 1.20.2 / OTP 28 — run every command through mise

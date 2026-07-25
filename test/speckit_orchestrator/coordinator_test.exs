@@ -20,24 +20,8 @@ defmodule SpeckitOrchestrator.CoordinatorTest do
         [features: features, runner: controllable_runner(self()), owner: self()] ++ opts
       )
 
-    on_exit(fn -> safe_stop(pid) end)
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
     pid
-  end
-
-  # Now that Coordinator traps exits (FR-027), it self-terminates the instant
-  # its starting (`start_link/1`-calling) test process dies — a `:gen_server`
-  # parent-exit convention that fires independently of any `on_exit`
-  # callback. That races this on_exit's own best-effort `GenServer.stop/1}`:
-  # `Process.alive?/1` can see `true` a moment before the process' own
-  # self-triggered shutdown completes, so `GenServer.stop/1` can still land on
-  # an already-dying process and raise. Harmless either way — the process is
-  # gone or is about to be — so swallow it.
-  defp safe_stop(pid) do
-    if Process.alive?(pid) do
-      GenServer.stop(pid)
-    end
-  catch
-    :exit, _ -> :ok
   end
 
   defp await_started(id) do
@@ -98,7 +82,7 @@ defmodule SpeckitOrchestrator.CoordinatorTest do
   end
 
   test "a tripped breaker releases nothing (pre-tripped ledger)" do
-    ledger = start_ledger(0.0)
+    {:ok, ledger} = Ledger.start_link(budget: 0.0, name: nil)
     features = [feat("001"), feat("002", ["001"])]
     start(features, max_concurrency: 2, ledger: ledger)
 
@@ -110,7 +94,7 @@ defmodule SpeckitOrchestrator.CoordinatorTest do
   end
 
   test "breaker tripping mid-run drains in-flight then releases no more" do
-    ledger = start_ledger(100.0)
+    {:ok, ledger} = Ledger.start_link(budget: 100.0, name: nil)
     features = [feat("001"), feat("002", ["001"])]
     start(features, max_concurrency: 2, ledger: ledger)
 
@@ -207,15 +191,9 @@ defmodule SpeckitOrchestrator.CoordinatorTest do
 
     def start_link(test_pid), do: Agent.start_link(fn -> test_pid end, name: __MODULE__)
 
-    # Best-effort, mirroring RunManifest.write/1's own contract — a
-    # terminate/2-triggered write racing this fake's own teardown (both react
-    # to the same test-process death independently) must not crash a
-    # Coordinator that's already mid-shutdown.
     def write(payload) do
       __MODULE__ |> Agent.get(& &1) |> send({:manifest_write, payload})
       :ok
-    catch
-      :exit, _ -> :ok
     end
   end
 
@@ -271,80 +249,5 @@ defmodule SpeckitOrchestrator.CoordinatorTest do
       {:ok, segment} -> Path.join([root, "transcripts", segment, "run.json"])
       {:error, _} -> Path.join([root, "transcripts", "run.json"])
     end
-  end
-
-  # ---- terminate/2 shutdown flush (FR-027, T029) ----------------------------
-
-  # Coordinator writes the manifest on init, on every spawn, and on every
-  # finish — plus, now, once more on terminate/2. Collecting every write
-  # (rather than draining then asserting "the next one") sidesteps any
-  # ordering race between a cast being processed and our own draining, and
-  # lets every assertion target the true final snapshot: the last write.
-  defp collect_manifest_writes do
-    receive do
-      {:manifest_write, payload} -> [payload | collect_manifest_writes()]
-    after
-      200 -> []
-    end
-  end
-
-  defp start_ledger(budget) do
-    {:ok, ledger} = Ledger.start_link(budget: budget, name: nil)
-    on_exit(fn -> safe_stop(ledger) end)
-    ledger
-  end
-
-  test "a normal drain (all features already terminal) flushes the manifest unchanged on terminate/2" do
-    start_fake_manifest(self())
-    features = [feat("001")]
-    pid = start(features, max_concurrency: 2, manifest: FakeManifest)
-
-    n1 = await_started("001")
-    n1.("001", :done, nil)
-    assert_receive {:run_complete, _report}, 1_000
-
-    GenServer.stop(pid)
-
-    last = collect_manifest_writes() |> List.last()
-    assert last.statuses == %{"001" => :done}
-  end
-
-  test "a forced shutdown mid-phase records the in-flight feature :interrupted, leaving its Ledger reservation intact" do
-    ledger = start_ledger(100.0)
-    start_fake_manifest(self())
-    features = [feat("001"), feat("002")]
-    pid = start(features, max_concurrency: 2, manifest: FakeManifest, ledger: ledger)
-
-    await_started("001")
-    n2 = await_started("002")
-    n2.("002", :done, nil)
-
-    {:ok, _ref} = Ledger.reserve(ledger, 10.0)
-
-    GenServer.stop(pid)
-
-    last = collect_manifest_writes() |> List.last()
-    assert last.statuses["001"] == :interrupted
-    assert last.statuses["002"] == :done
-
-    # the reservation is untouched — Coordinator's flush never cancels/commits it
-    assert Ledger.snapshot(ledger).reserved == 10.0
-  end
-
-  test "terminate/2 flush never reports committed spend higher than Ledger's own committed total" do
-    ledger = start_ledger(100.0)
-    start_fake_manifest(self())
-    features = [feat("001")]
-    pid = start(features, max_concurrency: 2, manifest: FakeManifest, ledger: ledger)
-
-    await_started("001")
-    {:ok, ref} = Ledger.reserve(ledger, 10.0)
-    Ledger.record(ledger, ref, 7.0)
-
-    GenServer.stop(pid)
-
-    last = collect_manifest_writes() |> List.last()
-    assert last.spend == 7.0
-    assert last.statuses["001"] == :interrupted
   end
 end

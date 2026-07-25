@@ -18,11 +18,8 @@ defmodule SpeckitOrchestrator.TelemetryTest do
   end
 
   test "attach_default_logger logs phase-stop and feature-terminal events" do
-    # The application itself attaches this handler at boot (FR-028) — detach
-    # first so the test observes a fresh :ok regardless of that global state;
-    # re-attached afterwards, leaving it as attached as it started.
-    :telemetry.detach("speckit-default-logger")
     assert :ok = Telemetry.attach_default_logger()
+    on_exit(fn -> :telemetry.detach("speckit-default-logger") end)
 
     log =
       capture_log(fn ->
