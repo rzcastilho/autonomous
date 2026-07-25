@@ -21,23 +21,9 @@ defmodule SpeckitOrchestrator.Ledger do
   Note (Phase 0 finding): the Claude adapter does not surface usage/cost events
   (`capabilities.usage? == false`), so recorded amounts are config-derived
   per-phase estimates, not measured spend. See `docs/harness-contract.md`.
-
-  ## Shutdown flush (FR-027, container isolation)
-
-  `terminate/2` logs the final committed/reserved/budget tally — the
-  durable, no-session-required record of it (FR-028: `docker logs -f`
-  carries it) since this `GenServer`'s own state is otherwise in-memory only
-  (the committed figure is separately persisted per-write by `Coordinator`
-  into the run manifest; this is the shutdown-moment confirmation of it).
-  This module does not itself trap exits — see `Coordinator`'s moduledoc:
-  `SpeckitOrchestrator.Boot` reaches it via an explicit `GenServer.stop/1`
-  from Boot's own `terminate/2`, which always invokes `terminate/2` here
-  regardless of `trap_exit`.
   """
 
   use GenServer
-
-  require Logger
 
   @type ref :: reference()
 
@@ -123,20 +109,6 @@ defmodule SpeckitOrchestrator.Ledger do
     budget = Keyword.get_lazy(opts, :budget, &default_budget/0)
 
     {:ok, %{budget: budget, committed: 0, reservations: %{}}}
-  end
-
-  @impl true
-  def terminate(_reason, state) do
-    # `:warning`, not `:info` — the project's default `:logger` level is
-    # `:warning` (`config/config.exs`), so an `:info` log here would never
-    # reach `docker logs` (FR-028) despite this being exactly the kind of
-    # shutdown diagnostic that matters.
-    Logger.warning(
-      "Ledger shutdown flush: committed=#{state.committed} " <>
-        "reserved=#{reserved_total(state)} budget=#{state.budget} tripped=#{tripped?(state)}"
-    )
-
-    :ok
   end
 
   @impl true

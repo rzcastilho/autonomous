@@ -2,8 +2,6 @@ defmodule SpeckitOrchestrator.LedgerTest do
   use ExUnit.Case, async: true
   use ExUnitProperties
 
-  import ExUnit.CaptureLog
-
   alias SpeckitOrchestrator.Ledger
 
   defp start(budget) do
@@ -157,47 +155,5 @@ defmodule SpeckitOrchestrator.LedgerTest do
         ) do
       {res_amt, rec_amt}
     end
-  end
-
-  # ---- terminate/2 shutdown flush (FR-027, T030) ----------------------------
-
-  test "terminate/2 flushes the current committed/reserved tally to the log on shutdown" do
-    l = start(100)
-    {:ok, ref} = Ledger.reserve(l, 30)
-    Ledger.record(l, ref, 20)
-    {:ok, _ref2} = Ledger.reserve(l, 10)
-
-    snap = Ledger.snapshot(l)
-    assert snap.committed == 20
-    assert snap.reserved == 10
-
-    log = capture_log(fn -> GenServer.stop(l) end)
-
-    assert log =~ "committed=#{snap.committed}"
-    assert log =~ "reserved=#{snap.reserved}"
-    assert log =~ "budget=#{snap.budget}"
-  end
-
-  test "terminate/2's flushed values still satisfy committed < budget + max single reservation" do
-    l = start(50)
-    {:ok, ref} = Ledger.reserve(l, 20)
-    Ledger.record(l, ref, 20)
-    {:ok, _ref2} = Ledger.reserve(l, 15)
-
-    snap = Ledger.snapshot(l)
-
-    capture_log(fn -> GenServer.stop(l) end)
-
-    assert snap.committed < snap.budget + 15
-  end
-
-  test "a forced shutdown (trap_exit) does not crash and terminate/2 still runs even with an outstanding reservation" do
-    l = start(10)
-    {:ok, _ref} = Ledger.reserve(l, 10)
-
-    log = capture_log(fn -> GenServer.stop(l) end)
-
-    assert log =~ "Ledger shutdown flush"
-    refute Process.alive?(l)
   end
 end

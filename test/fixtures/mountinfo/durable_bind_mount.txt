@@ -1,4 +1,0 @@
-22 0 259:1 / / rw,relatime - ext4 /dev/sda1 rw,errors=remount-ro
-100 22 0:20 / /proc rw,nosuid,nodev,noexec,relatime - proc proc rw
-200 22 8:1 / /home/alice/code/ledgerlite rw,relatime - ext4 /dev/sdb1 rw
-300 22 8:2 / /home/alice/.autonomous rw,relatime - ext4 /dev/sdb2 rw

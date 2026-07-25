@@ -23,17 +23,10 @@ end
 # without binding a port, so the console never competes for 4000 during the
 # hermetic test suite.
 # ---------------------------------------------------------------------------
-# Dev/test console port — kept as one value so the bind address and
-# check_origin below can never drift apart. In :prod (containerized), FR-024's
-# AUTONOMOUS_CONSOLE_IP/AUTONOMOUS_CONSOLE_PORT recompute both of these the
-# same way from the boot environment (config/runtime.exs) and override this
-# compile-time default entirely.
-console_port = 4000
-
 config :speckit_orchestrator, SpeckitOrchestrator.Web.Endpoint,
   adapter: Bandit.PhoenixAdapter,
   url: [host: "localhost"],
-  http: [ip: {127, 0, 0, 1}, port: console_port],
+  http: [ip: {127, 0, 0, 1}, port: 4000],
   secret_key_base: "d95b33a1423f921b332c4b90b63972ea850e12e0a70ad8a467c73d6b59453320d95b33a",
   live_view: [signing_salt: "sO2z3sYqCPqm9k1r"],
   pubsub_server: SpeckitOrchestrator.PubSub,
@@ -43,9 +36,8 @@ config :speckit_orchestrator, SpeckitOrchestrator.Web.Endpoint,
   # reject the LiveView socket's Origin header on that host — the page loads
   # (dead render) but every phx-click/phx-submit is silently inert (no error
   # banner). Both loopback spellings are the same trusted single-operator
-  # console (FR-035), so both are allowed explicitly, matched at the same
-  # console_port as the bind above.
-  check_origin: ["http://localhost:#{console_port}", "http://127.0.0.1:#{console_port}"]
+  # console (FR-035), so both are allowed explicitly.
+  check_origin: ["http://localhost:4000", "http://127.0.0.1:4000"]
 
 config :phoenix, :json_library, Jason
 
