@@ -86,4 +86,67 @@ defmodule SpeckitOrchestrator.TranscriptsTest do
   test "no worktree is a no-op" do
     assert Transcripts.write(nil, nil, 1, :specify, result()) == :ok
   end
+
+  describe "write_labelled/6 (015 chunking)" do
+    test "names a task-phase attempt file by label, not the phase atom", %{root: root} do
+      wt_path = Path.join(System.tmp_dir!(), "wt_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(wt_path)
+      on_exit(fn -> File.rm_rf(wt_path) end)
+
+      wt = %Worktree{path: wt_path, branch: "feature/001", repo: ".", feature_id: "001"}
+
+      assert {:ok, in_tree} =
+               Transcripts.write_labelled(wt, nil, 6, "implement-p03-a1", :implement, result())
+
+      assert in_tree == Path.join([wt_path, ".speckit_logs", "06-implement-p03-a1.md"])
+      assert File.exists?(Path.join([root, "001", "06-implement-p03-a1.md"]))
+    end
+
+    test "the roll-up label reproduces the plain 06-implement.md filename", %{root: _root} do
+      wt_path = Path.join(System.tmp_dir!(), "wt_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(wt_path)
+      on_exit(fn -> File.rm_rf(wt_path) end)
+
+      wt = %Worktree{path: wt_path, branch: "feature/001", repo: ".", feature_id: "001"}
+
+      assert {:ok, in_tree} =
+               Transcripts.write_labelled(wt, nil, 6, "implement", :implement, result())
+
+      assert in_tree == Path.join([wt_path, ".speckit_logs", "06-implement.md"])
+    end
+
+    test "a sweep attempt label", %{root: _root} do
+      wt_path = Path.join(System.tmp_dir!(), "wt_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(wt_path)
+      on_exit(fn -> File.rm_rf(wt_path) end)
+
+      wt = %Worktree{path: wt_path, branch: "feature/001", repo: ".", feature_id: "001"}
+
+      assert {:ok, in_tree} =
+               Transcripts.write_labelled(wt, nil, 6, "implement-sweep-a1", :implement, result())
+
+      assert in_tree == Path.join([wt_path, ".speckit_logs", "06-implement-sweep-a1.md"])
+    end
+
+    test "no worktree is a no-op" do
+      assert Transcripts.write_labelled(nil, nil, 6, "implement-p01-a1", :implement, result()) ==
+               :ok
+    end
+  end
+
+  describe "render/2 error/subtype header lines (FR-027)" do
+    test "both lines are present regardless of write/5 or write_labelled/6" do
+      wt_path = Path.join(System.tmp_dir!(), "wt_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(wt_path)
+      on_exit(fn -> File.rm_rf(wt_path) end)
+
+      wt = %Worktree{path: wt_path, branch: "feature/001", repo: ".", feature_id: "001"}
+      failed = %{result() | status: :error, error: "boom", subtype: "error_max_turns"}
+
+      {:ok, in_tree} = Transcripts.write(wt, nil, 6, :implement, failed)
+      contents = File.read!(in_tree)
+      assert contents =~ "- error: \"boom\""
+      assert contents =~ "- subtype: error_max_turns"
+    end
+  end
 end

@@ -256,4 +256,67 @@ defmodule SpeckitOrchestrator.CheckpointTest do
     assert {:ok, record} = Checkpoint.read("013")
     refute Map.has_key?(record, "context")
   end
+
+  test "write given an implement_chunk persists and read/1 round-trips all seven fields", %{
+    root: root
+  } do
+    chunk = %{
+      ordinal: 3,
+      number: "3",
+      title: "User Story 1 - Long task lists finish (Priority: P1)",
+      total: 5,
+      sessions_used: 7,
+      ceiling: 14,
+      scope: :task_phase
+    }
+
+    assert :ok =
+             Checkpoint.write(%{
+               feature_id: "015",
+               last_phase: :implement,
+               status: :failed,
+               reason: "stuck",
+               session_id: "s15",
+               slug: "widget",
+               path: "docs/breakdown/015-widget.md",
+               implement_chunk: chunk
+             })
+
+    decoded = root |> checkpoint_path("015") |> File.read!() |> Jason.decode!()
+    assert decoded["implement_chunk"]["ordinal"] == 3
+    assert decoded["implement_chunk"]["number"] == "3"
+    assert decoded["implement_chunk"]["title"] == chunk.title
+    assert decoded["implement_chunk"]["total"] == 5
+    assert decoded["implement_chunk"]["sessions_used"] == 7
+    assert decoded["implement_chunk"]["ceiling"] == 14
+    assert decoded["implement_chunk"]["scope"] == "task_phase"
+
+    assert {:ok, record} = Checkpoint.read("015")
+    assert record["implement_chunk"]["ordinal"] == 3
+    assert record["implement_chunk"]["number"] == "3"
+    assert record["implement_chunk"]["title"] == chunk.title
+    assert record["implement_chunk"]["total"] == 5
+    assert record["implement_chunk"]["sessions_used"] == 7
+    assert record["implement_chunk"]["ceiling"] == 14
+    assert record["implement_chunk"]["scope"] == "task_phase"
+  end
+
+  test "write with no implement_chunk key omits it entirely — pre-015 checkpoint shape", %{
+    root: root
+  } do
+    assert :ok =
+             Checkpoint.write(%{
+               feature_id: "016",
+               last_phase: :implement,
+               status: :failed,
+               reason: "stuck",
+               session_id: "s16"
+             })
+
+    decoded = root |> checkpoint_path("016") |> File.read!() |> Jason.decode!()
+    refute Map.has_key?(decoded, "implement_chunk")
+
+    assert {:ok, record} = Checkpoint.read("016")
+    refute Map.has_key?(record, "implement_chunk")
+  end
 end

@@ -30,6 +30,7 @@ defmodule SpeckitOrchestrator.PhaseResult do
             tool_events: [],
             status: :incomplete,
             error: nil,
+            subtype: nil,
             num_turns: nil,
             event_count: 0
 
@@ -43,6 +44,7 @@ defmodule SpeckitOrchestrator.PhaseResult do
           tool_events: [tool_event()],
           status: :ok | :error | :incomplete,
           error: term() | nil,
+          subtype: String.t() | nil,
           num_turns: non_neg_integer() | nil,
           event_count: non_neg_integer()
         }
@@ -58,6 +60,7 @@ defmodule SpeckitOrchestrator.PhaseResult do
               tool_events: [],
               status: :incomplete,
               error: nil,
+              subtype: nil,
               num_turns: nil,
               count: 0
   end
@@ -101,6 +104,18 @@ defmodule SpeckitOrchestrator.PhaseResult do
   end
 
   def transient?(%__MODULE__{}), do: false
+
+  @doc """
+  True when the session ended because it exhausted its turn budget —
+  `:session_failed`'s `"subtype"` of `"error_max_turns"` — rather than a real
+  error. Classified from the harness's own deterministic subtype (never
+  inferred from error prose), and checked **before** the transient-retry
+  ladder: `transient?/1` is left unchanged so exhaustion and a transient
+  server/API drop stay distinct classifications (research R1, FR-014).
+  """
+  @spec exhausted?(t() | nil) :: boolean()
+  def exhausted?(%__MODULE__{subtype: "error_max_turns"}), do: true
+  def exhausted?(_), do: false
 
   @doc """
   Fold an enumerable of `%Jido.Harness.Event{}` into a `%PhaseResult{}`.
@@ -154,7 +169,7 @@ defmodule SpeckitOrchestrator.PhaseResult do
 
   defp reduce_type(:session_failed, event, acc) do
     p = payload(event)
-    %{acc | status: :error, error: Map.get(p, "error")}
+    %{acc | status: :error, error: Map.get(p, "error"), subtype: Map.get(p, "subtype")}
   end
 
   # :thinking_delta, :session_started, :provider_event, and any unknown type:
@@ -178,6 +193,7 @@ defmodule SpeckitOrchestrator.PhaseResult do
       tool_events: Enum.reverse(acc.tool_events),
       status: acc.status,
       error: acc.error,
+      subtype: acc.subtype,
       num_turns: acc.num_turns,
       event_count: acc.count
     }

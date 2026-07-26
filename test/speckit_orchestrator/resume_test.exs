@@ -61,6 +61,96 @@ defmodule SpeckitOrchestrator.ResumeTest do
     end
   end
 
+  # Fake SDK for the chunked-implement resume tests (US2) — checks off the
+  # scoped task-phase's own task (mirrors chunk_runner_test.exs's FakeSDK) and
+  # writes a real source file so the artifact gate sees genuine implementation
+  # changes. Dispatching task-phase 1 or 2 is treated as a hard bug (both are
+  # already complete in every fixture below) and returned as a genuine,
+  # non-transient session error — proof by construction that a redispatch of
+  # an already-complete task-phase would fail the run loudly rather than
+  # silently passing.
+  defmodule ChunkFakeSDK do
+    alias ClaudeAgentSDK.Message
+
+    def query(prompt, options) do
+      case Regex.run(~r/Implement ONLY the tasks in "Phase (\d+):/, prompt) do
+        [_, n] ->
+          if n in illegal_phases() do
+            error_messages("illegal redispatch of task-phase #{n}")
+          else
+            check_off_and_succeed(Map.get(options, :cwd), n)
+          end
+
+        nil ->
+          success_messages()
+      end
+    end
+
+    defp illegal_phases,
+      do: Application.get_env(:speckit_orchestrator, :chunk_fake_illegal_phases, [])
+
+    defp check_off_and_succeed(cwd, n) when is_binary(cwd) do
+      case cwd |> Path.join("specs/**/tasks.md") |> Path.wildcard() |> List.first() do
+        nil -> :ok
+        path -> check_off(path, cwd, n)
+      end
+
+      success_messages()
+    end
+
+    defp check_off_and_succeed(_cwd, _n), do: success_messages()
+
+    defp check_off(path, cwd, n) do
+      content =
+        path
+        |> File.read!()
+        |> String.split("\n")
+        |> Enum.map(&check_line(&1, n))
+        |> Enum.join("\n")
+
+      File.write!(path, content)
+
+      impl_path = Path.join(cwd, "lib/fake_phase_#{n}.ex")
+      File.mkdir_p!(Path.dirname(impl_path))
+      File.write!(impl_path, "defmodule FakePhase#{n} do\nend\n")
+    end
+
+    defp check_line(line, n) do
+      if String.contains?(line, "T00#{n} "), do: String.replace(line, "[ ]", "[X]"), else: line
+    end
+
+    defp success_messages do
+      [
+        %Message{type: :system, subtype: :init, data: %{session_id: "s"}, raw: %{}},
+        %Message{
+          type: :result,
+          subtype: :success,
+          data: %{
+            session_id: "s",
+            result: "done",
+            num_turns: 3,
+            is_error: false,
+            total_cost_usd: 0.1,
+            usage: %{input_tokens: 0, output_tokens: 0}
+          },
+          raw: %{}
+        }
+      ]
+    end
+
+    defp error_messages(reason) do
+      [
+        %Message{type: :system, subtype: :init, data: %{session_id: "s"}, raw: %{}},
+        %Message{
+          type: :result,
+          subtype: :error,
+          data: %{session_id: "s", error: reason, is_error: true, total_cost_usd: 0.05},
+          raw: %{}
+        }
+      ]
+    end
+  end
+
   setup do
     prev_sdk = Application.get_env(:jido_claude, :sdk_module)
     Application.put_env(:jido_claude, :sdk_module, FakeSDK)
@@ -822,6 +912,250 @@ defmodule SpeckitOrchestrator.ResumeTest do
 
       assert result.feature_id == id
       assert result.status == :halted
+    end
+  end
+
+  # ---- chunked implement resume (US2, FR-021/022/025/025a) ------------------
+
+  describe "resume/2 — chunked implement resume" do
+    setup do
+      prev_sdk = Application.get_env(:jido_claude, :sdk_module)
+      Application.put_env(:jido_claude, :sdk_module, ChunkFakeSDK)
+
+      on_exit(fn ->
+        if prev_sdk,
+          do: Application.put_env(:jido_claude, :sdk_module, prev_sdk),
+          else: Application.delete_env(:jido_claude, :sdk_module)
+
+        Application.delete_env(:speckit_orchestrator, :chunk_fake_illegal_phases)
+      end)
+
+      :ok
+    end
+
+    # `complete` marks which task-phase numbers start pre-checked (simulating
+    # a prior run's committed boundary work, FR-023a) — everything else is
+    # seeded incomplete.
+    defp chunked_repo(id, phases, complete) do
+      repo = base_repo()
+      spec_dir = Path.join(repo, "specs/#{id}-resume-facade")
+      File.mkdir_p!(spec_dir)
+
+      body =
+        Enum.map_join(phases, "\n", fn {n, title} ->
+          mark = if n in complete, do: "X", else: " "
+          "## Phase #{n}: #{title}\n\n- [#{mark}] T00#{n} #{title} task\n"
+        end)
+
+      File.write!(Path.join(spec_dir, "tasks.md"), "# Tasks\n\n" <> body)
+
+      git!(repo, ["add", "-A"])
+      git!(repo, ["commit", "-q", "-m", "seed tasks"])
+      repo
+    end
+
+    defp write_chunk_checkpoint(id, chunk) do
+      :ok =
+        Checkpoint.write(%{
+          feature_id: id,
+          last_phase: :implement,
+          status: :failed,
+          reason: "test fixture",
+          session_id: "s1",
+          slug: "resume-facade",
+          path: "#{id}-resume-facade.md",
+          implement_chunk: chunk
+        })
+
+      on_exit(fn -> File.rm_rf(Path.join(Config.transcript_root(), id)) end)
+    end
+
+    defp attach_chunk_resolved(id, me) do
+      handler = "resume-test-chunk-resolved-#{id}"
+
+      :telemetry.attach(
+        handler,
+        [:speckit, :chunk, :resolved],
+        fn _event, _meas, meta, _cfg -> send(me, {:chunk_resolved, meta}) end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach(handler) end)
+    end
+
+    test "resumes at the recorded task-phase, never redispatches a completed one, and resets sessions_used to 0" do
+      id = unique_id()
+
+      phases = [
+        {"1", "Setup"},
+        {"2", "Core"},
+        {"3", "Widgets"},
+        {"4", "Gadgets"},
+        {"5", "Polish"}
+      ]
+
+      repo = chunked_repo(id, phases, ["1", "2"])
+      root = tmp_root()
+      point_config_at(repo, root)
+
+      Application.put_env(:speckit_orchestrator, :chunk_fake_illegal_phases, ["1", "2"])
+
+      {:ok, _wt} = Worktree.create(feature(id), repo: repo, worktree_root: root)
+
+      # sessions_used near the 5-task-phase ceiling (2*5+4 = 14): if `resume/2`
+      # did not reset it to 0, dispatching task-phases 3-5 (3 more sessions)
+      # would hit the ceiling after task-phase 3 and fail before ever reaching
+      # 4 — landing on :done instead proves both that the reset happened and
+      # that 1-2 were never redispatched (ChunkFakeSDK fails loudly on either).
+      write_chunk_checkpoint(id, %{
+        ordinal: 3,
+        number: "3",
+        title: "Widgets",
+        total: 5,
+        sessions_used: 13,
+        ceiling: 14,
+        scope: :task_phase
+      })
+
+      me = self()
+      assert {:ok, pid} = SpeckitOrchestrator.resume(id, features: [feature(id)], owner: me)
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+      assert_receive {:run_complete, report}, 30_000
+      assert report.done == [id]
+    end
+
+    test ":from_task_phase overrides the recorded checkpoint position" do
+      id = unique_id()
+
+      phases = [
+        {"1", "Setup"},
+        {"2", "Core"},
+        {"3", "Widgets"},
+        {"4", "Gadgets"},
+        {"5", "Polish"}
+      ]
+
+      repo = chunked_repo(id, phases, ["1"])
+      root = tmp_root()
+      point_config_at(repo, root)
+
+      {:ok, _wt} = Worktree.create(feature(id), repo: repo, worktree_root: root)
+
+      # The checkpoint records task-phase 4, but the operator overrides back
+      # to task-phase 2. If the override were ignored, task-phases 2-3 would
+      # never be dispatched (only the sweep would see them, and the sweep's
+      # prompt shape doesn't match ChunkFakeSDK's per-task-phase check-off) —
+      # the run would fail on unchecked tasks instead of completing.
+      write_chunk_checkpoint(id, %{
+        ordinal: 4,
+        number: "4",
+        title: "Gadgets",
+        total: 5,
+        sessions_used: 0,
+        ceiling: 14,
+        scope: :task_phase
+      })
+
+      me = self()
+
+      assert {:ok, pid} =
+               SpeckitOrchestrator.resume(id,
+                 features: [feature(id)],
+                 owner: me,
+                 from_task_phase: 2
+               )
+
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+      assert_receive {:run_complete, report}, 30_000
+      assert report.done == [id]
+    end
+
+    test "a renumbered task list (numbers shifted, titles stable) resolves by :title and emits [:speckit, :chunk, :resolved]" do
+      id = unique_id()
+
+      # The checkpoint's recorded number ("3") no longer exists anywhere in
+      # the current file — task-phases 3-5 were renumbered to 6-8, titles
+      # unchanged — forcing the number match to miss and the title match
+      # ("Widgets") to resolve it instead.
+      phases = [
+        {"1", "Setup"},
+        {"2", "Core"},
+        {"6", "Widgets"},
+        {"7", "Gadgets"},
+        {"8", "Polish"}
+      ]
+
+      repo = chunked_repo(id, phases, ["1", "2"])
+      root = tmp_root()
+      point_config_at(repo, root)
+
+      {:ok, _wt} = Worktree.create(feature(id), repo: repo, worktree_root: root)
+
+      write_chunk_checkpoint(id, %{
+        ordinal: 3,
+        number: "3",
+        title: "Widgets",
+        total: 5,
+        sessions_used: 0,
+        ceiling: 14,
+        scope: :task_phase
+      })
+
+      me = self()
+      attach_chunk_resolved(id, me)
+
+      assert {:ok, pid} = SpeckitOrchestrator.resume(id, features: [feature(id)], owner: me)
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+      assert_receive {:chunk_resolved, meta}, 10_000
+      assert meta.match_kind == :title
+      assert meta.title == "Widgets"
+      assert meta.number == "6"
+
+      assert_receive {:run_complete, _report}, 30_000
+    end
+
+    test "a retitled-but-renumbered-stable task list resolves by :number — no weak-match telemetry" do
+      id = unique_id()
+
+      # Number "3" still exists and is still unique — the title changed
+      # ("Widgets" -> "Doohickeys") but that never gets consulted once the
+      # number matches (data-model.md §5's fixed number > title > ordinal
+      # order).
+      phases = [
+        {"1", "Setup"},
+        {"2", "Core"},
+        {"3", "Doohickeys"},
+        {"4", "Gadgets"},
+        {"5", "Polish"}
+      ]
+
+      repo = chunked_repo(id, phases, ["1", "2"])
+      root = tmp_root()
+      point_config_at(repo, root)
+
+      {:ok, _wt} = Worktree.create(feature(id), repo: repo, worktree_root: root)
+
+      write_chunk_checkpoint(id, %{
+        ordinal: 3,
+        number: "3",
+        title: "Widgets",
+        total: 5,
+        sessions_used: 0,
+        ceiling: 14,
+        scope: :task_phase
+      })
+
+      me = self()
+      attach_chunk_resolved(id, me)
+
+      assert {:ok, pid} = SpeckitOrchestrator.resume(id, features: [feature(id)], owner: me)
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+      assert_receive {:run_complete, _report}, 30_000
+      refute_received {:chunk_resolved, _meta}
     end
   end
 end

@@ -17,7 +17,11 @@ defmodule SpeckitOrchestrator.PhaseResultTest do
       ev(:tool_call, %{"name" => "Read", "input" => %{}, "call_id" => "t1"}, "sess-1"),
       ev(:tool_result, %{"output" => "ok", "call_id" => "t1", "is_error" => false}, "sess-1"),
       ev(:usage, %{"cost_usd" => 0.42, "input_tokens" => 10, "output_tokens" => 5}, "sess-1"),
-      ev(:session_completed, %{"result" => "FINAL", "num_turns" => 3, "is_error" => false}, "sess-1")
+      ev(
+        :session_completed,
+        %{"result" => "FINAL", "num_turns" => 3, "is_error" => false},
+        "sess-1"
+      )
     ]
 
     r = PhaseResult.reduce(events)
@@ -48,6 +52,7 @@ defmodule SpeckitOrchestrator.PhaseResultTest do
     r = PhaseResult.reduce(events)
     assert r.status == :error
     assert r.error == "boom"
+    assert r.subtype == "error"
   end
 
   test "completed with is_error true is an error" do
@@ -87,11 +92,19 @@ defmodule SpeckitOrchestrator.PhaseResultTest do
     test "an :error carrying a server/API drop signature is transient" do
       assert PhaseResult.transient?(%PhaseResult{
                status: :error,
-               final_text: "API Error: Server error mid-response. The response above may be incomplete."
+               final_text:
+                 "API Error: Server error mid-response. The response above may be incomplete."
              })
 
-      assert PhaseResult.transient?(%PhaseResult{status: :error, error: "upstream 503 unavailable"})
-      assert PhaseResult.transient?(%PhaseResult{status: :error, final_text: "model overloaded, try later"})
+      assert PhaseResult.transient?(%PhaseResult{
+               status: :error,
+               error: "upstream 503 unavailable"
+             })
+
+      assert PhaseResult.transient?(%PhaseResult{
+               status: :error,
+               final_text: "model overloaded, try later"
+             })
     end
 
     test "a clean application :error is NOT transient" do
@@ -103,6 +116,42 @@ defmodule SpeckitOrchestrator.PhaseResultTest do
 
     test "a successful result is never transient" do
       refute PhaseResult.transient?(%PhaseResult{status: :ok, final_text: "done"})
+    end
+  end
+
+  describe "exhausted?/1" do
+    test "a session_failed with subtype error_max_turns folds to exhausted? true" do
+      events = [ev(:session_failed, %{"error" => "boom", "subtype" => "error_max_turns"}, "s")]
+      r = PhaseResult.reduce(events)
+      assert PhaseResult.exhausted?(r)
+    end
+
+    test "a server-error subtype is not exhausted, and transient?/1 is unaffected" do
+      events = [
+        ev(
+          :session_failed,
+          %{"error" => "API Error: Server error mid-response.", "subtype" => "error"},
+          "s"
+        )
+      ]
+
+      r = PhaseResult.reduce(events)
+      refute PhaseResult.exhausted?(r)
+      assert PhaseResult.transient?(r)
+    end
+
+    test "a clean application error is neither exhausted nor transient" do
+      r = %PhaseResult{status: :error, error: "no such file", subtype: "error"}
+      refute PhaseResult.exhausted?(r)
+      refute PhaseResult.transient?(r)
+    end
+
+    test "a successful result is not exhausted" do
+      refute PhaseResult.exhausted?(%PhaseResult{status: :ok, subtype: nil})
+    end
+
+    test "nil (harness-level error) is not exhausted" do
+      refute PhaseResult.exhausted?(nil)
     end
   end
 end

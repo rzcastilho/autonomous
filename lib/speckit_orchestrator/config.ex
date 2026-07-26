@@ -161,6 +161,26 @@ defmodule SpeckitOrchestrator.Config do
   @spec phase_max_retries() :: non_neg_integer()
   def phase_max_retries, do: get(:phase_max_retries, 1)
 
+  @doc """
+  Consecutive no-progress attempts on one task-phase before it is judged stuck
+  (FR-013). Progress resets this counter; it is distinct from the session
+  ceiling (`implement_sessions_per_task_phase/0` + `implement_sessions_headroom/0`).
+  """
+  @spec implement_no_progress_limit() :: pos_integer()
+  def implement_no_progress_limit, do: get(:implement_no_progress_limit, 2)
+
+  @doc """
+  Session-ceiling formula multiplier (FR-013a): the ceiling is
+  `implement_sessions_per_task_phase() * task_phase_count + implement_sessions_headroom()`,
+  frozen once at implement-step start (research R8).
+  """
+  @spec implement_sessions_per_task_phase() :: pos_integer()
+  def implement_sessions_per_task_phase, do: get(:implement_sessions_per_task_phase, 2)
+
+  @doc "Session-ceiling formula constant (FR-013a) — see `implement_sessions_per_task_phase/0`."
+  @spec implement_sessions_headroom() :: non_neg_integer()
+  def implement_sessions_headroom, do: get(:implement_sessions_headroom, 4)
+
   @doc "Pinned Spec Kit CLI tag (drift diagnosis)."
   @spec speckit_version() :: String.t()
   def speckit_version, do: get(:speckit_version, "v0.12.11")

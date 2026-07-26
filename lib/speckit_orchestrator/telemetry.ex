@@ -13,22 +13,43 @@ defmodule SpeckitOrchestrator.Telemetry do
     * `[:speckit, :feature, :terminal]` — measurements `%{cost_total}`, metadata
       `%{feature_id, status, reason}`.
 
+  Events (emitted by `ChunkRunner`, one `:implement` step's chunk loop —
+  `specs/015-implement-phase-chunking/contracts/telemetry-chunk.md` §1):
+
+    * `[:speckit, :chunk, :start]` / `:stop` / `:exception` — the
+      `[:speckit, :chunk]` `:telemetry.span/3` around one chunk session,
+      metadata `%{feature_id, phase: :implement, scope, ordinal, total,
+      number, title, attempt, sessions_used, ceiling, model}` (`:stop` adds
+      `%{outcome, cost, completed_before, completed_after}`; `:exception`
+      adds `%{kind, reason}`).
+    * `[:speckit, :chunk, :resolved]` — measurements `%{}`, metadata
+      `%{feature_id, match_kind, ordinal, number, title, requested}`.
+
   Call `attach_default_logger/0` from `iex` to log every event.
   """
 
   require Logger
 
   @phase [:speckit, :phase]
+  @chunk [:speckit, :chunk]
   @events [
     [:speckit, :phase, :start],
     [:speckit, :phase, :stop],
     [:speckit, :phase, :exception],
-    [:speckit, :feature, :terminal]
+    [:speckit, :feature, :terminal],
+    [:speckit, :chunk, :start],
+    [:speckit, :chunk, :stop],
+    [:speckit, :chunk, :exception],
+    [:speckit, :chunk, :resolved]
   ]
 
   @doc "The `:telemetry.span/3` prefix for phase events."
   @spec phase_span() :: [atom()]
   def phase_span, do: @phase
+
+  @doc "The `:telemetry.span/3` prefix for chunk events."
+  @spec chunk_span() :: [atom()]
+  def chunk_span, do: @chunk
 
   @doc "All emitted event names."
   @spec events() :: [[atom()]]
