@@ -21,6 +21,7 @@ defmodule SpeckitOrchestrator.FeatureRunner do
 
   alias SpeckitOrchestrator.{
     Checkpoint,
+    ChunkRunner,
     Config,
     Describe,
     FeatureAgent,
@@ -73,6 +74,16 @@ defmodule SpeckitOrchestrator.FeatureRunner do
       FR-011), threaded alongside `:run_context` into checkpoint writes for
       scope-partitioned lookup once `Checkpoint` reads it (Phase 4). Defaults
       to `nil` (tests and non-layout callers).
+    * `:start_task_phase` — an explicit `TaskPhaseRef.t()` or ordinal
+      (`pos_integer()`) that overrides `implement`'s recorded checkpoint
+      position (checkpoint-implement-chunk.md §3); threaded straight into
+      `ChunkRunner.run/1`'s `:start_task_phase`. `nil` (default) resolves
+      against the checkpoint instead.
+    * `:reset_implement_sessions` — `true` clears the carried
+      `implement_chunk.sessions_used` to `0` before the chunk loop starts
+      (FR-013b — an explicit grant of more session budget). Default `false`
+      preserves whatever the checkpoint recorded, for the crash-recovery
+      continuation path.
   """
   @spec run(SpeckitOrchestrator.Feature.t(), keyword()) :: result() | {:error, term()}
   def run(feature, opts \\ []) do
@@ -86,6 +97,11 @@ defmodule SpeckitOrchestrator.FeatureRunner do
     remediation_model = Keyword.get(opts, :remediation_model)
     run_context = Keyword.get(opts, :run_context)
     layout = Keyword.get(opts, :layout)
+
+    chunk_opts = %{
+      start_task_phase: Keyword.get(opts, :start_task_phase),
+      reset_implement_sessions: Keyword.get(opts, :reset_implement_sessions, false)
+    }
 
     with {:ok, pid} <- start_agent(feature, opts) do
       try do
@@ -121,7 +137,8 @@ defmodule SpeckitOrchestrator.FeatureRunner do
                 ledger,
                 worktree,
                 run_context,
-                layout
+                layout,
+                chunk_opts
               )
           end
 
@@ -159,7 +176,14 @@ defmodule SpeckitOrchestrator.FeatureRunner do
       :ok
     else
       agent =
-        remediation_with_retry(pid, feature, timeout, worktree, layout, Config.phase_max_retries())
+        remediation_with_retry(
+          pid,
+          feature,
+          timeout,
+          worktree,
+          layout,
+          Config.phase_max_retries()
+        )
 
       if agent.state.last_outcome == :error, do: {:error, agent}, else: :ok
     end
@@ -195,9 +219,7 @@ defmodule SpeckitOrchestrator.FeatureRunner do
       entry = List.first(agent.state.history) || %{}
       Transcripts.write(worktree, layout, 0, :remediation, agent.state.last_result)
 
-      Logger.info(
-        "feature #{feature.id} remediation -> #{inspect(Map.get(entry, :outcome))}"
-      )
+      Logger.info("feature #{feature.id} remediation -> #{inspect(Map.get(entry, :outcome))}")
 
       {agent,
        Map.merge(meta, %{outcome: Map.get(entry, :outcome), cost: Map.get(entry, :cost, 0.0)})}
@@ -209,22 +231,13 @@ defmodule SpeckitOrchestrator.FeatureRunner do
 
   # ---- loop ---------------------------------------------------------------
 
-  defp loop(pid, feature, phase, step, timeout, ledger, worktree, run_context, layout) do
+  defp loop(pid, feature, phase, step, timeout, ledger, worktree, run_context, layout, chunk_opts) do
     agent =
-      run_phase_with_retry(
-        pid,
-        feature,
-        phase,
-        step,
-        timeout,
-        worktree,
-        layout,
-        Config.phase_max_retries()
-      )
+      run_step(pid, feature, phase, step, timeout, ledger, worktree, layout, chunk_opts)
 
     st = agent.state
 
-    case Pipeline.next(phase, st.last_outcome, st.last_signals) do
+    case chunk_terminal_override(st) || Pipeline.next(phase, st.last_outcome, st.last_signals) do
       {:cont, next} ->
         # Durable resume pointer for this boundary (FR-001) — before recursing,
         # not after, so a crash mid-next-phase still finds the checkpoint/commit
@@ -249,7 +262,18 @@ defmodule SpeckitOrchestrator.FeatureRunner do
         if breaker_tripped?(ledger),
           do: {:halted, :breaker, agent},
           else:
-            loop(pid, feature, next, step + 1, timeout, ledger, worktree, run_context, layout)
+            loop(
+              pid,
+              feature,
+              next,
+              step + 1,
+              timeout,
+              ledger,
+              worktree,
+              run_context,
+              layout,
+              chunk_opts
+            )
 
       {:done, :done} ->
         {:done, :done, agent}
@@ -264,6 +288,81 @@ defmodule SpeckitOrchestrator.FeatureRunner do
         {:failed, reason, agent}
     end
   end
+
+  # `:implement` (015) delegates wholesale to `ChunkRunner`, which drives its
+  # own multi-session loop and absorbs per-chunk transient retries via
+  # `Chunking.next/2`'s row 1 — the outer transient-retry wrapper
+  # (`run_phase_with_retry/8`) would be meaningless wrapped around a call that
+  # already represents N sessions, not one. Every other phase is unchanged.
+  defp run_step(pid, feature, :implement, step, timeout, ledger, worktree, layout, chunk_opts) do
+    run_chunked_phase(pid, feature, step, timeout, ledger, worktree, layout, chunk_opts)
+  end
+
+  defp run_step(pid, feature, phase, step, timeout, _ledger, worktree, layout, _chunk_opts) do
+    run_phase_with_retry(
+      pid,
+      feature,
+      phase,
+      step,
+      timeout,
+      worktree,
+      layout,
+      Config.phase_max_retries()
+    )
+  end
+
+  # The same [:speckit, :phase] span every other phase gets, wrapping the
+  # *whole* chunked step (so existing console/cost observability keeps
+  # working) — a finer per-chunk span is added in Phase 5 (T031), inside
+  # `ChunkRunner` itself. `ChunkRunner` writes its own per-chunk + roll-up
+  # transcripts (contracts/chunk_session.md §5), so the generic
+  # `Transcripts.write/5` call `run_phase/7` makes below is skipped here to
+  # avoid clobbering the roll-up with just the last chunk's raw result.
+  defp run_chunked_phase(pid, feature, step, timeout, ledger, worktree, layout, chunk_opts) do
+    meta = %{
+      feature_id: feature.id,
+      phase: :implement,
+      model: Config.model_for(:implement),
+      step: step
+    }
+
+    cost_before = current_cost_total(pid)
+
+    :telemetry.span([:speckit, :phase], meta, fn ->
+      agent =
+        ChunkRunner.run(
+          Map.merge(chunk_opts, %{
+            pid: pid,
+            feature: feature,
+            worktree: worktree,
+            layout: layout,
+            timeout: timeout,
+            step: step,
+            ledger: ledger
+          })
+        )
+
+      cost = (agent.state.cost_total || 0.0) - cost_before
+      Logger.info("feature #{feature.id} phase implement -> #{inspect(agent.state.last_outcome)}")
+
+      {agent, Map.merge(meta, %{outcome: agent.state.last_outcome, cost: cost})}
+    end)
+  end
+
+  defp current_cost_total(pid) do
+    {:ok, %{agent: agent}} = AgentServer.state(pid)
+    agent.state.cost_total || 0.0
+  end
+
+  # A chunked implement step resolves its own breaker-halt / SC-002 failure
+  # reason inside `ChunkRunner`, below `Pipeline.next/3`'s single generic
+  # `{phase, :error}` — `Pipeline.next/3` itself stays untouched (FR-008).
+  # `terminal_reason` is the existing `FeatureAgent` field (added in 013 for
+  # post-finalize bookkeeping) reused here as the seam that lets the specific
+  # reason reach the checkpoint/console instead of that generic tuple.
+  defp chunk_terminal_override(%{terminal_reason: {:halted, _} = t}), do: t
+  defp chunk_terminal_override(%{terminal_reason: {:failed, _} = t}), do: t
+  defp chunk_terminal_override(_st), do: nil
 
   # Re-run a phase that failed transiently (a server/API drop, not a real error)
   # up to `retries` times before giving up — a single dropped stream should not

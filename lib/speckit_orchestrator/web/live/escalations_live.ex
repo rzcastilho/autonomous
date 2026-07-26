@@ -33,8 +33,12 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
     Ledger,
     Pipeline,
     RunManifest,
+    TaskPhaseRef,
+    TaskPlan,
     Worktree
   }
+
+  alias SpeckitOrchestrator.TaskPlan.TaskPhase
 
   @diverted_statuses [:escalated, :halted, :failed]
 
@@ -105,6 +109,7 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
   defp escalation_view(id, feature, layout) do
     checkpoint = read_checkpoint(id, layout)
     identity = identity(id, feature, checkpoint)
+    default_phase = default_phase(checkpoint)
 
     %{
       id: id,
@@ -113,9 +118,44 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
       divert_reason: divert_reason(checkpoint),
       clarify: clarify_block(identity, feature.status),
       identity: identity,
-      default_phase: default_phase(checkpoint)
+      default_phase: default_phase,
+      task_phase_picker: task_phase_picker(identity, checkpoint, default_phase)
     }
   end
+
+  # ---- task-phase picker (US2, checkpoint-implement-chunk.md §4) ----------
+
+  # Meaningful only for an implement resume over a structured task list —
+  # every other diverted feature (or an unstructured/no-`tasks.md` target)
+  # gets no picker at all, so `resume/2` behaves exactly as it did before this
+  # feature (FR-019 spirit, SC-005).
+  defp task_phase_picker(_identity, _checkpoint, phase) when phase != :implement, do: nil
+
+  defp task_phase_picker(identity, checkpoint, :implement) do
+    plan = identity |> Worktree.locate() |> Map.fetch!(:path) |> TaskPlan.load()
+
+    if plan.structured? do
+      ref = ref_from_checkpoint(checkpoint)
+      {:ok, tp, match_kind} = TaskPlan.locate(plan, ref)
+
+      %{
+        task_phases: plan.task_phases,
+        total: TaskPlan.task_phase_count(plan),
+        default_ordinal: tp.ordinal,
+        weak_match?: match_kind != :number
+      }
+    end
+  end
+
+  defp ref_from_checkpoint({:ok, %{"implement_chunk" => %{} = chunk}}) do
+    %TaskPhaseRef{
+      ordinal: Map.get(chunk, "ordinal"),
+      number: Map.get(chunk, "number"),
+      title: Map.get(chunk, "title")
+    }
+  end
+
+  defp ref_from_checkpoint(_checkpoint), do: nil
 
   # Checkpoint identity wins when present (it recorded the exact slug/path the
   # feature ran under); otherwise Coordinator's own Feature struct still knows
@@ -208,6 +248,7 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
           |> Keyword.put(:from, safe_phase!(from, escalation.default_phase))
           |> Keyword.put(:remediation_prompt, blank_to_nil(Map.get(params, "remediation_prompt")))
           |> Keyword.put(:remediation_model, blank_to_nil(Map.get(params, "remediation_model")))
+          |> maybe_put_task_phase(Map.get(params, "from_task_phase"))
 
         case run_unlinked(fn -> SpeckitOrchestrator.resume(id, opts) end) do
           {:ok, _pid} ->
@@ -257,6 +298,19 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
 
   defp blank_to_nil(nil), do: nil
   defp blank_to_nil(s), do: if(String.trim(s) == "", do: nil, else: s)
+
+  # The submitted ordinal reaches `resume/2` as `:from_task_phase` — an
+  # integer, dropped (not overridden) unless the resolved start phase is
+  # `:implement` (`SpeckitOrchestrator.resume/2`'s own guard).
+  defp maybe_put_task_phase(opts, nil), do: opts
+  defp maybe_put_task_phase(opts, ""), do: opts
+
+  defp maybe_put_task_phase(opts, ordinal_str) do
+    case Integer.parse(ordinal_str) do
+      {n, _rest} -> Keyword.put(opts, :from_task_phase, n)
+      :error -> opts
+    end
+  end
 
   defp safe_phase!(phase_str, default) do
     case safe_phase(phase_str) do
@@ -379,6 +433,21 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
                 </option>
               </select>
             </label>
+            <label :if={e.task_phase_picker} class="field-label" data-field="task-phase-picker">
+              Starting task-phase
+              <select name="from_task_phase" class="resume-select" data-field="task-phase">
+                <option
+                  :for={tp <- e.task_phase_picker.task_phases}
+                  value={tp.ordinal}
+                  selected={tp.ordinal == e.task_phase_picker.default_ordinal}
+                >
+                  {task_phase_label(tp, e.task_phase_picker.total)}
+                </option>
+              </select>
+              <span :if={e.task_phase_picker.weak_match?} class="field-hint" data-weak-match>
+                matched by a weaker-than-number rule — the task list was renumbered
+              </span>
+            </label>
             <label class="field-label">
               Remediation (runs once, before the start phase — leave blank to skip)
               <textarea
@@ -441,6 +510,11 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
       />
     </div>
     """
+  end
+
+  defp task_phase_label(%TaskPhase{} = tp, total) do
+    mark = if TaskPhase.complete?(tp), do: " ✓", else: ""
+    "#{tp.ordinal}/#{total} · #{tp.number}: #{tp.title}#{mark}"
   end
 
   defp status_color(status), do: palette() |> Map.get(status, {"", "#64748b"}) |> elem(1)

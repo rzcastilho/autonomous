@@ -284,7 +284,11 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
                 <.status_pill status={node_status(@view, node.id)} />
               </div>
               <div class="dag-node-slug">{node.slug}</div>
-              <.phase_strip phases={node_phases(@view, node.id)} status={node_status(@view, node.id)} />
+              <.phase_strip
+                phases={node_phases(@view, node.id)}
+                status={node_status(@view, node.id)}
+                chunk={node_chunk(@view, node.id)}
+              />
               <div class="dag-node-spend">${format_money(node_spend(@view, node.id))}</div>
             </div>
           </div>
@@ -343,7 +347,10 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
   defp node_status(view, id), do: get_in(view.per_feature, [id, :status]) || :pending
   defp node_spend(view, id), do: get_in(view.per_feature, [id, :spend]) || 0.0
   defp node_phases(view, id), do: get_in(view.per_feature, [id, :phases]) || %{}
+  defp node_chunk(view, id), do: get_in(view.per_feature, [id, :chunk])
 
   defp ad_hoc_lane(nil, _per_feature), do: %{nodes: []}
-  defp ad_hoc_lane(dag_layout, per_feature), do: PipelineDagLayout.ad_hoc_nodes(dag_layout, per_feature)
+
+  defp ad_hoc_lane(dag_layout, per_feature),
+    do: PipelineDagLayout.ad_hoc_nodes(dag_layout, per_feature)
 end

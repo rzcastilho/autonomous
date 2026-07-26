@@ -17,6 +17,7 @@ defmodule SpeckitOrchestrator.PhaseRequest do
 
   alias Jido.Harness.RunRequest
   alias SpeckitOrchestrator.{Config, Feature, Layout, Prompts}
+  alias SpeckitOrchestrator.TaskPlan.TaskPhase
 
   @slash %{
     specify: "/speckit.specify",
@@ -46,6 +47,11 @@ defmodule SpeckitOrchestrator.PhaseRequest do
       **worktree-relative** breakdown ref (`Layout.in_repo_rel/1` — resolves
       analyze finding I1). `nil` (tests, non-layout callers) falls back to
       `Config.breakdown_dir/0`, the pre-012 flat layout.
+    * `:scope` — a `ChunkScope.t()` (015), honoured **only** at `phase ==
+      :implement`: appends a task-phase or sweep scoping block to the bare
+      `/speckit.implement` prompt (contracts/chunk_session.md §1). `nil`/absent,
+      `:whole_list`, or any non-`:implement` phase leaves the prompt
+      byte-identical to today (SC-005).
   """
   @spec build(Feature.t(), atom(), keyword()) :: RunRequest.t()
   def build(%Feature{} = feature, phase, opts \\ []) when is_atom(phase) do
@@ -53,7 +59,10 @@ defmodule SpeckitOrchestrator.PhaseRequest do
 
     %{
       prompt:
-        append_resume_prompt(prompt(feature, phase, layout), Keyword.get(opts, :resume_prompt)),
+        feature
+        |> prompt(phase, layout)
+        |> apply_scope(phase, Keyword.get(opts, :scope))
+        |> append_resume_prompt(Keyword.get(opts, :resume_prompt)),
       cwd: Keyword.get(opts, :cwd, Config.repo()),
       model: Config.model_for(phase)
     }
@@ -147,6 +156,37 @@ defmodule SpeckitOrchestrator.PhaseRequest do
 
   defp prompt(_feature, phase, _layout) do
     raise ArgumentError, "no prompt defined for phase #{inspect(phase)}"
+  end
+
+  # `:scope` is honoured only for `:implement` — every other phase's prompt is
+  # untouched regardless of what (if anything) a caller passes. `:whole_list`
+  # and `nil` (the FR-004 fallback / absent-option case) are also no-ops, so
+  # the built prompt stays byte-identical to today's bare `/speckit.implement`
+  # (SC-005).
+  defp apply_scope(prompt, :implement, {:task_phase, %TaskPhase{} = tp}),
+    do: prompt <> task_phase_block(tp)
+
+  defp apply_scope(prompt, :implement, {:sweep, tasks}), do: prompt <> sweep_block(tasks)
+  defp apply_scope(prompt, _phase, _scope), do: prompt
+
+  defp task_phase_block(%TaskPhase{number: number, title: title}) do
+    "\n\n---\n" <>
+      "Implement ONLY the tasks in \"Phase #{number}: #{title}\" of tasks.md.\n" <>
+      "Do NOT start, plan, or edit files for tasks belonging to any other phase.\n" <>
+      "Mark each task you complete as [X] in tasks.md before finishing.\n" <>
+      "This session is scoped deliberately: completing this phase alone is a\n" <>
+      "successful outcome. Ignore any instruction to keep working until every task\n" <>
+      "in tasks.md is complete — that condition does not apply to this session."
+  end
+
+  defp sweep_block(tasks) do
+    ids = Enum.map_join(tasks, ", ", &(&1.id || &1.text))
+
+    "\n\n---\n" <>
+      "Complete ONLY these remaining unchecked tasks from tasks.md, in this order:\n" <>
+      "#{ids}.\n" <>
+      "Mark each task you complete as [X] in tasks.md before finishing.\n" <>
+      "Completing exactly these tasks is a successful outcome for this session."
   end
 
   # Blank (nil/""/whitespace-only) guidance leaves the prompt byte-identical to

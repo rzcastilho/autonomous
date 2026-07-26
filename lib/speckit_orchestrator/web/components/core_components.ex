@@ -47,13 +47,20 @@ defmodule SpeckitOrchestrator.Web.CoreComponents do
   `phase => %{state: :pending | :active | :completed, ...}`; missing entries
   render as `:pending`. `status` further distinguishes the active cell when
   the feature has diverted (running vs escalated vs halted vs failed —
-  FR-008).
+  FR-008). `chunk` (015, `ConsoleReadModel.chunk_cell()` | `nil`) adds an
+  optional task-phase sub-label to the implement cell only — absent/`nil`/
+  `scope: :whole_list` render this **exactly as before 015** (FR-019,
+  SC-005; contracts/telemetry-chunk.md §4).
   """
   attr(:phases, :map, required: true)
   attr(:status, :atom, default: :pending)
+  attr(:chunk, :map, default: nil)
 
   def phase_strip(assigns) do
-    assigns = assign(assigns, :ordered, Pipeline.phases())
+    assigns =
+      assigns
+      |> assign(:ordered, Pipeline.phases())
+      |> assign(:chunk_label, chunk_sublabel(assigns[:chunk]))
 
     ~H"""
     <div class="phase-strip">
@@ -63,11 +70,25 @@ defmodule SpeckitOrchestrator.Web.CoreComponents do
         data-phase={phase}
         title={phase}
       >
-        {phase}
+        {phase}<span :if={phase == :implement and @chunk_label} class="phase-chunk-sublabel"> {@chunk_label}</span>
       </span>
     </div>
     """
   end
+
+  defp chunk_sublabel(nil), do: nil
+  defp chunk_sublabel(%{scope: :whole_list}), do: nil
+
+  defp chunk_sublabel(%{scope: :task_phase} = chunk),
+    do: attempt_suffix("#{chunk.ordinal}/#{chunk.total} · #{chunk.title}", chunk[:attempt])
+
+  defp chunk_sublabel(%{scope: :sweep} = chunk),
+    do: attempt_suffix("sweep · #{chunk[:remaining]} left", chunk[:attempt])
+
+  defp attempt_suffix(base, attempt) when is_integer(attempt) and attempt > 1,
+    do: base <> " (attempt #{attempt})"
+
+  defp attempt_suffix(base, _attempt), do: base
 
   defp phase_cell_state(nil, _status), do: "pending"
   defp phase_cell_state(%{state: :completed}, _status), do: "completed"

@@ -116,6 +116,36 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhaseTest do
     end
   end
 
+  test "a scoped implement request defers the artifact gate to ChunkRunner's roll-up" do
+    original = Application.get_env(:jido_claude, :sdk_module)
+    Application.put_env(:jido_claude, :sdk_module, CapturingSDK)
+    on_exit(fn -> restore(:jido_claude, :sdk_module, original) end)
+
+    tmp = Path.join(System.tmp_dir!(), "rfp_scope_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(tmp)
+    System.cmd("git", ["init"], cd: tmp)
+    on_exit(fn -> File.rm_rf(tmp) end)
+
+    ctx = context(%{worktree: %{path: tmp}})
+
+    # no scope: the artifact gate reports the missing implementation
+    assert {:ok, update} = RunFeaturePhase.run(%{phase: :implement}, ctx)
+    assert update.last_signals == %{missing_artifact: "implementation changes"}
+
+    tp = %SpeckitOrchestrator.TaskPlan.TaskPhase{
+      ordinal: 1,
+      number: "1",
+      title: "Setup",
+      tasks: []
+    }
+
+    # scoped: the gate is deferred — always {:ok, %{}}
+    assert {:ok, update2} =
+             RunFeaturePhase.run(%{phase: :implement, scope: {:task_phase, tp}}, ctx)
+
+    assert update2.last_signals == %{}
+  end
+
   test "a harness error is folded into an :error outcome (no crash, no cost)" do
     original = Application.get_env(:jido_harness, :providers)
     Application.put_env(:jido_harness, :providers, %{})

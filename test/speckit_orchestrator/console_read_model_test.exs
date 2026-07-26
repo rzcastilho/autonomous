@@ -3,6 +3,23 @@ defmodule SpeckitOrchestrator.ConsoleReadModelTest do
 
   alias SpeckitOrchestrator.ConsoleReadModel
 
+  defp chunk_start_meta(opts) do
+    %{
+      feature_id: "001",
+      phase: :implement,
+      scope: :task_phase,
+      ordinal: opts[:ordinal],
+      total: opts[:total],
+      number: to_string(opts[:ordinal]),
+      title: opts[:title],
+      attempt: opts[:attempt],
+      sessions_used: opts[:sessions_used] || 1,
+      ceiling: 14,
+      remaining: nil,
+      model: "sonnet"
+    }
+  end
+
   describe "apply_event/4 — [:speckit, :phase, :start]" do
     test "sets current_phase, marks the phase cell active, records the model" do
       model =
@@ -172,6 +189,23 @@ defmodule SpeckitOrchestrator.ConsoleReadModelTest do
       assert [%{severity: :warn}] = escalated.feed
       assert [%{severity: :error}] = failed.feed
     end
+
+    test "clears a chunked feature's chunk field on terminal" do
+      model =
+        ConsoleReadModel.new()
+        |> ConsoleReadModel.apply_event(
+          [:speckit, :chunk, :start],
+          %{},
+          chunk_start_meta(ordinal: 3, total: 5, title: "User Story 1", attempt: 1)
+        )
+        |> ConsoleReadModel.apply_event(
+          [:speckit, :feature, :terminal],
+          %{cost_total: 1.0},
+          %{feature_id: "001", status: :done, reason: nil}
+        )
+
+      assert model.features["001"].chunk == nil
+    end
   end
 
   describe "apply_event/4 — unknown events" do
@@ -309,7 +343,9 @@ defmodule SpeckitOrchestrator.ConsoleReadModelTest do
       manifest = %{"statuses" => %{"001" => "halted"}}
       checkpoints = %{"001" => {:ok, %{"last_phase" => "analyze", "status" => "halted"}}}
 
-      merged = ConsoleReadModel.overlay_last_known_statuses(inactive_view(), manifest, checkpoints)
+      merged =
+        ConsoleReadModel.overlay_last_known_statuses(inactive_view(), manifest, checkpoints)
+
       entry = merged.per_feature["001"]
 
       assert entry.current_phase == :analyze
@@ -327,7 +363,8 @@ defmodule SpeckitOrchestrator.ConsoleReadModelTest do
       manifest = %{"statuses" => %{"001" => "escalated"}}
       checkpoints = %{"001" => {:ok, %{"last_phase" => "clarify", "status" => "escalated"}}}
 
-      merged = ConsoleReadModel.overlay_last_known_statuses(inactive_view(), manifest, checkpoints)
+      merged =
+        ConsoleReadModel.overlay_last_known_statuses(inactive_view(), manifest, checkpoints)
 
       assert merged.per_feature["001"].phases[:clarify] ==
                %{state: :active, outcome: :escalated, cost: nil, model: nil}
@@ -337,7 +374,9 @@ defmodule SpeckitOrchestrator.ConsoleReadModelTest do
       manifest = %{"statuses" => %{"001" => "running"}}
       checkpoints = %{"001" => {:ok, %{"last_phase" => "plan", "status" => "in_progress"}}}
 
-      merged = ConsoleReadModel.overlay_last_known_statuses(inactive_view(), manifest, checkpoints)
+      merged =
+        ConsoleReadModel.overlay_last_known_statuses(inactive_view(), manifest, checkpoints)
+
       entry = merged.per_feature["001"]
 
       assert entry.current_phase == :plan
@@ -360,7 +399,9 @@ defmodule SpeckitOrchestrator.ConsoleReadModelTest do
       manifest = %{"statuses" => %{"001" => "halted"}}
       checkpoints = %{"001" => {:error, :corrupt}}
 
-      merged = ConsoleReadModel.overlay_last_known_statuses(inactive_view(), manifest, checkpoints)
+      merged =
+        ConsoleReadModel.overlay_last_known_statuses(inactive_view(), manifest, checkpoints)
+
       entry = merged.per_feature["001"]
 
       assert entry.current_phase == nil
@@ -371,7 +412,9 @@ defmodule SpeckitOrchestrator.ConsoleReadModelTest do
       manifest = %{"statuses" => %{"001" => "halted"}}
       checkpoints = %{"001" => {:ok, %{"last_phase" => "not-a-real-phase", "status" => "halted"}}}
 
-      merged = ConsoleReadModel.overlay_last_known_statuses(inactive_view(), manifest, checkpoints)
+      merged =
+        ConsoleReadModel.overlay_last_known_statuses(inactive_view(), manifest, checkpoints)
+
       entry = merged.per_feature["001"]
 
       assert entry.current_phase == nil
@@ -383,6 +426,340 @@ defmodule SpeckitOrchestrator.ConsoleReadModelTest do
       merged = ConsoleReadModel.overlay_last_known_statuses(inactive_view(), manifest)
 
       assert merged.per_feature["001"].phases == %{}
+    end
+  end
+
+  describe "apply_event/4 — [:speckit, :chunk, :start] (specs/015-implement-phase-chunking)" do
+    test "task-phase attempt 1 with no previous chunk sets chunk and emits a started boundary entry" do
+      model =
+        ConsoleReadModel.apply_event(
+          ConsoleReadModel.new(),
+          [:speckit, :chunk, :start],
+          %{system_time: 1},
+          chunk_start_meta(ordinal: 1, total: 5, title: "Setup", attempt: 1)
+        )
+
+      feature = model.features["001"]
+
+      assert feature.chunk == %{
+               ordinal: 1,
+               total: 5,
+               title: "Setup",
+               attempt: 1,
+               scope: :task_phase,
+               sessions_used: 1,
+               ceiling: 14,
+               remaining: nil,
+               outcome: nil
+             }
+
+      assert [%{severity: :info, text: "task-phase 1/5 \"Setup\" started"}] = model.feed
+    end
+
+    test "task-phase attempt 1 with a previous completed chunk emits a transition boundary entry" do
+      model =
+        ConsoleReadModel.new()
+        |> ConsoleReadModel.apply_event(
+          [:speckit, :chunk, :start],
+          %{},
+          chunk_start_meta(ordinal: 2, total: 5, title: "Foundational", attempt: 1)
+        )
+        |> ConsoleReadModel.apply_event(
+          [:speckit, :chunk, :start],
+          %{},
+          chunk_start_meta(ordinal: 3, total: 5, title: "User Story 1", attempt: 1)
+        )
+
+      assert [%{severity: :info, text: text} | _] = model.feed
+      assert text == "task-phase 2/5 \"Foundational\" complete → 3/5 \"User Story 1\""
+    end
+
+    test "attempt > 1 emits a :warn continuation entry naming the attempt" do
+      model =
+        ConsoleReadModel.apply_event(
+          ConsoleReadModel.new(),
+          [:speckit, :chunk, :start],
+          %{},
+          chunk_start_meta(ordinal: 3, total: 5, title: "User Story 1", attempt: 2)
+        )
+
+      assert [%{severity: :warn, text: text}] = model.feed
+      assert text == "task-phase 3/5 \"User Story 1\" continuing (attempt 2)"
+    end
+
+    test "sweep start sets chunk scope :sweep and emits a :warn feed entry naming the remaining count" do
+      model =
+        ConsoleReadModel.apply_event(
+          ConsoleReadModel.new(),
+          [:speckit, :chunk, :start],
+          %{},
+          %{
+            feature_id: "001",
+            phase: :implement,
+            scope: :sweep,
+            ordinal: nil,
+            total: nil,
+            number: nil,
+            title: nil,
+            attempt: 1,
+            sessions_used: 6,
+            ceiling: 14,
+            remaining: 2,
+            model: "sonnet"
+          }
+        )
+
+      assert model.features["001"].chunk.scope == :sweep
+      assert [%{severity: :warn, text: "sweep session over 2 remaining tasks"}] = model.feed
+    end
+
+    test "whole_list start sets chunk (rendering treats it as absent) but feeds :info \"implement started\"" do
+      model =
+        ConsoleReadModel.apply_event(
+          ConsoleReadModel.new(),
+          [:speckit, :chunk, :start],
+          %{},
+          %{
+            feature_id: "001",
+            phase: :implement,
+            scope: :whole_list,
+            ordinal: nil,
+            total: nil,
+            number: nil,
+            title: nil,
+            attempt: 1,
+            sessions_used: 1,
+            ceiling: 14,
+            remaining: nil,
+            model: "sonnet"
+          }
+        )
+
+      assert model.features["001"].chunk.scope == :whole_list
+      assert [%{severity: :info, text: "implement started"}] = model.feed
+    end
+  end
+
+  describe "apply_event/4 — [:speckit, :chunk, :stop] (specs/015-implement-phase-chunking)" do
+    test "an :ok task-phase stop adds its cost to spend and emits an info transition-outcome entry" do
+      model =
+        ConsoleReadModel.new()
+        |> ConsoleReadModel.apply_event(
+          [:speckit, :chunk, :start],
+          %{},
+          chunk_start_meta(ordinal: 3, total: 5, title: "User Story 1", attempt: 1)
+        )
+        |> ConsoleReadModel.apply_event(
+          [:speckit, :chunk, :stop],
+          %{duration: 1},
+          Map.merge(chunk_start_meta(ordinal: 3, total: 5, title: "User Story 1", attempt: 1), %{
+            outcome: :ok,
+            cost: 0.3,
+            completed_before: 11,
+            completed_after: 14
+          })
+        )
+
+      feature = model.features["001"]
+      assert feature.spend == 0.3
+
+      assert [%{severity: :info, text: text} | _] = model.feed
+      assert text == "task-phase 3/5 \"User Story 1\" → ok (11→14 tasks)"
+    end
+
+    test "an :exhausted stop is :warn severity regardless of progress" do
+      model =
+        ConsoleReadModel.new()
+        |> ConsoleReadModel.apply_event(
+          [:speckit, :chunk, :start],
+          %{},
+          chunk_start_meta(ordinal: 3, total: 5, title: "User Story 1", attempt: 1)
+        )
+        |> ConsoleReadModel.apply_event(
+          [:speckit, :chunk, :stop],
+          %{duration: 1},
+          Map.merge(chunk_start_meta(ordinal: 3, total: 5, title: "User Story 1", attempt: 1), %{
+            outcome: :exhausted,
+            cost: 0.1,
+            completed_before: 11,
+            completed_after: 11
+          })
+        )
+
+      assert [%{severity: :warn} | _] = model.feed
+    end
+  end
+
+  describe "apply_event/4 — [:speckit, :chunk, :exception] (specs/015-implement-phase-chunking)" do
+    test "sets chunk.outcome to :error and pushes an :error feed entry" do
+      model =
+        ConsoleReadModel.new()
+        |> ConsoleReadModel.apply_event(
+          [:speckit, :chunk, :start],
+          %{},
+          chunk_start_meta(ordinal: 3, total: 5, title: "User Story 1", attempt: 1)
+        )
+        |> ConsoleReadModel.apply_event(
+          [:speckit, :chunk, :exception],
+          %{duration: 1},
+          %{feature_id: "001", kind: :error, reason: :boom}
+        )
+
+      assert model.features["001"].chunk.outcome == :error
+      assert [%{severity: :error, text: text} | _] = model.feed
+      assert text =~ "boom"
+    end
+  end
+
+  describe "apply_event/4 — [:speckit, :chunk, :resolved] (specs/015-implement-phase-chunking)" do
+    test "match_kind :number is a no-op — no feed entry (the common, unremarkable case)" do
+      model =
+        ConsoleReadModel.apply_event(
+          ConsoleReadModel.new(),
+          [:speckit, :chunk, :resolved],
+          %{},
+          %{
+            feature_id: "001",
+            match_kind: :number,
+            ordinal: 3,
+            number: "3",
+            title: "US1",
+            requested: nil
+          }
+        )
+
+      assert model.feed == []
+    end
+
+    test "match_kind :title pushes a :warn feed entry naming the renumbering (FR-025a)" do
+      model =
+        ConsoleReadModel.apply_event(
+          ConsoleReadModel.new(),
+          [:speckit, :chunk, :resolved],
+          %{},
+          %{
+            feature_id: "001",
+            match_kind: :title,
+            ordinal: 3,
+            number: "3",
+            title: "US1",
+            requested: nil
+          }
+        )
+
+      assert [%{severity: :warn, text: text}] = model.feed
+      assert text =~ "title"
+    end
+
+    test "match_kind :fallback pushes a :warn feed entry" do
+      model =
+        ConsoleReadModel.apply_event(
+          ConsoleReadModel.new(),
+          [:speckit, :chunk, :resolved],
+          %{},
+          %{
+            feature_id: "001",
+            match_kind: :fallback,
+            ordinal: 1,
+            number: nil,
+            title: "Setup",
+            requested: nil
+          }
+        )
+
+      assert [%{severity: :warn}] = model.feed
+    end
+  end
+
+  describe "double-count avoidance — chunked implement phase-stop cost (contracts/telemetry-chunk.md §2)" do
+    test "the wrapping phase-stop event adds only the not-yet-counted remainder" do
+      model =
+        ConsoleReadModel.new()
+        |> ConsoleReadModel.apply_event(
+          [:speckit, :chunk, :stop],
+          %{},
+          %{feature_id: "001", outcome: :ok, cost: 0.4}
+        )
+        |> ConsoleReadModel.apply_event(
+          [:speckit, :chunk, :stop],
+          %{},
+          %{feature_id: "001", outcome: :ok, cost: 0.6}
+        )
+        |> ConsoleReadModel.apply_event(
+          [:speckit, :phase, :stop],
+          %{duration: 1},
+          %{
+            feature_id: "001",
+            phase: :implement,
+            model: "sonnet",
+            step: 6,
+            outcome: :ok,
+            cost: 1.0
+          }
+        )
+
+      assert_in_delta model.features["001"].spend, 1.0, 0.0001
+    end
+
+    test "a non-implement phase-stop still adds its full cost (unchanged behaviour)" do
+      model =
+        ConsoleReadModel.apply_event(
+          ConsoleReadModel.new(),
+          [:speckit, :phase, :stop],
+          %{duration: 1},
+          %{feature_id: "001", phase: :specify, model: "sonnet", step: 1, outcome: :ok, cost: 0.5}
+        )
+
+      assert model.features["001"].spend == 0.5
+    end
+  end
+
+  describe "overlay_last_known_statuses/3 — implement_chunk seeding (contracts/checkpoint-implement-chunk.md)" do
+    test "seeds chunk from the checkpoint's implement_chunk when present" do
+      manifest = %{"statuses" => %{"001" => "halted"}}
+
+      checkpoints = %{
+        "001" =>
+          {:ok,
+           %{
+             "last_phase" => "implement",
+             "status" => "halted",
+             "implement_chunk" => %{
+               "ordinal" => 3,
+               "number" => "3",
+               "title" => "User Story 1",
+               "total" => 5,
+               "sessions_used" => 7,
+               "ceiling" => 14,
+               "scope" => "task_phase"
+             }
+           }}
+      }
+
+      merged =
+        ConsoleReadModel.overlay_last_known_statuses(inactive_view(), manifest, checkpoints)
+
+      assert merged.per_feature["001"].chunk == %{
+               ordinal: 3,
+               total: 5,
+               title: "User Story 1",
+               attempt: 1,
+               scope: :task_phase,
+               sessions_used: 7,
+               ceiling: 14,
+               remaining: nil,
+               outcome: nil
+             }
+    end
+
+    test "absent implement_chunk seeds chunk: nil (FR-018)" do
+      manifest = %{"statuses" => %{"001" => "halted"}}
+      checkpoints = %{"001" => {:ok, %{"last_phase" => "analyze", "status" => "halted"}}}
+
+      merged =
+        ConsoleReadModel.overlay_last_known_statuses(inactive_view(), manifest, checkpoints)
+
+      assert merged.per_feature["001"].chunk == nil
     end
   end
 end

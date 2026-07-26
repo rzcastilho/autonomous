@@ -30,10 +30,23 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
           model: String.t() | nil
         }
 
+  @type chunk_cell :: %{
+          ordinal: pos_integer() | nil,
+          total: pos_integer() | nil,
+          title: String.t() | nil,
+          attempt: pos_integer(),
+          scope: :task_phase | :sweep | :whole_list,
+          sessions_used: non_neg_integer() | nil,
+          ceiling: pos_integer() | nil,
+          remaining: non_neg_integer() | nil,
+          outcome: atom() | nil
+        }
+
   @type feature_slice :: %{
           current_phase: atom() | nil,
           phases: %{atom() => phase_cell()},
-          spend: number()
+          spend: number(),
+          chunk: chunk_cell() | nil
         }
 
   @type t :: %{features: %{String.t() => feature_slice()}, feed: [event_entry()]}
@@ -79,9 +92,10 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
       ) do
     feature = feature_slice(model, id)
     outcome = meta[:outcome]
-    cost = meta[:cost] || 0.0
+    raw_cost = meta[:cost] || 0.0
+    cost = phase_stop_cost(phase, raw_cost, feature)
 
-    cell = %{state: :completed, outcome: outcome, cost: cost, model: meta[:model]}
+    cell = %{state: :completed, outcome: outcome, cost: raw_cost, model: meta[:model]}
     phases = Map.put(feature.phases, phase, cell)
 
     feature = %{feature | phases: phases, spend: feature.spend + cost}
@@ -119,7 +133,7 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
       ) do
     feature = feature_slice(model, id)
     cost_total = measurements[:cost_total] || 0.0
-    feature = %{feature | spend: max(feature.spend, cost_total)}
+    feature = %{feature | spend: max(feature.spend, cost_total), chunk: nil}
 
     model
     |> put_feature(id, feature)
@@ -131,6 +145,73 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
         "feature terminal #{status} (#{inspect(meta[:reason])})"
       )
     )
+  end
+
+  # ---- chunk events (specs/015-implement-phase-chunking) --------------------
+  # `ChunkRunner`'s per-chunk `[:speckit, :chunk]` span
+  # (contracts/telemetry-chunk.md §2-3): folds the current task-phase/sweep
+  # position into the feature slice and emits one feed entry per boundary.
+
+  def apply_event(
+        model,
+        [:speckit, :chunk, :start],
+        _measurements,
+        %{feature_id: id} = meta
+      ) do
+    feature = feature_slice(model, id)
+    previous = feature.chunk
+    feature = %{feature | chunk: chunk_from_start_meta(meta)}
+
+    model
+    |> put_feature(id, feature)
+    |> push_feed(start_feed_entry(id, previous, meta))
+  end
+
+  def apply_event(
+        model,
+        [:speckit, :chunk, :stop],
+        _measurements,
+        %{feature_id: id, outcome: outcome} = meta
+      ) do
+    feature = feature_slice(model, id)
+    cost = meta[:cost] || 0.0
+
+    feature = %{
+      feature
+      | spend: feature.spend + cost,
+        chunk_cost_seen: feature.chunk_cost_seen + cost
+    }
+
+    model
+    |> put_feature(id, feature)
+    |> push_feed(stop_feed_entry(id, feature.chunk, meta, outcome))
+  end
+
+  def apply_event(
+        model,
+        [:speckit, :chunk, :exception],
+        _measurements,
+        %{feature_id: id} = meta
+      ) do
+    feature = feature_slice(model, id)
+    chunk = feature.chunk && Map.put(feature.chunk, :outcome, :error)
+    feature = %{feature | chunk: chunk}
+
+    model
+    |> put_feature(id, feature)
+    |> push_feed(entry(id, :implement, :error, "chunk exception: #{inspect(meta[:reason])}"))
+  end
+
+  def apply_event(model, [:speckit, :chunk, :resolved], _measurements, %{match_kind: :number}),
+    do: model
+
+  def apply_event(
+        model,
+        [:speckit, :chunk, :resolved],
+        _measurements,
+        %{feature_id: id, match_kind: match_kind}
+      ) do
+    push_feed(model, entry(id, :implement, :warn, resolved_feed_text(match_kind)))
   end
 
   def apply_event(model, _event_name, _measurements, _metadata), do: model
@@ -203,7 +284,8 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
           prereqs: [],
           current_phase: checkpoint_phase(checkpoints, id),
           phases: checkpoint_phases(checkpoints, id, last_known_status),
-          spend: 0.0
+          spend: 0.0,
+          chunk: checkpoint_chunk(checkpoints, id)
         })
       end)
 
@@ -229,10 +311,40 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
       last_phase ->
         {before, [_ | _after]} = Enum.split_while(Pipeline.phases(), &(&1 != last_phase))
 
-        completed = Map.new(before, &{&1, %{state: :completed, outcome: nil, cost: nil, model: nil}})
+        completed =
+          Map.new(before, &{&1, %{state: :completed, outcome: nil, cost: nil, model: nil}})
+
         Map.put(completed, last_phase, last_phase_cell(status))
     end
   end
+
+  # Seeds `chunk` for an inactive run's implement cell from the checkpoint's
+  # `implement_chunk` (contracts/checkpoint-implement-chunk.md). `attempt`
+  # isn't part of that durable record (it's meaningless at rest between
+  # sessions), so it's fixed at `1` — no "(attempt N)" suffix on a dead run.
+  defp checkpoint_chunk(checkpoints, id) do
+    with {:ok, record} <- Map.get(checkpoints, id),
+         %{"implement_chunk" => %{} = chunk} <- record do
+      %{
+        ordinal: Map.get(chunk, "ordinal"),
+        total: Map.get(chunk, "total"),
+        title: Map.get(chunk, "title"),
+        attempt: 1,
+        scope: chunk_scope_atom(Map.get(chunk, "scope")),
+        sessions_used: Map.get(chunk, "sessions_used"),
+        ceiling: Map.get(chunk, "ceiling"),
+        remaining: nil,
+        outcome: nil
+      }
+    else
+      _ -> nil
+    end
+  end
+
+  defp chunk_scope_atom("task_phase"), do: :task_phase
+  defp chunk_scope_atom("sweep"), do: :sweep
+  defp chunk_scope_atom("whole_list"), do: :whole_list
+  defp chunk_scope_atom(_other), do: nil
 
   defp last_phase_cell(status) when status in [:escalated, :halted, :failed],
     do: %{state: :active, outcome: status, cost: nil, model: nil}
@@ -254,7 +366,14 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
 
   defp merge_per_feature(coordinator_per_feature, projection_features) do
     Map.new(coordinator_per_feature, fn {id, status_slice} ->
-      projected = Map.get(projection_features, id, %{current_phase: nil, phases: %{}, spend: 0.0})
+      projected =
+        Map.get(projection_features, id, %{
+          current_phase: nil,
+          phases: %{},
+          spend: 0.0,
+          chunk: nil
+        })
+
       {id, Map.merge(status_slice, projected)}
     end)
   end
@@ -262,7 +381,14 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
   # ---- helpers --------------------------------------------------------
 
   defp feature_slice(model, id),
-    do: Map.get(model.features, id, %{current_phase: nil, phases: %{}, spend: 0.0})
+    do:
+      Map.get(model.features, id, %{
+        current_phase: nil,
+        phases: %{},
+        spend: 0.0,
+        chunk: nil,
+        chunk_cost_seen: 0.0
+      })
 
   defp put_feature(model, id, feature),
     do: %{model | features: Map.put(model.features, id, feature)}
@@ -279,10 +405,102 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
     }
   end
 
+  # A chunked implement step's own [:speckit, :chunk, :stop] events already
+  # added each chunk's cost to `spend` — the wrapping [:speckit, :phase,
+  # :stop] for :implement must add only what those chunks haven't accounted
+  # for yet, or the console would double-count (contracts/telemetry-chunk.md
+  # §2).
+  defp phase_stop_cost(:implement, raw_cost, feature),
+    do: max(0.0, raw_cost - feature.chunk_cost_seen)
+
+  defp phase_stop_cost(_phase, raw_cost, _feature), do: raw_cost
+
   defp severity_for_outcome(:error), do: :error
   defp severity_for_outcome(_), do: :info
 
   defp severity_for_status(status) when status in [:escalated, :halted], do: :warn
   defp severity_for_status(:failed), do: :error
   defp severity_for_status(_), do: :info
+
+  # ---- chunk fold helpers (contracts/telemetry-chunk.md §2-3) ---------------
+
+  # `:whole_list` still sets `chunk` (so `overlay`/drawer callers can tell a
+  # feature is mid-implement), but `phase_strip` treats it identically to
+  # `nil` — FR-019's "no empty or misleading task-phase indicator" is a
+  # rendering rule, not an absence-of-data rule.
+  defp chunk_from_start_meta(meta) do
+    %{
+      ordinal: meta[:ordinal],
+      total: meta[:total],
+      title: meta[:title],
+      attempt: meta[:attempt],
+      scope: meta[:scope],
+      sessions_used: meta[:sessions_used],
+      ceiling: meta[:ceiling],
+      remaining: meta[:remaining],
+      outcome: nil
+    }
+  end
+
+  defp start_feed_entry(id, previous, %{scope: :task_phase, attempt: 1} = meta) do
+    text =
+      case previous do
+        %{scope: :task_phase} = prev ->
+          "task-phase #{prev.ordinal}/#{prev.total} #{qtitle(prev.title)} complete → " <>
+            "#{meta.ordinal}/#{meta.total} #{qtitle(meta.title)}"
+
+        _ ->
+          "task-phase #{meta.ordinal}/#{meta.total} #{qtitle(meta.title)} started"
+      end
+
+    entry(id, :implement, :info, text)
+  end
+
+  defp start_feed_entry(id, _previous, %{scope: :task_phase, attempt: attempt} = meta) do
+    text =
+      "task-phase #{meta.ordinal}/#{meta.total} #{qtitle(meta.title)} continuing " <>
+        "(attempt #{attempt})"
+
+    entry(id, :implement, :warn, text)
+  end
+
+  defp start_feed_entry(id, _previous, %{scope: :sweep} = meta) do
+    entry(id, :implement, :warn, "sweep session over #{meta[:remaining]} remaining tasks")
+  end
+
+  defp start_feed_entry(id, _previous, %{scope: :whole_list}) do
+    entry(id, :implement, :info, "implement started")
+  end
+
+  defp stop_feed_entry(id, %{scope: :task_phase} = chunk, meta, outcome) do
+    text =
+      "task-phase #{chunk.ordinal}/#{chunk.total} #{qtitle(chunk.title)} → #{outcome} " <>
+        "(#{meta[:completed_before]}→#{meta[:completed_after]} tasks)"
+
+    entry(id, :implement, chunk_stop_severity(outcome), text)
+  end
+
+  defp stop_feed_entry(id, %{scope: :sweep}, meta, outcome) do
+    text = "sweep → #{outcome} (#{meta[:completed_before]}→#{meta[:completed_after]} tasks)"
+    entry(id, :implement, chunk_stop_severity(outcome), text)
+  end
+
+  defp stop_feed_entry(id, _chunk, meta, outcome) do
+    text = "implement → #{outcome} (#{meta[:completed_before]}→#{meta[:completed_after]} tasks)"
+    entry(id, :implement, chunk_stop_severity(outcome), text)
+  end
+
+  defp chunk_stop_severity(:exhausted), do: :warn
+  defp chunk_stop_severity(outcome), do: severity_for_outcome(outcome)
+
+  defp resolved_feed_text(:title),
+    do: "resumed task-phase located by title — task list was renumbered"
+
+  defp resolved_feed_text(:ordinal),
+    do: "resumed task-phase located by ordinal — task list was renumbered"
+
+  defp resolved_feed_text(:fallback),
+    do: "resumed task-phase located by fallback — recorded task-phase not found"
+
+  defp qtitle(title), do: "\"#{title}\""
 end

@@ -126,6 +126,13 @@ config :speckit_orchestrator,
   # Retries for a phase that fails transiently (server/API drop, incomplete
   # stream) before the feature is failed. Real errors are never retried.
   phase_max_retries: 1,
+  # Consecutive no-progress attempts on one task-phase before it is judged
+  # stuck (FR-013). Feature 015 — implement phase chunking.
+  implement_no_progress_limit: 2,
+  # Session-ceiling formula (FR-013a): per_task_phase * task_phase_count +
+  # headroom, frozen at implement-step start. Feature 015.
+  implement_sessions_per_task_phase: 2,
+  implement_sessions_headroom: 4,
   # Per-phase USD cost estimates. Used as a FALLBACK only — the Claude adapter
   # emits a :usage event with actual cost_usd when the CLI reports
   # total_cost_usd; the estimate is recorded when it does not.

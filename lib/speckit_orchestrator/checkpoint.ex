@@ -16,11 +16,17 @@ defmodule SpeckitOrchestrator.Checkpoint do
   checkpoint from a corrupt one (FR-006) and never fabricates fields. Also
   written after **every** successful phase (not only on a terminal divert)
   with `status: :in_progress` and `last_phase:` the phase that just completed,
-  so a crash mid-run always has a fresh restore point (FR-002). See
+  so a crash mid-run always has a fresh restore point (FR-002). Gains one more
+  optional key, `implement_chunk` — the durable chunk position (ordinal/
+  number/title/total/sessions_used/ceiling/scope) written at each task-phase
+  boundary and on the implement step's terminal outcome (FR-020), same
+  `maybe_put_*`-omit-when-absent pattern as `:context`, so a pre-015
+  checkpoint (no key) still reads and resolves via the `:fallback` rule. See
   `specs/002-resume-checkpoint/contracts/checkpoint.md`,
   `specs/007-resume-self-sufficient/contracts/checkpoint.md`,
-  `specs/009-crash-recovery/contracts/checkpoint-progress.md`, and
-  `specs/012-run-directory-layout/contracts/layout.md`.
+  `specs/009-crash-recovery/contracts/checkpoint-progress.md`,
+  `specs/012-run-directory-layout/contracts/layout.md`, and
+  `specs/015-implement-phase-chunking/contracts/checkpoint-implement-chunk.md`.
   """
 
   alias SpeckitOrchestrator.{Config, Layout, RunContext}
@@ -47,6 +53,7 @@ defmodule SpeckitOrchestrator.Checkpoint do
         path: Map.get(input, :path)
       }
       |> maybe_put_context(Map.get(input, :run_context))
+      |> maybe_put_implement_chunk(Map.get(input, :implement_chunk))
 
     path = checkpoint_path(feature_id, Map.get(input, :layout))
     File.mkdir_p!(Path.dirname(path))
@@ -96,4 +103,9 @@ defmodule SpeckitOrchestrator.Checkpoint do
 
   defp maybe_put_context(record, %RunContext{} = run_context),
     do: Map.put(record, :context, RunContext.to_map(run_context))
+
+  defp maybe_put_implement_chunk(record, nil), do: record
+
+  defp maybe_put_implement_chunk(record, %{} = implement_chunk),
+    do: Map.put(record, :implement_chunk, implement_chunk)
 end

@@ -2,6 +2,7 @@ defmodule SpeckitOrchestrator.PhaseRequestTest do
   use ExUnit.Case, async: true
 
   alias SpeckitOrchestrator.{Feature, PhaseRequest}
+  alias SpeckitOrchestrator.TaskPlan.{Task, TaskPhase}
 
   defp feature do
     %Feature{id: "001", slug: "core-ledger", path: "/abs/docs/breakdown/001-core-ledger.md"}
@@ -135,6 +136,75 @@ defmodule SpeckitOrchestrator.PhaseRequestTest do
     r = PhaseRequest.build(feature(), :plan)
     assert r.prompt =~ "Elixir, SQLite"
     assert r.prompt =~ "Feature 001"
+  end
+
+  describe ":scope option (015 chunking)" do
+    test "task-phase scope carries all four FR-005 clauses, appended after the bare command" do
+      tp = %TaskPhase{
+        ordinal: 3,
+        number: "3",
+        title: "User Story 1 - Long task lists finish",
+        tasks: []
+      }
+
+      r = PhaseRequest.build(feature(), :implement, scope: {:task_phase, tp})
+
+      assert String.starts_with?(r.prompt, "/speckit.implement")
+
+      assert r.prompt =~
+               ~s(Implement ONLY the tasks in "Phase 3: User Story 1 - Long task lists finish" of tasks.md.)
+
+      assert r.prompt =~
+               "Do NOT start, plan, or edit files for tasks belonging to any other phase."
+
+      assert r.prompt =~ "Mark each task you complete as [X] in tasks.md before finishing."
+      assert r.prompt =~ "completing this phase alone is a"
+      assert r.prompt =~ "successful outcome"
+    end
+
+    test "sweep scope lists the exact remaining task ids in order" do
+      tasks = [
+        %Task{id: "T007", text: "Do the thing", complete?: false, line: 10},
+        %Task{id: "T012", text: "Do the other thing", complete?: false, line: 20}
+      ]
+
+      r = PhaseRequest.build(feature(), :implement, scope: {:sweep, tasks})
+
+      assert String.starts_with?(r.prompt, "/speckit.implement")
+
+      assert r.prompt =~
+               "Complete ONLY these remaining unchecked tasks from tasks.md, in this order:"
+
+      assert r.prompt =~ "T007, T012"
+      assert r.prompt =~ "Mark each task you complete as [X] in tasks.md before finishing."
+
+      assert r.prompt =~
+               "Completing exactly these tasks is a successful outcome for this session."
+    end
+
+    test "the :whole_list / absent / non-implement scope is byte-identical to today" do
+      base = PhaseRequest.build(feature(), :implement)
+
+      assert PhaseRequest.build(feature(), :implement, scope: :whole_list).prompt == base.prompt
+      assert PhaseRequest.build(feature(), :implement, scope: nil).prompt == base.prompt
+
+      tp = %TaskPhase{ordinal: 1, number: "1", title: "Setup", tasks: []}
+
+      assert PhaseRequest.build(feature(), :tasks, scope: {:task_phase, tp}).prompt ==
+               PhaseRequest.build(feature(), :tasks).prompt
+    end
+
+    test "a scoped request otherwise matches the unscoped implement request byte-for-byte" do
+      tp = %TaskPhase{ordinal: 1, number: "1", title: "Setup", tasks: []}
+      base = PhaseRequest.build(feature(), :implement)
+      r = PhaseRequest.build(feature(), :implement, scope: {:task_phase, tp})
+
+      assert r.model == base.model
+      assert r.max_turns == base.max_turns
+      assert r.cwd == base.cwd
+      assert r.permission_mode == base.permission_mode
+      assert r.allowed_tools == base.allowed_tools
+    end
   end
 
   describe "build_remediation/3" do

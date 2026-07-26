@@ -181,7 +181,9 @@ defmodule SpeckitOrchestrator.Recovery.EvidenceTest do
         )
 
       assert Reconcile.status(:running, evidence, :ad_hoc) == :done
-      assert {:conflict, _reason} = Reconcile.status(:running, evidence, {:breakdown, "core-ledger"})
+
+      assert {:conflict, _reason} =
+               Reconcile.status(:running, evidence, {:breakdown, "core-ledger"})
     end
   end
 
@@ -287,6 +289,37 @@ defmodule SpeckitOrchestrator.Recovery.EvidenceTest do
 
       assert evidence.branch_committed? == false
       assert evidence.last_boundary_phase == nil
+    end
+  end
+
+  describe "default :git seam — task-phase commits (015 chunking) are not phase boundaries" do
+    test "a task-phase commit subject does not match the boundary regex directly" do
+      assert Regex.named_captures(
+               ~r/^speckit: (?<id>\S+) checkpoint after (?<phase>\w+)$/,
+               "speckit: 001 implement task-phase 1/3 Setup"
+             ) == nil
+    end
+
+    test "a branch carrying both task-phase commits and the tasks boundary still reports :tasks" do
+      repo = base_repo()
+      Application.put_env(:speckit_orchestrator, :repo, repo)
+
+      git!(repo, ["checkout", "-q", "-b", "feature/001-core-ledger"])
+      commit(repo, "speckit: 001 checkpoint after specify")
+      commit(repo, "speckit: 001 checkpoint after tasks")
+      # Chunked implement's per-task-phase boundary commits (FR-023a) — newer
+      # than the "checkpoint after tasks" commit, but must not be mistaken for
+      # a later phase boundary (research R5): a match here would make crash
+      # recovery believe implement had completed and resume at converge over
+      # a half-built tree.
+      commit(repo, "speckit: 001 implement task-phase 1/3 Setup")
+      commit(repo, "speckit: 001 implement task-phase 2/3 Core")
+      commit(repo, "speckit: 001 implement task-phase 3/3 Polish")
+
+      evidence = Evidence.collect(feature(), nil, [])
+
+      assert evidence.branch_committed? == true
+      assert evidence.last_boundary_phase == :tasks
     end
   end
 end

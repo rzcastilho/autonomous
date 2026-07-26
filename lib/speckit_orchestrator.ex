@@ -278,6 +278,14 @@ defmodule SpeckitOrchestrator do
       An unknown alias returns `{:error, {:unknown_model, alias}}` and starts
       no run. Independent of the target phase's own model routing and of
       `:prompt` (FR-010/FR-011).
+    * `:from_task_phase` — an explicit starting task-phase (ordinal
+      `pos_integer()` or `TaskPhaseRef.t()`) for a chunked `implement` resume,
+      overriding the checkpoint's recorded `implement_chunk` position
+      (checkpoint-implement-chunk.md §3-4). Honoured only when the resolved
+      `start_phase == :implement`; ignored otherwise. `resume/2` always sets
+      `reset_implement_sessions: true` on `FeatureRunner.run/2` regardless of
+      whether this option is given (FR-013b — resuming is an explicit human
+      grant of more session budget).
 
   Also reapplies the run-shaping context (`pr_workflow`, `max_concurrency`,
   `budget_usd`, `plan_stack`, `pr_base`, `pr_remote`) the checkpoint recorded
@@ -316,6 +324,7 @@ defmodule SpeckitOrchestrator do
       pr_workflow? = Keyword.get(merged_opts, :pr_workflow, Config.pr_workflow?())
       prompt = Keyword.get(opts, :prompt)
       remediation_prompt = Keyword.get(opts, :remediation_prompt)
+      start_task_phase = task_phase_override(start_phase, opts)
 
       merged_opts
       |> maybe_put_layout(layout)
@@ -327,11 +336,19 @@ defmodule SpeckitOrchestrator do
         remediation_prompt,
         remediation_model,
         run_context,
-        layout
+        layout,
+        start_task_phase
       )
       |> run()
     end
   end
+
+  # FR-021/checkpoint-implement-chunk.md §3: an explicit `:from_task_phase`
+  # only means something for a chunked `implement` resume — any other
+  # resolved start phase has no chunk loop to steer, so the override is
+  # dropped rather than silently carried into an unrelated phase.
+  defp task_phase_override(:implement, opts), do: Keyword.get(opts, :from_task_phase)
+  defp task_phase_override(_start_phase, _opts), do: nil
 
   # T033 (resolves I2): rebuild the run's `%Layout{}` from the single-slot
   # manifest's recorded `segment`/`scope` so a resume locates the
@@ -611,7 +628,8 @@ defmodule SpeckitOrchestrator do
          remediation_prompt,
          remediation_model,
          run_context,
-         layout
+         layout,
+         start_task_phase
        ) do
     cond do
       Keyword.has_key?(opts, :runner) or Keyword.has_key?(opts, :executor) ->
@@ -627,7 +645,8 @@ defmodule SpeckitOrchestrator do
             remediation_prompt,
             remediation_model,
             run_context,
-            layout
+            layout,
+            start_task_phase
           )
         )
 
@@ -641,7 +660,8 @@ defmodule SpeckitOrchestrator do
             remediation_prompt,
             remediation_model,
             run_context,
-            layout
+            layout,
+            start_task_phase
           )
         )
     end
@@ -753,7 +773,15 @@ defmodule SpeckitOrchestrator do
   # feature never tore it down); else recreate it from the existing branch.
   # Never falls back to a fresh branch (FR-005, SC-005) — a missing branch is
   # a distinct worktree error, not silently re-created from HEAD.
-  defp resume_runner(start_phase, prompt, remediation_prompt, remediation_model, run_context, layout) do
+  defp resume_runner(
+         start_phase,
+         prompt,
+         remediation_prompt,
+         remediation_model,
+         run_context,
+         layout,
+         start_task_phase
+       ) do
     fn feature, notify ->
       Task.Supervisor.start_child(SpeckitOrchestrator.RunnerSup, fn ->
         case resume_worktree(feature, layout) do
@@ -767,7 +795,9 @@ defmodule SpeckitOrchestrator do
               remediation_prompt: remediation_prompt,
               remediation_model: remediation_model,
               run_context: run_context,
-              layout: layout
+              layout: layout,
+              start_task_phase: start_task_phase,
+              reset_implement_sessions: true
             )
 
           {:error, reason} ->
@@ -791,7 +821,8 @@ defmodule SpeckitOrchestrator do
          remediation_prompt,
          remediation_model,
          run_context,
-         layout
+         layout,
+         start_task_phase
        ) do
     fn feature, _base, notify ->
       Task.Supervisor.start_child(SpeckitOrchestrator.RunnerSup, fn ->
@@ -806,7 +837,9 @@ defmodule SpeckitOrchestrator do
               remediation_prompt: remediation_prompt,
               remediation_model: remediation_model,
               run_context: run_context,
-              layout: layout
+              layout: layout,
+              start_task_phase: start_task_phase,
+              reset_implement_sessions: true
             )
 
           {:error, reason} ->
@@ -826,9 +859,14 @@ defmodule SpeckitOrchestrator do
 
     result =
       cond do
-        File.dir?(worktree.path) -> {:ok, worktree}
-        branch_exists?(worktree.repo, worktree.branch) -> Worktree.create(feature, worktree_create_opts(layout))
-        true -> {:error, :branch_missing}
+        File.dir?(worktree.path) ->
+          {:ok, worktree}
+
+        branch_exists?(worktree.repo, worktree.branch) ->
+          Worktree.create(feature, worktree_create_opts(layout))
+
+        true ->
+          {:error, :branch_missing}
       end
 
     with {:ok, wt} <- result do
@@ -1102,7 +1140,11 @@ defmodule SpeckitOrchestrator do
 
     with :ok <- preflight_stacked(test_mode?) do
       {:ok, tracker} = StackTracker.start_link(Config.pr_base())
-      publisher = Keyword.get(opts, :publisher, fn feature, base -> publish_feature(feature, base, layout) end)
+
+      publisher =
+        Keyword.get(opts, :publisher, fn feature, base ->
+          publish_feature(feature, base, layout)
+        end)
 
       executor =
         Keyword.get(opts, :executor, fn feature, base, notify ->

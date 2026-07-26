@@ -120,7 +120,12 @@ defmodule SpeckitOrchestrator.Web.EscalationsLiveTest do
     conn: conn
   } do
     spec_dir =
-      [Application.fetch_env!(:speckit_orchestrator, :worktree_root), "e4-slug-e4", "specs", "004-slug-e4"]
+      [
+        Application.fetch_env!(:speckit_orchestrator, :worktree_root),
+        "e4-slug-e4",
+        "specs",
+        "004-slug-e4"
+      ]
       |> Path.join()
 
     File.mkdir_p!(spec_dir)
@@ -312,5 +317,174 @@ defmodule SpeckitOrchestrator.Web.EscalationsLiveTest do
     {:ok, _view, html} = live(conn, "/escalations")
 
     assert html =~ ~s(data-state="all-clear")
+  end
+
+  # ---- task-phase picker (US2, checkpoint-implement-chunk.md §4) ----------
+
+  defp write_tasks_md(id, slug, content) do
+    spec_dir =
+      [
+        Application.fetch_env!(:speckit_orchestrator, :worktree_root),
+        "#{id}-#{slug}",
+        "specs",
+        "#{id}-#{slug}"
+      ]
+      |> Path.join()
+
+    File.mkdir_p!(spec_dir)
+    File.write!(Path.join(spec_dir, "tasks.md"), content)
+  end
+
+  test "task-phase picker rendered for a structured implement checkpoint, defaulting to the recorded position",
+       %{conn: conn} do
+    write_tasks_md("e10", "slug-e10", """
+    # Tasks
+
+    ## Phase 1: Setup
+
+    - [X] T001 first thing
+
+    ## Phase 2: Core
+
+    - [ ] T002 second thing
+
+    ## Phase 3: Polish
+
+    - [ ] T003 third thing
+    """)
+
+    Checkpoint.write(%{
+      feature_id: "e10",
+      last_phase: :implement,
+      status: :failed,
+      reason: "stuck",
+      session_id: "sess-10",
+      slug: "slug-e10",
+      path: "e10.md",
+      implement_chunk: %{
+        ordinal: 2,
+        number: "2",
+        title: "Core",
+        total: 3,
+        sessions_used: 1,
+        ceiling: 10,
+        scope: :task_phase
+      }
+    })
+
+    pid = start_coordinator([feat("e10", "slug-e10")], %{"e10" => {:failed, "stuck"}})
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    {:ok, _view, html} = live(conn, "/escalations")
+
+    assert html =~ ~s(data-field="task-phase")
+    assert html =~ "1/3 · 1: Setup ✓"
+    assert html =~ "2/3 · 2: Core"
+    assert html =~ "3/3 · 3: Polish"
+    assert html =~ ~r/<option value="2"[^>]*selected/
+    refute html =~ "data-weak-match"
+  end
+
+  test "task-phase picker absent when the recorded task list is unstructured", %{conn: conn} do
+    Checkpoint.write(%{
+      feature_id: "e11",
+      last_phase: :implement,
+      status: :failed,
+      reason: "stuck",
+      session_id: "sess-11",
+      slug: "slug-e11",
+      path: "e11.md"
+    })
+
+    pid = start_coordinator([feat("e11", "slug-e11")], %{"e11" => {:failed, "stuck"}})
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    {:ok, _view, html} = live(conn, "/escalations")
+
+    assert html =~ ~s(data-escalation="e11")
+    refute html =~ ~s(data-field="task-phase")
+  end
+
+  test "task-phase picker absent when the checkpoint's last_phase isn't implement", %{conn: conn} do
+    write_tasks_md("e12", "slug-e12", """
+    # Tasks
+
+    ## Phase 1: Setup
+
+    - [ ] T001 first thing
+    """)
+
+    Checkpoint.write(%{
+      feature_id: "e12",
+      last_phase: :analyze,
+      status: :halted,
+      reason: "critical finding",
+      session_id: "sess-12",
+      slug: "slug-e12",
+      path: "e12.md"
+    })
+
+    pid = start_coordinator([feat("e12", "slug-e12")], %{"e12" => {:halted, "critical finding"}})
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    {:ok, _view, html} = live(conn, "/escalations")
+
+    assert html =~ ~s(data-escalation="e12")
+    refute html =~ ~s(data-field="task-phase")
+  end
+
+  test "submitted task-phase ordinal is accepted by the resume form and resume/2 still succeeds",
+       %{conn: conn} do
+    write_tasks_md("e13", "slug-e13", """
+    # Tasks
+
+    ## Phase 1: Setup
+
+    - [X] T001 first thing
+
+    ## Phase 2: Core
+
+    - [ ] T002 second thing
+    """)
+
+    Checkpoint.write(%{
+      feature_id: "e13",
+      last_phase: :implement,
+      status: :failed,
+      reason: "stuck",
+      session_id: "sess-13",
+      slug: "slug-e13",
+      path: "e13.md",
+      implement_chunk: %{
+        ordinal: 2,
+        number: "2",
+        title: "Core",
+        total: 2,
+        sessions_used: 1,
+        ceiling: 8,
+        scope: :task_phase
+      }
+    })
+
+    pid = start_coordinator([feat("e13", "slug-e13")], %{"e13" => {:failed, "stuck"}})
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    Application.put_env(:speckit_orchestrator, :console_test_runner, fn _feature, _notify ->
+      :ok
+    end)
+
+    {:ok, view, html} = live(conn, "/escalations")
+    assert html =~ ~s(data-escalation="e13")
+
+    html =
+      render_submit(view, "resume", %{
+        "feature_id" => "e13",
+        "prompt" => "",
+        "from" => "implement",
+        "from_task_phase" => "2"
+      })
+
+    assert html =~ "Feature e13 resumed"
+    refute html =~ ~s(data-escalation="e13")
   end
 end
