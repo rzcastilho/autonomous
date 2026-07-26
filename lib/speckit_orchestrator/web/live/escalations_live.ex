@@ -324,6 +324,10 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
   defp format_resume_error({:unknown_phase, p}), do: "unknown phase #{inspect(p)}"
   defp format_resume_error({:unknown_feature, id}), do: "unknown feature #{id}"
   defp format_resume_error({:unknown_model, alias}), do: "unknown model #{inspect(alias)}"
+
+  defp format_resume_error({:active_run, _pid}),
+    do: "a run is already live for this repository — stop it, or retry with force"
+
   defp format_resume_error(other), do: inspect(other)
 
   # See TriggerLive's `run_unlinked/1` for why: `run/1` (via `resume/2`)
@@ -390,6 +394,12 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
               <dt>reason</dt>
               <dd>{record["reason"]}</dd>
             </dl>
+
+            <div class="run-context-label" data-resume-scope-note>
+              Resuming continues the whole run — every other feature the run
+              recorded keeps its state and dependents release automatically
+              as prerequisites complete (016).
+            </div>
 
             <div :if={record["context"]} class="run-context-label">
               RUN_CONTEXT · resume re-executes under recorded run shape

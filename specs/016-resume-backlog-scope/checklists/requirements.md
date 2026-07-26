@@ -33,6 +33,33 @@
 
 - Items marked incomplete require spec updates before `/speckit-clarify` or `/speckit-plan`
 
+### Clarification re-validation (2026-07-26, post `/speckit-clarify`)
+
+All 16 items still pass — 16/16 → 16/16, no state changes, no regressions.
+Five clarifications were integrated; the notable effects on this checklist:
+
+- *Requirements are testable and unambiguous* — **strengthened**. Two vague
+  phrasings that would have passed review but failed a test author were
+  replaced: FR-012's "operator-visible channels" now names a run-level event
+  folded by the log and the console feed, and FR-011's count-based narrowing
+  test became identity-based (a swap that preserves the count now fails the
+  guard, with its own acceptance scenario).
+- *No implementation details* — still passes. The clarifications reference
+  existing behaviours by role ("the reconciliation the whole-run resume already
+  applies", "the same explicit force override") rather than by module or
+  function name.
+- *Scope is clearly bounded* — US3 tightened from "rebuild the record" to
+  "preview, then confirm", which removes the destructive-by-default reading and
+  makes the story independently testable without a throwaway fixture.
+
+**One contradiction was found and repaired during integration.** The
+live-run refusal (FR-010a) introduced by clarification 2 falsified SC-005's
+original promise that single-feature and no-record resumes behave "exactly as
+today" — those paths have no such refusal today. SC-005 was rewritten to scope
+the guarantee to dispatched work and outcome *once a resume is permitted to
+start*, and to name the refusal as the sole intentional change. US2's
+Independent Test carried the same count-based staleness and was corrected.
+
 ### Validation record (2026-07-26)
 
 **Iteration 1 — two issues found and fixed:**

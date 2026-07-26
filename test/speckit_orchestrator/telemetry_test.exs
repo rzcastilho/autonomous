@@ -90,4 +90,30 @@ defmodule SpeckitOrchestrator.TelemetryTest do
   test "unknown events are ignored by the handler" do
     assert :ok = Telemetry.handle_event([:speckit, :phase, :start], %{}, %{}, nil)
   end
+
+  test "events/0 exposes the scope-narrowing-refused run event (specs/016-resume-backlog-scope)" do
+    assert [:speckit, :run, :scope_narrowing_refused] in Telemetry.events()
+  end
+
+  test "attach_default_logger logs the dropped ids on a scope-narrowing refusal" do
+    assert :ok = Telemetry.attach_default_logger()
+    on_exit(fn -> :telemetry.detach("speckit-default-logger") end)
+
+    log =
+      capture_log(fn ->
+        :telemetry.execute(
+          [:speckit, :run, :scope_narrowing_refused],
+          %{dropped_count: 2},
+          %{
+            segment: "seg",
+            recorded: ["001", "002", "003"],
+            attempted: ["001"],
+            dropped: ["002", "003"]
+          }
+        )
+      end)
+
+    assert log =~ "run scope narrowing refused"
+    assert log =~ ~s(dropped=["002", "003"])
+  end
 end

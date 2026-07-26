@@ -23,6 +23,16 @@ names the three-feature backlog, while its feature list holds a single entry.
 The operator's entire reason for unblocking `001` was to let its dependents
 flow. Resuming a blocked feature silently discarded the work it was blocking.
 
+## Clarifications
+
+### Session 2026-07-26
+
+- Q: On resume, how should features recorded as `running` (in-flight when the run stopped) be treated? → A: Reconcile every restored feature against on-disk evidence before dispatch, reusing the existing whole-run reconciliation
+- Q: Should per-feature resume refuse to start when a live unfinished run already exists? → A: Yes — refuse, with the same explicit force override the whole-run resume already provides
+- Q: How should record recovery (US3) apply the record it rebuilds? → A: Preview by default — report the proposed record and require an explicit operator confirmation before writing
+- Q: Where should a refused scope-narrowing write be reported? → A: As a telemetry event that both the default logger and the console activity feed fold, matching existing run signals
+- Q: Should the anti-narrowing guard compare feature identities or just the count? → A: Identity-based — refuse if any currently-recorded feature would no longer be named, regardless of count
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Resuming one feature continues the whole run (Priority: P1)
@@ -76,19 +86,23 @@ again through some future path, and the inconsistency that made this bug hard to
 see (a scope naming a backlog beside a one-feature list) becomes impossible to
 write. It is a guard, so it ranks below the fix it guards.
 
-**Independent Test**: Attempt to record a run state holding fewer features than
-the live record it would replace, without an explicit supersede, and verify the
-write is refused and surfaced rather than applied.
+**Independent Test**: Attempt to record a run state in which a
+currently-recorded feature is no longer named, without an explicit supersede,
+and verify the write is refused and surfaced rather than applied.
 
 **Acceptance Scenarios**:
 
 1. **Given** a recorded run of three features, **When** something attempts to
    record a state for the same run holding only one of them, **Then** the write
    is refused, the existing record is left intact, and the refusal is reported.
-2. **Given** a recorded run of three features, **When** an operator
+2. **Given** a recorded run of three features, **When** something attempts to
+   record a state that still holds three features but has swapped one recorded
+   feature for a different one, **Then** the write is refused — the guard is
+   about a recorded feature disappearing, not about the count.
+3. **Given** a recorded run of three features, **When** an operator
    deliberately starts a **new** run for the same repository, **Then** the new
    run supersedes the old record normally — a fresh start is not a narrowing.
-3. **Given** any recorded run, **When** its features are recorded with statuses
+4. **Given** any recorded run, **When** its features are recorded with statuses
    advancing over the run's life, **Then** ordinary progress writes are
    unaffected.
 
@@ -114,9 +128,10 @@ the untouched ones pending.
 **Acceptance Scenarios**:
 
 1. **Given** a run record narrowed to one feature and a backlog on disk holding
-   three, **When** the operator runs recovery, **Then** the rebuilt record names
-   all three features with states consistent with the evidence available for
-   each.
+   three, **When** the operator runs recovery, **Then** it reports the record it
+   would write — all three features with states consistent with the evidence
+   available for each — and leaves the existing record unchanged until the
+   operator confirms.
 2. **Given** a rebuilt record, **When** the operator resumes the run, **Then**
    features already complete are not rebuilt and the remaining ones proceed in
    dependency order.
@@ -145,8 +160,14 @@ the untouched ones pending.
 - **Cost breaker already tripped.** A resume that would release dependents must
   still honour the breaker: no new features are released while it is tripped,
   and the in-flight one drains between phases.
-- **Two operators resume concurrently.** Two resumes racing on the same
-  repository must not interleave into a record that loses features from either.
+- **A feature recorded as in-flight when the run stopped.** A feature left
+  recorded as running by a crash or a killed console must be reconciled against
+  its evidence rather than trusted or blindly re-dispatched — otherwise it is
+  either permanently stuck or duplicated against a live worktree.
+- **Two operators resume concurrently.** The second resume is refused while the
+  first run is live (FR-010a), so two Coordinators never race on the same
+  repository's record, worktrees or budget. An operator who overrides the
+  refusal deliberately accepts that risk.
 - **Recovery against a changed backlog.** Features added to or removed from the
   backlog on disk after the run started must be reported during recovery, not
   silently merged or dropped.
@@ -162,7 +183,15 @@ the untouched ones pending.
 - **FR-001**: Resuming a single feature MUST restore the full set of features
   recorded for that run, not replace it with the resumed feature alone.
 - **FR-002**: Every feature other than the resumed one MUST retain the state
-  the run recorded for it; resuming MUST NOT reset any other feature's progress.
+  the run recorded for it, as reconciled per FR-002a; resuming MUST NOT reset
+  any other feature's progress.
+- **FR-002a**: Before any feature is dispatched, every restored feature's
+  recorded state MUST be reconciled against the durable evidence available for
+  it, using the same reconciliation the whole-run resume already applies. A
+  recorded state contradicted by evidence MUST be corrected to what the evidence
+  shows, and the correction MUST be reported. Reconciliation MUST NOT invent a
+  state for a feature whose evidence is absent or ambiguous — it reports the
+  conflict instead.
 - **FR-003**: The resumed feature MUST start at its recorded phase (or an
   operator-supplied override), while all other features MUST start at the point
   their recorded state implies.
@@ -184,14 +213,22 @@ the untouched ones pending.
 - **FR-010**: The run-shaping settings a resume already reapplies (concurrency
   cap, budget, publication workflow and its targets, plan stack) MUST continue to
   be reapplied unchanged, under the existing precedence.
+- **FR-010a**: Resuming a feature MUST be refused when a live, unfinished run
+  already exists for the repository, reporting the conflict and starting no
+  work. An explicit operator override MUST be available to proceed anyway,
+  matching the override the whole-run resume already provides.
 
 #### Scope loss is refused, not silent
 
-- **FR-011**: An attempt to record a run state that holds fewer features than
-  the live record it would replace MUST be refused; the existing record MUST be
-  left intact.
-- **FR-012**: A refused write MUST be reported through the operator-visible
-  channels rather than failing silently.
+- **FR-011**: An attempt to record a run state in which any currently-recorded
+  feature would no longer be named MUST be refused, regardless of whether the
+  total feature count decreases — a write that swaps one feature for another
+  loses work just as a shrinking one does. The existing record MUST be left
+  intact.
+- **FR-012**: A refused write MUST be announced as a run-level event carrying
+  the features that would have been lost, folded into both the operator log and
+  the console activity feed by the same path existing run signals use. It MUST
+  NOT fail silently.
 - **FR-013**: Deliberately starting a new run for a repository MUST continue to
   supersede that repository's previous record — a fresh start MUST NOT be
   treated as a narrowing.
@@ -212,6 +249,10 @@ the untouched ones pending.
   every discrepancy between the backlog on disk and the record being rebuilt.
 - **FR-019**: Recovery MUST be explicitly invoked by an operator and MUST NOT
   run automatically as part of an ordinary resume.
+- **FR-019a**: Recovery MUST default to a preview: it reports the record it
+  would write — the features it would restore and the state it would assign each
+  — and MUST NOT modify the existing record until the operator explicitly
+  confirms. Producing the preview MUST have no durable effect.
 - **FR-020**: Recovery MUST leave the existing record untouched when it cannot
   produce a consistent result, reporting why.
 
@@ -251,12 +292,15 @@ the untouched ones pending.
 - **SC-003**: The exact observed failure — a three-feature chained backlog whose
   first feature diverts at a gate — completes all three features end-to-end
   after one operator resume, where today it completes one.
-- **SC-004**: **No sequence of operations can reduce a live run's recorded
-  feature count** other than deliberately starting a new run; attempts are
-  refused and reported.
-- **SC-005**: Resuming a genuinely single-feature run, and resuming with no
-  readable run record, behave **exactly as they do today** — no change in
-  dispatched work or reported outcome.
+- **SC-004**: **No sequence of operations can cause a live run's recorded
+  feature to stop being recorded** — whether by shrinking the set or swapping a
+  member out — other than deliberately starting a new run; attempts are refused
+  and reported.
+- **SC-005**: Once a resume is permitted to start, resuming a genuinely
+  single-feature run, and resuming with no readable run record, dispatch
+  **exactly the work they dispatch today** and report the same outcome. The new
+  live-run refusal (FR-010a) is the sole intentional behavioural change on these
+  paths, and it starts no work when it fires.
 - **SC-006**: A run record already narrowed by this defect can be rebuilt to
   name its full backlog, and the run continued, **without rebuilding any feature
   that already completed**.

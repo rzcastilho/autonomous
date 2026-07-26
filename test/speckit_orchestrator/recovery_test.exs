@@ -454,4 +454,51 @@ defmodule SpeckitOrchestrator.RecoveryTest do
   test "reconcile_run/2 (T027): an absent manifest is caught by RunManifest.read/0 before reconcile_run/2 is ever called" do
     assert {:error, :no_manifest} = RunManifest.read()
   end
+
+  # ---- T032 (016 US3, research.md D4): plan_run/2 vs reconcile_run/2 split --
+
+  defmodule CountingManifest do
+    def write(_record) do
+      Process.put(:t032_manifest_writes, Process.get(:t032_manifest_writes, 0) + 1)
+      :ok
+    end
+  end
+
+  test "plan_run/2 returns the same {:ok, %{statuses, resume_phases, report}} shape but performs no write" do
+    layout = seed_mid_run_state()
+    on_exit(fn -> File.rm_rf(layout.worktree_root) end)
+
+    {:ok, record} = RunManifest.read()
+    Process.put(:t032_manifest_writes, 0)
+
+    assert {:ok, %{statuses: statuses, resume_phases: resume_phases, report: report}} =
+             Recovery.plan_run(record, manifest: CountingManifest)
+
+    assert statuses["001"] == :running
+    assert resume_phases["001"] == :tasks
+    assert %Recovery.Report{} = report
+
+    assert Process.get(:t032_manifest_writes) == 0
+
+    # No durable effect: a fresh read is still the pre-plan_run record.
+    {:ok, reread} = RunManifest.read()
+    assert reread["statuses"]["001"] == "running"
+  end
+
+  test "reconcile_run/2 still performs exactly one write — regression for resume_run/1 and resumable_run/0" do
+    layout = seed_mid_run_state()
+    on_exit(fn -> File.rm_rf(layout.worktree_root) end)
+
+    {:ok, record} = RunManifest.read()
+    Process.put(:t032_manifest_writes, 0)
+
+    assert {:ok, %{statuses: statuses, resume_phases: resume_phases, report: report}} =
+             Recovery.reconcile_run(record, manifest: CountingManifest)
+
+    assert statuses["001"] == :running
+    assert resume_phases["001"] == :tasks
+    assert %Recovery.Report{} = report
+
+    assert Process.get(:t032_manifest_writes) == 1
+  end
 end
