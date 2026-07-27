@@ -139,11 +139,14 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
     |> Task.await()
   end
 
-  # Mirrors the toggle into app env so the shared status bar (`Layouts.run_view/0`,
-  # which reads `Config.pr_workflow?/0` live) reflects the just-started run's
-  # mode — the toggle is otherwise a per-run opt, not a persisted default.
+  # The toggle is a per-run opt and nothing more. It used to also be mirrored
+  # into app env so the shared status bar could read it back via
+  # `Config.pr_workflow?/0`, but that made a single start with the toggle off
+  # silently overwrite the node's configured default (including one set from
+  # SPECKIT_PR_WORKFLOW) for every later run and every later mount of this
+  # form — sticky until restart. `Layouts.run_view/0` now reads the live run's
+  # own recorded context instead, so no global write is needed.
   defp start_opts(socket) do
-    Application.put_env(:speckit_orchestrator, :pr_workflow, socket.assigns.pr_workflow?)
     base = [pr_workflow: socket.assigns.pr_workflow?]
     base = maybe_put_slug(base, socket.assigns[:selected_package])
 
@@ -171,7 +174,8 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
   # `data-hint="no-packages"` empty-state naming the standard
   # `specs/autonomous/breakdown` location so a misconfigured repo isn't left
   # staring at the legacy `docs/breakdown` path.
-  defp backlog_preview(nil), do: backlog_preview_at(Path.join(Config.repo(), Config.breakdown_dir()))
+  defp backlog_preview(nil),
+    do: backlog_preview_at(Path.join(Config.repo(), Config.breakdown_dir()))
 
   defp backlog_preview(slug) do
     backlog_preview_at(Path.join([Config.repo(), Config.specs_root(), "breakdown", slug]))
@@ -197,9 +201,14 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
   @path_display_max 40
   defp truncate_path(path) when is_binary(path) do
     case String.split(path, "/autonomous/", parts: 2) do
-      [_prefix, rest] -> "…/autonomous/" <> rest
-      [_] when byte_size(path) > @path_display_max -> "…" <> String.slice(path, -@path_display_max, @path_display_max)
-      [_] -> path
+      [_prefix, rest] ->
+        "…/autonomous/" <> rest
+
+      [_] when byte_size(path) > @path_display_max ->
+        "…" <> String.slice(path, -@path_display_max, @path_display_max)
+
+      [_] ->
+        path
     end
   end
 

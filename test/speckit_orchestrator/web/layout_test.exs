@@ -7,7 +7,7 @@ defmodule SpeckitOrchestrator.Web.LayoutTest do
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
 
-  alias SpeckitOrchestrator.{Coordinator, Feature, Pipeline, RunManifest}
+  alias SpeckitOrchestrator.{Coordinator, Feature, Pipeline, RunContext, RunManifest}
 
   @endpoint SpeckitOrchestrator.Web.Endpoint
 
@@ -91,6 +91,53 @@ defmodule SpeckitOrchestrator.Web.LayoutTest do
     assert html =~ "Active run"
     assert html =~ "cost-gauge"
     assert html =~ "armed"
+  end
+
+  # The status bar used to read global Config for both of these, so a run
+  # started with a per-run :pr_workflow opt (or a later live-config edit)
+  # made the bar describe a run other than the one actually running.
+  test "status bar reports the live run's own mode and cap, not global Config", %{conn: conn} do
+    prior = Application.get_env(:speckit_orchestrator, :max_concurrency)
+    Application.put_env(:speckit_orchestrator, :max_concurrency, 7)
+    on_exit(fn -> Application.put_env(:speckit_orchestrator, :max_concurrency, prior) end)
+
+    {:ok, pid} =
+      Coordinator.start_link(
+        name: Coordinator,
+        features: [feat("001")],
+        runner: fn _feature, _notify -> :ok end,
+        context: %RunContext{pr_workflow: true, max_concurrency: 1},
+        max_concurrency: 1,
+        owner: self()
+      )
+
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    {:ok, _view, html} = live(conn, "/")
+
+    [meta] = Regex.run(~r/<div class="run-meta">.*?<\/div>/s, html)
+    assert meta =~ "stacked_pr"
+    assert meta =~ "cap 1"
+    refute meta =~ "cap 7"
+  end
+
+  test "status bar falls back to Config for mode/cap when no run is active", %{conn: conn} do
+    refute Process.whereis(Coordinator)
+
+    prior = Application.get_env(:speckit_orchestrator, :pr_workflow)
+    Application.put_env(:speckit_orchestrator, :pr_workflow, true)
+
+    on_exit(fn ->
+      if prior != nil,
+        do: Application.put_env(:speckit_orchestrator, :pr_workflow, prior),
+        else: Application.delete_env(:speckit_orchestrator, :pr_workflow)
+    end)
+
+    {:ok, _view, html} = live(conn, "/")
+
+    # No run to describe — the bar shows the shell, and never claims an
+    # active run's shape.
+    assert html =~ "No active run"
   end
 
   test "lifecycle colors and phase order come from the shared palette / Pipeline.phases/0" do

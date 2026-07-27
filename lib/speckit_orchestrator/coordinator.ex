@@ -26,7 +26,7 @@ defmodule SpeckitOrchestrator.Coordinator do
 
   use GenServer
 
-  alias SpeckitOrchestrator.{Feature, Ledger, Release, RunManifest}
+  alias SpeckitOrchestrator.{Feature, Ledger, Release, RunContext, RunManifest}
 
   @type status :: Feature.status()
 
@@ -91,8 +91,14 @@ defmodule SpeckitOrchestrator.Coordinator do
   Live-config apply (`contracts/live_config.md`): update the wave cap for
   subsequent releases. Forward-only — `Release.next_wave` picks up the new
   cap at its next computation; never affects in-flight work.
+
+  Refused with `{:error, :stacked_run}` when the run is a stacked PR run and
+  `n > 1`: that shape pins the cap to 1 so each feature can branch from the
+  previous one's published branch (`run_stacked/3`), and releasing a second
+  feature concurrently would race `StackTracker` and stack a PR on the wrong
+  base. Lowering back to 1 is always allowed.
   """
-  @spec set_cap(GenServer.server(), pos_integer()) :: :ok
+  @spec set_cap(GenServer.server(), pos_integer()) :: :ok | {:error, :stacked_run}
   def set_cap(server \\ __MODULE__, n) when is_integer(n) and n >= 1 do
     GenServer.call(server, {:set_cap, n})
   end
@@ -143,9 +149,16 @@ defmodule SpeckitOrchestrator.Coordinator do
     {:reply, snapshot(state), state}
   end
 
+  # The stacked PR run's cap-1 invariant outranks a live-config edit: refuse
+  # wholly (no cap change, no app-env mirror) rather than silently clamping,
+  # so the operator learns the edit did not take (Constitution II).
   def handle_call({:set_cap, n}, _from, state) do
-    Application.put_env(:speckit_orchestrator, :max_concurrency, n)
-    {:reply, :ok, %{state | cap: n}}
+    if n > 1 and RunContext.stacked?(state.context) do
+      {:reply, {:error, :stacked_run}, state}
+    else
+      Application.put_env(:speckit_orchestrator, :max_concurrency, n)
+      {:reply, :ok, %{state | cap: n}}
+    end
   end
 
   # ---- orchestration ------------------------------------------------------
@@ -256,7 +269,12 @@ defmodule SpeckitOrchestrator.Coordinator do
       breaker_tripped: breaker_tripped?(state),
       finished?: state.finished?,
       report: state.report,
-      layout: state.layout
+      layout: state.layout,
+      # This run's own shape, so consumers (the console status bar) report what
+      # is actually running rather than re-deriving it from live global Config,
+      # which any later edit or another run would have moved out from under them.
+      cap: state.cap,
+      context: state.context
     }
   end
 

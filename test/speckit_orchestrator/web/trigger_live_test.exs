@@ -7,7 +7,7 @@ defmodule SpeckitOrchestrator.Web.TriggerLiveTest do
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
 
-  alias SpeckitOrchestrator.Coordinator
+  alias SpeckitOrchestrator.{Config, Coordinator}
 
   @endpoint SpeckitOrchestrator.Web.Endpoint
 
@@ -170,5 +170,33 @@ defmodule SpeckitOrchestrator.Web.TriggerLiveTest do
 
     assert mc_html =~ "Backlog run started"
     assert Process.whereis(Coordinator)
+  end
+
+  # Start used to mirror the toggle into app env, so one start with the toggle
+  # off permanently overwrote the node's configured default (including one set
+  # from SPECKIT_PR_WORKFLOW) for every later run and every later mount here.
+  test "Start does not write the toggle into app env — the configured default survives", %{
+    conn: conn
+  } do
+    point_backlog_at(@valid_dir)
+    Application.put_env(:speckit_orchestrator, :pr_workflow, true)
+
+    {:ok, view, html} = live(conn, "/trigger")
+    # Mount seeds the toggle from the configured default...
+    assert html =~ ~s(data-pr-workflow="true")
+
+    # ...the operator turns it off for this one run...
+    html = render_click(view, "toggle_pr_workflow", %{})
+    assert html =~ ~s(data-pr-workflow="false")
+
+    result = render_click(view, "start_backlog", %{})
+    {:ok, _mc_view, _mc_html} = follow_redirect(result, conn)
+
+    # ...and the node-wide default is untouched, so the next run/mount is
+    # still stacked.
+    assert Config.pr_workflow?() == true
+
+    {:ok, _view2, html2} = live(conn, "/trigger")
+    assert html2 =~ ~s(data-pr-workflow="true")
   end
 end

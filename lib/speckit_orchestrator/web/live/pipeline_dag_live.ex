@@ -237,7 +237,10 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
         <div class="dag-canvas-header">
           <div>
             <div class="dag-canvas-title">Dependency DAG</div>
-            <div class="dag-canvas-sub">release in dependency-and-cap waves</div>
+            <div class="dag-canvas-sub">
+              columns are prereq depth, not concurrency — the wave cap decides how
+              many of a column actually run at once
+            </div>
           </div>
           <form
             :if={length(@packages) > 1}

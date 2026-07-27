@@ -4,7 +4,7 @@ defmodule SpeckitOrchestrator.LiveConfigTest do
   # with another test claiming those globals.
   use ExUnit.Case, async: false
 
-  alias SpeckitOrchestrator.{Config, Coordinator, Feature, Ledger, LiveConfig}
+  alias SpeckitOrchestrator.{Config, Coordinator, Feature, Ledger, LiveConfig, RunContext}
 
   setup do
     prior = %{
@@ -87,6 +87,68 @@ defmodule SpeckitOrchestrator.LiveConfigTest do
       refute Process.whereis(Coordinator)
       assert {:ok, _change} = LiveConfig.apply(%{max_concurrency: 3})
       assert Application.get_env(:speckit_orchestrator, :max_concurrency) == 3
+    end
+
+    # A stacked PR run pins cap 1 so each feature branches from the previous
+    # one's published branch — raising it would race StackTracker.
+    test "raising concurrency above 1 is refused while a stacked PR run is live, applying nothing" do
+      before = Application.get_env(:speckit_orchestrator, :max_concurrency)
+
+      {:ok, pid} =
+        Coordinator.start_link(
+          name: Coordinator,
+          features: [%Feature{id: "lc2", slug: "lc2", path: "lc2.md"}],
+          runner: fn _feature, _notify -> :ok end,
+          context: %RunContext{pr_workflow: true, max_concurrency: 1},
+          max_concurrency: 1,
+          owner: self()
+        )
+
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+      assert {:error, errors} = LiveConfig.apply(%{max_concurrency: 4})
+      assert errors[:max_concurrency] =~ "stacked PR run"
+
+      assert Coordinator.status(pid).cap == 1
+      assert Application.get_env(:speckit_orchestrator, :max_concurrency) == before
+    end
+
+    # All-or-nothing (FR-029): the refused cap must take the whole submit with
+    # it, not let a co-submitted budget through.
+    test "the stacked refusal rejects co-submitted fields too" do
+      budget_before = Ledger.snapshot().budget
+
+      {:ok, pid} =
+        Coordinator.start_link(
+          name: Coordinator,
+          features: [%Feature{id: "lc3", slug: "lc3", path: "lc3.md"}],
+          runner: fn _feature, _notify -> :ok end,
+          context: %RunContext{pr_workflow: true},
+          max_concurrency: 1,
+          owner: self()
+        )
+
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+      assert {:error, errors} = LiveConfig.apply(%{max_concurrency: 4, budget_usd: 999.0})
+      assert Map.has_key?(errors, :max_concurrency)
+      assert Ledger.snapshot().budget == budget_before
+    end
+
+    test "lowering concurrency to 1 is still accepted while a stacked PR run is live" do
+      {:ok, pid} =
+        Coordinator.start_link(
+          name: Coordinator,
+          features: [%Feature{id: "lc4", slug: "lc4", path: "lc4.md"}],
+          runner: fn _feature, _notify -> :ok end,
+          context: %RunContext{pr_workflow: true},
+          max_concurrency: 1,
+          owner: self()
+        )
+
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+      assert {:ok, _change} = LiveConfig.apply(%{max_concurrency: 1})
     end
   end
 

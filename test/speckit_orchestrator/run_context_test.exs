@@ -164,4 +164,25 @@ defmodule SpeckitOrchestrator.RunContextTest do
       refute Keyword.has_key?(merged, :pr_workflow)
     end
   end
+
+  describe "stacked?/1" do
+    test "true only for a context positively recording pr_workflow: true" do
+      assert RunContext.stacked?(%RunContext{pr_workflow: true})
+      refute RunContext.stacked?(%RunContext{pr_workflow: false})
+      refute RunContext.stacked?(%RunContext{pr_workflow: nil})
+    end
+
+    test "reads a manifest-decoded string-keyed map and a bare atom-keyed map" do
+      assert RunContext.stacked?(%{"pr_workflow" => true})
+      refute RunContext.stacked?(%{"pr_workflow" => false})
+      assert RunContext.stacked?(%{pr_workflow: true})
+    end
+
+    # A test Coordinator starts with `context: %{}`; nothing may read that as
+    # stacked, or every such run would refuse a live cap raise.
+    test "false for the empty/absent context a contextless run carries" do
+      refute RunContext.stacked?(%{})
+      refute RunContext.stacked?(nil)
+    end
+  end
 end
