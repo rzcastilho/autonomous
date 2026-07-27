@@ -127,6 +127,9 @@ defmodule SpeckitOrchestrator.ConsoleProjection do
     broadcast_feed(state, model)
   end
 
+  defp broadcast_diff(state, [:speckit, :run, :scope_narrowing_refused], model, _metadata),
+    do: broadcast_feed(state, model)
+
   defp broadcast_diff(_state, _event, _model, _metadata), do: :ok
 
   defp broadcast_feed(state, %{feed: [latest | _]}),

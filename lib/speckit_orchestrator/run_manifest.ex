@@ -29,6 +29,11 @@ defmodule SpeckitOrchestrator.RunManifest do
 
   See `specs/009-crash-recovery/contracts/run_manifest.md` and
   `specs/012-run-directory-layout/data-model.md` ("RunManifest locality").
+
+  `write/1` also refuses any write that would drop a currently-recorded
+  feature id (identity, not count) within one write chain — a deliberate
+  `clear/0` still supersedes freely. See
+  `specs/016-resume-backlog-scope/contracts/manifest-guard.md`.
   """
 
   alias SpeckitOrchestrator.{Config, Feature, Layout, RepoIdentity, RunContext}
@@ -45,22 +50,30 @@ defmodule SpeckitOrchestrator.RunManifest do
         } = input
       ) do
     segment = write_segment(input)
-
-    record =
-      %{
-        "features" => Enum.map(features, &feature_map/1),
-        "statuses" =>
-          Map.new(statuses, fn {id, status} -> {to_string(id), status_string(status)} end),
-        "context" => context_map(context),
-        "spend" => spend,
-        "updated_at" => updated_at
-      }
-      |> maybe_put("segment", segment)
-      |> maybe_put_scope(Map.get(input, :layout))
-
     path = manifest_path(segment)
-    File.mkdir_p!(Path.dirname(path))
-    File.write!(path, Jason.encode!(record, pretty: true))
+    proposed_ids = MapSet.new(features, & &1.id)
+    recorded_ids = existing_ids(path)
+    dropped = recorded_ids && MapSet.difference(recorded_ids, proposed_ids)
+
+    if dropped && MapSet.size(dropped) > 0 do
+      emit_scope_narrowing_refused(segment, recorded_ids, proposed_ids, dropped)
+    else
+      record =
+        %{
+          "features" => Enum.map(features, &feature_map/1),
+          "statuses" =>
+            Map.new(statuses, fn {id, status} -> {to_string(id), status_string(status)} end),
+          "context" => context_map(context),
+          "spend" => spend,
+          "updated_at" => updated_at
+        }
+        |> maybe_put("segment", segment)
+        |> maybe_put_scope(Map.get(input, :layout))
+
+      File.mkdir_p!(Path.dirname(path))
+      File.write!(path, Jason.encode!(record, pretty: true))
+    end
+
     :ok
   rescue
     _ -> :ok
@@ -163,6 +176,33 @@ defmodule SpeckitOrchestrator.RunManifest do
       {:ok, segment} -> segment
       {:error, _reason} -> nil
     end
+  end
+
+  # Feature ids currently recorded at `path`, or `nil` when absent, unreadable,
+  # or corrupt — any of which degrades the guard to "nothing provable to
+  # lose," so the write proceeds (contracts/manifest-guard.md decision table).
+  defp existing_ids(path) do
+    with {:ok, contents} <- File.read(path),
+         {:ok, %{"features" => features}} when is_list(features) <- Jason.decode(contents) do
+      MapSet.new(features, fn %{"id" => id} -> id end)
+    else
+      _ -> nil
+    end
+  rescue
+    _ -> nil
+  end
+
+  defp emit_scope_narrowing_refused(segment, recorded_ids, proposed_ids, dropped) do
+    :telemetry.execute(
+      [:speckit, :run, :scope_narrowing_refused],
+      %{dropped_count: MapSet.size(dropped)},
+      %{
+        segment: segment,
+        recorded: Enum.sort(recorded_ids),
+        attempted: Enum.sort(proposed_ids),
+        dropped: Enum.sort(dropped)
+      }
+    )
   end
 
   defp maybe_put(record, _key, nil), do: record

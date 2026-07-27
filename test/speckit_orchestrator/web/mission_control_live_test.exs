@@ -7,7 +7,14 @@ defmodule SpeckitOrchestrator.Web.MissionControlLiveTest do
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
 
-  alias SpeckitOrchestrator.{Checkpoint, ConsoleProjection, Coordinator, Feature, RunManifest}
+  alias SpeckitOrchestrator.{
+    Checkpoint,
+    ConsoleProjection,
+    Coordinator,
+    Feature,
+    RunContext,
+    RunManifest
+  }
 
   @endpoint SpeckitOrchestrator.Web.Endpoint
 
@@ -125,6 +132,38 @@ defmodule SpeckitOrchestrator.Web.MissionControlLiveTest do
     assert first_li =~ "MC-TEST-FEED-ENTRY"
   end
 
+  test "a scope-narrowing-refused broadcast renders in the activity feed with no feature row affected",
+       %{conn: conn} do
+    pid = start_coordinator([feat("mc-scope")])
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    {:ok, view, html_before} = live(conn, "/")
+    row_before = Regex.run(~r/<tr[^>]*data-feature-row="mc-scope".*?<\/tr>/s, html_before) |> hd()
+
+    entry = %{
+      feature_id: nil,
+      phase: nil,
+      severity: :warn,
+      text: "scope narrowing refused — would drop 002, 003",
+      at: DateTime.utc_now()
+    }
+
+    Phoenix.PubSub.broadcast(
+      SpeckitOrchestrator.PubSub,
+      ConsoleProjection.topic(),
+      {:console, :feed, entry}
+    )
+
+    html = render(view)
+    [feed_section] = Regex.run(~r/<ul class="telemetry-feed">.*?<\/ul>/s, html)
+    [first_li | _] = Regex.run(~r/<li.*?<\/li>/s, feed_section, capture: :all) |> List.wrap()
+    assert first_li =~ "scope narrowing refused"
+    assert first_li =~ "002, 003"
+
+    row_after = Regex.run(~r/<tr[^>]*data-feature-row="mc-scope".*?<\/tr>/s, html) |> hd()
+    assert row_after == row_before
+  end
+
   test "status bar reflects run title/mode, cost gauge, and armed/tripped indicator", %{
     conn: conn
   } do
@@ -215,5 +254,73 @@ defmodule SpeckitOrchestrator.Web.MissionControlLiveTest do
     [drawer] = Regex.run(~r/<aside class="feature-drawer".*?<\/aside>/s, html)
     assert drawer =~ ~s(data-phase="analyze" data-phase-state="halted")
     assert drawer =~ "/transcripts?feature=mc7&amp;phase=analyze"
+  end
+
+  # ---- 016 T039: resume lists the whole restored run (FR-022) ---------------
+
+  defp write_run_manifest(overrides) do
+    :ok =
+      RunManifest.write(
+        Map.merge(
+          %{
+            features: [],
+            statuses: %{},
+            context: %RunContext{pr_workflow: false, max_concurrency: 2, budget_usd: 100.0},
+            spend: 1.0,
+            updated_at: 1
+          },
+          overrides
+        )
+      )
+  end
+
+  defp write_run_checkpoint(id, last_phase, status) do
+    :ok =
+      Checkpoint.write(%{
+        feature_id: id,
+        last_phase: last_phase,
+        status: status,
+        reason: "test fixture",
+        session_id: "s1",
+        slug: "slug-#{id}",
+        path: "#{id}.md"
+      })
+  end
+
+  test "after a resume, every feature in the restored run is listed, including ones still waiting on prerequisites",
+       %{conn: conn} do
+    refute Process.whereis(Coordinator)
+
+    write_run_checkpoint("mc10", :analyze, :halted)
+
+    write_run_manifest(%{
+      features: [feat("mc10"), feat("mc11", ["mc10"]), feat("mc12", ["mc11"])],
+      statuses: %{"mc10" => :halted, "mc11" => :pending, "mc12" => :pending}
+    })
+
+    me = self()
+
+    assert {:ok, pid} =
+             SpeckitOrchestrator.resume("mc10",
+               runner: fn feature, notify -> send(me, {:started, feature.id, notify}) end,
+               owner: me
+             )
+
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    # target dispatched, never notified — 011/012 stay :pending on their
+    # prereq the whole time this test observes the render.
+    assert_receive {:started, "mc10", _notify}, 1_000
+
+    {:ok, _view, html} = live(conn, "/")
+
+    assert html =~ ~s(data-feature-row="mc10")
+    assert html =~ ~s(data-feature-row="mc11")
+    assert html =~ ~s(data-feature-row="mc12")
+
+    [pending_cell] =
+      Regex.run(~r/<div class="status-count-cell" data-status="pending">.*?<\/div>/s, html)
+
+    assert pending_cell =~ ">2<"
   end
 end

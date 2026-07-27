@@ -50,6 +50,10 @@ defmodule SpeckitOrchestrator do
       the branch is pushed and a PR opened against that base.
     * `:publisher` — override the PR opener (tests inject a fake);
       `(repo, spec) -> {:ok, url} | {:error, term}`.
+    * `:supersede` — default `true`; when `true`, `RunManifest.clear/0` runs
+      first (a fresh run supersedes the prior manifest). Resume paths pass
+      `false` to write into the existing record instead, where
+      `RunManifest.write/1`'s anti-narrowing guard applies (016).
 
   Captures the six run-shaping settings (`pr_workflow`, `max_concurrency`,
   `budget_usd`, `plan_stack`, `pr_base`, `pr_remote`) from the effective opts
@@ -72,7 +76,10 @@ defmodule SpeckitOrchestrator do
   def run(opts \\ []) do
     # Single-slot rule (FR-005): a new run supersedes the prior manifest — the
     # fresh Coordinator's first write (from `init/1`) replaces it immediately.
-    RunManifest.clear()
+    # `:supersede` (default true) lets a resume path (016) skip the clear and
+    # write into the existing record instead, where the anti-narrowing guard
+    # applies (contracts/manifest-guard.md "Supersede").
+    if Keyword.get(opts, :supersede, true), do: RunManifest.clear()
     run_context = RunContext.capture(opts)
 
     with {:ok, layout} <- preflight_layout(opts) do
@@ -286,6 +293,9 @@ defmodule SpeckitOrchestrator do
       `reset_implement_sessions: true` on `FeatureRunner.run/2` regardless of
       whether this option is given (FR-013b — resuming is an explicit human
       grant of more session budget).
+    * `:force` — proceed despite a live unfinished run, matching
+      `resume_run/1`'s option of the same name (016, FR-010a); default
+      `false`.
 
   Also reapplies the run-shaping context (`pr_workflow`, `max_concurrency`,
   `budget_usd`, `plan_stack`, `pr_base`, `pr_remote`) the checkpoint recorded
@@ -302,6 +312,18 @@ defmodule SpeckitOrchestrator do
   caller-supplied `:runner` or `:executor` still wins over either injected
   strategy (test seam). See `specs/005-resume-facade/contracts/resume.md` and
   `specs/007-resume-self-sufficient/contracts/resume.md`.
+
+  **016 — whole-run continuation**: `resume/2` no longer starts a run
+  containing only the named feature. It restores the *entire* recorded run
+  (every feature the manifest still names), reconciles each restored feature
+  against durable evidence (`Recovery.reconcile_run/2`, reused from 014), and
+  applies every option above to the **named feature only** — every other
+  restored feature keeps its reconciled status and dispatches (or stays put)
+  exactly as `resume_run/1` already would. See
+  `specs/016-resume-backlog-scope/contracts/resume-scope.md`. A live
+  unfinished run refuses with `{:error, {:active_run, pid}}` (FR-010a) before
+  anything else is read. With no readable manifest, behaviour is unchanged
+  from pre-016 — a single-feature run (FR-009, D8).
   """
   @spec resume(String.t(), keyword()) ::
           GenServer.on_start()
@@ -310,10 +332,13 @@ defmodule SpeckitOrchestrator do
           | {:error, :corrupt_checkpoint}
           | {:error, {:unknown_phase, term()}}
           | {:error, {:unknown_model, String.t()}}
+          | {:error, {:active_run, pid()}}
   def resume(feature_id, opts \\ []) do
     remediation_model = Keyword.get(opts, :remediation_model)
 
-    with {:ok, record, layout} <- read_checkpoint(feature_id, layout_from_manifest(opts)),
+    with :ok <- guard_active_run(opts),
+         {:ok, record, checkpoint_layout} <-
+           read_checkpoint(feature_id, layout_from_manifest(opts)),
          {:ok, feature} <- resolve_identity(feature_id, record, opts),
          {:ok, start_phase} <- resolve_start_phase(record, opts),
          {:ok, _resolved} <- Config.remediation_model(start_phase, remediation_model) do
@@ -321,25 +346,211 @@ defmodule SpeckitOrchestrator do
       log_context_fallback(feature_id, fell_back)
 
       run_context = RunContext.capture(merged_opts)
-      pr_workflow? = Keyword.get(merged_opts, :pr_workflow, Config.pr_workflow?())
       prompt = Keyword.get(opts, :prompt)
       remediation_prompt = Keyword.get(opts, :remediation_prompt)
       start_task_phase = task_phase_override(start_phase, opts)
 
-      merged_opts
-      |> maybe_put_layout(layout)
-      |> Keyword.put(:features, [feature])
-      |> inject_resume_strategy(
-        pr_workflow?,
-        start_phase,
-        prompt,
-        remediation_prompt,
-        remediation_model,
-        run_context,
-        layout,
-        start_task_phase
-      )
-      |> run()
+      with {:ok, scope} <- resume_scope(merged_opts, feature) do
+        pr_workflow? = Keyword.get(scope.merged_opts, :pr_workflow, Config.pr_workflow?())
+
+        scope.merged_opts
+        |> maybe_put_layout(checkpoint_layout)
+        |> Keyword.put(:features, scope.features)
+        |> Keyword.put(:statuses, dispatch_statuses(scope.statuses, scope.resume_phases))
+        |> Keyword.put(:supersede, false)
+        |> inject_resume_scope_strategy(
+          feature.id,
+          pr_workflow?,
+          start_phase,
+          prompt,
+          remediation_prompt,
+          remediation_model,
+          run_context,
+          checkpoint_layout,
+          scope.layout,
+          start_task_phase,
+          scope.resume_phases
+        )
+        |> run()
+      end
+    end
+  end
+
+  # T008/D1: the restored-run assembly both `resume/2` and `resume_run/1`
+  # need, given an already-read manifest `record` — reconciles every feature
+  # against durable evidence (`Recovery.reconcile_run/2`), reconstructs the
+  # feature list, restores the `Ledger`'s spend, rebuilds the run's
+  # `%Layout{}`, and reapplies the recorded run-shaping context. `opts` may
+  # already carry context overrides (e.g. resume/2's checkpoint-context
+  # merge) — `RunContext.merge/2` never overrides a key already present, so
+  # merging again here is idempotent.
+  defp restore_run_scope(record, opts) do
+    with {:ok, %{statuses: statuses, resume_phases: resume_phases}} <-
+           Recovery.reconcile_run(record) do
+      {features, _legacy_statuses} = RunManifest.reconstruct(record)
+      Ledger.restore(Ledger, record["spend"] || 0)
+
+      layout =
+        case Keyword.fetch(opts, :layout) do
+          {:ok, layout} -> layout
+          :error -> RunManifest.rebuild_layout(record, Config.repo())
+        end
+
+      {merged_opts, fell_back} = RunContext.merge(opts, RunContext.from_map(record["context"]))
+      log_context_fallback("run", fell_back)
+
+      run_context = RunContext.capture(merged_opts)
+
+      {:ok,
+       %{
+         features: features,
+         statuses: statuses,
+         resume_phases: resume_phases,
+         layout: layout,
+         run_context: run_context,
+         merged_opts: merged_opts
+       }}
+    end
+  end
+
+  # D8: no readable manifest — today's single-feature path, unchanged
+  # (nothing recorded to restore or narrow).
+  defp resume_scope(opts, feature) do
+    case RunManifest.read() do
+      {:ok, record} ->
+        with {:ok, scope} <- restore_run_scope(record, opts) do
+          {:ok, merge_resume_target(scope, feature)}
+        end
+
+      {:error, _reason} ->
+        {:ok,
+         %{
+           features: [feature],
+           statuses: %{feature.id => :pending},
+           resume_phases: %{},
+           layout: nil,
+           run_context: RunContext.capture(opts),
+           merged_opts: opts
+         }}
+    end
+  end
+
+  # T009 (contracts/resume-scope.md steps 8-9): append the target feature
+  # when the restored set omits it (FR-008); force its seed status to
+  # :pending; delete it from resume_phases so the operator's resolved start
+  # phase (D2) governs instead of the reconciled one.
+  defp merge_resume_target(scope, feature) do
+    features =
+      if Enum.any?(scope.features, &(&1.id == feature.id)) do
+        scope.features
+      else
+        scope.features ++ [feature]
+      end
+
+    %{
+      scope
+      | features: features,
+        statuses: Map.put(scope.statuses, feature.id, :pending),
+        resume_phases: Map.delete(scope.resume_phases, feature.id)
+    }
+  end
+
+  # T010 (contracts/resume-scope.md "Dispatch matrix"): the target id
+  # dispatches through today's byte-identical resume_runner/7 /
+  # resume_executor/7 (G5); every other restored feature dispatches through
+  # resume_run/1's existing checkpoint-driven dispatch_resume/6.
+  defp split_resume_runner(target_id, target_runner, run_context, layout, resume_phases) do
+    fn feature, notify ->
+      if feature.id == target_id do
+        target_runner.(feature, notify)
+      else
+        Task.Supervisor.start_child(SpeckitOrchestrator.RunnerSup, fn ->
+          dispatch_resume(feature, nil, notify, run_context, layout, resume_phases)
+        end)
+
+        :ok
+      end
+    end
+  end
+
+  defp split_resume_executor(target_id, target_executor, run_context, layout, resume_phases) do
+    fn feature, base, notify ->
+      if feature.id == target_id do
+        target_executor.(feature, base, notify)
+      else
+        Task.Supervisor.start_child(SpeckitOrchestrator.RunnerSup, fn ->
+          dispatch_resume(feature, base, notify, run_context, layout, resume_phases)
+        end)
+
+        :ok
+      end
+    end
+  end
+
+  # A caller-supplied :runner/:executor still wins (test seam), same
+  # precedence as inject_resume_run_strategy/5. `target_layout` is the
+  # checkpoint-resolved layout (byte-identical target dispatch, G5);
+  # `scope_layout` is the manifest-derived layout used for every other
+  # restored feature (matches resume_run/1).
+  defp inject_resume_scope_strategy(
+         opts,
+         target_id,
+         pr_workflow?,
+         start_phase,
+         prompt,
+         remediation_prompt,
+         remediation_model,
+         run_context,
+         target_layout,
+         scope_layout,
+         start_task_phase,
+         resume_phases
+       ) do
+    cond do
+      Keyword.has_key?(opts, :runner) or Keyword.has_key?(opts, :executor) ->
+        opts
+
+      pr_workflow? ->
+        target_executor =
+          resume_executor(
+            start_phase,
+            prompt,
+            remediation_prompt,
+            remediation_model,
+            run_context,
+            target_layout,
+            start_task_phase
+          )
+
+        Keyword.put(
+          opts,
+          :executor,
+          split_resume_executor(
+            target_id,
+            target_executor,
+            run_context,
+            scope_layout,
+            resume_phases
+          )
+        )
+
+      true ->
+        target_runner =
+          resume_runner(
+            start_phase,
+            prompt,
+            remediation_prompt,
+            remediation_model,
+            run_context,
+            target_layout,
+            start_task_phase
+          )
+
+        Keyword.put(
+          opts,
+          :runner,
+          split_resume_runner(target_id, target_runner, run_context, scope_layout, resume_phases)
+        )
     end
   end
 
@@ -442,31 +653,127 @@ defmodule SpeckitOrchestrator do
   def resume_run(opts \\ []) do
     with :ok <- guard_active_run(opts),
          {:ok, record} <- read_manifest(),
-         {:ok, %{statuses: statuses, resume_phases: resume_phases}} <-
-           Recovery.reconcile_run(record) do
-      {features, _legacy_statuses} = RunManifest.reconstruct(record)
-      Ledger.restore(Ledger, record["spend"] || 0)
+         {:ok, scope} <- restore_run_scope(record, opts) do
+      pr_workflow? = Keyword.get(scope.merged_opts, :pr_workflow, Config.pr_workflow?())
 
-      layout =
-        case Keyword.fetch(opts, :layout) do
-          {:ok, layout} -> layout
-          :error -> RunManifest.rebuild_layout(record, Config.repo())
-        end
-
-      {merged_opts, fell_back} = RunContext.merge(opts, RunContext.from_map(record["context"]))
-      log_context_fallback("run", fell_back)
-
-      run_context = RunContext.capture(merged_opts)
-      pr_workflow? = Keyword.get(merged_opts, :pr_workflow, Config.pr_workflow?())
-
-      merged_opts
-      |> maybe_put_layout(layout)
-      |> Keyword.put(:features, features)
-      |> Keyword.put(:statuses, dispatch_statuses(statuses, resume_phases))
-      |> inject_resume_run_strategy(pr_workflow?, run_context, layout, resume_phases)
+      scope.merged_opts
+      |> maybe_put_layout(scope.layout)
+      |> Keyword.put(:features, scope.features)
+      |> Keyword.put(:statuses, dispatch_statuses(scope.statuses, scope.resume_phases))
+      |> Keyword.put(:supersede, false)
+      |> inject_resume_run_strategy(
+        pr_workflow?,
+        scope.run_context,
+        scope.layout,
+        scope.resume_phases
+      )
       |> run()
     end
   end
+
+  @doc """
+  Preview, or (with `:confirm`) write, a repaired run record for a
+  repository whose recorded scope was narrowed by the defect this feature
+  closes (016 US3, FR-016-020). Unions the (possibly narrowed) manifest
+  record's features with the backlog on disk plus per-feature durable
+  evidence (`Recovery.Rebuild.propose/3`) and returns the proposal. Never
+  runs a phase, never spends budget, never starts a `Coordinator`.
+
+  Options:
+    * `:confirm` — `true` writes the rebuilt record via
+      `RunManifest.write/1` and returns `{:ok, :written, proposal}`;
+      default `false` previews only, with **no durable effect** (FR-019a).
+    * `:backlog_root` — override the backlog source (default the rebuilt
+      layout's `breakdown_root`).
+    * `:layout` — test seam; skips layout rebuild.
+    * `:git` / `:remote` — forwarded to `Recovery.Evidence.collect/3`.
+    * `:manifest` — module implementing `RunManifest.write/1` (test seam;
+      default `RunManifest`).
+    * `:repo` — repo path for layout rebuild (default `Config.repo/0`).
+
+  The confirmed write is always a superset of the currently-recorded
+  features (the union rule), so `RunManifest.write/1`'s anti-narrowing
+  guard (016 US2) never refuses it.
+
+  Refuses with no write when: there is no record (`{:error, :no_manifest}`);
+  the record is corrupt (`{:error, :corrupt_manifest}`); the backlog cannot
+  be loaded — missing directory, dangling prereq, or a cycle —
+  (`{:error, {:backlog, reason}}`, catching `Backlog.load!/1`'s raises at
+  this boundary rather than propagating them into an operator session); or
+  the proposal names a feature whose prereq is absent from the union
+  (`{:error, {:inconsistent, discrepancies}}`, FR-020).
+
+  Never runs automatically inside `resume/2`/`resume_run/1` — operator-
+  invoked only (FR-019). See
+  `specs/016-resume-backlog-scope/contracts/record-recovery.md`.
+  """
+  @spec recover_record(keyword()) ::
+          {:ok, Recovery.Rebuild.proposal()}
+          | {:ok, :written, Recovery.Rebuild.proposal()}
+          | {:error, :no_manifest}
+          | {:error, :corrupt_manifest}
+          | {:error, {:backlog, term()}}
+          | {:error, {:inconsistent, [Recovery.Rebuild.discrepancy()]}}
+  def recover_record(opts \\ []) do
+    repo = Keyword.get(opts, :repo, Config.repo())
+
+    with {:ok, record} <- read_manifest() do
+      layout = Keyword.get(opts, :layout) || RunManifest.rebuild_layout(record, repo)
+
+      with {:ok, backlog} <- load_recovery_backlog(record, layout, opts),
+           {:ok, proposal} <-
+             Recovery.Rebuild.propose(record, backlog, recovery_propose_opts(opts, layout)) do
+        maybe_write_recovered_record(record, layout, proposal, opts)
+      end
+    end
+  end
+
+  defp maybe_write_recovered_record(record, layout, proposal, opts) do
+    if Keyword.get(opts, :confirm, false) do
+      writer = Keyword.get(opts, :manifest, RunManifest)
+
+      writer.write(%{
+        features: proposal.features,
+        statuses: proposal.statuses,
+        context: Map.get(record, "context", %{}),
+        spend: Map.get(record, "spend", 0),
+        updated_at: System.system_time(),
+        layout: layout,
+        segment: Map.get(record, "segment")
+      })
+
+      {:ok, :written, proposal}
+    else
+      {:ok, proposal}
+    end
+  end
+
+  defp recovery_propose_opts(opts, layout) do
+    opts
+    |> Keyword.take([:git, :remote, :repo, :backlog_root])
+    |> Keyword.put(:layout, layout)
+  end
+
+  # A `Backlog.load!/1` raise (missing dir, dangling prereq, cycle) is
+  # caught here rather than propagated into an operator session (Principle
+  # II's boundary is `recover_record/1`, not `Backlog`, which fails loud by
+  # design). No usable layout/backlog_root — nothing to load from.
+  defp load_recovery_backlog(record, layout, opts) do
+    case Keyword.get(opts, :backlog_root) || backlog_root(layout, record) do
+      nil ->
+        {:error, {:backlog, :no_backlog_root}}
+
+      root ->
+        try do
+          {:ok, Backlog.load!(root)}
+        rescue
+          e -> {:error, {:backlog, Exception.message(e)}}
+        end
+    end
+  end
+
+  defp backlog_root(%Layout{breakdown_root: root}, _record) when is_binary(root), do: root
+  defp backlog_root(_layout, _record), do: nil
 
   # Recovery.reconcile_run/2's `statuses` map persists a `{:resume, phase}`
   # feature as `:running` (the manifest's human-facing/report value — the
@@ -501,7 +808,7 @@ defmodule SpeckitOrchestrator do
   end
 
   # A caller-supplied :runner/:executor still wins (test seam), same
-  # precedence as inject_resume_strategy/6 below.
+  # precedence as inject_resume_scope_strategy/12 below.
   defp inject_resume_run_strategy(opts, pr_workflow?, run_context, layout, resume_phases) do
     cond do
       Keyword.has_key?(opts, :runner) or Keyword.has_key?(opts, :executor) ->
@@ -613,57 +920,6 @@ defmodule SpeckitOrchestrator do
 
       {:error, reason} ->
         notify.(feature.id, :failed, {:worktree, reason})
-    end
-  end
-
-  # FR-007/008: explicit resume opt > recorded context > live Config/default.
-  # A caller-supplied :runner/:executor still wins (test seam) regardless of
-  # the effective pr_workflow — checked here rather than at run/1 since resume
-  # must choose runner vs executor based on the *reapplied* pr_workflow.
-  defp inject_resume_strategy(
-         opts,
-         pr_workflow?,
-         start_phase,
-         prompt,
-         remediation_prompt,
-         remediation_model,
-         run_context,
-         layout,
-         start_task_phase
-       ) do
-    cond do
-      Keyword.has_key?(opts, :runner) or Keyword.has_key?(opts, :executor) ->
-        opts
-
-      pr_workflow? ->
-        Keyword.put(
-          opts,
-          :executor,
-          resume_executor(
-            start_phase,
-            prompt,
-            remediation_prompt,
-            remediation_model,
-            run_context,
-            layout,
-            start_task_phase
-          )
-        )
-
-      true ->
-        Keyword.put(
-          opts,
-          :runner,
-          resume_runner(
-            start_phase,
-            prompt,
-            remediation_prompt,
-            remediation_model,
-            run_context,
-            layout,
-            start_task_phase
-          )
-        )
     end
   end
 

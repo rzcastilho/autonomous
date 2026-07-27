@@ -5,7 +5,16 @@ defmodule SpeckitOrchestrator.ResumeTest do
   # collide on the shared (fixed, per-suite) :transcript_root checkpoint path.
   use ExUnit.Case, async: false
 
-  alias SpeckitOrchestrator.{Checkpoint, Config, Feature, FeatureRunner, RunContext, Worktree}
+  alias SpeckitOrchestrator.{
+    Checkpoint,
+    Config,
+    Coordinator,
+    Feature,
+    FeatureRunner,
+    RepoIdentity,
+    RunContext,
+    Worktree
+  }
 
   # Fake SDK — only the branches these tests exercise (analyze -> critical
   # finding). Mirrors feature_runner_test.exs's FakeSDK, trimmed to this
@@ -151,11 +160,38 @@ defmodule SpeckitOrchestrator.ResumeTest do
     end
   end
 
+  # 016: a :manifest fake for a test Coordinator that must not durably record
+  # its features (avoids bleeding a stray feature into a later whole-run
+  # scope restore).
+  defmodule NoopManifest do
+    def write(_record), do: :ok
+  end
+
   setup do
     prev_sdk = Application.get_env(:jido_claude, :sdk_module)
     Application.put_env(:jido_claude, :sdk_module, FakeSDK)
 
+    # 016: resume/2 now reads the run manifest (whole-run scope restore).
+    # This file never writes one deliberately and none of its tests override
+    # :repo/:autonomous_root, so without isolation every test here would share
+    # the one default (repo ".", global tmp autonomous_root) segment with
+    # every other async:false test file that also leaves it at its default
+    # (e.g. pr_workflow_test.exs) — a stray manifest from either side could
+    # bleed into a resume/2 call here. A unique :autonomous_root per test
+    # guarantees RunManifest.read/0 sees nothing here, keeping every test on
+    # the D8 no-manifest path (byte-identical pre-016 single-feature
+    # behaviour) regardless of run order or what other files do.
+    prev_autonomous = Application.get_env(:speckit_orchestrator, :autonomous_root)
+    root = Path.join(System.tmp_dir!(), "resume_manifest_#{System.unique_integer([:positive])}")
+    Application.put_env(:speckit_orchestrator, :autonomous_root, root)
+
     on_exit(fn ->
+      File.rm_rf(root)
+
+      if prev_autonomous,
+        do: Application.put_env(:speckit_orchestrator, :autonomous_root, prev_autonomous),
+        else: Application.delete_env(:speckit_orchestrator, :autonomous_root)
+
       if prev_sdk,
         do: Application.put_env(:jido_claude, :sdk_module, prev_sdk),
         else: Application.delete_env(:jido_claude, :sdk_module)
@@ -291,6 +327,85 @@ defmodule SpeckitOrchestrator.ResumeTest do
                )
 
       refute_received {:runner_called, _}
+    end
+  end
+
+  # ---- 016 T005: SC-005 no-regression + D8 no-manifest/corrupt fallback ----
+
+  describe "resume/2 — 016 whole-run scope restore, no-regression" do
+    test "a corrupt run manifest on disk falls back to today's single-feature path, unchanged" do
+      id = unique_id()
+      write_checkpoint(id, :analyze, :halted, slug: "widget", path: "#{id}-widget.md")
+
+      path = manifest_path()
+      File.mkdir_p!(Path.dirname(path))
+      File.write!(path, "not valid json{")
+      on_exit(fn -> File.rm(path) end)
+
+      me = self()
+
+      assert {:ok, pid} =
+               SpeckitOrchestrator.resume(id, features: [], runner: capturing_runner(me))
+
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+      assert_receive {:runner_called, feat}
+      assert feat.id == id
+      assert feat.slug == "widget"
+    end
+
+    # 016 T006/FR-010a: same live-run refusal resume_run/1 already has
+    # (guard_active_run/1, reused unchanged) — a resume/2 that would start a
+    # second whole-run Coordinator against the same repo's manifest slot is
+    # refused instead of racing it.
+    test "a live unfinished Coordinator refuses resume/2 without :force, and :force proceeds" do
+      id = unique_id()
+      write_checkpoint(id, :analyze, :halted, slug: "widget", path: "#{id}-widget.md")
+
+      # :manifest fake — a real (unfaked) blocking Coordinator would durably
+      # record "999" via its own per-phase write, which the force:true
+      # resume below would then legitimately restore alongside the target
+      # (016's whole-run scope restore, exercised on purpose in
+      # resume_scope_test.exs) — irrelevant noise for this test, which is
+      # only about the live-run guard/force mechanics.
+      {:ok, blocking_pid} =
+        Coordinator.start_link(
+          features: [feature("999")],
+          runner: fn _feature, _notify -> :ok end,
+          manifest: NoopManifest,
+          name: SpeckitOrchestrator.Coordinator
+        )
+
+      me = self()
+
+      assert {:error, {:active_run, ^blocking_pid}} =
+               SpeckitOrchestrator.resume(id, features: [], runner: capturing_runner(me))
+
+      refute_received {:runner_called, _}
+      assert Process.alive?(blocking_pid)
+
+      assert {:ok, pid} =
+               SpeckitOrchestrator.resume(id,
+                 features: [],
+                 runner: capturing_runner(me),
+                 force: true
+               )
+
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+      assert_receive {:runner_called, feat}
+      assert feat.id == id
+    end
+  end
+
+  # Mirrors RunManifest's own segment resolution — this file's tests use the
+  # default repo (".") and this setup's isolated :autonomous_root.
+  defp manifest_path do
+    case RepoIdentity.resolve(Config.repo()) do
+      {:ok, segment} ->
+        Path.join([Config.autonomous_root(), "transcripts", segment, "run.json"])
+
+      {:error, _} ->
+        Path.join([Config.autonomous_root(), "transcripts", "run.json"])
     end
   end
 

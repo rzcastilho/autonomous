@@ -208,6 +208,33 @@ defmodule SpeckitOrchestrator.ConsoleReadModelTest do
     end
   end
 
+  describe "apply_event/4 — [:speckit, :run, :scope_narrowing_refused] (specs/016-resume-backlog-scope)" do
+    test "pushes one :warn feed entry with feature_id nil naming the dropped ids, and leaves features untouched" do
+      model =
+        ConsoleReadModel.new()
+        |> ConsoleReadModel.apply_event(
+          [:speckit, :phase, :start],
+          %{system_time: 1},
+          %{feature_id: "001", phase: :specify, model: "sonnet", step: 1}
+        )
+        |> ConsoleReadModel.apply_event(
+          [:speckit, :run, :scope_narrowing_refused],
+          %{dropped_count: 2},
+          %{
+            segment: "seg",
+            recorded: ["001", "002", "003"],
+            attempted: ["001"],
+            dropped: ["002", "003"]
+          }
+        )
+
+      assert [%{feature_id: nil, phase: nil, severity: :warn, text: text} | _] = model.feed
+      assert text =~ "002"
+      assert text =~ "003"
+      assert map_size(model.features) == 1
+    end
+  end
+
   describe "apply_event/4 — unknown events" do
     test "passes the model through unchanged" do
       model = ConsoleReadModel.new()

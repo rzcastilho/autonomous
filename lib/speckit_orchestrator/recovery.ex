@@ -8,36 +8,40 @@ defmodule SpeckitOrchestrator.Recovery do
   `specs/014-recovery-reconciliation/contracts/recovery-report.md`.
   """
 
-  alias SpeckitOrchestrator.{Config, Feature, Pipeline, Release, RunManifest}
+  alias SpeckitOrchestrator.{Config, Feature, Layout, Pipeline, Release, RunManifest}
   alias SpeckitOrchestrator.Recovery.{Evidence, Reconcile, Report}
 
   @doc """
   Reconcile every feature in a (already read) run manifest `record` against
-  its durable repository evidence, rewrite the manifest with the corrected
-  statuses, and build the reconciled report.
+  its durable repository evidence and build the reconciled report —
+  **performs no write** (research.md D4/T033). `reconcile_run/2` is
+  `plan_run/2` plus the manifest rewrite; `Recovery.Rebuild.propose/3` (016
+  US3) calls the same `Evidence`/`Reconcile` pair this function uses, via
+  the shared `run_shape_of/1`/`recorded_statuses/1`/`persisted_status/1`
+  helpers below, so there is exactly one reconciliation decision table.
 
   `opts`:
     * `:repo` — repo path for layout rebuild (default `Config.repo/0`).
     * `:git` / `:remote` — forwarded to `Evidence.collect/3` (test seams).
-    * `:manifest` — module implementing `RunManifest.write/1` (default
-      `RunManifest`; tests inject a fake to avoid disk writes).
 
   A malformed `record` (missing `"features"`/`"statuses"`) fails loud as
   `{:error, :corrupt}` rather than fabricating a run (Principle II) — a
   missing/absent manifest is the caller's concern (`RunManifest.read/0`,
   already handled upstream of this call).
   """
-  @spec reconcile_run(map(), keyword()) ::
+  @spec plan_run(map(), keyword()) ::
           {:ok,
            %{
              statuses: %{String.t() => Feature.status()},
              report: Report.t(),
-             resume_phases: %{String.t() => Pipeline.phase()}
+             resume_phases: %{String.t() => Pipeline.phase()},
+             features: [Feature.t()],
+             layout: Layout.t() | nil
            }}
           | {:error, term()}
-  def reconcile_run(record, opts \\ [])
+  def plan_run(record, opts \\ [])
 
-  def reconcile_run(%{"features" => _, "statuses" => _} = record, opts) do
+  def plan_run(%{"features" => _, "statuses" => _} = record, opts) do
     repo = Keyword.get(opts, :repo, Config.repo())
     layout = RunManifest.rebuild_layout(record, repo)
     run_shape = run_shape_of(record)
@@ -50,8 +54,6 @@ defmodule SpeckitOrchestrator.Recovery do
         reconcile_feature(feature, recorded, layout, run_shape, opts, acc)
       end)
 
-    rewrite_manifest(record, features, statuses, layout, opts)
-
     report = %Report{
       features: Enum.reverse(rows),
       conflicts: Enum.reverse(conflicts),
@@ -60,14 +62,54 @@ defmodule SpeckitOrchestrator.Recovery do
       run_shape: run_shape
     }
 
-    {:ok, %{statuses: statuses, report: report, resume_phases: resume_phases}}
+    {:ok,
+     %{
+       statuses: statuses,
+       report: report,
+       resume_phases: resume_phases,
+       features: features,
+       layout: layout
+     }}
   end
 
-  def reconcile_run(_record, _opts), do: {:error, :corrupt}
+  def plan_run(_record, _opts), do: {:error, :corrupt}
+
+  @doc """
+  `plan_run/2` plus the manifest rewrite with the corrected statuses
+  (unchanged behaviour/return shape for existing callers — `resume/2`,
+  `resume_run/1`, `resumable_run/0`; research.md D4).
+
+  `opts`: same as `plan_run/2`, plus:
+    * `:manifest` — module implementing `RunManifest.write/1` (default
+      `RunManifest`; tests inject a fake to avoid disk writes).
+  """
+  @spec reconcile_run(map(), keyword()) ::
+          {:ok,
+           %{
+             statuses: %{String.t() => Feature.status()},
+             report: Report.t(),
+             resume_phases: %{String.t() => Pipeline.phase()}
+           }}
+          | {:error, term()}
+  def reconcile_run(record, opts \\ [])
+
+  def reconcile_run(record, opts) do
+    with {:ok, plan} <- plan_run(record, opts) do
+      rewrite_manifest(record, plan.features, plan.statuses, plan.layout, opts)
+      {:ok, Map.take(plan, [:statuses, :report, :resume_phases])}
+    end
+  end
 
   # ---- per-feature fold ------------------------------------------------------
 
-  defp reconcile_feature(feature, recorded, layout, run_shape, opts, {rows, statuses, resume_phases, conflicts}) do
+  defp reconcile_feature(
+         feature,
+         recorded,
+         layout,
+         run_shape,
+         opts,
+         {rows, statuses, resume_phases, conflicts}
+       ) do
     feature_recorded = Map.get(recorded, feature.id, :pending)
     evidence = Evidence.collect(feature, layout, opts)
     reconciled = Reconcile.status(feature_recorded, evidence, run_shape)
@@ -98,15 +140,20 @@ defmodule SpeckitOrchestrator.Recovery do
 
   # Maps a `Reconcile.result()` onto the `Feature.status()` persisted to the
   # manifest, plus the resume phase carried alongside it (data-model.md
-  # "Entity: Reconciled status" mapping table).
-  defp persisted_status(:done), do: {:done, nil}
-  defp persisted_status({:resume, phase}), do: {:running, phase}
-  defp persisted_status(:pending), do: {:pending, nil}
-  defp persisted_status(:escalated), do: {:escalated, nil}
-  defp persisted_status(:halted), do: {:halted, nil}
-  defp persisted_status(:failed), do: {:failed, nil}
-  defp persisted_status({:conflict, _reason}), do: {:blocked, nil}
-  defp persisted_status(:blocked), do: {:blocked, nil}
+  # "Entity: Reconciled status" mapping table). Public (not `defp`) —
+  # `Recovery.Rebuild.propose/3` (016 US3) reuses this exact mapping so a
+  # rebuild proposal's statuses agree with an ordinary resume's (D4/D9: no
+  # second decision table).
+  @doc false
+  @spec persisted_status(Reconcile.result()) :: {Feature.status(), Pipeline.phase() | nil}
+  def persisted_status(:done), do: {:done, nil}
+  def persisted_status({:resume, phase}), do: {:running, phase}
+  def persisted_status(:pending), do: {:pending, nil}
+  def persisted_status(:escalated), do: {:escalated, nil}
+  def persisted_status(:halted), do: {:halted, nil}
+  def persisted_status(:failed), do: {:failed, nil}
+  def persisted_status({:conflict, _reason}), do: {:blocked, nil}
+  def persisted_status(:blocked), do: {:blocked, nil}
 
   # ---- manifest rewrite -------------------------------------------------------
 
@@ -132,8 +179,12 @@ defmodule SpeckitOrchestrator.Recovery do
   # A read-only preview of what would release next under the corrected
   # statuses — the actual cap/breaker are enforced live by the Coordinator on
   # continuation; this uses the configured cap and an untripped breaker so the
-  # preview reflects DAG/status correctness, not in-flight scheduling.
-  defp next_runnable(features, statuses) do
+  # preview reflects DAG/status correctness, not in-flight scheduling. Public
+  # — `Recovery.Rebuild.propose/3` previews the same way over its (possibly
+  # larger, repaired) union feature set.
+  @doc false
+  @spec next_runnable([Feature.t()], %{String.t() => Feature.status()}) :: [String.t()]
+  def next_runnable(features, statuses) do
     features
     |> Release.next_wave(statuses, Config.max_concurrency(), false)
     |> Enum.map(& &1.id)
@@ -141,19 +192,30 @@ defmodule SpeckitOrchestrator.Recovery do
 
   # ---- record parsing ---------------------------------------------------------
 
-  defp run_shape_of(%{"scope" => %{"breakdown" => slug}}) when is_binary(slug),
+  # Public — shared with `Recovery.Rebuild.propose/3` so a rebuild proposal
+  # reconciles under the same done-signal formula (`Reconcile.done_signal?/2`
+  # is shape-aware) as an ordinary resume.
+  @doc false
+  @spec run_shape_of(map()) :: Reconcile.run_shape()
+  def run_shape_of(%{"scope" => %{"breakdown" => slug}}) when is_binary(slug),
     do: {:breakdown, slug}
 
-  defp run_shape_of(_record), do: :ad_hoc
+  def run_shape_of(_record), do: :ad_hoc
 
   # Never `String.to_atom/1` on file-sourced content (atom-table safety) — an
   # explicit mapping over the fixed, known status vocabulary, mirroring
   # `RunManifest`'s own `reconstruct_status/1` but preserving `"running"` as
   # `:running` (this feature's whole point is telling apart a stale `running`
-  # from a genuinely mid-run one, not collapsing them upstream).
-  defp recorded_statuses(%{"statuses" => statuses}) do
+  # from a genuinely mid-run one, not collapsing them upstream). Public —
+  # `Recovery.Rebuild.propose/3` reuses this to determine each unioned
+  # feature's recorded input (D9: no second decision table).
+  @doc false
+  @spec recorded_statuses(map()) :: %{String.t() => Feature.status()}
+  def recorded_statuses(%{"statuses" => statuses}) do
     Map.new(statuses, fn {id, status} -> {id, parse_recorded_status(status)} end)
   end
+
+  def recorded_statuses(_record), do: %{}
 
   defp parse_recorded_status("done"), do: :done
   defp parse_recorded_status("running"), do: :running
