@@ -25,6 +25,7 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
     ConsoleReadModel,
     Coordinator,
     Ledger,
+    Release,
     RepoIdentity,
     RunManifest
   }
@@ -91,11 +92,18 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
 
       assign(socket,
         backlog_error: nil,
+        features: features,
         dag_layout: dag_layout,
         canvas: PipelineDagLayout.canvas_size(dag_layout)
       )
     rescue
-      e -> assign(socket, backlog_error: Exception.message(e), dag_layout: nil, canvas: nil)
+      e ->
+        assign(socket,
+          backlog_error: Exception.message(e),
+          features: [],
+          dag_layout: nil,
+          canvas: nil
+        )
     end
   end
 
@@ -123,11 +131,34 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
   end
 
   defp seed(socket) do
-    view =
-      ConsoleReadModel.merge(coordinator_status(), ledger_snapshot(), ConsoleProjection.read())
+    status = coordinator_status()
+    view = ConsoleReadModel.merge(status, ledger_snapshot(), ConsoleProjection.read())
 
-    assign(socket, view: overlay_manifest(socket, view))
+    socket
+    |> assign(view: overlay_manifest(socket, view))
+    |> assign_release_order(status)
   end
+
+  # A cap-1 run (any stacked PR run, and any run explicitly capped at 1) releases
+  # strictly one feature at a time, so the canvas annotates each node with its
+  # release position. Without it the layout reads as though a whole column starts
+  # together — columns are prereq depth, and two features at the same depth sit
+  # side by side whether the run can actually overlap them or not.
+  #
+  # Empty for a cap > 1 run: there the overlap depends on phase durations, and a
+  # projected order would be a guess drawn as fact.
+  defp assign_release_order(socket, status) do
+    assign(socket, release_order: release_order(socket.assigns[:features] || [], status))
+  end
+
+  defp release_order(features, %{cap: 1}) when features != [] do
+    features
+    |> Release.sequential_order()
+    |> Enum.with_index(1)
+    |> Map.new()
+  end
+
+  defp release_order(_features, _status), do: %{}
 
   # No live Coordinator (fresh boot, no resume yet) — fall back to the
   # durable run manifest (specs/009-crash-recovery) so the DAG reflects the
@@ -190,7 +221,11 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
         socket
       ) do
     view = ConsoleReadModel.merge(coordinator_status, ledger_snapshot, ConsoleProjection.read())
-    {:noreply, assign(socket, view: overlay_manifest(socket, view))}
+
+    {:noreply,
+     socket
+     |> assign(view: overlay_manifest(socket, view))
+     |> assign_release_order(coordinator_status)}
   end
 
   def handle_info({:console, :run_finished, report}, socket) do
@@ -237,9 +272,13 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
         <div class="dag-canvas-header">
           <div>
             <div class="dag-canvas-title">Dependency DAG</div>
-            <div class="dag-canvas-sub">
+            <div :if={@release_order == %{}} class="dag-canvas-sub">
               columns are prereq depth, not concurrency — the wave cap decides how
               many of a column actually run at once
+            </div>
+            <div :if={@release_order != %{}} class="dag-canvas-sub" data-state="sequential-run">
+              this run releases one feature at a time — badges show release order,
+              so a shared column runs top to bottom, not together
             </div>
           </div>
           <form
@@ -283,6 +322,14 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
               phx-value-id={node.id}
             >
               <div class="dag-node-head">
+                <span
+                  :if={@release_order[node.id]}
+                  class="dag-release-badge"
+                  data-release-order={@release_order[node.id]}
+                  title="release order — this run runs one feature at a time"
+                >
+                  {@release_order[node.id]}
+                </span>
                 <span class="dag-node-id">{node.id}</span>
                 <.status_pill status={node_status(@view, node.id)} />
               </div>

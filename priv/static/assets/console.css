@@ -844,6 +844,22 @@ a:hover {
   position: static;
 }
 
+/* Release-order badge — only rendered for a cap-1 (sequential) run, where the
+   order a shared prereq-depth column actually runs in is exactly known. */
+.dag-release-badge {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--text);
+  background: var(--accent-2);
+  border-radius: 999px;
+  min-width: 15px;
+  padding: 3px 4px;
+  text-align: center;
+  flex: none;
+}
+
 .dag-adhoc-badge {
   font-family: var(--font-mono);
   font-size: 9px;
