@@ -156,6 +156,87 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLiveTest do
     refute html =~ "widget"
   end
 
+  # Mirrors the real ../ledgerlite shape: two packages whose ids do NOT overlap
+  # (001-mvp holds 001-007, 002-addons holds 008-011). The shipped
+  # breakdown_packages fixture numbers both packages "001", so it cannot show
+  # this class of bug at all.
+  defp repo_with_disjoint_packages do
+    repo = Path.join(System.tmp_dir!(), "dag_disjoint_#{System.unique_integer([:positive])}")
+    root = Path.join(repo, "specs/autonomous/breakdown")
+    File.mkdir_p!(Path.join(root, "first-wave"))
+    File.mkdir_p!(Path.join(root, "second-wave"))
+
+    File.write!(
+      Path.join(root, "first-wave/001-alpha.md"),
+      "# 001 — Alpha\n\n## Prerequisites\n\nNone\n"
+    )
+
+    File.write!(
+      Path.join(root, "second-wave/008-beta.md"),
+      "# 008 — Beta\n\n## Prerequisites\n\nNone\n"
+    )
+
+    on_exit(fn -> File.rm_rf(repo) end)
+    Application.put_env(:speckit_orchestrator, :repo, repo)
+    repo
+  end
+
+  describe "ad-hoc lane across breakdown packages" do
+    # A feature belonging to another package has a breakdown file, so it is not
+    # ad-hoc. Switching the wave picker away from the running package used to
+    # relabel every one of its features as ad-hoc, because the lane's exclusion
+    # set was the drawn package alone.
+    test "a running package's features are not shown as ad-hoc when viewing another package",
+         %{conn: conn} do
+      repo_with_disjoint_packages()
+
+      {:ok, pid} =
+        Coordinator.start_link(
+          name: Coordinator,
+          features: [feat("001")],
+          runner: fn _feature, _notify -> :ok end,
+          owner: self()
+        )
+
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+      {:ok, view, html} = live(conn, "/dag")
+      # Defaults to the first package alphabetically — 001 is a normal node.
+      assert html =~ ~s(data-dag-node="001")
+      refute html =~ ~s(data-node-origin="ad-hoc")
+
+      html =
+        view
+        |> element(~s(form[data-form="wave-picker"]))
+        |> render_change(%{"slug" => "second-wave"})
+
+      assert html =~ ~s(data-dag-node="008")
+      refute html =~ ~s(data-node-origin="ad-hoc")
+      refute html =~ ~s(data-state="ad-hoc-lane")
+    end
+
+    test "a feature in no package at all is still shown as ad-hoc", %{conn: conn} do
+      repo_with_disjoint_packages()
+
+      {:ok, pid} =
+        Coordinator.start_link(
+          name: Coordinator,
+          features: [feat("001"), feat("999")],
+          runner: fn _feature, _notify -> :ok end,
+          owner: self()
+        )
+
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+      {:ok, _view, html} = live(conn, "/dag")
+
+      assert html =~ ~s(data-state="ad-hoc-lane")
+      assert html =~ ~s(data-node-origin="ad-hoc")
+      lane = extract_node(html, "999")
+      assert lane =~ "ad-hoc"
+    end
+  end
+
   # A cap-1 run releases strictly one feature at a time, but the canvas lays
   # nodes out by prereq depth — so 002/005/007 (all depending only on 001) sit
   # in one column and read as if they start together. The badges say otherwise.

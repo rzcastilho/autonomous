@@ -88,14 +88,22 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLayout do
   @doc """
   Pure set-difference + lane positioning for ad-hoc (non-backlog) live
   features (contracts/dag-ad-hoc-render.md §1). An id is ad-hoc iff it's a
-  key of `live` absent from `backlog_layout.nodes` (VR-1); positions are
-  computed in a dedicated single-row lane, independent of the backlog
-  plane's depth/column math, so backlog geometry is unchanged whether or
-  not ad-hoc nodes exist.
+  key of `live` absent from the backlog (VR-1); positions are computed in a
+  dedicated single-row lane, independent of the backlog plane's depth/column
+  math, so backlog geometry is unchanged whether or not ad-hoc nodes exist.
+
+  `known_ids` is the set of ids belonging to **any** breakdown package on
+  disk, which is not the same as the ids of the package currently drawn.
+  Defaulting to the drawn package alone made every feature of a *different*
+  package render as ad-hoc the moment the wave picker switched away from the
+  running one — they have breakdown files, so they are not ad-hoc. Pass the
+  union; the drawn layout only decides what the main plane shows.
   """
-  @spec ad_hoc_nodes(t(), %{String.t() => map()}) :: ad_hoc_lane()
-  def ad_hoc_nodes(%{nodes: backlog_nodes}, live) when is_map(live) do
-    backlog_ids = MapSet.new(backlog_nodes, & &1.id)
+  @spec ad_hoc_nodes(t(), %{String.t() => map()}, MapSet.t(String.t()) | nil) :: ad_hoc_lane()
+  def ad_hoc_nodes(layout, live, known_ids \\ nil)
+
+  def ad_hoc_nodes(%{nodes: backlog_nodes}, live, known_ids) when is_map(live) do
+    backlog_ids = known_ids || MapSet.new(backlog_nodes, & &1.id)
 
     nodes =
       live

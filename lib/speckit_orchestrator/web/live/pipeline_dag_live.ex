@@ -52,7 +52,8 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
        repo: repo,
        segment: segment,
        packages: packages,
-       selected_package: selected_package
+       selected_package: selected_package,
+       known_backlog_ids: known_backlog_ids(repo, packages)
      )
      |> load_layout()
      |> seed()}
@@ -353,7 +354,7 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
             <span class="legend-swatch" style={"background-color: #{color};"}></span> {label}
           </div>
           <div
-            :if={ad_hoc_lane(@dag_layout, @view.per_feature).nodes != []}
+            :if={ad_hoc_lane(@dag_layout, @view.per_feature, @known_backlog_ids).nodes != []}
             class="dag-legend-item dag-legend-ad-hoc"
             data-legend-origin="ad-hoc"
           >
@@ -362,7 +363,7 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
         </div>
       </div>
 
-      <% ad_hoc_lane = ad_hoc_lane(@dag_layout, @view.per_feature) %>
+      <% ad_hoc_lane = ad_hoc_lane(@dag_layout, @view.per_feature, @known_backlog_ids) %>
 
       <div :if={ad_hoc_lane.nodes != []} class="dag-ad-hoc-lane" data-state="ad-hoc-lane">
         <div
@@ -399,8 +400,28 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
   defp node_phases(view, id), do: get_in(view.per_feature, [id, :phases]) || %{}
   defp node_chunk(view, id), do: get_in(view.per_feature, [id, :chunk])
 
-  defp ad_hoc_lane(nil, _per_feature), do: %{nodes: []}
+  defp ad_hoc_lane(nil, _per_feature, _known_ids), do: %{nodes: []}
 
-  defp ad_hoc_lane(dag_layout, per_feature),
-    do: PipelineDagLayout.ad_hoc_nodes(dag_layout, per_feature)
+  defp ad_hoc_lane(dag_layout, per_feature, known_ids),
+    do: PipelineDagLayout.ad_hoc_nodes(dag_layout, per_feature, known_ids)
+
+  # Every id that has a breakdown file in ANY package, not just the drawn one.
+  # A feature is ad-hoc because `run_spec/2` created it with no breakdown file
+  # at all — never merely because the wave picker is currently pointed
+  # somewhere else. Tolerant per package: one unparseable package must not
+  # blank the lane's exclusion set and turn every live feature into a false
+  # ad-hoc node.
+  defp known_backlog_ids(repo, []), do: package_ids(repo, nil)
+
+  defp known_backlog_ids(repo, packages) do
+    Enum.reduce(packages, MapSet.new(), fn slug, acc ->
+      MapSet.union(acc, package_ids(repo, slug))
+    end)
+  end
+
+  defp package_ids(repo, slug) do
+    repo |> load_features(slug) |> MapSet.new(& &1.id)
+  rescue
+    _ -> MapSet.new()
+  end
 end
