@@ -339,6 +339,7 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
                 phases={node_phases(@view, node.id)}
                 status={node_status(@view, node.id)}
                 chunk={node_chunk(@view, node.id)}
+                remediation={node_remediation(@view, node.id)}
               />
               <div class="dag-node-spend">${format_money(node_spend(@view, node.id))}</div>
             </div>
@@ -380,7 +381,11 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
             <.status_pill status={node_status(@view, node.id)} />
           </div>
           <div class="dag-node-slug">{node.slug}</div>
-          <.phase_strip phases={node_phases(@view, node.id)} status={node_status(@view, node.id)} />
+          <.phase_strip
+            phases={node_phases(@view, node.id)}
+            status={node_status(@view, node.id)}
+            remediation={node_remediation(@view, node.id)}
+          />
           <div class="dag-node-spend">${format_money(node_spend(@view, node.id))}</div>
         </div>
       </div>
@@ -399,6 +404,8 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
   defp node_spend(view, id), do: get_in(view.per_feature, [id, :spend]) || 0.0
   defp node_phases(view, id), do: get_in(view.per_feature, [id, :phases]) || %{}
   defp node_chunk(view, id), do: get_in(view.per_feature, [id, :chunk])
+
+  defp node_remediation(view, id), do: get_in(view.per_feature, [id, :remediation])
 
   defp ad_hoc_lane(nil, _per_feature, _known_ids), do: %{nodes: []}
 

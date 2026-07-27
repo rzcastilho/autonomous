@@ -89,6 +89,7 @@ defmodule SpeckitOrchestrator.Actions.RunRemediationTest do
     assert update.last_outcome == :error
     assert update.last_signals == %{}
     assert update.last_result == nil
+
     assert [%{phase: :remediation, outcome: :error, error: {:unknown_model, "not-a-model"}}] =
              update.history
   end

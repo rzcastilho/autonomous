@@ -147,7 +147,10 @@ defmodule SpeckitOrchestrator.Web.FeatureDrawerComponent do
   defp timeline_glyph(_cell), do: "○"
 
   defp timeline_meta(nil), do: ""
-  defp timeline_meta(%{cost: cost}) when is_number(cost) and cost > 0, do: "$#{format_money(cost)}"
+
+  defp timeline_meta(%{cost: cost}) when is_number(cost) and cost > 0,
+    do: "$#{format_money(cost)}"
+
   defp timeline_meta(%{state: state}), do: to_string(state)
 
   defp diverted?(nil), do: false

@@ -54,7 +54,9 @@ defmodule SpeckitOrchestrator.Report do
     widths =
       rows
       |> Enum.zip()
-      |> Enum.map(fn col -> col |> Tuple.to_list() |> Enum.map(&String.length/1) |> Enum.max() end)
+      |> Enum.map(fn col ->
+        col |> Tuple.to_list() |> Enum.map(&String.length/1) |> Enum.max()
+      end)
 
     Enum.map_join(rows, "\n", fn row ->
       row

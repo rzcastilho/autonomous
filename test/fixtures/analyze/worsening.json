@@ -1,0 +1,32 @@
+[
+  {
+    "summary": "A High finding on the first pass.",
+    "findings": [
+      {
+        "severity": "high",
+        "title": "tasks.md has no task for FR-004",
+        "detail": "Pass 1 — escalation-worthy but not a halt."
+      }
+    ]
+  },
+  {
+    "summary": "The corrective step made it worse.",
+    "findings": [
+      {
+        "severity": "critical",
+        "title": "data-model.md now stores money as a float",
+        "detail": "Pass 2 — a constitution Critical the gate must halt on."
+      }
+    ]
+  },
+  {
+    "summary": "The corrective step made it worse.",
+    "findings": [
+      {
+        "severity": "critical",
+        "title": "data-model.md now stores money as a float",
+        "detail": "Pass 3 — the final run is what the gate decides from."
+      }
+    ]
+  }
+]

@@ -18,7 +18,7 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
 
   use SpeckitOrchestrator.Web, :live_view
 
-  alias SpeckitOrchestrator.{Backlog, Config, RunContext}
+  alias SpeckitOrchestrator.{Backlog, Config, Remediation, RunContext, Severity}
 
   @impl true
   def mount(_params, _session, socket) do
@@ -31,6 +31,10 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
        current_path: "/trigger",
        mode: :backlog,
        pr_workflow?: Config.pr_workflow?(),
+       auto_remediation?: Config.auto_remediation?(),
+       remediation_threshold: to_string(Config.auto_remediation_threshold()),
+       remediation_limit: to_string(Config.auto_remediation_attempt_limit()),
+       remediation_error: nil,
        description: "",
        preview: nil,
        field_error: nil,
@@ -67,6 +71,26 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
     {:noreply, assign(socket, pr_workflow?: not socket.assigns.pr_workflow?)}
   end
 
+  # ---- auto-remediation controls (017, contracts/telemetry-console.md §4) ----
+
+  def handle_event("toggle_auto_remediation", _params, socket) do
+    {:noreply,
+     assign(socket,
+       auto_remediation?: not socket.assigns.auto_remediation?,
+       remediation_error: nil
+     )}
+  end
+
+  def handle_event("update_remediation", params, socket) do
+    {:noreply,
+     assign(socket,
+       remediation_threshold:
+         Map.get(params, "threshold", socket.assigns.remediation_threshold),
+       remediation_limit: Map.get(params, "attempt_limit", socket.assigns.remediation_limit),
+       remediation_error: nil
+     )}
+  end
+
   def handle_event("select_package", %{"slug" => slug}, socket) do
     {:noreply, socket |> assign(selected_package: slug) |> refresh_backlog_preview()}
   end
@@ -83,17 +107,21 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
 
   def handle_event("start_backlog", _params, socket) do
     if socket.assigns.backlog_preview.dag_valid? do
-      opts = start_opts(socket)
+      case start_opts(socket) do
+        {:ok, opts} ->
+          case run_unlinked(fn -> SpeckitOrchestrator.run(opts) end) do
+            {:ok, _pid} ->
+              {:noreply,
+               socket
+               |> put_flash(:info, "Backlog run started")
+               |> push_navigate(to: "/")}
 
-      case run_unlinked(fn -> SpeckitOrchestrator.run(opts) end) do
-        {:ok, _pid} ->
-          {:noreply,
-           socket
-           |> put_flash(:info, "Backlog run started")
-           |> push_navigate(to: "/")}
+            {:error, reason} ->
+              {:noreply, assign(socket, start_error: format_start_error(reason))}
+          end
 
-        {:error, reason} ->
-          {:noreply, assign(socket, start_error: format_start_error(reason))}
+        {:error, remediation_error} ->
+          {:noreply, assign(socket, remediation_error: remediation_error)}
       end
     else
       {:noreply, socket}
@@ -106,20 +134,24 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
     if blank?(description) do
       {:noreply, assign(socket, field_error: "Description is required")}
     else
-      opts = start_opts(socket)
+      case start_opts(socket) do
+        {:ok, opts} ->
+          case run_unlinked(fn -> SpeckitOrchestrator.run_spec(description, opts) end) do
+            {:ok, _pid} ->
+              {:noreply,
+               socket
+               |> put_flash(:info, "Feature started")
+               |> push_navigate(to: "/")}
 
-      case run_unlinked(fn -> SpeckitOrchestrator.run_spec(description, opts) end) do
-        {:ok, _pid} ->
-          {:noreply,
-           socket
-           |> put_flash(:info, "Feature started")
-           |> push_navigate(to: "/")}
+            {:error, :empty_description} ->
+              {:noreply, assign(socket, field_error: "Description is required")}
 
-        {:error, :empty_description} ->
-          {:noreply, assign(socket, field_error: "Description is required")}
+            {:error, reason} ->
+              {:noreply, assign(socket, start_error: format_start_error(reason))}
+          end
 
-        {:error, reason} ->
-          {:noreply, assign(socket, start_error: format_start_error(reason))}
+        {:error, remediation_error} ->
+          {:noreply, assign(socket, remediation_error: remediation_error)}
       end
     end
   end
@@ -146,15 +178,64 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
   # SPECKIT_PR_WORKFLOW) for every later run and every later mount of this
   # form — sticky until restart. `Layouts.run_view/0` now reads the live run's
   # own recorded context instead, so no global write is needed.
+  #
+  # The auto-remediation controls (017) are per-run opts on exactly the same
+  # terms: validated here through `Remediation.Settings.validate/1` — the same
+  # single validator `run/1`'s own preflight uses — so a bad limit/threshold is
+  # refused *before* any run is dispatched (FR-010e), and the accepted values
+  # travel as opts only, leaving the node's configured defaults untouched for
+  # the next mount (FR-010f).
   defp start_opts(socket) do
-    base = [pr_workflow: socket.assigns.pr_workflow?]
-    base = maybe_put_slug(base, socket.assigns[:selected_package])
+    with {:ok, settings} <- validate_remediation(socket) do
+      base = [
+        pr_workflow: socket.assigns.pr_workflow?,
+        auto_remediation: settings.enabled?,
+        auto_remediation_threshold: settings.threshold,
+        auto_remediation_attempt_limit: settings.attempt_limit
+      ]
 
-    case Application.get_env(:speckit_orchestrator, :console_test_runner) do
-      nil -> base
-      runner -> Keyword.put(base, :runner, runner)
+      base = maybe_put_slug(base, socket.assigns[:selected_package])
+
+      case Application.get_env(:speckit_orchestrator, :console_test_runner) do
+        nil -> {:ok, base}
+        runner -> {:ok, Keyword.put(base, :runner, runner)}
+      end
     end
   end
+
+  defp validate_remediation(socket) do
+    input = %{
+      enabled?: socket.assigns.auto_remediation?,
+      threshold: socket.assigns.remediation_threshold,
+      attempt_limit: parse_limit(socket.assigns.remediation_limit),
+      model: Config.auto_remediation_model()
+    }
+
+    case Remediation.Settings.validate(input) do
+      {:ok, settings} ->
+        {:ok, settings}
+
+      {:error, {:invalid_threshold, value}} ->
+        {:error, {"auto-remediation-threshold", "Unrecognized severity threshold: #{value}"}}
+
+      {:error, {:invalid_attempt_limit, value}} ->
+        {:error, {"auto-remediation-limit", "Attempt limit must be a whole number 1–5, got: #{value}"}}
+
+      {:error, {:unknown_model, value}} ->
+        {:error, {"auto-remediation-model", "Unknown model: #{inspect(value)}"}}
+    end
+  end
+
+  # A number input still delivers a string, and a non-numeric one must reach
+  # the validator as-is so it rejects rather than being silently defaulted.
+  defp parse_limit(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {limit, ""} -> limit
+      _ -> value
+    end
+  end
+
+  defp parse_limit(value), do: value
 
   defp maybe_put_slug(opts, nil), do: opts
   defp maybe_put_slug(opts, slug), do: Keyword.put(opts, :slug, slug)
@@ -333,6 +414,58 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
           effective concurrency: {@effective_concurrency}
         </span>
       </div>
+
+      <div class="pr-toggle-row auto-remediation-row">
+        <label class="pr-toggle">
+          <input
+            type="checkbox"
+            phx-click="toggle_auto_remediation"
+            checked={@auto_remediation?}
+            class="switch-input"
+          />
+          <span class="switch-track"><span class="switch-knob"></span></span>
+          <span>Analyze auto-remediation</span>
+        </label>
+        <span class="pr-hint" data-auto-remediation={to_string(@auto_remediation?)}>
+          {if @auto_remediation?, do: "on", else: "off"}
+        </span>
+
+        <form
+          id="auto-remediation-form"
+          phx-change="update_remediation"
+          class={not @auto_remediation? && "controls-disabled"}
+        >
+          <label class="field-label-inline">
+            Severity threshold
+            <select name="threshold" data-remediation-threshold disabled={not @auto_remediation?}>
+              <option
+                :for={severity <- Severity.values()}
+                value={severity}
+                selected={to_string(severity) == @remediation_threshold}
+              >
+                {severity}
+              </option>
+            </select>
+          </label>
+
+          <label class="field-label-inline">
+            Attempt limit
+            <input
+              type="number"
+              name="attempt_limit"
+              min="1"
+              max="5"
+              value={@remediation_limit}
+              data-remediation-limit
+              disabled={not @auto_remediation?}
+            />
+          </label>
+        </form>
+      </div>
+
+      <p :if={@remediation_error} class="field-error" data-error={elem(@remediation_error, 0)}>
+        {elem(@remediation_error, 1)}
+      </p>
 
       <button
         :if={@mode == :backlog}

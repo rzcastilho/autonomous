@@ -50,17 +50,25 @@ defmodule SpeckitOrchestrator.Web.CoreComponents do
   FR-008). `chunk` (015, `ConsoleReadModel.chunk_cell()` | `nil`) adds an
   optional task-phase sub-label to the implement cell only — absent/`nil`/
   `scope: :whole_list` render this **exactly as before 015** (FR-019,
-  SC-005; contracts/telemetry-chunk.md §4).
+  SC-005; contracts/telemetry-chunk.md §4). `remediation` (017,
+  `ConsoleReadModel.remediation_cell()` | `nil`) uses the same sub-label slot
+  under the **analyze** cell to show `attempt k/n` while the auto-remediation
+  loop is running — absent/`nil` renders the cell exactly as before 017
+  (contracts/telemetry-console.md §3).
   """
   attr(:phases, :map, required: true)
   attr(:status, :atom, default: :pending)
   attr(:chunk, :map, default: nil)
+  attr(:remediation, :map, default: nil)
 
   def phase_strip(assigns) do
     assigns =
       assigns
       |> assign(:ordered, Pipeline.phases())
-      |> assign(:chunk_label, chunk_sublabel(assigns[:chunk]))
+      |> assign(:sublabels, %{
+        implement: chunk_sublabel(assigns[:chunk]),
+        analyze: remediation_sublabel(assigns[:remediation])
+      })
 
     ~H"""
     <div class="phase-strip">
@@ -70,11 +78,17 @@ defmodule SpeckitOrchestrator.Web.CoreComponents do
         data-phase={phase}
         title={phase}
       >
-        {phase}<span :if={phase == :implement and @chunk_label} class="phase-chunk-sublabel"> {@chunk_label}</span>
+        {phase}<span :if={@sublabels[phase]} class="phase-sublabel"> {@sublabels[phase]}</span>
       </span>
     </div>
     """
   end
+
+  defp remediation_sublabel(%{attempt: attempt, limit: limit})
+       when is_integer(attempt) and is_integer(limit),
+       do: "attempt #{attempt}/#{limit}"
+
+  defp remediation_sublabel(_remediation), do: nil
 
   defp chunk_sublabel(nil), do: nil
   defp chunk_sublabel(%{scope: :whole_list}), do: nil

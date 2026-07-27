@@ -21,6 +21,7 @@ defmodule SpeckitOrchestrator do
     Pipeline,
     PullRequest,
     Recovery,
+    Remediation,
     Report,
     RepoIdentity,
     RunContext,
@@ -69,33 +70,58 @@ defmodule SpeckitOrchestrator do
   preflight, since it delegates to `run/1` once its single-feature seed is
   prepared.
 
+  Also preflights the analyze auto-remediation settings (017, FR-011): an
+  out-of-range `:auto_remediation_attempt_limit`, an unrecognized
+  `:auto_remediation_threshold` or an unknown `:auto_remediation_model` refuses
+  the run with e.g. `{:error, {:preflight, [{:invalid_attempt_limit, 0}]}}` and
+  starts no work — no clamping, no silent default.
+
   Returns `{:ok, coordinator_pid}`, or `{:error, {:preflight, problems}}` if
-  the layout preflight or the PR workflow's remote/pack preflight fails.
+  the remediation-settings, layout, or PR workflow remote/pack preflight fails.
   """
   @spec run(keyword()) :: GenServer.on_start() | {:error, term()}
   def run(opts \\ []) do
-    # Single-slot rule (FR-005): a new run supersedes the prior manifest — the
-    # fresh Coordinator's first write (from `init/1`) replaces it immediately.
-    # `:supersede` (default true) lets a resume path (016) skip the clear and
-    # write into the existing record instead, where the anti-narrowing guard
-    # applies (contracts/manifest-guard.md "Supersede").
-    if Keyword.get(opts, :supersede, true), do: RunManifest.clear()
     run_context = RunContext.capture(opts)
 
-    with {:ok, layout} <- preflight_layout(opts) do
-      if Keyword.get(opts, :pr_workflow, Config.pr_workflow?()) do
-        run_stacked(opts, run_context, layout)
-      else
-        start_run(opts,
-          max_concurrency: Keyword.get(opts, :max_concurrency, Config.max_concurrency()),
-          context: run_context,
-          layout: layout,
-          runner:
-            Keyword.get(opts, :runner, fn feature, notify ->
-              default_runner(feature, notify, run_context, layout)
-            end)
-        )
+    # Auto-remediation settings are validated *first* (017, FR-011): an invalid
+    # threshold/limit/model refuses the run before any side effect at all —
+    # before the manifest is superseded and before a run directory is ensured.
+    # Never clamped, never defaulted around.
+    with {:ok, _settings} <- preflight_remediation(run_context) do
+      # Single-slot rule (FR-005): a new run supersedes the prior manifest — the
+      # fresh Coordinator's first write (from `init/1`) replaces it immediately.
+      # `:supersede` (default true) lets a resume path (016) skip the clear and
+      # write into the existing record instead, where the anti-narrowing guard
+      # applies (contracts/manifest-guard.md "Supersede").
+      if Keyword.get(opts, :supersede, true), do: RunManifest.clear()
+
+      with {:ok, layout} <- preflight_layout(opts) do
+        if Keyword.get(opts, :pr_workflow, Config.pr_workflow?()) do
+          run_stacked(opts, run_context, layout)
+        else
+          start_run(opts,
+            max_concurrency: Keyword.get(opts, :max_concurrency, Config.max_concurrency()),
+            context: run_context,
+            layout: layout,
+            runner:
+              Keyword.get(opts, :runner, fn feature, notify ->
+                default_runner(feature, notify, run_context, layout)
+              end)
+          )
+        end
       end
+    end
+  end
+
+  # FR-011: the loop's three knobs go through the single validator
+  # (`Remediation.Settings.validate/1`, reached via the captured context so an
+  # explicit opt, a recorded value and the live `Config` default all resolve the
+  # same way) before any work starts. Refusals surface in the same
+  # `{:error, {:preflight, problems}}` shape as every other launch refusal.
+  defp preflight_remediation(run_context) do
+    case Remediation.Settings.from_context(run_context) do
+      {:ok, settings} -> {:ok, settings}
+      {:error, reason} -> {:error, {:preflight, [reason]}}
     end
   end
 

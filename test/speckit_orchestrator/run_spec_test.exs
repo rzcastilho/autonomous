@@ -17,7 +17,11 @@ defmodule SpeckitOrchestrator.RunSpecTest do
 
       [
         %Message{type: :system, subtype: :init, data: %{session_id: "s"}, raw: %{}},
-        %Message{type: :assistant, data: %{session_id: "s", message: %{"content" => text}}, raw: %{}},
+        %Message{
+          type: :assistant,
+          data: %{session_id: "s", message: %{"content" => text}},
+          raw: %{}
+        },
         %Message{
           type: :result,
           subtype: :success,
@@ -39,8 +43,11 @@ defmodule SpeckitOrchestrator.RunSpecTest do
 
         String.contains?(prompt, "/speckit.analyze") ->
           case scenario do
-            :halt -> ~s({"summary":"violation","findings":[{"severity":"critical","title":"bad"}]})
-            _ -> ~s({"summary":"clean","findings":[]})
+            :halt ->
+              ~s({"summary":"violation","findings":[{"severity":"critical","title":"bad"}]})
+
+            _ ->
+              ~s({"summary":"clean","findings":[]})
           end
 
         true ->
@@ -49,7 +56,8 @@ defmodule SpeckitOrchestrator.RunSpecTest do
     end
   end
 
-  defp git!(repo, args), do: {_, 0} = System.cmd("git", ["-C", repo | args], stderr_to_stdout: true)
+  defp git!(repo, args),
+    do: {_, 0} = System.cmd("git", ["-C", repo | args], stderr_to_stdout: true)
 
   # Base repo with the committed scaffold single-spec worktrees need — same
   # shape as facade_e2e_test.exs / worktree_test.exs's helpers.
@@ -86,7 +94,7 @@ defmodule SpeckitOrchestrator.RunSpecTest do
   defp point_config_at(repo, root) do
     prev =
       for k <- [:repo, :worktree_root, :autonomous_root],
-        do: {k, Application.get_env(:speckit_orchestrator, k)}
+          do: {k, Application.get_env(:speckit_orchestrator, k)}
 
     Application.put_env(:speckit_orchestrator, :repo, repo)
     Application.put_env(:speckit_orchestrator, :worktree_root, root)
@@ -94,7 +102,9 @@ defmodule SpeckitOrchestrator.RunSpecTest do
 
     on_exit(fn ->
       for {k, v} <- prev do
-        if v, do: Application.put_env(:speckit_orchestrator, k, v), else: Application.delete_env(:speckit_orchestrator, k)
+        if v,
+          do: Application.put_env(:speckit_orchestrator, k, v),
+          else: Application.delete_env(:speckit_orchestrator, k)
       end
     end)
   end
@@ -132,7 +142,11 @@ defmodule SpeckitOrchestrator.RunSpecTest do
 
     test "a valid description runs as a wave of one via an injected :runner" do
       me = self()
-      runner = fn feature, notify -> send(me, {:started, feature.id, feature.slug}); notify.(feature.id, :done, nil) end
+
+      runner = fn feature, notify ->
+        send(me, {:started, feature.id, feature.slug})
+        notify.(feature.id, :done, nil)
+      end
 
       {:ok, pid} =
         SpeckitOrchestrator.run_spec("Add a health check endpoint",
@@ -151,16 +165,24 @@ defmodule SpeckitOrchestrator.RunSpecTest do
     test "auto-assigned id skips past existing ad-hoc ids and feature branches" do
       repo = base_repo()
       File.mkdir_p!(Path.join(repo, "specs/autonomous/ad-hoc"))
+
       File.write!(
         Path.join(repo, "specs/autonomous/ad-hoc/001-existing.md"),
         "# 001\n\n## Prerequisites\n\nNone\n"
       )
+
       git!(repo, ["branch", "feature/002-also-existing"])
 
       me = self()
-      runner = fn feature, notify -> send(me, {:id, feature.id}); notify.(feature.id, :done, nil) end
 
-      {:ok, pid} = SpeckitOrchestrator.run_spec("A third feature", repo: repo, runner: runner, owner: me)
+      runner = fn feature, notify ->
+        send(me, {:id, feature.id})
+        notify.(feature.id, :done, nil)
+      end
+
+      {:ok, pid} =
+        SpeckitOrchestrator.run_spec("A third feature", repo: repo, runner: runner, owner: me)
+
       on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
 
       assert_receive {:id, "003"}, 2_000
@@ -277,7 +299,13 @@ defmodule SpeckitOrchestrator.RunSpecTest do
       runner = fn f, _notify -> send(me, {:started, f.id}) end
 
       {:ok, pid} =
-        Coordinator.start_link(features: [feature], ledger: ledger, runner: runner, owner: me, name: nil)
+        Coordinator.start_link(
+          features: [feature],
+          ledger: ledger,
+          runner: runner,
+          owner: me,
+          name: nil
+        )
 
       on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
 
@@ -331,7 +359,10 @@ defmodule SpeckitOrchestrator.RunSpecTest do
 
       on_exit(fn ->
         File.rm_rf(bare)
-        if prev, do: Application.put_env(:speckit_orchestrator, :repo, prev), else: Application.delete_env(:speckit_orchestrator, :repo)
+
+        if prev,
+          do: Application.put_env(:speckit_orchestrator, :repo, prev),
+          else: Application.delete_env(:speckit_orchestrator, :repo)
       end)
 
       assert {:error, {:preflight, _problems}} =

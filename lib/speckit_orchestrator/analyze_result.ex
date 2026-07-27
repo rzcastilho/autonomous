@@ -25,7 +25,7 @@ defmodule SpeckitOrchestrator.AnalyzeResult do
   feature sailed through to `:done` and opened a PR for a spec-only branch.
   """
 
-  alias SpeckitOrchestrator.AnalyzeResult
+  alias SpeckitOrchestrator.{AnalyzeResult, Severity}
 
   @critical_severities ~w(critical blocker)
   @high_severities ~w(high)
@@ -90,6 +90,32 @@ defmodule SpeckitOrchestrator.AnalyzeResult do
     do: String.downcase(sev) in @high_severities
 
   defp high_finding?(_), do: false
+
+  @doc """
+  Highest recognized severity across `findings` — `:unknown` if none of them
+  parse, `nil` for an empty findings list (contracts/severity.md §5). Built on
+  `Severity`; `critical?/1`/`high?/1` are **not** reimplemented in terms of
+  it, so a run with the auto-remediation loop disabled produces byte-identical
+  gate signals (SC-007a).
+  """
+  @spec max_severity(t()) :: Severity.parsed() | nil
+  def max_severity(%AnalyzeResult{findings: findings}) do
+    findings |> Enum.map(&Severity.parse_finding/1) |> Severity.max()
+  end
+
+  @doc "Findings at or above `threshold`, verbatim and in report order (FR-001a)."
+  @spec findings_at_or_above(t(), Severity.severity()) :: [finding()]
+  def findings_at_or_above(%AnalyzeResult{findings: findings}, threshold) do
+    Enum.filter(findings, fn finding ->
+      finding |> Severity.parse_finding() |> Severity.at_or_above?(threshold)
+    end)
+  end
+
+  @doc "Findings whose severity did not parse (research R3) — reported, never dropped."
+  @spec unknown_severities(t()) :: [finding()]
+  def unknown_severities(%AnalyzeResult{findings: findings}) do
+    Enum.filter(findings, &(Severity.parse_finding(&1) == :unknown))
+  end
 
   # ---- JSON recovery ------------------------------------------------------
 

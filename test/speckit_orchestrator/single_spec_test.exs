@@ -23,7 +23,8 @@ defmodule SpeckitOrchestrator.SingleSpecTest do
 
   describe "slug/1" do
     test "kebab-cases the first tokens of a description" do
-      assert SingleSpec.slug("Add a health check endpoint please") == "add-a-health-check-endpoint"
+      assert SingleSpec.slug("Add a health check endpoint please") ==
+               "add-a-health-check-endpoint"
     end
 
     test "caps at 5 tokens" do

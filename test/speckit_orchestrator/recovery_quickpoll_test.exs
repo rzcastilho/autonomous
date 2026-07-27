@@ -141,6 +141,7 @@ defmodule SpeckitOrchestrator.RecoveryQuickpollTest do
     seed_quickpoll_state()
 
     {:ok, record} = RunManifest.read()
+
     assert {:ok, %{statuses: statuses, report: report, resume_phases: resume_phases}} =
              Recovery.reconcile_run(record)
 

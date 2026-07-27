@@ -550,4 +550,79 @@ defmodule SpeckitOrchestrator.Web.EscalationsLiveTest do
     assert html =~ "Feature e13 resumed"
     refute html =~ ~s(data-escalation="e13")
   end
+
+  # ---- auto-remediation attempt history (017, SC-005) ------------------------
+
+  test "renders the exhausted-attempts summary above the resume controls", %{conn: conn} do
+    Checkpoint.write(%{
+      feature_id: "e14",
+      last_phase: :analyze,
+      status: :escalated,
+      reason: "{:high_findings, :auto_remediation_exhausted}",
+      session_id: "sess-14",
+      slug: "slug-e14",
+      path: "e14.md",
+      analyze_remediation: %{
+        attempts_used: 2,
+        limit: 2,
+        threshold: "high",
+        enabled: true
+      }
+    })
+
+    pid = start_coordinator([feat("e14", "slug-e14")], %{"e14" => {:escalated, "exhausted"}})
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    {:ok, _view, html} = live(conn, "/escalations")
+
+    assert html =~ ~s(data-auto-remediation)
+    assert html =~ "auto-remediation: 2/2 attempts exhausted (threshold high)"
+  end
+
+  test "a partial attempt budget reads as spent, not exhausted", %{conn: conn} do
+    Checkpoint.write(%{
+      feature_id: "e15",
+      last_phase: :analyze,
+      status: :failed,
+      reason: "{:failed, :remediation_failed}",
+      session_id: "sess-15",
+      slug: "slug-e15",
+      path: "e15.md",
+      analyze_remediation: %{
+        attempts_used: 1,
+        limit: 4,
+        threshold: "critical",
+        enabled: true
+      }
+    })
+
+    pid =
+      start_coordinator([feat("e15", "slug-e15")], %{"e15" => {:failed, "remediation failed"}})
+
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    {:ok, _view, html} = live(conn, "/escalations")
+
+    assert html =~ "auto-remediation: 1/4 attempts spent (threshold critical)"
+  end
+
+  test "a pre-017 checkpoint renders no auto-remediation line at all", %{conn: conn} do
+    Checkpoint.write(%{
+      feature_id: "e16",
+      last_phase: :analyze,
+      status: :halted,
+      reason: "critical finding",
+      session_id: "sess-16",
+      slug: "slug-e16",
+      path: "e16.md"
+    })
+
+    pid = start_coordinator([feat("e16", "slug-e16")], %{"e16" => {:halted, "critical finding"}})
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    {:ok, _view, html} = live(conn, "/escalations")
+
+    assert html =~ ~s(data-escalation="e16")
+    refute html =~ ~s(data-auto-remediation)
+  end
 end

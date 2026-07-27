@@ -1,0 +1,12 @@
+[
+  {
+    "summary": "One finding carries a severity outside the vocabulary.",
+    "findings": [
+      {
+        "severity": "showstopper",
+        "title": "data-model.md contradicts plan.md on the checkpoint key",
+        "detail": "Unrecognized severity: matches no threshold, including :low (research R3)."
+      }
+    ]
+  }
+]

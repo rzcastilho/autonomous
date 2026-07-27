@@ -4,7 +4,18 @@ defmodule SpeckitOrchestrator.RunContextTest do
 
   alias SpeckitOrchestrator.RunContext
 
-  @config_keys [:pr_workflow, :max_concurrency, :budget_usd, :plan_stack, :pr_base, :pr_remote]
+  @config_keys [
+    :pr_workflow,
+    :max_concurrency,
+    :budget_usd,
+    :plan_stack,
+    :pr_base,
+    :pr_remote,
+    :auto_remediation,
+    :auto_remediation_threshold,
+    :auto_remediation_attempt_limit,
+    :auto_remediation_model
+  ]
 
   setup do
     prev = for k <- @config_keys, do: {k, Application.get_env(:speckit_orchestrator, k)}
@@ -28,7 +39,11 @@ defmodule SpeckitOrchestrator.RunContextTest do
         budget_usd: 7.5,
         plan_stack: ["a", "b"],
         pr_base: "develop",
-        pr_remote: "upstream"
+        pr_remote: "upstream",
+        auto_remediation: false,
+        auto_remediation_threshold: :critical,
+        auto_remediation_attempt_limit: 3,
+        auto_remediation_model: "opus"
       ]
 
       assert RunContext.capture(opts) == %RunContext{
@@ -37,7 +52,11 @@ defmodule SpeckitOrchestrator.RunContextTest do
                budget_usd: 7.5,
                plan_stack: ["a", "b"],
                pr_base: "develop",
-               pr_remote: "upstream"
+               pr_remote: "upstream",
+               auto_remediation: false,
+               auto_remediation_threshold: "critical",
+               auto_remediation_attempt_limit: 3,
+               auto_remediation_model: "opus"
              }
     end
 
@@ -48,6 +67,10 @@ defmodule SpeckitOrchestrator.RunContextTest do
       Application.put_env(:speckit_orchestrator, :plan_stack, ["x"])
       Application.put_env(:speckit_orchestrator, :pr_base, "trunk")
       Application.put_env(:speckit_orchestrator, :pr_remote, "origin2")
+      Application.put_env(:speckit_orchestrator, :auto_remediation, false)
+      Application.put_env(:speckit_orchestrator, :auto_remediation_threshold, :medium)
+      Application.put_env(:speckit_orchestrator, :auto_remediation_attempt_limit, 4)
+      Application.put_env(:speckit_orchestrator, :auto_remediation_model, "sonnet")
 
       assert RunContext.capture([]) == %RunContext{
                pr_workflow: true,
@@ -55,7 +78,11 @@ defmodule SpeckitOrchestrator.RunContextTest do
                budget_usd: 12.0,
                plan_stack: ["x"],
                pr_base: "trunk",
-               pr_remote: "origin2"
+               pr_remote: "origin2",
+               auto_remediation: false,
+               auto_remediation_threshold: "medium",
+               auto_remediation_attempt_limit: 4,
+               auto_remediation_model: "sonnet"
              }
     end
 
@@ -66,17 +93,37 @@ defmodule SpeckitOrchestrator.RunContextTest do
       assert ctx.pr_workflow == true
       assert ctx.max_concurrency == 9
     end
+
+    test "defaults (no opts, no Config override) resolve auto_remediation on with threshold \"high\"" do
+      ctx = RunContext.capture([])
+      assert ctx.auto_remediation == true
+      assert ctx.auto_remediation_threshold == "high"
+      assert ctx.auto_remediation_attempt_limit == 2
+      assert ctx.auto_remediation_model == nil
+    end
+
+    test "auto_remediation_threshold is always stored as a string, never an atom" do
+      assert RunContext.capture(auto_remediation_threshold: :low).auto_remediation_threshold ==
+               "low"
+
+      assert RunContext.capture(auto_remediation_threshold: "low").auto_remediation_threshold ==
+               "low"
+    end
   end
 
   describe "to_map/1" do
-    test "produces a JSON-ready string-keyed map of exactly the six settings" do
+    test "produces a JSON-ready string-keyed map of exactly the ten settings" do
       ctx = %RunContext{
         pr_workflow: true,
         max_concurrency: 2,
         budget_usd: 25.0,
         plan_stack: ["research", "plan"],
         pr_base: "main",
-        pr_remote: "origin"
+        pr_remote: "origin",
+        auto_remediation: true,
+        auto_remediation_threshold: "high",
+        auto_remediation_attempt_limit: 2,
+        auto_remediation_model: nil
       }
 
       assert RunContext.to_map(ctx) == %{
@@ -85,11 +132,15 @@ defmodule SpeckitOrchestrator.RunContextTest do
                "budget_usd" => 25.0,
                "plan_stack" => ["research", "plan"],
                "pr_base" => "main",
-               "pr_remote" => "origin"
+               "pr_remote" => "origin",
+               "auto_remediation" => true,
+               "auto_remediation_threshold" => "high",
+               "auto_remediation_attempt_limit" => 2,
+               "auto_remediation_model" => nil
              }
     end
 
-    test "map keys are exactly the six settings, nothing else" do
+    test "map keys are exactly the ten settings, nothing else" do
       map = RunContext.to_map(%RunContext{})
 
       assert Map.keys(map) |> Enum.sort() ==
@@ -99,7 +150,11 @@ defmodule SpeckitOrchestrator.RunContextTest do
                  "budget_usd",
                  "plan_stack",
                  "pr_base",
-                 "pr_remote"
+                 "pr_remote",
+                 "auto_remediation",
+                 "auto_remediation_threshold",
+                 "auto_remediation_attempt_limit",
+                 "auto_remediation_model"
                ])
     end
   end
@@ -121,6 +176,17 @@ defmodule SpeckitOrchestrator.RunContextTest do
     test "never raises on an unexpected/extra key" do
       assert RunContext.from_map(%{"pr_workflow" => true, "unexpected" => "ignored"}) ==
                %RunContext{pr_workflow: true}
+    end
+
+    test "round-trips the four auto-remediation fields through to_map/from_map" do
+      ctx = %RunContext{
+        auto_remediation: false,
+        auto_remediation_threshold: "critical",
+        auto_remediation_attempt_limit: 5,
+        auto_remediation_model: "opus"
+      }
+
+      assert ctx |> RunContext.to_map() |> RunContext.from_map() == ctx
     end
   end
 
@@ -146,7 +212,23 @@ defmodule SpeckitOrchestrator.RunContextTest do
 
       assert Keyword.fetch(merged, :pr_base) == :error
       assert :pr_base in fell_back
-      assert length(fell_back) == 6
+      assert length(fell_back) == 10
+    end
+
+    test "explicit opt > recorded > absent precedence holds for the auto-remediation fields too" do
+      recorded = %RunContext{
+        auto_remediation: false,
+        auto_remediation_threshold: "critical",
+        auto_remediation_attempt_limit: 4
+      }
+
+      {merged, fell_back} = RunContext.merge([auto_remediation: true], recorded)
+
+      assert Keyword.get(merged, :auto_remediation) == true
+      assert Keyword.get(merged, :auto_remediation_threshold) == "critical"
+      assert Keyword.get(merged, :auto_remediation_attempt_limit) == 4
+      assert Keyword.fetch(merged, :auto_remediation_model) == :error
+      assert :auto_remediation_model in fell_back
     end
 
     test "result is independent of opts vs recorded argument precedence order" do

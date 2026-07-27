@@ -1068,6 +1068,32 @@ a:hover {
   color: var(--muted);
 }
 
+/* Validation and start-refusal messages, shared by every form in the console
+   (trigger, configuration, pipeline DAG). Uses the palette's `failed` red so a
+   refusal reads as one at a glance rather than as body copy — previously this
+   class carried no rule at all. */
+.field-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid #f43f5e;
+  border-left-width: 3px;
+  border-radius: 8px;
+  background: #f43f5e14;
+  color: #f43f5e;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.field-error::before {
+  content: "!";
+  flex: 0 0 auto;
+  font-weight: 700;
+}
+
 .resume-textarea,
 .resume-select {
   background: var(--bg);
@@ -1656,6 +1682,28 @@ textarea {
   font-size: 11px;
   color: var(--muted);
   font-family: var(--font-mono);
+}
+
+/* 017: the auto-remediation threshold/limit are meaningless while the switch
+   is off. The controls carry the native `disabled` attribute; this dims their
+   labels with them so the whole group reads as inactive. */
+.auto-remediation-row form {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.field-label-inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+}
+
+.controls-disabled {
+  opacity: 0.45;
 }
 
 /* Range sliders (Config's budget/concurrency) */

@@ -387,16 +387,27 @@ defmodule SpeckitOrchestrator.ResumeRunTest do
 
     on_exit(fn -> File.rm_rf(Path.join(Config.transcript_root(), id)) end)
 
-    # A recorded layout (012, T033) lets resume_run/1 skip re-resolving repo
-    # identity — exactly the point of this test: the repo itself has since
-    # become unreachable, but the crash-recovery resume must not need it to
-    # exist just to locate the checkpoint; only the feature's own worktree
-    # lookup (against the now-broken :repo) should fail.
-    layout = %Layout{
-      worktree_root: Path.join(root, "worktrees"),
-      transcript_root: root,
-      in_repo_rel: "specs/autonomous/ad-hoc"
-    }
+    # The repo must keep a *resolvable identity* — `RunManifest.read/0` locates
+    # the slot by resolving `Config.repo()`'s origin-derived segment, and there
+    # is deliberately no flat-path fallback on a segment-scoped read (012), so a
+    # repo whose identity cannot be resolved reads the identity-less bucket and
+    # can never see a segment-scoped write. What this test breaks is the thing
+    # it is actually about: the *feature's* branch/worktree. The repo below is a
+    # real git repo with an origin (so the segment resolves and matches the
+    # write) but is bare of the committed `.specify/`/`.claude/` scaffold
+    # `Worktree.create` asserts, so the feature fails loud while the run itself
+    # drains normally.
+    repo = Path.join(root, "gone-repo")
+    File.mkdir_p!(repo)
+    git!(repo, ["init", "-q", "-b", "main"])
+    git!(repo, ["remote", "add", "origin", "https://example.com/acme/gone-#{id}.git"])
+    {:ok, segment} = RepoIdentity.resolve(repo)
+
+    # Built through the real API, so `worktree_root`'s basename *is* the segment
+    # — which is what `RunManifest.write/1` records the slot under. A hand-rolled
+    # `%Layout{}` whose basename is not a segment silently writes to a slot no
+    # read can ever resolve.
+    {:ok, layout} = Layout.build(repo, segment, {:breakdown, "pkg"})
 
     write_manifest(%{
       features: [feat(id)],
@@ -406,7 +417,7 @@ defmodule SpeckitOrchestrator.ResumeRunTest do
     })
 
     prev_repo = Application.get_env(:speckit_orchestrator, :repo)
-    Application.put_env(:speckit_orchestrator, :repo, "/nonexistent/repo-#{id}")
+    Application.put_env(:speckit_orchestrator, :repo, repo)
 
     on_exit(fn ->
       if prev_repo,

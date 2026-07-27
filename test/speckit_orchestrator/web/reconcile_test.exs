@@ -154,7 +154,9 @@ defmodule SpeckitOrchestrator.Web.ReconcileTest do
     {:ok, _view, html} = live(conn, "/")
     assert html =~ ~s(data-state="no-active-run")
 
-    empty_dir = Path.join(System.tmp_dir!(), "reconcile_empty_#{System.unique_integer([:positive])}")
+    empty_dir =
+      Path.join(System.tmp_dir!(), "reconcile_empty_#{System.unique_integer([:positive])}")
+
     File.mkdir_p!(empty_dir)
     on_exit(fn -> File.rm_rf(empty_dir) end)
     point_backlog_at(empty_dir)

@@ -199,4 +199,112 @@ defmodule SpeckitOrchestrator.Web.TriggerLiveTest do
     {:ok, _view2, html2} = live(conn, "/trigger")
     assert html2 =~ ~s(data-pr-workflow="true")
   end
+
+  # ---- 017-analyze-auto-remediation launch controls (contracts/telemetry-console.md §4)
+
+  describe "auto-remediation launch controls" do
+    setup do
+      prior = %{
+        auto_remediation: Application.get_env(:speckit_orchestrator, :auto_remediation),
+        auto_remediation_threshold:
+          Application.get_env(:speckit_orchestrator, :auto_remediation_threshold),
+        auto_remediation_attempt_limit:
+          Application.get_env(:speckit_orchestrator, :auto_remediation_attempt_limit)
+      }
+
+      on_exit(fn ->
+        Enum.each(prior, fn
+          {k, nil} -> Application.delete_env(:speckit_orchestrator, k)
+          {k, v} -> Application.put_env(:speckit_orchestrator, k, v)
+        end)
+      end)
+
+      :ok
+    end
+
+    test "the three controls are pre-filled from Config (AS-8)", %{conn: conn} do
+      point_backlog_at(@valid_dir)
+      Application.put_env(:speckit_orchestrator, :auto_remediation, true)
+      Application.put_env(:speckit_orchestrator, :auto_remediation_threshold, :high)
+      Application.put_env(:speckit_orchestrator, :auto_remediation_attempt_limit, 2)
+
+      {:ok, _view, html} = live(conn, "/trigger")
+
+      assert html =~ ~s(data-auto-remediation="true")
+      assert html =~ ~s(<option value="high" selected)
+      assert html =~ ~s(data-remediation-limit)
+      assert html =~ ~s(value="2")
+    end
+
+    test "threshold and limit are disabled while the switch is off", %{conn: conn} do
+      point_backlog_at(@valid_dir)
+
+      {:ok, view, html} = live(conn, "/trigger")
+      refute html =~ ~s(data-remediation-threshold="" disabled)
+      refute html =~ ~s(data-remediation-limit="" disabled)
+
+      html = render_click(view, "toggle_auto_remediation", %{})
+
+      assert html =~ ~s(data-auto-remediation="false")
+      assert html =~ ~s(data-remediation-threshold="" disabled="")
+      assert html =~ ~s(data-remediation-limit="" disabled="")
+      assert html =~ ~s(class="controls-disabled")
+    end
+
+    test "an out-of-range attempt limit is refused before the run starts (AS-9, FR-010e)", %{
+      conn: conn
+    } do
+      point_backlog_at(@valid_dir)
+
+      {:ok, view, _html} = live(conn, "/trigger")
+
+      render_change(
+        view,
+        "update_remediation",
+        %{"threshold" => "high", "attempt_limit" => "7"}
+      )
+
+      html = render_click(view, "start_backlog", %{})
+
+      assert html =~ ~s(data-error="auto-remediation-limit")
+      refute Process.whereis(Coordinator)
+    end
+
+    test "an unrecognized threshold is refused before the run starts (FR-010e)", %{conn: conn} do
+      point_backlog_at(@valid_dir)
+
+      {:ok, view, _html} = live(conn, "/trigger")
+
+      render_change(
+        view,
+        "update_remediation",
+        %{"threshold" => "urgent", "attempt_limit" => "2"}
+      )
+
+      html = render_click(view, "start_backlog", %{})
+
+      assert html =~ ~s(data-error="auto-remediation-threshold")
+      refute Process.whereis(Coordinator)
+    end
+
+    test "a run launched with the loop off leaves the next mount's defaults untouched (FR-010f)",
+         %{conn: conn} do
+      point_backlog_at(@valid_dir)
+      Application.put_env(:speckit_orchestrator, :auto_remediation, true)
+
+      {:ok, view, html} = live(conn, "/trigger")
+      assert html =~ ~s(data-auto-remediation="true")
+
+      html = render_click(view, "toggle_auto_remediation", %{})
+      assert html =~ ~s(data-auto-remediation="false")
+
+      result = render_click(view, "start_backlog", %{})
+      {:ok, _mc_view, _mc_html} = follow_redirect(result, conn)
+
+      assert Config.auto_remediation?() == true
+
+      {:ok, _view2, html2} = live(conn, "/trigger")
+      assert html2 =~ ~s(data-auto-remediation="true")
+    end
+  end
 end
