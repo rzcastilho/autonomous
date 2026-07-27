@@ -242,4 +242,110 @@ defmodule SpeckitOrchestrator.RunManifestTest do
 
     assert statuses == %{"001" => :pending}
   end
+
+  # ---- scope-narrowing guard (T016/T017, contracts/manifest-guard.md) -------
+
+  defp write3, do: base_payload(%{features: [feat("001"), feat("002"), feat("003")]})
+
+  test "write/1 refuses a write that drops a recorded id, leaving the file byte-identical",
+       %{root: root} do
+    :ok = RunManifest.write(write3())
+    before = File.read!(manifest_path(root))
+
+    assert :ok = RunManifest.write(base_payload(%{features: [feat("001")]}))
+
+    assert File.read!(manifest_path(root)) == before
+
+    {:ok, record} = RunManifest.read()
+    assert Enum.map(record["features"], & &1["id"]) |> Enum.sort() == ["001", "002", "003"]
+  end
+
+  test "write/1 refuses an identity swap even though the count is unchanged (FR-011, SC-004)" do
+    :ok = RunManifest.write(write3())
+
+    assert :ok =
+             RunManifest.write(base_payload(%{features: [feat("001"), feat("002"), feat("004")]}))
+
+    {:ok, record} = RunManifest.read()
+    assert Enum.map(record["features"], & &1["id"]) |> Enum.sort() == ["001", "002", "003"]
+  end
+
+  test "write/1 allows a write that grows the recorded set (superset is not narrowing)" do
+    :ok = RunManifest.write(write3())
+
+    assert :ok =
+             RunManifest.write(
+               base_payload(%{
+                 features: [feat("001"), feat("002"), feat("003"), feat("004")]
+               })
+             )
+
+    {:ok, record} = RunManifest.read()
+    assert Enum.map(record["features"], & &1["id"]) |> Enum.sort() == ["001", "002", "003", "004"]
+  end
+
+  test "write/1 allows the first write after clear/0 (a fresh run supersedes, FR-013)" do
+    :ok = RunManifest.write(write3())
+    :ok = RunManifest.clear()
+
+    assert :ok = RunManifest.write(base_payload(%{features: [feat("001")]}))
+
+    {:ok, record} = RunManifest.read()
+    assert Enum.map(record["features"], & &1["id"]) == ["001"]
+  end
+
+  test "write/1 allows a same-ids progress-only write (FR-014 unaffected)" do
+    :ok = RunManifest.write(write3())
+
+    assert :ok =
+             RunManifest.write(
+               write3()
+               |> Map.put(:statuses, %{"001" => :done, "002" => :running, "003" => :pending})
+             )
+
+    {:ok, record} = RunManifest.read()
+    assert record["statuses"]["001"] == "done"
+  end
+
+  test "write/1 emits the refusal telemetry event with dropped_count and sorted metadata" do
+    :ok = RunManifest.write(write3())
+
+    ref = make_ref()
+
+    :telemetry.attach(
+      ref,
+      [:speckit, :run, :scope_narrowing_refused],
+      fn event, meas, meta, pid -> send(pid, {:telemetry, event, meas, meta}) end,
+      self()
+    )
+
+    on_exit(fn -> :telemetry.detach(ref) end)
+
+    assert :ok = RunManifest.write(base_payload(%{features: [feat("001")]}))
+
+    assert_receive {:telemetry, [:speckit, :run, :scope_narrowing_refused], measurements,
+                    metadata}
+
+    assert measurements.dropped_count == 2
+    assert metadata.dropped == ["002", "003"]
+    assert metadata.recorded == ["001", "002", "003"]
+    assert metadata.attempted == ["001"]
+  end
+
+  test "write/1 does not emit the refusal telemetry event on an allowed write" do
+    ref = make_ref()
+
+    :telemetry.attach(
+      ref,
+      [:speckit, :run, :scope_narrowing_refused],
+      fn event, meas, meta, pid -> send(pid, {:telemetry, event, meas, meta}) end,
+      self()
+    )
+
+    on_exit(fn -> :telemetry.detach(ref) end)
+
+    :ok = RunManifest.write(write3())
+
+    refute_receive {:telemetry, [:speckit, :run, :scope_narrowing_refused], _, _}
+  end
 end

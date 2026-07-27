@@ -214,6 +214,20 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
     push_feed(model, entry(id, :implement, :warn, resolved_feed_text(match_kind)))
   end
 
+  # ---- run-level guard refusal (specs/016-resume-backlog-scope) -------------
+
+  def apply_event(
+        model,
+        [:speckit, :run, :scope_narrowing_refused],
+        _measurements,
+        %{dropped: dropped}
+      ) do
+    push_feed(
+      model,
+      entry(nil, nil, :warn, "scope narrowing refused — would drop #{Enum.join(dropped, ", ")}")
+    )
+  end
+
   def apply_event(model, _event_name, _measurements, _metadata), do: model
 
   @doc """

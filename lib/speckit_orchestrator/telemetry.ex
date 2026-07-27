@@ -25,6 +25,14 @@ defmodule SpeckitOrchestrator.Telemetry do
     * `[:speckit, :chunk, :resolved]` — measurements `%{}`, metadata
       `%{feature_id, match_kind, ordinal, number, title, requested}`.
 
+  Events (emitted by `RunManifest.write/1` — run-level, no `feature_id`;
+  `specs/016-resume-backlog-scope/contracts/manifest-guard.md`):
+
+    * `[:speckit, :run, :scope_narrowing_refused]` — measurements
+      `%{dropped_count}`, metadata `%{segment, recorded, attempted, dropped}`.
+      Fires when a write would drop a currently-recorded feature id; the
+      write is refused and the existing record is left untouched.
+
   Call `attach_default_logger/0` from `iex` to log every event.
   """
 
@@ -40,7 +48,8 @@ defmodule SpeckitOrchestrator.Telemetry do
     [:speckit, :chunk, :start],
     [:speckit, :chunk, :stop],
     [:speckit, :chunk, :exception],
-    [:speckit, :chunk, :resolved]
+    [:speckit, :chunk, :resolved],
+    [:speckit, :run, :scope_narrowing_refused]
   ]
 
   @doc "The `:telemetry.span/3` prefix for phase events."
@@ -73,6 +82,13 @@ defmodule SpeckitOrchestrator.Telemetry do
     Logger.info(
       "feature #{meta.feature_id} terminal=#{meta.status} reason=#{inspect(meta.reason)} " <>
         "cost_total=#{inspect(meas.cost_total)}"
+    )
+  end
+
+  def handle_event([:speckit, :run, :scope_narrowing_refused], _meas, meta, _cfg) do
+    Logger.warning(
+      "run scope narrowing refused: dropped=#{inspect(meta.dropped)} " <>
+        "recorded=#{inspect(meta.recorded)} segment=#{inspect(meta.segment)}"
     )
   end
 

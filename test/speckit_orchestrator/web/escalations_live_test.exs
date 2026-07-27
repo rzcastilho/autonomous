@@ -311,6 +311,69 @@ defmodule SpeckitOrchestrator.Web.EscalationsLiveTest do
     assert html =~ ~s(data-action="full-restart-e8")
   end
 
+  # ---- 016 T038: resume panel states whole-run continuation + active-run refusal (S7) ----
+
+  test "resume panel copy states that resuming continues the whole run, not only the selected feature",
+       %{conn: conn} do
+    Checkpoint.write(%{
+      feature_id: "e14",
+      last_phase: :clarify,
+      status: :escalated,
+      reason: "needs human",
+      session_id: "sess-14",
+      slug: "slug-e14",
+      path: "e14.md"
+    })
+
+    pid = start_coordinator([feat("e14", "slug-e14")], %{"e14" => {:escalated, "needs human"}})
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    {:ok, _view, html} = live(conn, "/escalations")
+
+    assert html =~ ~s(data-resume-scope-note)
+    assert html =~ "Resuming continues the whole run"
+  end
+
+  test "a resume attempted while another run is live renders the active-run refusal instead of starting work",
+       %{conn: conn} do
+    Checkpoint.write(%{
+      feature_id: "e15",
+      last_phase: :clarify,
+      status: :escalated,
+      reason: "needs human",
+      session_id: "sess-15",
+      slug: "slug-e15",
+      path: "e15.md"
+    })
+
+    # A blocker feature with no outcome entry never notifies — the Coordinator
+    # this starts stays unfinished for the duration of the test, matching
+    # `guard_active_run/1`'s `finished?` check (FR-010a).
+    pid =
+      start_coordinator(
+        [feat("e15", "slug-e15"), feat("blocker", "slug-blocker")],
+        %{"e15" => {:escalated, "needs human"}}
+      )
+
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    {:ok, view, html} = live(conn, "/escalations")
+    assert html =~ ~s(data-escalation="e15")
+
+    html =
+      render_submit(view, "resume", %{
+        "feature_id" => "e15",
+        "prompt" => "",
+        "from" => "clarify"
+      })
+
+    assert html =~ "Resume failed:"
+    assert html =~ "a run is already live for this repository"
+    # refused, not started — the escalation is still open.
+    assert html =~ ~s(data-escalation="e15")
+    assert Process.whereis(Coordinator) == pid
+  end
+
   test "empty escalation set renders the all-clear empty state", %{conn: conn} do
     refute Process.whereis(Coordinator)
 
