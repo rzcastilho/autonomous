@@ -78,8 +78,11 @@ defmodule SpeckitOrchestrator.Web.TranscriptsLive do
     scope_dir = Path.join(root, scope)
 
     case File.ls(scope_dir) do
-      {:ok, ids} -> ids |> Enum.filter(&File.dir?(Path.join(scope_dir, &1))) |> Enum.map(&"#{scope}/#{&1}")
-      {:error, _reason} -> []
+      {:ok, ids} ->
+        ids |> Enum.filter(&File.dir?(Path.join(scope_dir, &1))) |> Enum.map(&"#{scope}/#{&1}")
+
+      {:error, _reason} ->
+        []
     end
   end
 

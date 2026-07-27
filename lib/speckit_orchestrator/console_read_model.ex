@@ -42,11 +42,20 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
           outcome: atom() | nil
         }
 
+  @type remediation_cell :: %{
+          attempt: pos_integer(),
+          limit: pos_integer(),
+          threshold: atom(),
+          findings: non_neg_integer(),
+          outcome: :ok | :error | nil
+        }
+
   @type feature_slice :: %{
           current_phase: atom() | nil,
           phases: %{atom() => phase_cell()},
           spend: number(),
-          chunk: chunk_cell() | nil
+          chunk: chunk_cell() | nil,
+          remediation: remediation_cell() | nil
         }
 
   @type t :: %{features: %{String.t() => feature_slice()}, feed: [event_entry()]}
@@ -61,7 +70,10 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
 
   Recognized events (see the projection contract's telemetry table):
   `[:speckit, :phase, :start/:stop/:exception]`, `[:speckit, :feature,
-  :terminal]`. Any other event passes through unchanged.
+  :terminal]`, `[:speckit, :chunk, :start/:stop/:exception/:resolved]`,
+  `[:speckit, :remediation, :start/:stop/:exception]`, and
+  `[:speckit, :run, :scope_narrowing_refused]`. Any other event passes through
+  unchanged.
   """
   @spec apply_event(t(), [atom()], map(), map()) :: t()
   def apply_event(model, event_name, measurements, metadata)
@@ -133,7 +145,7 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
       ) do
     feature = feature_slice(model, id)
     cost_total = measurements[:cost_total] || 0.0
-    feature = %{feature | spend: max(feature.spend, cost_total), chunk: nil}
+    feature = %{feature | spend: max(feature.spend, cost_total), chunk: nil, remediation: nil}
 
     model
     |> put_feature(id, feature)
@@ -212,6 +224,72 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
         %{feature_id: id, match_kind: match_kind}
       ) do
     push_feed(model, entry(id, :implement, :warn, resolved_feed_text(match_kind)))
+  end
+
+  # ---- auto-remediation events (specs/017-analyze-auto-remediation) ---------
+  # `AnalyzeRunner`'s per-attempt `[:speckit, :remediation]` span
+  # (contracts/telemetry-console.md §2): folds the current attempt into the
+  # feature slice and emits one feed entry per attempt boundary. The slice is
+  # the analyze-step analogue of `chunk` — same shape of concept, so
+  # `phase_strip` renders it through the same sub-label slot.
+  #
+  # No double counting: the remediation span and the analyze phase span never
+  # describe the same harness run, so cost is added plainly here and plainly in
+  # `[:speckit, :phase, :stop]` — no `chunk_cost_seen`-style guard is needed.
+
+  def apply_event(
+        model,
+        [:speckit, :remediation, :start],
+        _measurements,
+        %{feature_id: id} = meta
+      ) do
+    feature = feature_slice(model, id)
+    feature = %{feature | remediation: remediation_from_start_meta(meta)}
+
+    text =
+      "auto-remediation attempt #{meta[:attempt]}/#{meta[:limit]} — " <>
+        "#{meta[:findings_count]} findings ≥ #{meta[:threshold]}"
+
+    model
+    |> put_feature(id, feature)
+    |> push_feed(entry(id, :analyze, :info, text))
+  end
+
+  def apply_event(
+        model,
+        [:speckit, :remediation, :stop],
+        _measurements,
+        %{feature_id: id} = meta
+      ) do
+    feature = feature_slice(model, id)
+    outcome = meta[:outcome]
+    cost = meta[:cost] || 0.0
+
+    remediation = feature.remediation && Map.put(feature.remediation, :outcome, outcome)
+    feature = %{feature | spend: feature.spend + cost, remediation: remediation}
+
+    text = "auto-remediation attempt #{meta[:attempt]}/#{meta[:limit]} → #{outcome}"
+
+    model
+    |> put_feature(id, feature)
+    |> push_feed(entry(id, :analyze, severity_for_outcome(outcome), text))
+  end
+
+  def apply_event(
+        model,
+        [:speckit, :remediation, :exception],
+        _measurements,
+        %{feature_id: id} = meta
+      ) do
+    feature = feature_slice(model, id)
+    remediation = feature.remediation && Map.put(feature.remediation, :outcome, :error)
+    feature = %{feature | remediation: remediation}
+
+    model
+    |> put_feature(id, feature)
+    |> push_feed(
+      entry(id, :analyze, :error, "auto-remediation exception: #{inspect(meta[:reason])}")
+    )
   end
 
   # ---- run-level guard refusal (specs/016-resume-backlog-scope) -------------
@@ -299,7 +377,8 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
           current_phase: checkpoint_phase(checkpoints, id),
           phases: checkpoint_phases(checkpoints, id, last_known_status),
           spend: 0.0,
-          chunk: checkpoint_chunk(checkpoints, id)
+          chunk: checkpoint_chunk(checkpoints, id),
+          remediation: nil
         })
       end)
 
@@ -385,7 +464,8 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
           current_phase: nil,
           phases: %{},
           spend: 0.0,
-          chunk: nil
+          chunk: nil,
+          remediation: nil
         })
 
       {id, Map.merge(status_slice, projected)}
@@ -401,7 +481,8 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
         phases: %{},
         spend: 0.0,
         chunk: nil,
-        chunk_cost_seen: 0.0
+        chunk_cost_seen: 0.0,
+        remediation: nil
       })
 
   defp put_feature(model, id, feature),
@@ -452,6 +533,18 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
       sessions_used: meta[:sessions_used],
       ceiling: meta[:ceiling],
       remaining: meta[:remaining],
+      outcome: nil
+    }
+  end
+
+  # ---- remediation fold helpers (contracts/telemetry-console.md §2) ---------
+
+  defp remediation_from_start_meta(meta) do
+    %{
+      attempt: meta[:attempt],
+      limit: meta[:limit],
+      threshold: meta[:threshold],
+      findings: meta[:findings_count],
       outcome: nil
     }
   end

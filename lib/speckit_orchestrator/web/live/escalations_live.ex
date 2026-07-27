@@ -409,6 +409,14 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
                 {k}=<span>{inspect(v)}</span>
               </span>
             </div>
+
+            <div
+              :if={auto_remediation_summary(record)}
+              class="run-context-label"
+              data-auto-remediation
+            >
+              {auto_remediation_summary(record)}
+            </div>
           </div>
 
           <p
@@ -521,6 +529,27 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
     </div>
     """
   end
+
+  # What the loop already tried, read from the checkpoint's optional
+  # `analyze_remediation` key (017, SC-005) — so a reviewer sees the attempt
+  # budget without opening raw agent logs. The per-attempt transcripts
+  # themselves are reachable through the existing transcripts link below.
+  # Absent for every pre-017 checkpoint and for any feature whose loop made no
+  # attempt.
+  defp auto_remediation_summary(%{"analyze_remediation" => %{} = r}) do
+    with used when is_integer(used) <- Map.get(r, "attempts_used"),
+         limit when is_integer(limit) <- Map.get(r, "limit") do
+      "auto-remediation: #{used}/#{limit} attempts #{verb(used, limit)}" <>
+        " (threshold #{Map.get(r, "threshold") || "?"})"
+    else
+      _ -> nil
+    end
+  end
+
+  defp auto_remediation_summary(_record), do: nil
+
+  defp verb(used, limit) when used >= limit, do: "exhausted"
+  defp verb(_used, _limit), do: "spent"
 
   defp task_phase_label(%TaskPhase{} = tp, total) do
     mark = if TaskPhase.complete?(tp), do: " ✓", else: ""

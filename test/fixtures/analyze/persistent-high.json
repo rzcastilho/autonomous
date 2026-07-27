@@ -1,0 +1,62 @@
+[
+  {
+    "summary": "The same gap, unfixed.",
+    "findings": [
+      {
+        "severity": "high",
+        "title": "tasks.md has no task for FR-004",
+        "detail": "Pass 1."
+      }
+    ]
+  },
+  {
+    "summary": "The same gap, unfixed.",
+    "findings": [
+      {
+        "severity": "high",
+        "title": "tasks.md has no task for FR-004",
+        "detail": "Pass 2."
+      }
+    ]
+  },
+  {
+    "summary": "The same gap, unfixed.",
+    "findings": [
+      {
+        "severity": "high",
+        "title": "tasks.md has no task for FR-004",
+        "detail": "Pass 3."
+      }
+    ]
+  },
+  {
+    "summary": "The same gap, unfixed.",
+    "findings": [
+      {
+        "severity": "high",
+        "title": "tasks.md has no task for FR-004",
+        "detail": "Pass 4."
+      }
+    ]
+  },
+  {
+    "summary": "The same gap, unfixed.",
+    "findings": [
+      {
+        "severity": "high",
+        "title": "tasks.md has no task for FR-004",
+        "detail": "Pass 5."
+      }
+    ]
+  },
+  {
+    "summary": "The same gap, unfixed.",
+    "findings": [
+      {
+        "severity": "high",
+        "title": "tasks.md has no task for FR-004",
+        "detail": "Pass 6."
+      }
+    ]
+  }
+]

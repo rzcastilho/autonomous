@@ -86,8 +86,24 @@ dependency, fully unit-testable:
   `ANTHROPIC_DEFAULT_*_MODEL` env. `model_for/1` raises on an unrouted phase.
 - `Pipeline` — the pure phase transition table. `next/3` is the whole decision
   surface: advance, or divert via the **clarify gate** (`## NEEDS HUMAN` →
-  `:escalated`) or **analyze gate** (Critical finding → `:halted`). Gate signals
-  are extracted upstream and passed in, keeping this module side-effect free.
+  `:escalated`) or **analyze gate** (Critical finding → `:halted`, High →
+  `:escalated`). Gate signals are extracted upstream and passed in, keeping
+  this module side-effect free. `Pipeline` itself is unmodified by the loop
+  below — it still sees exactly one `:analyze` outcome per feature run.
+- `Severity` / `Remediation` (feature 017) — a bounded, switchable
+  **auto-remediation loop** sits strictly *below* the analyze gate, inside the
+  `:analyze` step: when analyze reports findings at or above a configured
+  severity threshold (default High), a corrective step runs against them
+  verbatim and analyze re-runs, up to a per-run attempt limit (default 2)
+  before the gate ever decides. `Severity` is the pure `:low < :medium < :high
+  < :critical` order; `Remediation.next/2` is the loop's own decision table
+  (remediate / gate / halt / fail), the direct analogue of `Pipeline.next/3`.
+  On exhaustion the gate decides from the **final** analyze run exactly as it
+  does today, with the reason decorated to name exhausted auto-remediation;
+  disabling the loop restores today's fail-fast behaviour byte-for-byte. Every
+  attempt is Ledger-accounted and individually recorded — see
+  `docs/speckit-orchestrator-implementation-plan.md` and
+  `specs/017-analyze-auto-remediation/`.
 - `Ledger` — cost circuit-breaker `GenServer`. `reserve` is rejected once
   `committed + reserved >= budget`; invariant: `committed < budget + max single
   reservation`. Breaker trips at `committed >= budget`.

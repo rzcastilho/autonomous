@@ -127,7 +127,8 @@ defmodule SpeckitOrchestrator.AnalyzeResultTest do
 
   describe "high? severity" do
     test "a high finding sets high? without setting critical?" do
-      transcript = ~s({"summary":"gaps","findings":[{"severity":"high","title":"plan.md missing"}]})
+      transcript =
+        ~s({"summary":"gaps","findings":[{"severity":"high","title":"plan.md missing"}]})
 
       assert {:ok, r} = AnalyzeResult.parse(transcript)
       assert r.high?
@@ -155,6 +156,76 @@ defmodule SpeckitOrchestrator.AnalyzeResultTest do
       assert {:ok, r} = AnalyzeResult.parse(transcript)
       assert r.high?
       assert r.critical?
+    end
+  end
+
+  describe "max_severity/1" do
+    test "highest recognized severity present" do
+      json =
+        ~s({"summary":"s","findings":[{"severity":"low"},{"severity":"high"},{"severity":"medium"}]})
+
+      assert {:ok, r} = AnalyzeResult.parse(json)
+      assert AnalyzeResult.max_severity(r) == :high
+    end
+
+    test ":unknown when no finding's severity parses" do
+      json = ~s({"summary":"s","findings":[{"severity":"severe"},{"title":"no severity"}]})
+      assert {:ok, r} = AnalyzeResult.parse(json)
+      assert AnalyzeResult.max_severity(r) == :unknown
+    end
+
+    test "nil for no findings" do
+      assert {:ok, r} = AnalyzeResult.parse(~s({"summary":"clean","findings":[]}))
+      assert AnalyzeResult.max_severity(r) == nil
+    end
+  end
+
+  describe "findings_at_or_above/2" do
+    test "returns only findings meeting the threshold, verbatim, in report order" do
+      json =
+        ~s({"summary":"s","findings":[)
+        |> Kernel.<>(~s({"severity":"low","title":"nit"},))
+        |> Kernel.<>(~s({"severity":"high","title":"plan gap","detail":"missing plan.md"},))
+        |> Kernel.<>(~s({"severity":"critical","title":"float money"}))
+        |> Kernel.<>("]}")
+
+      assert {:ok, r} = AnalyzeResult.parse(json)
+
+      assert AnalyzeResult.findings_at_or_above(r, :high) == [
+               %{"severity" => "high", "title" => "plan gap", "detail" => "missing plan.md"},
+               %{"severity" => "critical", "title" => "float money"}
+             ]
+    end
+
+    test "empty when nothing meets the threshold" do
+      json = ~s({"summary":"s","findings":[{"severity":"low","title":"nit"}]})
+      assert {:ok, r} = AnalyzeResult.parse(json)
+      assert AnalyzeResult.findings_at_or_above(r, :high) == []
+    end
+
+    test "unknown-severity findings never match any threshold, including :low" do
+      json = ~s({"summary":"s","findings":[{"severity":"severe","title":"garbled"}]})
+      assert {:ok, r} = AnalyzeResult.parse(json)
+      assert AnalyzeResult.findings_at_or_above(r, :low) == []
+    end
+  end
+
+  describe "unknown_severities/1" do
+    test "findings whose severity did not parse are reported, not dropped" do
+      json =
+        ~s({"summary":"s","findings":[{"severity":"high","title":"ok"},{"severity":"severe","title":"garbled"}]})
+
+      assert {:ok, r} = AnalyzeResult.parse(json)
+
+      assert AnalyzeResult.unknown_severities(r) == [
+               %{"severity" => "severe", "title" => "garbled"}
+             ]
+    end
+
+    test "empty when every finding parses" do
+      json = ~s({"summary":"s","findings":[{"severity":"low"}]})
+      assert {:ok, r} = AnalyzeResult.parse(json)
+      assert AnalyzeResult.unknown_severities(r) == []
     end
   end
 end

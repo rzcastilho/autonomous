@@ -1658,6 +1658,28 @@ textarea {
   font-family: var(--font-mono);
 }
 
+/* 017: the auto-remediation threshold/limit are meaningless while the switch
+   is off. The controls carry the native `disabled` attribute; this dims their
+   labels with them so the whole group reads as inactive. */
+.auto-remediation-row form {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.field-label-inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+}
+
+.controls-disabled {
+  opacity: 0.45;
+}
+
 /* Range sliders (Config's budget/concurrency) */
 
 .range-row-head {

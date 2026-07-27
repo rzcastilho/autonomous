@@ -192,7 +192,14 @@ defmodule SpeckitOrchestrator.Web.MissionControlLive do
                   <td>{id}</td>
                   <td>{f.slug}</td>
                   <td><.status_pill status={f.status} /></td>
-                  <td><.phase_strip phases={f.phases} status={f.status} chunk={f[:chunk]} /></td>
+                  <td>
+                    <.phase_strip
+                      phases={f.phases}
+                      status={f.status}
+                      chunk={f[:chunk]}
+                      remediation={f[:remediation]}
+                    />
+                  </td>
                   <td>{format_elapsed(f.elapsed_ms)}</td>
                   <td>${format_money(f.spend)}</td>
                 </tr>

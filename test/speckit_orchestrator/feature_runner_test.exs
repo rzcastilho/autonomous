@@ -178,6 +178,13 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
   defp feature,
     do: %Feature{id: "001", slug: "core-ledger", path: "docs/breakdown/001-core-ledger.md"}
 
+  # 017's auto-remediation loop defaults to **on**, so every test that uses an
+  # at-or-above-threshold analyze finding purely as a mechanism to reach a
+  # terminal state must pin it off — otherwise it exercises the loop by
+  # accident and the gate's reason arrives decorated (research R16). Tests that
+  # are *about* the loop live in analyze_runner_test.exs.
+  defp loop_off, do: %RunContext{auto_remediation: false}
+
   # --- real base repo + worktree for the containment assertions ---
   defp git!(repo, args),
     do: {_, 0} = System.cmd("git", ["-C", repo | args], stderr_to_stdout: true)
@@ -301,7 +308,7 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
     Application.put_env(:speckit_orchestrator, :test_fake_scenario, :halt)
     wt = scaffolded_worktree()
 
-    result = FeatureRunner.run(feature(), worktree: wt, notify: self())
+    result = FeatureRunner.run(feature(), worktree: wt, notify: self(), run_context: loop_off())
 
     assert result.status == :halted
     assert_received {:feature_finished, "001", :halted, :critical_finding}
@@ -374,11 +381,66 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
     Application.put_env(:speckit_orchestrator, :test_fake_scenario, :analyze_high)
     wt = scaffolded_worktree()
 
-    result = FeatureRunner.run(feature(), worktree: wt, notify: self())
+    result = FeatureRunner.run(feature(), worktree: wt, notify: self(), run_context: loop_off())
 
     assert result.status == :escalated
     assert result.reason == :high_findings
     assert File.dir?(wt.path)
+  end
+
+  test "phase :analyze delegates to AnalyzeRunner — the loop runs below the gate (017)" do
+    Application.put_env(:speckit_orchestrator, :test_fake_scenario, :analyze_high)
+    wt = scaffolded_worktree()
+
+    test_pid = self()
+    handler = "delegation-#{System.unique_integer([:positive])}"
+
+    :telemetry.attach(
+      handler,
+      [:speckit, :remediation, :start],
+      fn _event, _meas, meta, _ -> send(test_pid, {:attempt, meta}) end,
+      nil
+    )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+
+    # No run_context ⇒ the shipped defaults ⇒ the loop is on. The finding
+    # persists, so both attempts are spent and the gate then decides from the
+    # final run, with the reason naming exhaustion (FR-006).
+    result = FeatureRunner.run(feature(), worktree: wt, notify: self())
+
+    assert result.status == :escalated
+    assert result.reason == {:high_findings, :auto_remediation_exhausted}
+
+    assert_received {:attempt, %{phase: :analyze, attempt: 1, limit: 2, threshold: :high}}
+    assert_received {:attempt, %{phase: :analyze, attempt: 2, limit: 2}}
+    refute_received {:attempt, %{attempt: 3}}
+
+    assert File.exists?(Path.join(wt.path, ".speckit_logs/05-remediation-a1.md"))
+    assert File.exists?(Path.join(wt.path, ".speckit_logs/05-analyze.md"))
+  end
+
+  test "pinning the loop off makes no remediation call and leaves the reason bare (SC-007a)" do
+    Application.put_env(:speckit_orchestrator, :test_fake_scenario, :analyze_high)
+    wt = scaffolded_worktree()
+
+    test_pid = self()
+    handler = "delegation-off-#{System.unique_integer([:positive])}"
+
+    :telemetry.attach(
+      handler,
+      [:speckit, :remediation, :start],
+      fn _event, _meas, meta, _ -> send(test_pid, {:attempt, meta}) end,
+      nil
+    )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+
+    result = FeatureRunner.run(feature(), worktree: wt, notify: self(), run_context: loop_off())
+
+    assert result.reason == :high_findings
+    refute_received {:attempt, _meta}
+    refute File.exists?(Path.join(wt.path, ".speckit_logs/05-remediation-a1.md"))
   end
 
   test "runs without a worktree (dry run in base repo), notify as a function" do
@@ -461,7 +523,7 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
     Application.put_env(:speckit_orchestrator, :test_fake_scenario, :halt)
     wt = scaffolded_worktree()
 
-    FeatureRunner.run(feature(), worktree: wt, notify: self())
+    FeatureRunner.run(feature(), worktree: wt, notify: self(), run_context: loop_off())
 
     {log, 0} = System.cmd("git", ["-C", wt.repo, "log", "--format=%s", wt.branch])
 
@@ -526,7 +588,13 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
     Application.put_env(:speckit_orchestrator, :test_fake_scenario, :halt)
     wt = scaffolded_worktree()
 
-    result = FeatureRunner.run(feature(), start_phase: :plan, worktree: wt, notify: self())
+    result =
+      FeatureRunner.run(feature(),
+        start_phase: :plan,
+        worktree: wt,
+        notify: self(),
+        run_context: loop_off()
+      )
 
     assert result.status == :halted
     assert File.exists?(Path.join(wt.path, ".speckit_logs/03-plan.md"))
@@ -552,7 +620,7 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
 
     on_exit(fn -> :telemetry.detach(handler) end)
 
-    FeatureRunner.run(feature(), worktree: wt, notify: self())
+    FeatureRunner.run(feature(), worktree: wt, notify: self(), run_context: loop_off())
 
     assert_received {:tele, [:speckit, :phase, :stop], %{phase: :specify, step: 1}}
     assert File.exists?(Path.join(wt.path, ".speckit_logs/01-specify.md"))
@@ -662,7 +730,8 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
         FeatureRunner.run(feature(),
           worktree: wt,
           notify: self(),
-          remediation_prompt: "Fix the money-type Critical."
+          remediation_prompt: "Fix the money-type Critical.",
+          run_context: loop_off()
         )
 
       assert result.status == :halted

@@ -44,7 +44,15 @@ defmodule SpeckitOrchestrator.ReportTest do
   end
 
   test "format_status/1 handles an empty run" do
-    out = Report.format_status(%{per_feature: %{}, totals: %{}, spend: 0.0, breaker_tripped: false, finished?: false})
+    out =
+      Report.format_status(%{
+        per_feature: %{},
+        totals: %{},
+        spend: 0.0,
+        breaker_tripped: false,
+        finished?: false
+      })
+
     assert out =~ "FEATURE"
     assert out =~ "(none)"
   end

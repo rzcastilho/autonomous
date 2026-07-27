@@ -3,6 +3,19 @@ defmodule SpeckitOrchestrator.ConsoleReadModelTest do
 
   alias SpeckitOrchestrator.ConsoleReadModel
 
+  defp remediation_meta(opts) do
+    %{
+      feature_id: "001",
+      phase: :analyze,
+      attempt: opts[:attempt] || 1,
+      limit: opts[:limit] || 2,
+      threshold: opts[:threshold] || :high,
+      findings_count: opts[:findings_count] || 1,
+      max_severity: opts[:max_severity] || :high,
+      model: "sonnet"
+    }
+  end
+
   defp chunk_start_meta(opts) do
     %{
       feature_id: "001",
@@ -787,6 +800,155 @@ defmodule SpeckitOrchestrator.ConsoleReadModelTest do
         ConsoleReadModel.overlay_last_known_statuses(inactive_view(), manifest, checkpoints)
 
       assert merged.per_feature["001"].chunk == nil
+    end
+  end
+
+  # ---- 017-analyze-auto-remediation (contracts/telemetry-console.md §2) -------
+
+  describe "apply_event/4 — [:speckit, :remediation, :start]" do
+    test "sets the feature's remediation slice and pushes an attempt feed entry" do
+      model =
+        ConsoleReadModel.apply_event(
+          ConsoleReadModel.new(),
+          [:speckit, :remediation, :start],
+          %{system_time: 1},
+          remediation_meta(attempt: 1, limit: 2, findings_count: 3)
+        )
+
+      assert model.features["001"].remediation == %{
+               attempt: 1,
+               limit: 2,
+               threshold: :high,
+               findings: 3,
+               outcome: nil
+             }
+
+      assert [%{feature_id: "001", phase: :analyze, severity: :info, text: text}] = model.feed
+      assert text == "auto-remediation attempt 1/2 — 3 findings ≥ high"
+    end
+
+    test "a later attempt replaces the slice rather than accumulating" do
+      model =
+        ConsoleReadModel.new()
+        |> ConsoleReadModel.apply_event(
+          [:speckit, :remediation, :start],
+          %{},
+          remediation_meta(attempt: 1, limit: 2)
+        )
+        |> ConsoleReadModel.apply_event(
+          [:speckit, :remediation, :start],
+          %{},
+          remediation_meta(attempt: 2, limit: 2, findings_count: 2)
+        )
+
+      assert model.features["001"].remediation.attempt == 2
+      assert model.features["001"].remediation.findings == 2
+    end
+  end
+
+  describe "apply_event/4 — [:speckit, :remediation, :stop]" do
+    test "adds the attempt's cost to spend, records the outcome, pushes a feed entry" do
+      model =
+        ConsoleReadModel.new()
+        |> ConsoleReadModel.apply_event(
+          [:speckit, :remediation, :start],
+          %{},
+          remediation_meta(attempt: 1, limit: 2)
+        )
+        |> ConsoleReadModel.apply_event(
+          [:speckit, :remediation, :stop],
+          %{duration: 1},
+          remediation_meta(attempt: 1, limit: 2) |> Map.merge(%{outcome: :ok, cost: 1.26})
+        )
+
+      feature = model.features["001"]
+      assert_in_delta feature.spend, 1.26, 0.0001
+      assert feature.remediation.outcome == :ok
+
+      assert [%{severity: :info, text: text} | _] = model.feed
+      assert text == "auto-remediation attempt 1/2 → ok"
+    end
+
+    test "an :error outcome pushes an :error feed entry" do
+      model =
+        ConsoleReadModel.apply_event(
+          ConsoleReadModel.new(),
+          [:speckit, :remediation, :stop],
+          %{duration: 1},
+          remediation_meta(attempt: 2, limit: 2) |> Map.merge(%{outcome: :error, cost: 0.0})
+        )
+
+      assert [%{severity: :error, text: "auto-remediation attempt 2/2 → error"}] = model.feed
+    end
+  end
+
+  describe "apply_event/4 — [:speckit, :remediation, :exception]" do
+    test "marks the slice's outcome :error and pushes an :error feed entry" do
+      model =
+        ConsoleReadModel.new()
+        |> ConsoleReadModel.apply_event(
+          [:speckit, :remediation, :start],
+          %{},
+          remediation_meta(attempt: 1, limit: 2)
+        )
+        |> ConsoleReadModel.apply_event(
+          [:speckit, :remediation, :exception],
+          %{duration: 1},
+          remediation_meta(attempt: 1, limit: 2)
+          |> Map.merge(%{kind: :error, reason: %RuntimeError{message: "boom"}})
+        )
+
+      assert model.features["001"].remediation.outcome == :error
+      assert [%{severity: :error, phase: :analyze, text: text} | _] = model.feed
+      assert text =~ "auto-remediation exception"
+    end
+  end
+
+  describe "remediation cost is never double-counted against the analyze phase" do
+    test "a remediation stop plus the wrapping analyze phase stop sum, they do not overlap" do
+      model =
+        ConsoleReadModel.new()
+        |> ConsoleReadModel.apply_event(
+          [:speckit, :remediation, :stop],
+          %{},
+          remediation_meta(attempt: 1, limit: 2) |> Map.merge(%{outcome: :ok, cost: 1.26})
+        )
+        |> ConsoleReadModel.apply_event(
+          [:speckit, :phase, :stop],
+          %{duration: 1},
+          %{
+            feature_id: "001",
+            phase: :analyze,
+            model: "sonnet",
+            step: 5,
+            outcome: :ok,
+            cost: 0.4
+          }
+        )
+
+      # The two events describe different harness runs — the analyze phase span
+      # never wraps the remediation span's cost, so no `chunk_cost_seen`-style
+      # guard applies and the total is the plain sum.
+      assert_in_delta model.features["001"].spend, 1.66, 0.0001
+    end
+  end
+
+  describe "apply_event/4 — [:speckit, :feature, :terminal] clears the remediation slice" do
+    test "remediation is reset to nil alongside chunk" do
+      model =
+        ConsoleReadModel.new()
+        |> ConsoleReadModel.apply_event(
+          [:speckit, :remediation, :start],
+          %{},
+          remediation_meta(attempt: 1, limit: 2)
+        )
+        |> ConsoleReadModel.apply_event(
+          [:speckit, :feature, :terminal],
+          %{cost_total: 2.0},
+          %{feature_id: "001", status: :escalated, reason: {:high_findings, :auto_remediation_exhausted}}
+        )
+
+      assert model.features["001"].remediation == nil
     end
   end
 end

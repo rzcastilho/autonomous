@@ -319,4 +319,60 @@ defmodule SpeckitOrchestrator.CheckpointTest do
     assert {:ok, record} = Checkpoint.read("016")
     refute Map.has_key?(record, "implement_chunk")
   end
+
+  # ---- analyze auto-remediation (017) --------------------------------------
+
+  test "write given an analyze_remediation persists and read/1 round-trips it", %{root: root} do
+    assert :ok =
+             Checkpoint.write(%{
+               feature_id: "017",
+               last_phase: :analyze,
+               status: :escalated,
+               reason: {:high_findings, :auto_remediation_exhausted},
+               session_id: "s17",
+               slug: "auto-remediation",
+               path: "docs/breakdown/017-auto-remediation.md",
+               analyze_remediation: %{
+                 attempts_used: 2,
+                 limit: 2,
+                 threshold: "high",
+                 enabled: true
+               }
+             })
+
+    decoded = root |> checkpoint_path("017") |> File.read!() |> Jason.decode!()
+
+    # the loop is not a pipeline position — last_phase stays "analyze" (FR-012b)
+    assert decoded["last_phase"] == "analyze"
+    assert decoded["analyze_remediation"]["attempts_used"] == 2
+    assert decoded["analyze_remediation"]["limit"] == 2
+    assert decoded["analyze_remediation"]["threshold"] == "high"
+    assert decoded["analyze_remediation"]["enabled"] == true
+
+    assert {:ok, record} = Checkpoint.read("017")
+    assert record["analyze_remediation"]["attempts_used"] == 2
+    assert record["analyze_remediation"]["limit"] == 2
+    assert record["analyze_remediation"]["threshold"] == "high"
+    assert record["analyze_remediation"]["enabled"] == true
+  end
+
+  test "write with no analyze_remediation key omits it — a pre-017 checkpoint reads unchanged",
+       %{root: root} do
+    assert :ok =
+             Checkpoint.write(%{
+               feature_id: "018",
+               last_phase: :analyze,
+               status: :halted,
+               reason: :critical_finding,
+               session_id: "s18"
+             })
+
+    decoded = root |> checkpoint_path("018") |> File.read!() |> Jason.decode!()
+    refute Map.has_key?(decoded, "analyze_remediation")
+
+    assert {:ok, record} = Checkpoint.read("018")
+    refute Map.has_key?(record, "analyze_remediation")
+    assert record["last_phase"] == "analyze"
+    assert record["status"] == "halted"
+  end
 end

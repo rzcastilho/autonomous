@@ -185,6 +185,22 @@ defmodule SpeckitOrchestrator.Config do
   @spec speckit_version() :: String.t()
   def speckit_version, do: get(:speckit_version, "v0.12.11")
 
+  @doc "Default: whether the analyze auto-remediation loop runs at all (FR-002/FR-010)."
+  @spec auto_remediation?() :: boolean()
+  def auto_remediation?, do: get(:auto_remediation, true)
+
+  @doc "Default severity threshold (inclusive floor) that triggers a remediation attempt."
+  @spec auto_remediation_threshold() :: atom()
+  def auto_remediation_threshold, do: get(:auto_remediation_threshold, :high)
+
+  @doc "Default per-run attempt limit (1..5) for the auto-remediation loop."
+  @spec auto_remediation_attempt_limit() :: pos_integer()
+  def auto_remediation_attempt_limit, do: get(:auto_remediation_attempt_limit, 2)
+
+  @doc "Default model alias override for the auto-remediation step (`nil` = analyze's model)."
+  @spec auto_remediation_model() :: String.t() | nil
+  def auto_remediation_model, do: get(:auto_remediation_model, nil)
+
   @default_cost_estimates %{
     specify: 0.20,
     clarify: 0.40,

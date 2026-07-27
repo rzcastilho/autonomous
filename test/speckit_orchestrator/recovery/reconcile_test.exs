@@ -195,12 +195,14 @@ defmodule SpeckitOrchestrator.Recovery.ReconcileTest do
 
     test "recorded :done, no branch/no PR -> {:conflict, :done_without_artifacts}" do
       ev = evidence()
+
       assert Reconcile.status(:done, ev, {:breakdown, "core-ledger"}) ==
                {:conflict, :done_without_artifacts}
     end
 
     test "recorded :done, breakdown workflow with branch but no PR record -> conflict" do
       ev = evidence(%{branch_committed?: true, pr_record?: false})
+
       assert Reconcile.status(:done, ev, {:breakdown, "core-ledger"}) ==
                {:conflict, :done_without_artifacts}
     end
@@ -224,6 +226,7 @@ defmodule SpeckitOrchestrator.Recovery.ReconcileTest do
   describe "status/3 clause 7 — contradictions" do
     test "pr_record? without branch_committed? -> {:conflict, :pr_without_branch}" do
       ev = evidence(%{pr_record?: true, branch_committed?: false})
+
       assert Reconcile.status(:running, ev, {:breakdown, "core-ledger"}) ==
                {:conflict, :pr_without_branch}
 
@@ -233,6 +236,7 @@ defmodule SpeckitOrchestrator.Recovery.ReconcileTest do
 
     test "recorded :pending with unexplained branch progress but no done-signal -> conflict" do
       ev = evidence(%{branch_committed?: true, last_boundary_phase: :plan})
+
       assert Reconcile.status(:pending, ev, {:breakdown, "core-ledger"}) ==
                {:conflict, :ambiguous_evidence}
     end
@@ -251,9 +255,11 @@ defmodule SpeckitOrchestrator.Recovery.ReconcileTest do
         {:escalated, evidence(), :ad_hoc},
         {:halted, evidence(%{branch_committed?: true}), {:breakdown, "core-ledger"}},
         {:failed, evidence(), :ad_hoc},
-        {:done, evidence(%{pr_record?: true, branch_committed?: true}), {:breakdown, "core-ledger"}},
+        {:done, evidence(%{pr_record?: true, branch_committed?: true}),
+         {:breakdown, "core-ledger"}},
         {:done, evidence(), {:breakdown, "core-ledger"}},
-        {:running, evidence(%{pr_record?: true, branch_committed?: true}), {:breakdown, "core-ledger"}},
+        {:running, evidence(%{pr_record?: true, branch_committed?: true}),
+         {:breakdown, "core-ledger"}},
         {:running, evidence(%{branch_committed?: true, last_boundary_phase: :plan}), :ad_hoc},
         {:pending, evidence(), :ad_hoc},
         {:pending, evidence(%{pr_record?: true}), {:breakdown, "core-ledger"}}

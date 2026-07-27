@@ -67,7 +67,7 @@ defmodule SpeckitOrchestrator.Web.PhaseStripTest do
 
     assert html =~
              ~s(<span class="phase-cell phase-cell-pending" data-phase="implement" title="implement">) <>
-               ~s(\n    implement<span class="phase-chunk-sublabel"> 3/5 · User Story 1</span>\n  </span>)
+               ~s(\n    implement<span class="phase-sublabel"> 3/5 · User Story 1</span>\n  </span>)
 
     for phase <- [:specify, :clarify, :plan, :tasks, :analyze, :converge] do
       refute html =~ ~s(data-phase="#{phase}">\n    #{phase}<span)
@@ -106,5 +106,46 @@ defmodule SpeckitOrchestrator.Web.PhaseStripTest do
 
     html = strip(%{phases: %{}, status: :running, chunk: chunk})
     assert html =~ "sweep · 2 left"
+  end
+
+  # ---- 017-analyze-auto-remediation (contracts/telemetry-console.md §3) ------
+
+  test "remediation: nil renders byte-identical to the pre-017 strip" do
+    assert strip(%{phases: %{}, status: :pending, remediation: nil}) == @golden_strip
+  end
+
+  test "a running loop adds an \"attempt k/n\" sub-label to the analyze cell only" do
+    remediation = %{attempt: 1, limit: 2, threshold: :high, findings: 3, outcome: nil}
+
+    html = strip(%{phases: %{}, status: :running, remediation: remediation})
+
+    assert html =~
+             ~s(<span class="phase-cell phase-cell-pending" data-phase="analyze" title="analyze">) <>
+               ~s(\n    analyze<span class="phase-sublabel"> attempt 1/2</span>\n  </span>)
+
+    for phase <- [:specify, :clarify, :plan, :tasks, :implement, :converge] do
+      refute html =~ ~s(data-phase="#{phase}">\n    #{phase}<span)
+    end
+  end
+
+  test "chunk and remediation sub-labels coexist on their own cells" do
+    chunk = %{
+      ordinal: 2,
+      total: 4,
+      title: "Foundational",
+      attempt: 1,
+      scope: :task_phase,
+      sessions_used: 3,
+      ceiling: 14,
+      remaining: nil,
+      outcome: nil
+    }
+
+    remediation = %{attempt: 2, limit: 2, threshold: :high, findings: 1, outcome: nil}
+
+    html = strip(%{phases: %{}, status: :running, chunk: chunk, remediation: remediation})
+
+    assert html =~ ~s(analyze<span class="phase-sublabel"> attempt 2/2</span>)
+    assert html =~ ~s(implement<span class="phase-sublabel"> 2/4 · Foundational</span>)
   end
 end

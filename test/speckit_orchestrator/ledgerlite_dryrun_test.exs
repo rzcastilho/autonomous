@@ -124,7 +124,9 @@ defmodule SpeckitOrchestrator.LedgerLiteDryRunTest do
 
     # Every feature accounted for.
     accounted =
-      report.done ++ report.halted ++ report.escalated ++
+      report.done ++
+        report.halted ++
+        report.escalated ++
         report.failed ++ report.not_started ++ report.blocked
 
     assert Enum.sort(accounted) == ~w(001 002 003 004 005 006 007)

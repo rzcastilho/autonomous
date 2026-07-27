@@ -1,21 +1,39 @@
 <!--
 Sync Impact Report
-Version change: 1.0.0 → 1.1.0
-Bump rationale: MINOR — added one new principle (VI) and one new normative
-  section (Technology Stack); no existing principle removed or redefined.
-Modified principles: none (I–V unchanged)
-Added principles:
-  - VI. Idiomatic Elixir/OTP & Functional Design
-Added sections:
-  - Technology Stack
+Version change: 1.1.0 → 1.2.0
+Bump rationale: MINOR — Principle V materially expanded to permit a bounded,
+  pre-gate auto-remediation loop with a halt-on-exhaustion guarantee; no
+  principle removed or made backward-incompatible.
+Modified principles:
+  - V. Human-in-the-Loop Escalation (bounded pre-gate loop + guarantees)
+Added principles: none
+Added sections: none
 Removed sections: none
 Templates requiring updates:
-  ✅ .specify/templates/plan-template.md — Constitution Check is principle-agnostic
-     ("[Gates determined based on constitution file]"); no change needed
-  ✅ .specify/templates/spec-template.md — no principle-specific references; no change
-  ✅ .specify/templates/tasks-template.md — no principle-specific references; no change
+  ✅ .specify/templates/plan-template.md — Constitution Check is
+     principle-agnostic; no change needed
+  ✅ .specify/templates/spec-template.md — no principle-specific references
+  ✅ .specify/templates/tasks-template.md — no principle-specific references
   ✅ .specify/templates/checklist-template.md — generic; no change
 Follow-up TODOs: none
+
+Prior report (1.1.0):
+  Version change: 1.0.0 → 1.1.0
+  Bump rationale: MINOR — added one new principle (VI) and one new normative
+    section (Technology Stack); no existing principle removed or redefined.
+  Modified principles: none (I–V unchanged)
+  Added principles:
+    - VI. Idiomatic Elixir/OTP & Functional Design
+  Added sections:
+    - Technology Stack
+  Removed sections: none
+  Templates requiring updates:
+    ✅ .specify/templates/plan-template.md — Constitution Check is principle-agnostic
+       ("[Gates determined based on constitution file]"); no change needed
+    ✅ .specify/templates/spec-template.md — no principle-specific references; no change
+    ✅ .specify/templates/tasks-template.md — no principle-specific references; no change
+    ✅ .specify/templates/checklist-template.md — generic; no change
+  Follow-up TODOs: none
 
 Prior report (1.0.0):
   Version change: (unversioned template) → 1.0.0
@@ -85,16 +103,36 @@ within budget plus one outstanding reservation.
 
 ### V. Human-in-the-Loop Escalation
 
-The pipeline MUST NOT fabricate resolution of ambiguity or of a quality failure.
-The clarify gate MUST escalate a feature to `:escalated` on an unresolved
-`## NEEDS HUMAN` marker in `spec.md`. The analyze gate MUST halt to `:halted` on
-a constitution Critical finding. Escalated and halted features MUST retain their
-worktree for post-mortem; only `:done` features remove it. A human resolution
-path (`resolve/1`) MUST let a feature re-run on its existing branch.
+The pipeline MUST NOT fabricate resolution of ambiguity or of a quality
+failure. The clarify gate MUST escalate a feature to `:escalated` on an
+unresolved `## NEEDS HUMAN` marker in `spec.md`. The analyze gate MUST halt to
+`:halted` on a constitution Critical finding and escalate to `:escalated` on a
+High one. A **bounded, pre-gate auto-remediation loop** MAY attempt to fix
+findings at or above a configured severity threshold before the gate is
+evaluated, subject to all of:
+
+- it runs **strictly before** the gate decides, never after — a gate
+  diversion is still never retried;
+- it is bounded by a per-run attempt limit (1–5, default 2) that MUST NOT be
+  exceeded within one feature run;
+- on exhaustion the gate decides the outcome from the **final** analyze run
+  under the rules above, unchanged, with a recorded reason naming exhausted
+  auto-remediation;
+- every attempt and every analyze re-run is subject to the cost breaker of
+  Principle IV and is individually recorded;
+- it is switchable per run, and disabling it MUST restore fail-fast behaviour
+  exactly.
+
+Escalated and halted features MUST retain their worktree for post-mortem;
+only `:done` features remove it. A human resolution path (`resolve/1`) MUST
+let a feature re-run on its existing branch.
 
 Rationale: Autonomy has bounds. Materially ambiguous specs and constitution
 violations are human decisions; encoding them as automatic pass-throughs would
-ship wrong or non-compliant work at machine speed.
+ship wrong or non-compliant work at machine speed. A bounded, fully-recorded,
+switchable pre-gate remediation loop does not relax that bound — it only
+delays a still-mandatory human handoff by a capped number of self-fix
+attempts, and restores today's exact behaviour when disabled.
 
 ### VI. Idiomatic Elixir/OTP & Functional Design
 
@@ -211,4 +249,4 @@ deviation already is. Reviews and PRs MUST verify compliance with these
 principles; the constitution and the implementation plan together are the
 runtime guidance for autonomous and human contributors alike.
 
-**Version**: 1.1.0 | **Ratified**: 2026-07-11 | **Last Amended**: 2026-07-24
+**Version**: 1.2.0 | **Ratified**: 2026-07-11 | **Last Amended**: 2026-07-27

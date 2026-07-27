@@ -165,7 +165,9 @@ defmodule SpeckitOrchestrator.RunDirectoryLayoutTest do
 
     # The ad-hoc seed write is worktree-relative (resolves I1, T023) — never
     # the base-repo-absolute ad_hoc_root.
-    worktree_path = Path.join(System.tmp_dir!(), "run_dir_wt_#{System.unique_integer([:positive])}")
+    worktree_path =
+      Path.join(System.tmp_dir!(), "run_dir_wt_#{System.unique_integer([:positive])}")
+
     on_exit(fn -> File.rm_rf(worktree_path) end)
     seed_path = Path.join([worktree_path, Layout.in_repo_rel(ad_hoc_layout), "001-widget.md"])
     File.mkdir_p!(Path.dirname(seed_path))

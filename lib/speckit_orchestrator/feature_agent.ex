@@ -19,6 +19,11 @@ defmodule SpeckitOrchestrator.FeatureAgent do
       :halted | :failed`), set by `feature.finalize`.
     * `last_outcome` / `last_signals` / `last_result` — the most recent phase
       run, consumed by the runner to compute `Pipeline.next/3`.
+    * `analyze_remediation` — the analyze auto-remediation loop's provenance
+      for this feature run (`%{attempts_used:, limit:, threshold:, enabled:}`),
+      patched onto the agent snapshot `AnalyzeRunner` returns and read by
+      `FeatureRunner` for the checkpoint's optional `analyze_remediation` key.
+      `nil` whenever the loop made no attempt (017).
     * `history` — reverse-chronological per-phase entries.
     * `cost_total` — accumulated recorded spend for this feature.
   """
@@ -42,6 +47,7 @@ defmodule SpeckitOrchestrator.FeatureAgent do
       last_signals: [type: :map, default: %{}],
       last_result: [type: :any, default: nil],
       terminal_reason: [type: :any, default: nil],
+      analyze_remediation: [type: :any, default: nil],
       history: [type: {:list, :any}, default: []],
       cost_total: [type: :float, default: 0.0]
     ],
@@ -49,6 +55,7 @@ defmodule SpeckitOrchestrator.FeatureAgent do
       {"feature.init", SpeckitOrchestrator.Actions.InitFeature},
       {"phase.run", SpeckitOrchestrator.Actions.RunFeaturePhase},
       {"remediation.run", SpeckitOrchestrator.Actions.RunRemediation},
+      {"auto_remediation.run", SpeckitOrchestrator.Actions.RunAutoRemediation},
       {"feature.finalize", SpeckitOrchestrator.Actions.FinalizeFeature}
     ]
 end

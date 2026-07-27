@@ -20,13 +20,16 @@ defmodule SpeckitOrchestrator.FeatureRunner do
   alias Jido.{AgentServer, Signal}
 
   alias SpeckitOrchestrator.{
+    AnalyzeRunner,
     Checkpoint,
     ChunkRunner,
     Config,
     Describe,
     FeatureAgent,
     PhaseResult,
+    PhaseStep,
     Pipeline,
+    Remediation,
     Transcripts,
     Worktree
   }
@@ -98,9 +101,10 @@ defmodule SpeckitOrchestrator.FeatureRunner do
     run_context = Keyword.get(opts, :run_context)
     layout = Keyword.get(opts, :layout)
 
-    chunk_opts = %{
+    step_opts = %{
       start_task_phase: Keyword.get(opts, :start_task_phase),
-      reset_implement_sessions: Keyword.get(opts, :reset_implement_sessions, false)
+      reset_implement_sessions: Keyword.get(opts, :reset_implement_sessions, false),
+      remediation_settings: remediation_settings!(run_context)
     }
 
     with {:ok, pid} <- start_agent(feature, opts) do
@@ -138,7 +142,7 @@ defmodule SpeckitOrchestrator.FeatureRunner do
                 worktree,
                 run_context,
                 layout,
-                chunk_opts
+                step_opts
               )
           end
 
@@ -231,13 +235,16 @@ defmodule SpeckitOrchestrator.FeatureRunner do
 
   # ---- loop ---------------------------------------------------------------
 
-  defp loop(pid, feature, phase, step, timeout, ledger, worktree, run_context, layout, chunk_opts) do
+  defp loop(pid, feature, phase, step, timeout, ledger, worktree, run_context, layout, step_opts) do
     agent =
-      run_step(pid, feature, phase, step, timeout, ledger, worktree, layout, chunk_opts)
+      run_step(pid, feature, phase, step, timeout, ledger, worktree, layout, step_opts)
 
     st = agent.state
 
-    case chunk_terminal_override(st) || Pipeline.next(phase, st.last_outcome, st.last_signals) do
+    transition =
+      terminal_override(st) || Pipeline.next(phase, st.last_outcome, st.last_signals)
+
+    case decorate(transition, phase, st) do
       {:cont, next} ->
         # Durable resume pointer for this boundary (FR-001) — before recursing,
         # not after, so a crash mid-next-phase still finds the checkpoint/commit
@@ -251,7 +258,8 @@ defmodule SpeckitOrchestrator.FeatureRunner do
           slug: feature.slug,
           path: feature.path,
           run_context: run_context,
-          layout: layout
+          layout: layout,
+          analyze_remediation: Map.get(st, :analyze_remediation)
         })
 
         if worktree,
@@ -272,7 +280,7 @@ defmodule SpeckitOrchestrator.FeatureRunner do
               worktree,
               run_context,
               layout,
-              chunk_opts
+              step_opts
             )
 
       {:done, :done} ->
@@ -294,20 +302,36 @@ defmodule SpeckitOrchestrator.FeatureRunner do
   # `Chunking.next/2`'s row 1 — the outer transient-retry wrapper
   # (`run_phase_with_retry/8`) would be meaningless wrapped around a call that
   # already represents N sessions, not one. Every other phase is unchanged.
-  defp run_step(pid, feature, :implement, step, timeout, ledger, worktree, layout, chunk_opts) do
+  defp run_step(pid, feature, :implement, step, timeout, ledger, worktree, layout, step_opts) do
+    chunk_opts = Map.take(step_opts, [:start_task_phase, :reset_implement_sessions])
     run_chunked_phase(pid, feature, step, timeout, ledger, worktree, layout, chunk_opts)
   end
 
-  defp run_step(pid, feature, phase, step, timeout, _ledger, worktree, layout, _chunk_opts) do
-    run_phase_with_retry(
-      pid,
-      feature,
-      phase,
-      step,
-      timeout,
-      worktree,
-      layout,
-      Config.phase_max_retries()
+  # `:analyze` (017) delegates to `AnalyzeRunner`, which drives the bounded
+  # auto-remediation loop *below* the analyze gate and returns the **final**
+  # analyze run's outcome/signals — so `Pipeline.next/3` below still sees
+  # exactly one `:analyze` outcome, exactly once (FR-007). With the loop
+  # disabled the runner short-circuits to the same `PhaseStep.run/4` call the
+  # generic clause makes.
+  defp run_step(pid, feature, :analyze, step, timeout, ledger, worktree, layout, step_opts) do
+    AnalyzeRunner.run(%{
+      pid: pid,
+      feature: feature,
+      worktree: worktree,
+      layout: layout,
+      timeout: timeout,
+      step: step,
+      ledger: ledger,
+      settings: Map.fetch!(step_opts, :remediation_settings)
+    })
+  end
+
+  defp run_step(pid, feature, phase, step, timeout, _ledger, worktree, layout, _step_opts) do
+    PhaseStep.run(pid, feature, phase,
+      step: step,
+      timeout: timeout,
+      worktree: worktree,
+      layout: layout
     )
   end
 
@@ -354,49 +378,43 @@ defmodule SpeckitOrchestrator.FeatureRunner do
     agent.state.cost_total || 0.0
   end
 
-  # A chunked implement step resolves its own breaker-halt / SC-002 failure
-  # reason inside `ChunkRunner`, below `Pipeline.next/3`'s single generic
-  # `{phase, :error}` — `Pipeline.next/3` itself stays untouched (FR-008).
-  # `terminal_reason` is the existing `FeatureAgent` field (added in 013 for
-  # post-finalize bookkeeping) reused here as the seam that lets the specific
-  # reason reach the checkpoint/console instead of that generic tuple.
-  defp chunk_terminal_override(%{terminal_reason: {:halted, _} = t}), do: t
-  defp chunk_terminal_override(%{terminal_reason: {:failed, _} = t}), do: t
-  defp chunk_terminal_override(_st), do: nil
+  # An edge module that drives its own sub-loop (`ChunkRunner` for `:implement`,
+  # `AnalyzeRunner` for `:analyze`) resolves halt/failure reasons
+  # `Pipeline.next/3` has no vocabulary for — a chunked implement's SC-002
+  # reasons and breaker halt, the analyze loop's `:remediation_failed` and its
+  # own breaker halt — below `Pipeline.next/3`'s single generic `{phase,
+  # :error}`. `Pipeline.next/3` itself stays untouched. `terminal_reason` is
+  # the existing `FeatureAgent` field (added in 013 for post-finalize
+  # bookkeeping) reused as the seam both edge modules share, so the specific
+  # reason reaches the checkpoint/console instead of that generic tuple.
+  defp terminal_override(%{terminal_reason: {:halted, _} = t}), do: t
+  defp terminal_override(%{terminal_reason: {:failed, _} = t}), do: t
+  defp terminal_override(_st), do: nil
 
-  # Re-run a phase that failed transiently (a server/API drop, not a real error)
-  # up to `retries` times before giving up — a single dropped stream should not
-  # fail an expensive feature. Real errors and the gate outcomes (`:escalated` /
-  # `:halted`, which are signals, not `:error`) fall straight through.
-  defp run_phase_with_retry(pid, feature, phase, step, timeout, worktree, layout, retries) do
-    agent = run_phase(pid, feature, phase, step, timeout, worktree, layout)
-    st = agent.state
-
-    if retries > 0 and st.last_outcome == :error and PhaseResult.transient?(st.last_result) do
-      Logger.warning(
-        "feature #{feature.id} phase #{phase} failed transiently — retrying (#{retries} left)"
-      )
-
-      run_phase_with_retry(pid, feature, phase, step, timeout, worktree, layout, retries - 1)
-    else
-      agent
-    end
+  # Exhausted auto-remediation names itself in the gate's reason (FR-006,
+  # research R11) without the gate itself changing: `Pipeline.next/3` already
+  # produced the identical transition, and a loop that never ran (or succeeded)
+  # leaves it byte-identical to pre-017 (SC-007a).
+  defp decorate(transition, :analyze, %{analyze_remediation: %{attempts_used: n}}) when n > 0 do
+    Remediation.terminal_reason(transition, %{attempts_used: n})
   end
 
-  # Run one phase inside a telemetry span, write its transcript, and log the
-  # transition.
-  defp run_phase(pid, feature, phase, step, timeout, worktree, layout) do
-    meta = %{feature_id: feature.id, phase: phase, model: Config.model_for(phase), step: step}
+  defp decorate(transition, _phase, _st), do: transition
 
-    :telemetry.span([:speckit, :phase], meta, fn ->
-      {:ok, agent} = call(pid, "phase.run", %{phase: phase}, timeout)
-      entry = List.first(agent.state.history) || %{}
-      Transcripts.write(worktree, layout, step, phase, agent.state.last_result)
-      Logger.info("feature #{feature.id} phase #{phase} -> #{inspect(Map.get(entry, :outcome))}")
+  # Resolved once per feature run from the run's **captured** `RunContext`,
+  # never from live `Config` (FR-010b) — a mid-run config edit must not reach an
+  # in-flight run. A recorded-but-invalid setting is a corrupt manifest, not an
+  # operator mistake (`run/1`'s preflight rejects those at launch), so it fails
+  # loud here rather than silently falling back to a default.
+  defp remediation_settings!(run_context) do
+    case Remediation.Settings.from_context(run_context) do
+      {:ok, settings} ->
+        settings
 
-      {agent,
-       Map.merge(meta, %{outcome: Map.get(entry, :outcome), cost: Map.get(entry, :cost, 0.0)})}
-    end)
+      {:error, reason} ->
+        raise ArgumentError,
+              "invalid recorded auto-remediation settings: #{inspect(reason)}"
+    end
   end
 
   defp emit_terminal(feature, status, reason, cost_total) do
@@ -424,7 +442,8 @@ defmodule SpeckitOrchestrator.FeatureRunner do
       slug: feature.slug,
       path: feature.path,
       run_context: run_context,
-      layout: layout
+      layout: layout,
+      analyze_remediation: Map.get(agent.state, :analyze_remediation)
     })
   end
 

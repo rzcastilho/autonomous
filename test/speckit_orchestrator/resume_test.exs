@@ -1273,4 +1273,54 @@ defmodule SpeckitOrchestrator.ResumeTest do
       refute_received {:chunk_resolved, _meta}
     end
   end
+
+  # ---- analyze auto-remediation budget (feature 017, FR-015) -----------------
+
+  describe "resume/2 — the recorded attempt budget is provenance, never budget" do
+    test "a resumed run starts at attempts_used == 0 even though the checkpoint records an exhausted budget" do
+      id = unique_id()
+      repo = base_repo()
+      root = tmp_root()
+      point_config_at(repo, root)
+
+      {:ok, wt} = Worktree.create(feature(id), repo: repo, worktree_root: root)
+
+      # The prior run spent its whole budget and escalated on a persisting
+      # finding. Nothing may read this back as spend (FR-015) — it exists so an
+      # operator can see what was already tried (SC-005).
+      :ok =
+        Checkpoint.write(%{
+          feature_id: id,
+          last_phase: :analyze,
+          status: :halted,
+          reason: {:critical_finding, :auto_remediation_exhausted},
+          session_id: "s1",
+          analyze_remediation: %{
+            attempts_used: 2,
+            limit: 2,
+            threshold: "high",
+            enabled: true
+          }
+        })
+
+      on_exit(fn -> File.rm_rf(Path.join(Config.transcript_root(), id)) end)
+
+      me = self()
+      assert {:ok, pid} = SpeckitOrchestrator.resume(id, features: [feature(id)], owner: me)
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+      assert_receive {:run_complete, report}, 30_000
+      assert report.halted == [id]
+
+      # A full, fresh budget of two attempts ran — not zero, and not one.
+      assert File.exists?(Path.join(wt.path, ".speckit_logs/05-remediation-a1.md"))
+      assert File.exists?(Path.join(wt.path, ".speckit_logs/05-remediation-a2.md"))
+      refute File.exists?(Path.join(wt.path, ".speckit_logs/05-remediation-a3.md"))
+
+      # …and the new run's own provenance replaces the old, still at the limit.
+      assert {:ok, record} = Checkpoint.read(id)
+      assert record["analyze_remediation"]["attempts_used"] == 2
+      assert record["analyze_remediation"]["limit"] == 2
+    end
+  end
 end

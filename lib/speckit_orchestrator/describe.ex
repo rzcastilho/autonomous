@@ -73,21 +73,25 @@ defmodule SpeckitOrchestrator.Describe do
   transcript dir (scope-keyed); `layout: nil` falls back to the pre-012 flat
   `Config.transcript_root/0`.
   """
-  @spec write_pr(String.t(), %{pr_title: String.t(), pr_body: String.t()}, Layout.t() | nil) :: :ok
+  @spec write_pr(String.t(), %{pr_title: String.t(), pr_body: String.t()}, Layout.t() | nil) ::
+          :ok
   def write_pr(feature_id, description, layout \\ nil)
 
   def write_pr(feature_id, %{pr_title: title, pr_body: body}, layout) do
     dir = Path.join(durable_root(layout), feature_id)
     File.mkdir_p!(dir)
+
     File.write!(
       Path.join(dir, "pr.json"),
       Jason.encode!(%{pr_title: title, pr_body: body}, pretty: true)
     )
+
     :ok
   end
 
   @doc "Read a previously-written PR title/body, or `:error` if absent/malformed."
-  @spec read_pr(String.t(), Layout.t() | nil) :: {:ok, %{pr_title: String.t(), pr_body: String.t()}} | :error
+  @spec read_pr(String.t(), Layout.t() | nil) ::
+          {:ok, %{pr_title: String.t(), pr_body: String.t()}} | :error
   def read_pr(feature_id, layout \\ nil) do
     path = Path.join([durable_root(layout), feature_id, "pr.json"])
 

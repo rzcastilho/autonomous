@@ -12,7 +12,12 @@ defmodule SpeckitOrchestrator.RunPhaseTest do
 
     def query(_prompt, _options) do
       [
-        %Message{type: :system, subtype: :init, data: %{session_id: "sess-int", tools: []}, raw: %{}},
+        %Message{
+          type: :system,
+          subtype: :init,
+          data: %{session_id: "sess-int", tools: []},
+          raw: %{}
+        },
         %Message{
           type: :assistant,
           subtype: nil,
@@ -42,7 +47,14 @@ defmodule SpeckitOrchestrator.RunPhaseTest do
     alias ClaudeAgentSDK.Message
 
     def query(_prompt, _options) do
-      [%Message{type: :result, subtype: :error, data: %{session_id: "s", error: "kaboom"}, raw: %{}}]
+      [
+        %Message{
+          type: :result,
+          subtype: :error,
+          data: %{session_id: "s", error: "kaboom"},
+          raw: %{}
+        }
+      ]
     end
   end
 
@@ -74,7 +86,9 @@ defmodule SpeckitOrchestrator.RunPhaseTest do
     assert Ledger.spent(ledger) == 0.37
   end
 
-  test "a failed session surfaces an error PhaseResult (still charged an estimate)", %{ledger: ledger} do
+  test "a failed session surfaces an error PhaseResult (still charged an estimate)", %{
+    ledger: ledger
+  } do
     Application.put_env(:jido_claude, :sdk_module, FailSDK)
 
     request = PhaseRequest.build(feature(), :specify)
@@ -100,14 +114,22 @@ defmodule SpeckitOrchestrator.RunPhaseTest do
     on_exit(fn -> Application.put_env(:jido_harness, :providers, original) end)
 
     request = PhaseRequest.build(feature(), :specify)
-    assert {:error, _reason} = RunPhase.run(%{request: request, phase: :specify, ledger: nil}, %{})
+
+    assert {:error, _reason} =
+             RunPhase.run(%{request: request, phase: :specify, ledger: nil}, %{})
   end
 
   @tag :integration
   test "LIVE: runs /speckit.specify against a real Spec Kit repo (paid, opt-in)" do
-    repo = System.get_env("SPECKIT_FIXTURE_REPO") || flunk("set SPECKIT_FIXTURE_REPO to a repo path")
+    repo =
+      System.get_env("SPECKIT_FIXTURE_REPO") || flunk("set SPECKIT_FIXTURE_REPO to a repo path")
 
-    feature = %Feature{id: "001", slug: "smoke", path: Path.join(repo, "docs/breakdown/001-smoke.md")}
+    feature = %Feature{
+      id: "001",
+      slug: "smoke",
+      path: Path.join(repo, "docs/breakdown/001-smoke.md")
+    }
+
     request = PhaseRequest.build(feature, :specify, cwd: repo)
 
     assert {:ok, out} = RunPhase.run(%{request: request, phase: :specify, ledger: nil}, %{})

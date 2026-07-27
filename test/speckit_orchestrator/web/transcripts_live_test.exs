@@ -65,7 +65,14 @@ defmodule SpeckitOrchestrator.Web.TranscriptsLiveTest do
     segment: segment,
     root: root
   } do
-    write_transcript(root, segment, "core/t1", 3, "plan", "# plan\n\nsome durable transcript body")
+    write_transcript(
+      root,
+      segment,
+      "core/t1",
+      3,
+      "plan",
+      "# plan\n\nsome durable transcript body"
+    )
 
     {:ok, view, html} = live(conn, "/transcripts?feature=core/t1&phase=plan")
 

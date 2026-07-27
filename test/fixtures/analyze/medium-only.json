@@ -1,0 +1,17 @@
+[
+  {
+    "summary": "Nothing at or above the default threshold.",
+    "findings": [
+      {
+        "severity": "medium",
+        "title": "quickstart.md omits the iex path",
+        "detail": "Only the console walkthrough is documented."
+      },
+      {
+        "severity": "low",
+        "title": "research.md heading level drift",
+        "detail": "R7 is an h3 where every other decision is an h2."
+      }
+    ]
+  }
+]

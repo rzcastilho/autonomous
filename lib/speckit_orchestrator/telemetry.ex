@@ -25,6 +25,19 @@ defmodule SpeckitOrchestrator.Telemetry do
     * `[:speckit, :chunk, :resolved]` — measurements `%{}`, metadata
       `%{feature_id, match_kind, ordinal, number, title, requested}`.
 
+  Events (emitted by `AnalyzeRunner`, one `:analyze` step's auto-remediation
+  loop — `specs/017-analyze-auto-remediation/contracts/telemetry-console.md` §1):
+
+    * `[:speckit, :remediation, :start]` / `:stop` / `:exception` — the
+      `[:speckit, :remediation]` `:telemetry.span/3` around one corrective
+      attempt, metadata `%{feature_id, phase: :analyze, attempt, limit,
+      threshold, findings_count, max_severity, model}` (`:stop` adds
+      `%{outcome, cost}`; `:exception` adds `%{kind, reason}`).
+
+    The `[:speckit, :phase]` span for `phase: :analyze` additionally carries
+    `attempt` / `limit` **only while the loop is enabled**; with the loop off
+    the metadata map is byte-identical to pre-017 (FR-010, SC-007a).
+
   Events (emitted by `RunManifest.write/1` — run-level, no `feature_id`;
   `specs/016-resume-backlog-scope/contracts/manifest-guard.md`):
 
@@ -40,6 +53,7 @@ defmodule SpeckitOrchestrator.Telemetry do
 
   @phase [:speckit, :phase]
   @chunk [:speckit, :chunk]
+  @remediation [:speckit, :remediation]
   @events [
     [:speckit, :phase, :start],
     [:speckit, :phase, :stop],
@@ -49,6 +63,9 @@ defmodule SpeckitOrchestrator.Telemetry do
     [:speckit, :chunk, :stop],
     [:speckit, :chunk, :exception],
     [:speckit, :chunk, :resolved],
+    [:speckit, :remediation, :start],
+    [:speckit, :remediation, :stop],
+    [:speckit, :remediation, :exception],
     [:speckit, :run, :scope_narrowing_refused]
   ]
 
@@ -59,6 +76,10 @@ defmodule SpeckitOrchestrator.Telemetry do
   @doc "The `:telemetry.span/3` prefix for chunk events."
   @spec chunk_span() :: [atom()]
   def chunk_span, do: @chunk
+
+  @doc "The `:telemetry.span/3` prefix for auto-remediation attempt events."
+  @spec remediation_span() :: [atom()]
+  def remediation_span, do: @remediation
 
   @doc "All emitted event names."
   @spec events() :: [[atom()]]
@@ -82,6 +103,14 @@ defmodule SpeckitOrchestrator.Telemetry do
     Logger.info(
       "feature #{meta.feature_id} terminal=#{meta.status} reason=#{inspect(meta.reason)} " <>
         "cost_total=#{inspect(meas.cost_total)}"
+    )
+  end
+
+  def handle_event([:speckit, :remediation, :stop], %{duration: dur}, meta, _cfg) do
+    Logger.info(
+      "auto-remediation attempt #{meta.attempt}/#{meta.limit} feature=#{meta.feature_id} " <>
+        "outcome=#{inspect(meta[:outcome])} cost=#{inspect(meta[:cost])} #{ms(dur)}ms " <>
+        "findings=#{meta.findings_count} threshold=#{meta.threshold}"
     )
   end
 

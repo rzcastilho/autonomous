@@ -3,7 +3,8 @@ defmodule SpeckitOrchestrator.ResolveTest do
 
   alias SpeckitOrchestrator.{Feature, Worktree}
 
-  defp git!(repo, args), do: {_, 0} = System.cmd("git", ["-C", repo | args], stderr_to_stdout: true)
+  defp git!(repo, args),
+    do: {_, 0} = System.cmd("git", ["-C", repo | args], stderr_to_stdout: true)
 
   defp scaffolded_repo do
     repo = Path.join(System.tmp_dir!(), "rs_repo_#{System.unique_integer([:positive])}")
@@ -49,7 +50,13 @@ defmodule SpeckitOrchestrator.ResolveTest do
 
   test "resolve/2 is a no-op when there is no kept worktree" do
     repo = scaffolded_repo()
-    opts = [repo: repo, worktree_root: Path.join(System.tmp_dir!(), "none_#{System.unique_integer([:positive])}"), features: [feature()]]
+
+    opts = [
+      repo: repo,
+      worktree_root: Path.join(System.tmp_dir!(), "none_#{System.unique_integer([:positive])}"),
+      features: [feature()]
+    ]
+
     assert :ok = SpeckitOrchestrator.resolve("007", opts)
   end
 

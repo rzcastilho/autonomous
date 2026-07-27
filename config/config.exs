@@ -133,6 +133,14 @@ config :speckit_orchestrator,
   # headroom, frozen at implement-step start. Feature 015.
   implement_sessions_per_task_phase: 2,
   implement_sessions_headroom: 4,
+  # Analyze auto-remediation loop (feature 017) — on by default. A bounded
+  # pre-gate corrective step runs against at-or-above-threshold findings
+  # before the analyze gate decides. See Remediation.Settings.validate/1 for
+  # the single validation point (FR-011); these are only defaults.
+  auto_remediation: true,
+  auto_remediation_threshold: :high,
+  auto_remediation_attempt_limit: 2,
+  auto_remediation_model: nil,
   # Per-phase USD cost estimates. Used as a FALLBACK only — the Claude adapter
   # emits a :usage event with actual cost_usd when the CLI reports
   # total_cost_usd; the estimate is recorded when it does not.
@@ -151,7 +159,12 @@ config :speckit_orchestrator,
     analyze: 1.26,
     implement: 7.88,
     converge: 0.95,
-    describe: 0.15
+    describe: 0.15,
+    # NEW (feature 017) — runs on the analyze model (FR-009b, SC-008).
+    auto_remediation: 1.26,
+    # NEW (feature 017) — closes a pre-existing 0.0 hole: 013's operator
+    # pre-phase remediation step had no estimate at all (research R6).
+    remediation: 0.95
   },
   # Pinned Spec Kit CLI tag (drift diagnosis — plan §4.6).
   speckit_version: "v0.12.11"

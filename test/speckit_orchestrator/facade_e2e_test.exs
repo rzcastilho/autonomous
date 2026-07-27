@@ -21,7 +21,11 @@ defmodule SpeckitOrchestrator.FacadeE2ETest do
 
       [
         %Message{type: :system, subtype: :init, data: %{session_id: "s"}, raw: %{}},
-        %Message{type: :assistant, data: %{session_id: "s", message: %{"content" => text}}, raw: %{}},
+        %Message{
+          type: :assistant,
+          data: %{session_id: "s", message: %{"content" => text}},
+          raw: %{}
+        },
         %Message{
           type: :result,
           subtype: :success,
@@ -34,16 +38,18 @@ defmodule SpeckitOrchestrator.FacadeE2ETest do
 
   alias SpeckitOrchestrator.RepoIdentity
 
-  defp git!(repo, args), do: {_, 0} = System.cmd("git", ["-C", repo | args], stderr_to_stdout: true)
+  defp git!(repo, args),
+    do: {_, 0} = System.cmd("git", ["-C", repo | args], stderr_to_stdout: true)
 
-  defp add_origin!(repo), do: git!(repo, ["remote", "add", "origin", "git@example.com:test/#{Path.basename(repo)}.git"])
+  defp add_origin!(repo),
+    do: git!(repo, ["remote", "add", "origin", "git@example.com:test/#{Path.basename(repo)}.git"])
 
   setup do
     prev_sdk = Application.get_env(:jido_claude, :sdk_module)
 
     prev =
       for k <- [:repo, :breakdown_dir, :worktree_root, :autonomous_root],
-        do: {k, Application.get_env(:speckit_orchestrator, k)}
+          do: {k, Application.get_env(:speckit_orchestrator, k)}
 
     Application.put_env(:jido_claude, :sdk_module, FakeSDK)
     Application.put_env(:speckit_orchestrator, :test_fake_scenario, :happy)
@@ -80,7 +86,8 @@ defmodule SpeckitOrchestrator.FacadeE2ETest do
         else: Application.delete_env(:jido_claude, :sdk_module)
 
       for {k, v} <- prev do
-        if v, do: Application.put_env(:speckit_orchestrator, k, v),
+        if v,
+          do: Application.put_env(:speckit_orchestrator, k, v),
           else: Application.delete_env(:speckit_orchestrator, k)
       end
 
@@ -92,7 +99,10 @@ defmodule SpeckitOrchestrator.FacadeE2ETest do
     %{repo: repo, root: root}
   end
 
-  test "run/0 drives a real one-feature backlog to :done end-to-end (offline)", %{repo: repo, root: root} do
+  test "run/0 drives a real one-feature backlog to :done end-to-end (offline)", %{
+    repo: repo,
+    root: root
+  } do
     # no-arg run/0: owner defaults to the caller.
     {:ok, pid} = SpeckitOrchestrator.run()
     on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)

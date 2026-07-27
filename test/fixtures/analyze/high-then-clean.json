@@ -1,0 +1,21 @@
+[
+  {
+    "summary": "One mechanically fixable gap.",
+    "findings": [
+      {
+        "severity": "high",
+        "title": "tasks.md has no task for FR-004",
+        "detail": "tasks.md enumerates FR-001..FR-003 only; FR-004 is unmapped."
+      },
+      {
+        "severity": "low",
+        "title": "plan.md wording nit",
+        "detail": "\"the the\" typo in the Summary section."
+      }
+    ]
+  },
+  {
+    "summary": "Clean — no findings.",
+    "findings": []
+  }
+]
