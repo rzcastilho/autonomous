@@ -81,6 +81,56 @@ defmodule SpeckitOrchestrator.PRWorkflowTest do
     assert_receive {:started, "003", _}, 2_000
   end
 
+  # The recorded context is the run's own account of the shape it ran under —
+  # it fed the manifest and every checkpoint the live Config value (typically
+  # 2) for a run that only ever released one feature at a time, so the console
+  # and a later resume both read back a cap the run never used.
+  test "a stacked run records its effective cap of 1 in the run context, not the live Config value" do
+    me = self()
+    prior = Application.get_env(:speckit_orchestrator, :max_concurrency)
+    Application.put_env(:speckit_orchestrator, :max_concurrency, 7)
+    on_exit(fn -> Application.put_env(:speckit_orchestrator, :max_concurrency, prior) end)
+
+    runner = fn feature, notify -> send(me, {:started, feature.id, notify}) end
+
+    {:ok, pid} =
+      SpeckitOrchestrator.run(
+        pr_workflow: true,
+        features: [feat("001", "a"), feat("002", "b")],
+        runner: runner,
+        owner: me
+      )
+
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+    assert_receive {:started, "001", _}, 2_000
+
+    status = SpeckitOrchestrator.Coordinator.status(pid)
+    assert status.cap == 1
+    assert status.context.max_concurrency == 1
+    assert status.context.pr_workflow == true
+  end
+
+  test "a non-stacked run still records the requested cap" do
+    me = self()
+    runner = fn feature, notify -> send(me, {:started, feature.id, notify}) end
+
+    {:ok, pid} =
+      SpeckitOrchestrator.run(
+        pr_workflow: false,
+        max_concurrency: 3,
+        features: [feat("001", "a")],
+        runner: runner,
+        owner: me
+      )
+
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+    assert_receive {:started, "001", _}, 2_000
+
+    status = SpeckitOrchestrator.Coordinator.status(pid)
+    assert status.cap == 3
+    assert status.context.max_concurrency == 3
+  end
+
   test "a second run replaces the previous Coordinator (no :already_started)" do
     me = self()
     runner = fn feature, notify -> send(me, {:started, feature.id, notify}) end

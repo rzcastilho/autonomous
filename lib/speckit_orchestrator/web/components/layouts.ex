@@ -14,7 +14,7 @@ defmodule SpeckitOrchestrator.Web.Layouts do
 
   use SpeckitOrchestrator.Web, :html
 
-  alias SpeckitOrchestrator.{Config, Coordinator, Ledger}
+  alias SpeckitOrchestrator.{Config, Coordinator, Ledger, RunContext}
 
   embed_templates("layouts/*")
 
@@ -77,7 +77,8 @@ defmodule SpeckitOrchestrator.Web.Layouts do
     %{
       active?: status != nil,
       title: if(status, do: "Active run", else: "No active run"),
-      mode: if(Config.pr_workflow?(), do: :stacked_pr, else: :parallel_waves),
+      mode: run_mode(status),
+      cap: run_cap(status),
       committed: ledger.committed * 1.0,
       reserved: ledger.reserved * 1.0,
       budget: ledger.budget * 1.0,
@@ -85,6 +86,20 @@ defmodule SpeckitOrchestrator.Web.Layouts do
       clock: DateTime.utc_now() |> DateTime.to_time() |> Time.to_string()
     }
   end
+
+  # An active run reports the shape it actually started with; only when there
+  # is no run does the bar fall back to live Config as a "what the next run
+  # would be" preview. Reading global Config while a run is live let the bar
+  # claim :parallel_waves for a stacked run (and vice versa) whenever a
+  # per-run `:pr_workflow` opt differed from the global default.
+  defp run_mode(nil), do: if(Config.pr_workflow?(), do: :stacked_pr, else: :parallel_waves)
+
+  defp run_mode(status) do
+    if RunContext.stacked?(status[:context]), do: :stacked_pr, else: :parallel_waves
+  end
+
+  defp run_cap(nil), do: Config.max_concurrency()
+  defp run_cap(status), do: status[:cap] || Config.max_concurrency()
 
   defp coordinator_status do
     if Process.whereis(Coordinator) do

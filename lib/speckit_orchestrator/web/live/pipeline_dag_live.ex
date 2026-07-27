@@ -25,6 +25,7 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
     ConsoleReadModel,
     Coordinator,
     Ledger,
+    Release,
     RepoIdentity,
     RunManifest
   }
@@ -51,7 +52,8 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
        repo: repo,
        segment: segment,
        packages: packages,
-       selected_package: selected_package
+       selected_package: selected_package,
+       known_backlog_ids: known_backlog_ids(repo, packages)
      )
      |> load_layout()
      |> seed()}
@@ -91,11 +93,18 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
 
       assign(socket,
         backlog_error: nil,
+        features: features,
         dag_layout: dag_layout,
         canvas: PipelineDagLayout.canvas_size(dag_layout)
       )
     rescue
-      e -> assign(socket, backlog_error: Exception.message(e), dag_layout: nil, canvas: nil)
+      e ->
+        assign(socket,
+          backlog_error: Exception.message(e),
+          features: [],
+          dag_layout: nil,
+          canvas: nil
+        )
     end
   end
 
@@ -123,11 +132,34 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
   end
 
   defp seed(socket) do
-    view =
-      ConsoleReadModel.merge(coordinator_status(), ledger_snapshot(), ConsoleProjection.read())
+    status = coordinator_status()
+    view = ConsoleReadModel.merge(status, ledger_snapshot(), ConsoleProjection.read())
 
-    assign(socket, view: overlay_manifest(socket, view))
+    socket
+    |> assign(view: overlay_manifest(socket, view))
+    |> assign_release_order(status)
   end
+
+  # A cap-1 run (any stacked PR run, and any run explicitly capped at 1) releases
+  # strictly one feature at a time, so the canvas annotates each node with its
+  # release position. Without it the layout reads as though a whole column starts
+  # together — columns are prereq depth, and two features at the same depth sit
+  # side by side whether the run can actually overlap them or not.
+  #
+  # Empty for a cap > 1 run: there the overlap depends on phase durations, and a
+  # projected order would be a guess drawn as fact.
+  defp assign_release_order(socket, status) do
+    assign(socket, release_order: release_order(socket.assigns[:features] || [], status))
+  end
+
+  defp release_order(features, %{cap: 1}) when features != [] do
+    features
+    |> Release.sequential_order()
+    |> Enum.with_index(1)
+    |> Map.new()
+  end
+
+  defp release_order(_features, _status), do: %{}
 
   # No live Coordinator (fresh boot, no resume yet) — fall back to the
   # durable run manifest (specs/009-crash-recovery) so the DAG reflects the
@@ -190,7 +222,11 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
         socket
       ) do
     view = ConsoleReadModel.merge(coordinator_status, ledger_snapshot, ConsoleProjection.read())
-    {:noreply, assign(socket, view: overlay_manifest(socket, view))}
+
+    {:noreply,
+     socket
+     |> assign(view: overlay_manifest(socket, view))
+     |> assign_release_order(coordinator_status)}
   end
 
   def handle_info({:console, :run_finished, report}, socket) do
@@ -237,7 +273,14 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
         <div class="dag-canvas-header">
           <div>
             <div class="dag-canvas-title">Dependency DAG</div>
-            <div class="dag-canvas-sub">release in dependency-and-cap waves</div>
+            <div :if={@release_order == %{}} class="dag-canvas-sub">
+              columns are prereq depth, not concurrency — the wave cap decides how
+              many of a column actually run at once
+            </div>
+            <div :if={@release_order != %{}} class="dag-canvas-sub" data-state="sequential-run">
+              this run releases one feature at a time — badges show release order,
+              so a shared column runs top to bottom, not together
+            </div>
           </div>
           <form
             :if={length(@packages) > 1}
@@ -280,6 +323,14 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
               phx-value-id={node.id}
             >
               <div class="dag-node-head">
+                <span
+                  :if={@release_order[node.id]}
+                  class="dag-release-badge"
+                  data-release-order={@release_order[node.id]}
+                  title="release order — this run runs one feature at a time"
+                >
+                  {@release_order[node.id]}
+                </span>
                 <span class="dag-node-id">{node.id}</span>
                 <.status_pill status={node_status(@view, node.id)} />
               </div>
@@ -303,7 +354,7 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
             <span class="legend-swatch" style={"background-color: #{color};"}></span> {label}
           </div>
           <div
-            :if={ad_hoc_lane(@dag_layout, @view.per_feature).nodes != []}
+            :if={ad_hoc_lane(@dag_layout, @view.per_feature, @known_backlog_ids).nodes != []}
             class="dag-legend-item dag-legend-ad-hoc"
             data-legend-origin="ad-hoc"
           >
@@ -312,7 +363,7 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
         </div>
       </div>
 
-      <% ad_hoc_lane = ad_hoc_lane(@dag_layout, @view.per_feature) %>
+      <% ad_hoc_lane = ad_hoc_lane(@dag_layout, @view.per_feature, @known_backlog_ids) %>
 
       <div :if={ad_hoc_lane.nodes != []} class="dag-ad-hoc-lane" data-state="ad-hoc-lane">
         <div
@@ -349,8 +400,28 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
   defp node_phases(view, id), do: get_in(view.per_feature, [id, :phases]) || %{}
   defp node_chunk(view, id), do: get_in(view.per_feature, [id, :chunk])
 
-  defp ad_hoc_lane(nil, _per_feature), do: %{nodes: []}
+  defp ad_hoc_lane(nil, _per_feature, _known_ids), do: %{nodes: []}
 
-  defp ad_hoc_lane(dag_layout, per_feature),
-    do: PipelineDagLayout.ad_hoc_nodes(dag_layout, per_feature)
+  defp ad_hoc_lane(dag_layout, per_feature, known_ids),
+    do: PipelineDagLayout.ad_hoc_nodes(dag_layout, per_feature, known_ids)
+
+  # Every id that has a breakdown file in ANY package, not just the drawn one.
+  # A feature is ad-hoc because `run_spec/2` created it with no breakdown file
+  # at all — never merely because the wave picker is currently pointed
+  # somewhere else. Tolerant per package: one unparseable package must not
+  # blank the lane's exclusion set and turn every live feature into a false
+  # ad-hoc node.
+  defp known_backlog_ids(repo, []), do: package_ids(repo, nil)
+
+  defp known_backlog_ids(repo, packages) do
+    Enum.reduce(packages, MapSet.new(), fn slug, acc ->
+      MapSet.union(acc, package_ids(repo, slug))
+    end)
+  end
+
+  defp package_ids(repo, slug) do
+    repo |> load_features(slug) |> MapSet.new(& &1.id)
+  rescue
+    _ -> MapSet.new()
+  end
 end

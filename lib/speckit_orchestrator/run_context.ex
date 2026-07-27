@@ -41,6 +41,35 @@ defmodule SpeckitOrchestrator.RunContext do
     }
   end
 
+  @doc """
+  Whether the context describes a **stacked PR run** — the shape `run/1`
+  routes through `run_stacked/3`, which pins the wave cap to 1 so each
+  feature branches from the previous one's published branch.
+
+  Tolerant by design: a run's context reaches consumers as this struct, as a
+  string-keyed map decoded from the manifest, or as the bare `%{}` a test
+  Coordinator starts with. Anything that does not positively say
+  `pr_workflow: true` is not stacked.
+  """
+  @spec stacked?(t() | map() | nil) :: boolean()
+  def stacked?(%__MODULE__{pr_workflow: pr_workflow}), do: pr_workflow == true
+  def stacked?(%{"pr_workflow" => pr_workflow}), do: pr_workflow == true
+  def stacked?(%{pr_workflow: pr_workflow}), do: pr_workflow == true
+  def stacked?(_context), do: false
+
+  @doc """
+  The wave cap a run of this shape actually releases at: `1` when stacked
+  (each feature must branch from the previous one's published branch), the
+  requested cap otherwise.
+
+  One rule, one home — the console previews it before a run starts and
+  `run/1` records it into the run's context once started, so the number an
+  operator is shown up front is the number the run then reports.
+  """
+  @spec effective_max_concurrency(boolean() | nil, pos_integer() | nil) :: pos_integer() | nil
+  def effective_max_concurrency(true, _requested), do: 1
+  def effective_max_concurrency(_pr_workflow?, requested), do: requested
+
   @doc "JSON-ready, string-keyed map of exactly the six settings, for the checkpoint."
   @spec to_map(t()) :: %{String.t() => term()}
   def to_map(%__MODULE__{} = ctx) do

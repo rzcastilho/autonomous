@@ -7,7 +7,15 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLiveTest do
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
 
-  alias SpeckitOrchestrator.{Checkpoint, Coordinator, Feature, Layout, RepoIdentity, RunManifest}
+  alias SpeckitOrchestrator.{
+    Checkpoint,
+    Coordinator,
+    Feature,
+    Layout,
+    RepoIdentity,
+    RunContext,
+    RunManifest
+  }
 
   @endpoint SpeckitOrchestrator.Web.Endpoint
 
@@ -48,7 +56,8 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLiveTest do
     Application.put_env(:speckit_orchestrator, :breakdown_dir, "")
   end
 
-  defp git!(repo, args), do: {_, 0} = System.cmd("git", ["-C", repo | args], stderr_to_stdout: true)
+  defp git!(repo, args),
+    do: {_, 0} = System.cmd("git", ["-C", repo | args], stderr_to_stdout: true)
 
   # A real git repo (with `origin`) carrying the same 001/002 breakdown files
   # as @valid_dir, so RepoIdentity.resolve/1 succeeds and the manifest overlay
@@ -145,6 +154,154 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLiveTest do
 
     assert html =~ "gadget"
     refute html =~ "widget"
+  end
+
+  # Mirrors the real ../ledgerlite shape: two packages whose ids do NOT overlap
+  # (001-mvp holds 001-007, 002-addons holds 008-011). The shipped
+  # breakdown_packages fixture numbers both packages "001", so it cannot show
+  # this class of bug at all.
+  defp repo_with_disjoint_packages do
+    repo = Path.join(System.tmp_dir!(), "dag_disjoint_#{System.unique_integer([:positive])}")
+    root = Path.join(repo, "specs/autonomous/breakdown")
+    File.mkdir_p!(Path.join(root, "first-wave"))
+    File.mkdir_p!(Path.join(root, "second-wave"))
+
+    File.write!(
+      Path.join(root, "first-wave/001-alpha.md"),
+      "# 001 — Alpha\n\n## Prerequisites\n\nNone\n"
+    )
+
+    File.write!(
+      Path.join(root, "second-wave/008-beta.md"),
+      "# 008 — Beta\n\n## Prerequisites\n\nNone\n"
+    )
+
+    on_exit(fn -> File.rm_rf(repo) end)
+    Application.put_env(:speckit_orchestrator, :repo, repo)
+    repo
+  end
+
+  describe "ad-hoc lane across breakdown packages" do
+    # A feature belonging to another package has a breakdown file, so it is not
+    # ad-hoc. Switching the wave picker away from the running package used to
+    # relabel every one of its features as ad-hoc, because the lane's exclusion
+    # set was the drawn package alone.
+    test "a running package's features are not shown as ad-hoc when viewing another package",
+         %{conn: conn} do
+      repo_with_disjoint_packages()
+
+      {:ok, pid} =
+        Coordinator.start_link(
+          name: Coordinator,
+          features: [feat("001")],
+          runner: fn _feature, _notify -> :ok end,
+          owner: self()
+        )
+
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+      {:ok, view, html} = live(conn, "/dag")
+      # Defaults to the first package alphabetically — 001 is a normal node.
+      assert html =~ ~s(data-dag-node="001")
+      refute html =~ ~s(data-node-origin="ad-hoc")
+
+      html =
+        view
+        |> element(~s(form[data-form="wave-picker"]))
+        |> render_change(%{"slug" => "second-wave"})
+
+      assert html =~ ~s(data-dag-node="008")
+      refute html =~ ~s(data-node-origin="ad-hoc")
+      refute html =~ ~s(data-state="ad-hoc-lane")
+    end
+
+    test "a feature in no package at all is still shown as ad-hoc", %{conn: conn} do
+      repo_with_disjoint_packages()
+
+      {:ok, pid} =
+        Coordinator.start_link(
+          name: Coordinator,
+          features: [feat("001"), feat("999")],
+          runner: fn _feature, _notify -> :ok end,
+          owner: self()
+        )
+
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+      {:ok, _view, html} = live(conn, "/dag")
+
+      assert html =~ ~s(data-state="ad-hoc-lane")
+      assert html =~ ~s(data-node-origin="ad-hoc")
+      lane = extract_node(html, "999")
+      assert lane =~ "ad-hoc"
+    end
+  end
+
+  # A cap-1 run releases strictly one feature at a time, but the canvas lays
+  # nodes out by prereq depth — so 002/005/007 (all depending only on 001) sit
+  # in one column and read as if they start together. The badges say otherwise.
+  describe "release-order badges (cap-1 runs)" do
+    defp start_run(features, opts) do
+      {:ok, pid} =
+        Coordinator.start_link(
+          [
+            name: Coordinator,
+            features: features,
+            runner: fn _feature, _notify -> :ok end,
+            owner: self()
+          ] ++ opts
+        )
+
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+      pid
+    end
+
+    test "a stacked (cap-1) run numbers every node with its release position", %{conn: conn} do
+      point_backlog_at(@valid_dir)
+
+      start_run([feat("001"), feat("002", ["001"])],
+        max_concurrency: 1,
+        context: %RunContext{pr_workflow: true, max_concurrency: 1}
+      )
+
+      {:ok, _view, html} = live(conn, "/dag")
+
+      assert html =~ ~s(data-state="sequential-run")
+      assert html =~ "releases one feature at a time"
+
+      # The fixture DAG linearizes to 001..007 — one badge per node, no gaps.
+      for {id, position} <- Enum.with_index(~w(001 002 003 004 005 006 007), 1) do
+        [node] =
+          Regex.run(~r/data-dag-node="#{id}".*?<\/div>\s*<div class="dag-node-slug"/s, html)
+
+        assert node =~ ~s(data-release-order="#{position}")
+      end
+    end
+
+    test "a cap > 1 run renders no badges and keeps the prereq-depth wording", %{conn: conn} do
+      point_backlog_at(@valid_dir)
+
+      start_run([feat("001"), feat("002", ["001"])],
+        max_concurrency: 2,
+        context: %RunContext{pr_workflow: false, max_concurrency: 2}
+      )
+
+      {:ok, _view, html} = live(conn, "/dag")
+
+      refute html =~ "data-release-order"
+      refute html =~ ~s(data-state="sequential-run")
+      assert html =~ "columns are prereq depth"
+    end
+
+    test "no live run renders no badges", %{conn: conn} do
+      point_backlog_at(@valid_dir)
+      refute Process.whereis(Coordinator)
+
+      {:ok, _view, html} = live(conn, "/dag")
+
+      refute html =~ "data-release-order"
+      assert html =~ "columns are prereq depth"
+    end
   end
 
   test "clicking a node opens the same FeatureDrawerComponent as Mission Control", %{conn: conn} do

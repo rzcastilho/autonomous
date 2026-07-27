@@ -14,7 +14,7 @@ defmodule SpeckitOrchestrator.LiveConfig do
   no in-flight work (Constitution IV: drain, don't kill).
   """
 
-  alias SpeckitOrchestrator.{Config, Coordinator, Ledger}
+  alias SpeckitOrchestrator.{Config, Coordinator, Ledger, RunContext}
 
   @app :speckit_orchestrator
   @valid_models ~w(opus sonnet)
@@ -58,6 +58,19 @@ defmodule SpeckitOrchestrator.LiveConfig do
   defp validate_field(:budget_usd, v) when is_number(v) and v >= 0, do: :ok
   defp validate_field(:budget_usd, _v), do: {:error, "budget must be a non-negative number"}
 
+  # A live stacked PR run pins the cap to 1 (`run_stacked/3`) — raising it
+  # would race `StackTracker` and stack a PR on the wrong base. Rejected here,
+  # at validation, so the all-or-nothing contract holds and the operator sees
+  # a field error instead of a silently-dropped edit. `Coordinator.set_cap/2`
+  # enforces the same rule independently, for any other caller.
+  defp validate_field(:max_concurrency, v) when is_integer(v) and v > 1 do
+    if stacked_run?() do
+      {:error, "the live run is a stacked PR run — its cap is pinned to 1"}
+    else
+      :ok
+    end
+  end
+
   defp validate_field(:max_concurrency, v) when is_integer(v) and v >= 1, do: :ok
 
   defp validate_field(:max_concurrency, _v),
@@ -78,6 +91,13 @@ defmodule SpeckitOrchestrator.LiveConfig do
   defp validate_field(:pr_remote, _v), do: {:error, "must be a string"}
 
   defp validate_field(field, _value), do: {:error, "unknown field #{inspect(field)}"}
+
+  defp stacked_run? do
+    case Process.whereis(Coordinator) do
+      nil -> false
+      server -> server |> Coordinator.status() |> Map.get(:context) |> RunContext.stacked?()
+    end
+  end
 
   # ---- dispatch (the apply table) ------------------------------------------
 

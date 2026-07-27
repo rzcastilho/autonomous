@@ -3,7 +3,7 @@ defmodule SpeckitOrchestrator.CoordinatorTest do
   # by Coordinator.set_cap/2), same convention as run_context_test.exs.
   use ExUnit.Case, async: false
 
-  alias SpeckitOrchestrator.{Config, Coordinator, Feature, Ledger, RepoIdentity}
+  alias SpeckitOrchestrator.{Config, Coordinator, Feature, Ledger, RepoIdentity, RunContext}
 
   defp feat(id, prereqs \\ []),
     do: %Feature{id: id, slug: "f#{id}", path: "#{id}.md", prereqs: prereqs}
@@ -152,6 +152,60 @@ defmodule SpeckitOrchestrator.CoordinatorTest do
       assert Coordinator.set_cap(pid, 5) == :ok
       assert Application.get_env(:speckit_orchestrator, :max_concurrency) == 5
     end)
+  end
+
+  # ---- stacked PR run pins cap 1 -------------------------------------------
+
+  test "set_cap/2 refuses to raise the cap on a stacked PR run, changing neither the cap nor app env" do
+    with_restored_max_concurrency(fn ->
+      Application.put_env(:speckit_orchestrator, :max_concurrency, 1)
+      features = [feat("001"), feat("002")]
+
+      pid =
+        start(features,
+          max_concurrency: 1,
+          context: %RunContext{pr_workflow: true, max_concurrency: 1}
+        )
+
+      _n1 = await_started("001")
+      refute_received {:started, "002", _}
+
+      assert Coordinator.set_cap(pid, 4) == {:error, :stacked_run}
+      assert Coordinator.status(pid).cap == 1
+      assert Application.get_env(:speckit_orchestrator, :max_concurrency) == 1
+
+      # The refusal is not cosmetic — 002 is still held at cap 1.
+      refute_received {:started, "002", _}
+    end)
+  end
+
+  test "set_cap/2 still allows lowering to 1 on a stacked PR run" do
+    with_restored_max_concurrency(fn ->
+      pid = start([feat("001")], context: %RunContext{pr_workflow: true})
+      _n1 = await_started("001")
+
+      assert Coordinator.set_cap(pid, 1) == :ok
+      assert Coordinator.status(pid).cap == 1
+    end)
+  end
+
+  test "set_cap/2 raises the cap normally on a non-stacked run recording pr_workflow: false" do
+    with_restored_max_concurrency(fn ->
+      pid = start([feat("001")], max_concurrency: 1, context: %RunContext{pr_workflow: false})
+      _n1 = await_started("001")
+
+      assert Coordinator.set_cap(pid, 3) == :ok
+      assert Coordinator.status(pid).cap == 3
+    end)
+  end
+
+  test "status/0 exposes the run's own cap and context" do
+    pid = start([feat("001")], max_concurrency: 1, context: %RunContext{pr_workflow: true})
+    _n1 = await_started("001")
+
+    status = Coordinator.status(pid)
+    assert status.cap == 1
+    assert status.context.pr_workflow == true
   end
 
   # ---- :statuses init option (crash recovery, T020) ------------------------

@@ -45,6 +45,38 @@ defmodule SpeckitOrchestrator.Release do
     end
   end
 
+  @doc """
+  The order a **cap-1** run releases `features` in, as a list of ids.
+
+  At cap 1 the run is strictly sequential, so this projection is exact rather
+  than an estimate: replaying `next_wave/4` with `cap: 1`, marking each
+  released feature `:done`, reproduces the very policy the Coordinator runs,
+  and so can never drift from it.
+
+  Deliberately cap-1 only. At cap > 1 the Coordinator releases as each
+  individual feature finishes, not in synchronized batches, so which features
+  overlap depends on phase durations that are unknowable up front — any
+  "wave N" projection there would be a guess presented as fact.
+
+  Features that can never be released (a prereq stuck in a blocking state)
+  are simply absent from the result; the walk stops when nothing more is
+  releasable, so it always terminates.
+  """
+  @spec sequential_order([Feature.t()]) :: [String.t()]
+  def sequential_order(features) when is_list(features) do
+    sequential_order(features, %{}, [])
+  end
+
+  defp sequential_order(features, statuses, acc) do
+    case next_wave(features, statuses, 1, false) do
+      [] ->
+        Enum.reverse(acc)
+
+      [%Feature{id: id}] ->
+        sequential_order(features, Map.put(statuses, id, :done), [id | acc])
+    end
+  end
+
   @doc "True when `feature` is `:pending` and all prereqs are `:done`."
   @spec releasable?(Feature.t(), %{String.t() => Feature.status()}) :: boolean()
   def releasable?(%Feature{} = feature, statuses) do

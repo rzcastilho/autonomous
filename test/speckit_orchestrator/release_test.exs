@@ -57,6 +57,56 @@ defmodule SpeckitOrchestrator.ReleaseTest do
     end
   end
 
+  describe "sequential_order/1" do
+    test "a diamond linearizes to a topological order, ties broken by ascending id" do
+      assert Release.sequential_order(diamond()) == ["001", "002", "003", "004"]
+    end
+
+    test "a chain keeps its chain order regardless of the list's own order" do
+      chain = [feat("003", ["002"]), feat("001"), feat("002", ["001"])]
+      assert Release.sequential_order(chain) == ["001", "002", "003"]
+    end
+
+    test "fully independent features order by ascending id" do
+      assert Release.sequential_order([feat("003"), feat("001"), feat("002")]) ==
+               ["001", "002", "003"]
+    end
+
+    # Guards against the order silently degrading to a plain id sort: here the
+    # dependency inverts id order, so only a real topological walk gets it right.
+    test "dependency order beats id order when the two disagree" do
+      assert Release.sequential_order([feat("001", ["002"]), feat("002")]) == ["002", "001"]
+    end
+
+    test "omits a feature that can never be released, and still terminates" do
+      # 003's prereq is not in the backlog at all, so it is never releasable.
+      # (Backlog.load!/1 rejects this shape; the guard is here so a partial or
+      # hand-built feature list can never spin the walk forever.)
+      features = [feat("001"), feat("003", ["999"])]
+      assert Release.sequential_order(features) == ["001"]
+    end
+
+    test "empty backlog yields an empty order" do
+      assert Release.sequential_order([]) == []
+    end
+
+    # The projection's whole claim is that it reproduces the real policy, so
+    # assert exactly that: replaying next_wave/4 at cap 1 must visit the same
+    # ids in the same order.
+    test "matches what next_wave/4 at cap 1 actually releases, step for step" do
+      features = diamond()
+
+      replayed =
+        Enum.reduce(1..4, {%{}, []}, fn _step, {statuses, acc} ->
+          [f] = Release.next_wave(features, statuses, 1, false)
+          {Map.put(statuses, f.id, :done), acc ++ [f.id]}
+        end)
+        |> elem(1)
+
+      assert Release.sequential_order(features) == replayed
+    end
+  end
+
   test "releasable?/2 requires pending self and all prereqs done" do
     f = feat("002", ["001"])
     refute Release.releasable?(f, %{})

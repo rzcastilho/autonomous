@@ -138,8 +138,11 @@ config :speckit_orchestrator,
 
 ### 6. Start the run
 
+```bash
+SPECKIT_REPO=../ledgerlite iex -S mix
+```
+
 ```elixir
-iex -S mix
 iex> SpeckitOrchestrator.Telemetry.attach_default_logger()   # log phase transitions
 iex> {:ok, _coord} = SpeckitOrchestrator.run()
 ```
@@ -148,6 +151,30 @@ iex> {:ok, _coord} = SpeckitOrchestrator.run()
 prereqs), and releases the first wave. Features run in dependency-and-cap waves
 (`config :max_concurrency`). The caller receives `{:run_complete, report}` when
 the run drains.
+
+**Environment variables** (`config/runtime.exs`) are read at boot in every env
+except `:test`, so they steer a plain `iex -S mix` as well as a release:
+
+| Variable | Effect |
+|----------|--------|
+| `SPECKIT_REPO` | Target repo. Required in `:prod` (raises at boot if unset); elsewhere overrides the `repo: "."` default. **Unset means the orchestrator points at itself and finds no backlog** — the console's package pickers then render empty. |
+| `SPECKIT_PR_WORKFLOW` | `true` → stacked sequential PR run: cap 1, remote preflight, one stacked PR per feature on `:done`. |
+| `SPECKIT_PR_BASE` / `SPECKIT_PR_REMOTE` | Root base branch / remote for the PR stack (default `main` / `origin`). |
+| `SPECKIT_MAX_CONCURRENCY` | Wave cap. Ignored under the PR workflow, which pins 1. |
+| `SPECKIT_BUDGET_USD` | Cost breaker budget. |
+| `SPECKIT_PLAN_STACK` | Preferred stack handed to `plan` (see step 5). |
+
+**More than one breakdown package.** With 2+ packages under
+`specs/autonomous/breakdown/`, a bare `run/0` refuses rather than guessing:
+
+```elixir
+iex> SpeckitOrchestrator.run()
+{:error, {:ambiguous_breakdown_package, ["001-mvp", "002-addons"]}}
+
+iex> SpeckitOrchestrator.run(slug: "001-mvp")
+```
+
+The console's Trigger Run page supplies this from its package picker.
 
 ---
 

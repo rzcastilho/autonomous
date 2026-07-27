@@ -1,27 +1,48 @@
 import Config
 
 # ---------------------------------------------------------------------------
-# Runtime configuration — evaluated at boot (dev/prod), NOT at compile time.
+# Runtime configuration — evaluated at boot, NOT at compile time.
 #
 # Everything here is driven by environment variables with sane defaults, so a
-# run can be steered without editing code. Applied only in :prod — dev/test keep
-# the compile-time defaults (config/config.exs), so the deterministic suite and
-# local iex sessions are never steered by a stray env var. In :prod, SPECKIT_REPO
-# MUST be set explicitly (no fallback).
+# run can be steered without editing code.
+#
+# Applied in every env EXCEPT :test. `:test` keeps the compile-time defaults
+# (config/config.exs) so the deterministic suite can never be steered by a
+# stray env var. This block used to be gated on `:prod` alone, which meant the
+# startup path the runbook actually documents (`iex -S mix`, i.e. :dev) silently
+# ignored every SPECKIT_* var — including SPECKIT_REPO, leaving the orchestrator
+# pointed at its own repo (`repo: "."` from config.exs) with no backlog to run.
+#
+# SPECKIT_REPO is REQUIRED in :prod (raises at boot, so a production run can
+# never silently point at the wrong repo); elsewhere it is an optional override
+# of the compile-time default.
 # ---------------------------------------------------------------------------
-if config_env() == :prod do
-  # "1" / "true" / "yes" / "on" (case-insensitive) → true; anything else → default.
+if config_env() != :test do
+  # "1" / "true" / "yes" / "on" (case-insensitive) → true; anything else →
+  # default. Trimmed, so an exported value carrying stray whitespace (common
+  # with `export FOO="true "` or a value pasted from a .env file) still reads
+  # as true instead of silently falling back to the default.
   truthy = fn name, default ->
     case System.get_env(name) do
       nil -> default
-      v -> String.downcase(v) in ~w(1 true yes on)
+      v -> v |> String.trim() |> String.downcase() |> Kernel.in(~w(1 true yes on))
     end
   end
 
-  # Target Spec Kit repo the orchestrator drives. Required in :prod — raises at
-  # boot if unset, so a production run can never silently point at the wrong repo.
+  # Target Spec Kit repo the orchestrator drives.
+  case config_env() do
+    :prod ->
+      config :speckit_orchestrator, repo: System.fetch_env!("SPECKIT_REPO")
+
+    _ ->
+      # Only override when set, so an unset var leaves config/config.exs's
+      # default in place rather than pinning a second copy of it here.
+      if repo = System.get_env("SPECKIT_REPO") do
+        config :speckit_orchestrator, repo: repo
+      end
+  end
+
   config :speckit_orchestrator,
-    repo: System.fetch_env!("SPECKIT_REPO"),
     # Stacked sequential PR workflow (docs/runbook.md → "Stacked sequential PR
     # workflow"). SPECKIT_PR_WORKFLOW=true forces cap 1, preflights the remote,
     # and opens a stacked PR per feature on :done.
