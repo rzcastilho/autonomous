@@ -15,7 +15,15 @@ defmodule SpeckitOrchestrator.Web.ConfigLive do
 
   use SpeckitOrchestrator.Web, :live_view
 
-  alias SpeckitOrchestrator.{Config, ConsoleProjection, Coordinator, Ledger, LiveConfig, Pipeline}
+  alias SpeckitOrchestrator.{
+    Config,
+    ConsoleProjection,
+    Coordinator,
+    Ledger,
+    LiveConfig,
+    Pipeline,
+    RunContext
+  }
 
   @impl true
   def mount(_params, _session, socket) do
@@ -105,9 +113,6 @@ defmodule SpeckitOrchestrator.Web.ConfigLive do
     if Process.whereis(Coordinator), do: Coordinator.status(Coordinator)
   end
 
-  defp effective_concurrency(true, _max_concurrency), do: 1
-  defp effective_concurrency(false, max_concurrency), do: max_concurrency
-
   # ---- render -----------------------------------------------------------
 
   @impl true
@@ -116,7 +121,7 @@ defmodule SpeckitOrchestrator.Web.ConfigLive do
       assign(
         assigns,
         :effective_concurrency,
-        effective_concurrency(assigns.pr_workflow?, assigns.max_concurrency)
+        RunContext.effective_max_concurrency(assigns.pr_workflow?, assigns.max_concurrency)
       )
 
     ~H"""

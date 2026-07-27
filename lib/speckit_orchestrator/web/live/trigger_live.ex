@@ -18,7 +18,7 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
 
   use SpeckitOrchestrator.Web, :live_view
 
-  alias SpeckitOrchestrator.{Backlog, Config}
+  alias SpeckitOrchestrator.{Backlog, Config, RunContext}
 
   @impl true
   def mount(_params, _session, socket) do
@@ -191,9 +191,6 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
     end
   end
 
-  defp effective_concurrency(true, _max_concurrency), do: 1
-  defp effective_concurrency(false, max_concurrency), do: max_concurrency
-
   # Show the meaningful tail of the source path, anchored at the `autonomous`
   # namespace segment (…/autonomous/breakdown/<slug>) on one line; the full path
   # is exposed via the dd's `title` tooltip on hover. Paths with no `autonomous`
@@ -222,7 +219,7 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
       assign(
         assigns,
         :effective_concurrency,
-        effective_concurrency(assigns.pr_workflow?, Config.max_concurrency())
+        RunContext.effective_max_concurrency(assigns.pr_workflow?, Config.max_concurrency())
       )
 
     ~H"""

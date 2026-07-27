@@ -1138,6 +1138,15 @@ defmodule SpeckitOrchestrator do
   defp run_stacked(opts, run_context, layout) do
     test_mode? = Keyword.has_key?(opts, :runner) or Keyword.has_key?(opts, :executor)
 
+    # This branch is what pins the cap to 1 (below), so it is also where the
+    # recorded context stops describing the *requested* cap and starts
+    # describing the one the run actually uses. `RunContext.capture/1` stays a
+    # dumb per-field resolver — the pin belongs with the decision, not with the
+    # capture. Without this the manifest and every checkpoint recorded the live
+    # Config value (typically 2) for a run that only ever released one feature
+    # at a time, and the console read that number back as the run's cap.
+    run_context = %{run_context | max_concurrency: 1}
+
     with :ok <- preflight_stacked(test_mode?) do
       {:ok, tracker} = StackTracker.start_link(Config.pr_base())
 

@@ -165,6 +165,18 @@ defmodule SpeckitOrchestrator.RunContextTest do
     end
   end
 
+  describe "effective_max_concurrency/2" do
+    test "a stacked run releases at 1 regardless of the requested cap" do
+      assert RunContext.effective_max_concurrency(true, 7) == 1
+      assert RunContext.effective_max_concurrency(true, 1) == 1
+    end
+
+    test "a non-stacked run releases at the requested cap" do
+      assert RunContext.effective_max_concurrency(false, 7) == 7
+      assert RunContext.effective_max_concurrency(nil, 7) == 7
+    end
+  end
+
   describe "stacked?/1" do
     test "true only for a context positively recording pr_workflow: true" do
       assert RunContext.stacked?(%RunContext{pr_workflow: true})
