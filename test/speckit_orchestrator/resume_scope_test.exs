@@ -170,6 +170,51 @@ defmodule SpeckitOrchestrator.ResumeScopeTest do
     assert Enum.sort(report.done) == ["001", "002", "003"]
   end
 
+  # ---- the console's own call shape -----------------------------------------
+
+  # `EscalationsLive`'s resume handler always passes `features: [identity]` —
+  # it supplies the target's slug/path, not the run's scope. Every other test
+  # here calls `resume/2` without `:features`, so nothing pinned down what a
+  # single-element `:features` opt does once a manifest exists. It must feed
+  # identity resolution only: the recorded scope still governs, otherwise a
+  # resume driven from the Escalations page narrows the run to one feature —
+  # exactly the defect this feature exists to close, reached by the path an
+  # operator actually uses.
+  test "an explicit single-feature :features opt (the console's shape) does not narrow the restored scope" do
+    write_checkpoint("001", :analyze, :halted, nil)
+
+    write_manifest(%{
+      features: [feat("001"), feat("002", ["001"]), feat("003", ["002"])],
+      statuses: %{"001" => :halted, "002" => :pending, "003" => :pending}
+    })
+
+    me = self()
+
+    assert {:ok, pid} =
+             SpeckitOrchestrator.resume("001",
+               features: [feat("001")],
+               remediation_prompt: "Fix the money-type Critical.",
+               runner: capturing_runner(me),
+               owner: me
+             )
+
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    assert Enum.sort(Map.keys(Coordinator.status(pid).per_feature)) == ["001", "002", "003"]
+
+    assert_receive {:started, "001", n1}, 1_000
+    n1.("001", :done, nil)
+
+    assert_receive {:started, "002", n2}, 1_000
+    n2.("002", :done, nil)
+
+    assert_receive {:started, "003", n3}, 1_000
+    n3.("003", :done, nil)
+
+    assert_receive {:run_complete, report}, 1_000
+    assert Enum.sort(report.done) == ["001", "002", "003"]
+  end
+
   # ---- S2: nothing else is disturbed (US1, FR-002/005/006) -------------------
 
   test "resume/2 never redispatches an already-:done or diverted non-target feature" do
