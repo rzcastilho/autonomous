@@ -155,11 +155,42 @@ mise exec -- iex -S mix
 ```
 
 ```elixir
+# Attach first — the logger is the iex surface for the loop.
+SpeckitOrchestrator.Telemetry.attach_default_logger()
+
 SpeckitOrchestrator.run(auto_remediation: true, auto_remediation_threshold: :medium,
                         auto_remediation_attempt_limit: 3)
+```
 
-SpeckitOrchestrator.print_status()     # phase strip shows "analyze / attempt 1/3"
-SpeckitOrchestrator.Telemetry.attach_default_logger()   # one line per attempt
+`attach_default_logger/0` emits one line per attempt, from the
+`[:speckit, :remediation, :stop]` span:
+
+```text
+auto-remediation attempt 1/3 feature=001 outcome=:ok cost=1.26 8421ms findings=2 threshold=medium
+```
+
+`print_status/0` reports lifecycle status and spend — a feature/status/elapsed
+table, not a phase timeline:
+
+```text
+FEATURE  STATUS   ELAPSED
+001      running  42.3s
+002      pending  -
+
+totals: pending=1  running=1
+spend:  $3.14
+state:  running
+```
+
+It has **no** phase strip and therefore shows no `attempt k/n` — the phase strip
+is a web-console component (`CoreComponents.phase_strip/1`), so the per-attempt
+sub-label is visible at `/` (Mission Control) and `/dag`, not in `iex`. The same
+is true of the 015 chunk sub-label. Verifying an invalid launch is refused needs
+no run at all:
+
+```elixir
+SpeckitOrchestrator.run(auto_remediation_attempt_limit: 7)
+#=> {:error, {:preflight, [invalid_attempt_limit: 7]}}
 ```
 
 ---
