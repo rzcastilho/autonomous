@@ -1052,6 +1052,29 @@ a:hover {
   color: var(--text);
 }
 
+.transcript-row td {
+  background: var(--bg);
+  padding: 0 0 12px;
+  border-bottom: none;
+}
+
+.transcript-panel {
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  padding: 13px 15px;
+}
+
+.transcript-body {
+  margin: 8px 0 0;
+  white-space: pre-wrap;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text);
+  max-height: 420px;
+  overflow-y: auto;
+}
+
 .resume-form {
   display: flex;
   flex-direction: column;

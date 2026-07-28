@@ -159,25 +159,47 @@ defmodule SpeckitOrchestrator.Web.RunDetailLive do
                 </tr>
               </thead>
               <tbody>
-                <tr :for={a <- f.phase_attempts} data-attempt={attempt_ref(a)}>
-                  <td>{a.phase} #{a.ordinal}</td>
-                  <td>{a.outcome}</td>
-                  <td>{a.model}</td>
-                  <td>${format_money(a.cost_usd)}</td>
-                  <td>{format_elapsed(a.duration_ms)}</td>
-                  <td>{format_datetime(a.started_at)}</td>
-                  <td>
-                    <button
-                      type="button"
-                      phx-click="open_transcript"
-                      phx-value-ref={attempt_ref(a)}
-                      class="btn-secondary"
-                      data-action={"transcript-#{attempt_ref(a)}"}
-                    >
-                      &#8801; Transcript
-                    </button>
-                  </td>
-                </tr>
+                <%= for a <- f.phase_attempts do %>
+                  <tr data-attempt={attempt_ref(a)}>
+                    <td>{a.phase} #{a.ordinal}</td>
+                    <td>{a.outcome}</td>
+                    <td>{a.model}</td>
+                    <td>${format_money(a.cost_usd)}</td>
+                    <td>{format_elapsed(a.duration_ms)}</td>
+                    <td>{format_datetime(a.started_at)}</td>
+                    <td>
+                      <button
+                        type="button"
+                        phx-click="open_transcript"
+                        phx-value-ref={attempt_ref(a)}
+                        class="btn-secondary"
+                        data-action={"transcript-#{attempt_ref(a)}"}
+                      >
+                        &#8801; Transcript
+                      </button>
+                    </td>
+                  </tr>
+                  <tr
+                    :if={@transcript && @transcript.ref == attempt_ref(a)}
+                    class="transcript-row"
+                    data-transcript-row={attempt_ref(a)}
+                  >
+                    <td colspan="7">
+                      <div class="transcript-panel" data-transcript={@transcript.ref}>
+                        <div class="checkpoint-box-label">
+                          TRANSCRIPT
+                          <button type="button" phx-click="close_transcript" class="btn-secondary">
+                            &times;
+                          </button>
+                        </div>
+                        <p :if={@transcript[:error]} class="field-error">
+                          {inspect(@transcript.error)}
+                        </p>
+                        <pre :if={@transcript[:body]} class="transcript-body">{@transcript.body}</pre>
+                      </div>
+                    </td>
+                  </tr>
+                <% end %>
               </tbody>
             </table>
 
@@ -239,15 +261,6 @@ defmodule SpeckitOrchestrator.Web.RunDetailLive do
               </div>
             </div>
           </div>
-        </div>
-
-        <div :if={@transcript} class="clarify-block" data-transcript={@transcript[:ref]}>
-          <div class="checkpoint-box-label">
-            TRANSCRIPT
-            <button type="button" phx-click="close_transcript" class="btn-secondary">&times;</button>
-          </div>
-          <p :if={@transcript[:error]} class="field-error">{inspect(@transcript.error)}</p>
-          <pre :if={@transcript[:body]}>{@transcript.body}</pre>
         </div>
       </div>
     </div>
