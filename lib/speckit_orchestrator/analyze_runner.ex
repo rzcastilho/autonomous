@@ -32,8 +32,7 @@ defmodule SpeckitOrchestrator.AnalyzeRunner do
     Prompts,
     Remediation,
     Severity,
-    Telemetry,
-    Transcripts
+    Telemetry
   }
 
   alias SpeckitOrchestrator.Store.Writer
@@ -70,12 +69,7 @@ defmodule SpeckitOrchestrator.AnalyzeRunner do
   # label, no extra span meta, no `Remediation.next/2` call, no extra
   # transcript, no cost beyond that one run.
   def run(%{settings: %Settings{enabled?: false}} = ctx) do
-    PhaseStep.run(ctx.pid, ctx.feature, :analyze,
-      step: ctx.step,
-      timeout: ctx.timeout,
-      worktree: ctx.worktree,
-      layout: ctx.layout
-    )
+    PhaseStep.run(ctx.pid, ctx.feature, :analyze, step: ctx.step, timeout: ctx.timeout)
   end
 
   def run(%{settings: %Settings{} = settings} = ctx) do
@@ -112,7 +106,6 @@ defmodule SpeckitOrchestrator.AnalyzeRunner do
         halt(ctx, state1, agent)
 
       {:remediate, findings, state1} ->
-        write_analyze_worktree_copy(ctx, state1.analyze_runs, agent.state.last_result)
         remediate_then_reanalyze(ctx, state1, findings)
     end
   end
@@ -159,8 +152,6 @@ defmodule SpeckitOrchestrator.AnalyzeRunner do
       PhaseStep.run(ctx.pid, ctx.feature, :analyze,
         step: ctx.step,
         timeout: ctx.timeout,
-        worktree: ctx.worktree,
-        layout: ctx.layout,
         span_meta: %{attempt: k, limit: state.settings.attempt_limit}
       )
 
@@ -212,7 +203,6 @@ defmodule SpeckitOrchestrator.AnalyzeRunner do
       outcome = Map.get(entry, :outcome, agent.state.last_outcome)
       cost = Map.get(entry, :cost, 0.0)
 
-      write_remediation_worktree_copy(ctx, attempt, instruction, agent.state.last_result)
       record_remediation_attempt(ctx, state, findings, attempt, outcome, started_at, agent)
 
       Logger.info(
@@ -236,47 +226,6 @@ defmodule SpeckitOrchestrator.AnalyzeRunner do
       model: state.settings.model
     }
   end
-
-  # ---- file records (unchanged until T073; store record is separate below) --
-
-  defp write_analyze_worktree_copy(ctx, k, %PhaseResult{} = result) do
-    Transcripts.write_labelled(
-      ctx.worktree,
-      ctx.layout,
-      ctx.step,
-      "analyze-a#{k}",
-      :analyze,
-      result
-    )
-  end
-
-  defp write_analyze_worktree_copy(_ctx, _k, _result), do: :ok
-
-  # The triggering findings, the instruction issued, the outcome and the cost
-  # are all recoverable from this one file (FR-012). `.speckit_logs/` (and the
-  # durable file copy) keep writing until the clean break (FR-037, research
-  # R15, T072/T073); `record_remediation_attempt/8` below additionally
-  # persists the same attempt through the store once a real `run_key` reaches
-  # this module (T044-T046).
-  defp write_remediation_worktree_copy(ctx, attempt, instruction, %PhaseResult{} = result) do
-    body = %{
-      result
-      | final_text:
-          "### instruction\n\n" <>
-            instruction <> "\n\n### step output\n\n" <> (result.final_text || "")
-    }
-
-    Transcripts.write_labelled(
-      ctx.worktree,
-      ctx.layout,
-      ctx.step,
-      "remediation-a#{attempt}",
-      :auto_remediation,
-      body
-    )
-  end
-
-  defp write_remediation_worktree_copy(_ctx, _attempt, _instruction, _result), do: :ok
 
   # ---- records (FR-012, FR-012a, contracts/analyze_loop.md §4) ----------------
   #
@@ -361,10 +310,7 @@ defmodule SpeckitOrchestrator.AnalyzeRunner do
   # Converged / below threshold / exhausted: the final analyze run governs, and
   # `Pipeline.next/3` evaluates it exactly as it would an un-looped run. Only the
   # *reason* is later decorated, by `Remediation.terminal_reason/2`.
-  defp finish(ctx, state, agent, exhausted) do
-    if state.attempts_used > 0,
-      do: write_analyze_worktree_copy(ctx, state.analyze_runs, agent.state.last_result)
-
+  defp finish(_ctx, state, agent, exhausted) do
     patch(agent,
       last_signals: exhaustion_signals(agent.state.last_signals || %{}, state, exhausted),
       terminal_reason: nil,

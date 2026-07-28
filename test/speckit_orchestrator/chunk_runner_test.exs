@@ -359,15 +359,6 @@ defmodule SpeckitOrchestrator.ChunkRunnerTest do
     assert Enum.at(prompts, 1) =~ ~s(Phase 2: Core)
     assert Enum.at(prompts, 2) =~ ~s(Phase 3: Polish)
 
-    for f <- [
-          "06-implement-p01-a1.md",
-          "06-implement-p02-a1.md",
-          "06-implement-p03-a1.md",
-          "06-implement.md"
-        ] do
-      assert File.exists?(Path.join([root, ".speckit_logs", f])), "missing transcript #{f}"
-    end
-
     content = File.read!(Path.join(root, "specs/001-fake/tasks.md"))
     assert content =~ "[X] T001"
     assert content =~ "[X] T002"

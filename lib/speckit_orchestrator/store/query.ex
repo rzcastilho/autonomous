@@ -100,6 +100,52 @@ defmodule SpeckitOrchestrator.Store.Query do
     end
   end
 
+  # A run's removal deletes control rows across nine tables besides the
+  # transcript rows already summed by `bytes`; this is a fixed per-row
+  # estimate for those (contracts/capacity-and-prune.md § Prune rule 5) —
+  # computed from stored counts, never by deleting and measuring.
+  @row_bytes_estimate 200
+
+  @doc """
+  Bytes a run's removal would reclaim (contracts/capacity-and-prune.md §
+  Prune rule 5): its transcripts' recorded `bytes` plus a fixed per-row
+  estimate for every other row `prune_run/1` would delete.
+  """
+  @spec run_bytes(binary() | {binary(), binary()}) :: non_neg_integer()
+  def run_bytes(run_key) do
+    case Mnesia.transaction(fn -> run_bytes_in_transaction(run_key) end) do
+      {:ok, bytes} -> bytes
+      {:error, _} -> 0
+    end
+  end
+
+  defp run_bytes_in_transaction(run_key) do
+    phase_attempts = Mnesia.index_read(:speckit_phase_attempt, run_key, :run_key)
+
+    transcript_bytes =
+      phase_attempts
+      |> Enum.map(&elem(&1, 1))
+      |> Enum.reduce(0, fn attempt_id, acc ->
+        case Mnesia.read(:speckit_transcript, attempt_id) do
+          [tuple] -> acc + elem(tuple, 3)
+          [] -> acc
+        end
+      end)
+
+    control_row_count =
+      1 +
+        length(Mnesia.read(:speckit_run_settings, run_key)) +
+        length(Mnesia.index_read(:speckit_settings_amendment, run_key, :run_key)) +
+        length(Mnesia.index_read(:speckit_feature_run, run_key, :run_key)) +
+        length(phase_attempts) +
+        length(Mnesia.index_read(:speckit_checkpoint, run_key, :run_key)) +
+        length(Mnesia.index_read(:speckit_escalation, run_key, :run_key)) +
+        length(Mnesia.index_read(:speckit_remediation_attempt, run_key, :run_key)) +
+        length(Mnesia.index_read(:speckit_cost_entry, run_key, :run_key))
+
+    transcript_bytes + control_row_count * @row_bytes_estimate
+  end
+
   @doc """
   Store capacity measurement: transcript bytes (`disc_only_copies`'
   `:memory`, already bytes) and whole-store bytes (a `File.stat/1` sum over

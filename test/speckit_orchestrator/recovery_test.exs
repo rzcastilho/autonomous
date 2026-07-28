@@ -10,8 +10,7 @@ defmodule SpeckitOrchestrator.RecoveryTest do
     Recovery,
     Recovery.Evidence,
     RepoIdentity,
-    RunContext,
-    RunManifest
+    RunContext
   }
 
   @coordinator SpeckitOrchestrator.Coordinator
@@ -318,8 +317,20 @@ defmodule SpeckitOrchestrator.RecoveryTest do
   end
 
   test "resume_run/1 dispatches continuation at :tasks — specify/clarify/plan never regenerate" do
-    {layout, _run_key} = seed_mid_run_state()
+    {layout, run_key} = seed_mid_run_state()
     me = self()
+
+    # `seed_mid_run_state/0` itself plants a :plan phase attempt (the
+    # fixture's own "plan just finished" checkpoint marker) — captured here so
+    # the post-run assertion can prove that row was never touched, rather than
+    # merely asserting :plan is present (which the seed guarantees regardless).
+    seeded_plan_attempt =
+      Store.run(run_key)
+      |> elem(1)
+      |> Map.fetch!(:features)
+      |> hd()
+      |> Map.fetch!(:phase_attempts)
+      |> Enum.find(&(&1.phase == :plan))
 
     assert {:ok, pid} = SpeckitOrchestrator.resume_run(owner: me)
     on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
@@ -327,11 +338,12 @@ defmodule SpeckitOrchestrator.RecoveryTest do
     assert_receive {:run_complete, report}, 10_000
     assert report.failed == ["001"]
 
-    log_dir = Path.join(layout.worktree_root, "001-core-ledger/.speckit_logs")
-    refute File.exists?(Path.join(log_dir, "01-specify.md"))
-    refute File.exists?(Path.join(log_dir, "02-clarify.md"))
-    refute File.exists?(Path.join(log_dir, "03-plan.md"))
-    assert File.exists?(Path.join(log_dir, "04-tasks.md"))
+    {:ok, detail} = Store.run(run_key)
+    phases = detail.features |> hd() |> Map.fetch!(:phase_attempts)
+    refute Enum.any?(phases, &(&1.phase == :specify))
+    refute Enum.any?(phases, &(&1.phase == :clarify))
+    assert Enum.any?(phases, &(&1.phase == :tasks))
+    assert Enum.find(phases, &(&1.phase == :plan)) == seeded_plan_attempt
 
     on_exit(fn -> File.rm_rf(layout.worktree_root) end)
   end
@@ -462,15 +474,14 @@ defmodule SpeckitOrchestrator.RecoveryTest do
   # is the "corrupt" half (a record not shaped like a store run detail);
   # "no run" is `Store.current_run_key/1`'s concern, upstream of any
   # `reconcile_run/2` call — asserted here directly so the boundary is
-  # explicit rather than assumed. `RunManifest` itself is untouched (dual-write
-  # through Phase 3) and still reports absence the same way.
+  # explicit rather than assumed (018).
   test "reconcile_run/2 (T027): a malformed record (not shaped like a store run detail) returns {:error, :corrupt}, never fabricates a run" do
     assert {:error, :corrupt} = Recovery.reconcile_run(%{"not" => "a manifest"})
     assert {:error, :corrupt} = Recovery.reconcile_run(%{})
   end
 
   test "reconcile_run/2 (T027): an absent run is caught before reconcile_run/2 is ever called" do
-    assert {:error, :no_manifest} = RunManifest.read()
+    assert {:error, :no_manifest} = SpeckitOrchestrator.resumable("o:no-such-repo-recovery-test")
   end
 
   # ---- T032 (016 US3, research.md D4): plan_run/2 vs reconcile_run/2 split --

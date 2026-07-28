@@ -191,8 +191,10 @@ defmodule SpeckitOrchestrator.Store.Writer do
   @doc """
   Record one bounded-loop remediation attempt (R7 "remediation attempt end"
   boundary, one transaction): the corrective step's own `phase_attempt`
-  (`phase: :remediation`), the `remediation_attempt` row referencing it, its
-  `cost_entry`, and `transcript` — all keyed off that same phase attempt.
+  (`phase: :auto_remediation` — distinct from the pre-phase `:remediation`
+  step's own attempt-1 row, so the two never collide on the same attempt_id),
+  the `remediation_attempt` row referencing it, its `cost_entry`, and
+  `transcript` — all keyed off that same phase attempt.
   """
   @spec record_remediation_attempt(run_key(), %{
           required(:remediation) => map(),
@@ -206,14 +208,14 @@ defmodule SpeckitOrchestrator.Store.Writer do
       ) do
     run_transaction(fn ->
       feature_key = Ids.feature_key(repo_id, run_id, r.feature_id)
-      attempt_id = Ids.attempt_id(repo_id, run_id, r.feature_id, :remediation, r.ordinal)
+      attempt_id = Ids.attempt_id(repo_id, run_id, r.feature_id, :auto_remediation, r.ordinal)
 
       Mnesia.write(
         Records.encode(%Records.PhaseAttempt{
           attempt_id: attempt_id,
           run_key: run_key,
           feature_key: feature_key,
-          phase: :remediation,
+          phase: :auto_remediation,
           ordinal: r.ordinal,
           step: pa.step,
           label: pa.label,
@@ -402,6 +404,39 @@ defmodule SpeckitOrchestrator.Store.Writer do
   end
 
   @doc """
+  Delete every row of `run_key` across all twelve tables, one transaction
+  (FR-031a, contracts/capacity-and-prune.md § Prune). The caller
+  (`SpeckitOrchestrator.prune/1`, via `Store.Prune.plan/3`) has already
+  established the run is neither `:in_flight` nor resumable before calling
+  this — an in-flight or resumable run is never passed here. Transcripts have
+  no direct `run_key` index; they are reached through the run's
+  `phase_attempt` rows, which share the same `attempt_id` (FR-035 — a
+  transcript is never pruned out of step with the attempt it belongs to).
+  """
+  @spec prune_run(run_key()) :: :ok | {:error, term()}
+  def prune_run(run_key) do
+    run_transaction(fn ->
+      attempt_ids =
+        :speckit_phase_attempt
+        |> Mnesia.index_read(run_key, :run_key)
+        |> Enum.map(&elem(&1, 1))
+
+      delete_by_index(:speckit_settings_amendment, run_key)
+      delete_by_index(:speckit_feature_run, run_key)
+      delete_by_index(:speckit_phase_attempt, run_key)
+      delete_by_index(:speckit_checkpoint, run_key)
+      delete_by_index(:speckit_escalation, run_key)
+      delete_by_index(:speckit_remediation_attempt, run_key)
+      delete_by_index(:speckit_cost_entry, run_key)
+      Enum.each(attempt_ids, &Mnesia.delete(:speckit_transcript, &1))
+      Mnesia.delete(:speckit_run_settings, run_key)
+      Mnesia.delete(:speckit_run, run_key)
+
+      :ok
+    end)
+  end
+
+  @doc """
   Flag a run's record incomplete after a persistence-failure drain (FR-010,
   FR-010a) — one transaction, best-effort: if this write itself fails, the run
   stays `:in_flight` with its last successful `updated_at`, which is itself
@@ -533,6 +568,12 @@ defmodule SpeckitOrchestrator.Store.Writer do
         written_at: DateTime.utc_now()
       })
     )
+  end
+
+  defp delete_by_index(table, run_key) do
+    table
+    |> Mnesia.index_read(run_key, :run_key)
+    |> Enum.each(&Mnesia.delete(table, elem(&1, 1)))
   end
 
   defp next_escalation_ordinal(run_key, feature_id) do

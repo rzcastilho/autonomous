@@ -286,11 +286,11 @@ defmodule SpeckitOrchestrator.Store.WriterTest do
           transcript: "remediation output"
         })
 
-      attempt_id = {repo, run_id, "001", :remediation, 1}
+      attempt_id = {repo, run_id, "001", :auto_remediation, 1}
 
       {:ok, [pa]} = Mnesia.transaction(fn -> Mnesia.read(:speckit_phase_attempt, attempt_id) end)
 
-      assert {:ok, %Records.PhaseAttempt{phase: :remediation}} =
+      assert {:ok, %Records.PhaseAttempt{phase: :auto_remediation}} =
                Records.decode(:speckit_phase_attempt, pa)
 
       {:ok, [ra]} =
@@ -395,6 +395,11 @@ defmodule SpeckitOrchestrator.Store.WriterTest do
 
       assert Health.failed?()
       assert {:failed, {:absent, _}, %DateTime{}} = Health.status()
+      # Store.Health is a single named process shared by the whole test run,
+      # not reset by StoreCase's per-test setup after THIS test — a poisoned
+      # flag left here would fail every later run/1 call anywhere in the
+      # suite (mirrors persistence_failure_test.exs's own safeguard).
+      Health.clear()
     end
   end
 
@@ -454,6 +459,8 @@ defmodule SpeckitOrchestrator.Store.WriterTest do
     test "resolving an unknown escalation aborts and reports to Store.Health" do
       assert {:error, {:absent, _}} = Writer.resolve_escalation({"x", "r000001", "001", 1}, %{})
       assert Health.failed?()
+      # See the note in the test above — clean up the shared Health process.
+      Health.clear()
     end
   end
 

@@ -15,14 +15,7 @@ defmodule SpeckitOrchestrator.Web.MissionControlLive do
 
   use SpeckitOrchestrator.Web, :live_view
 
-  alias SpeckitOrchestrator.{
-    Checkpoint,
-    ConsoleProjection,
-    ConsoleReadModel,
-    Coordinator,
-    Ledger,
-    RunManifest
-  }
+  alias SpeckitOrchestrator.{ConsoleProjection, ConsoleReadModel, Coordinator, Ledger}
 
   @status_order [:pending, :blocked, :running, :escalated, :halted, :failed, :done]
 
@@ -45,29 +38,27 @@ defmodule SpeckitOrchestrator.Web.MissionControlLive do
     assign(socket, view: overlay_manifest(view))
   end
 
-  # No live Coordinator (fresh boot, no resume yet) — fall back to the
-  # durable run manifest (specs/009-crash-recovery) so Mission Control shows
-  # last-known per-feature state instead of the blank "no active run" empty
-  # state, even though a crashed feature's status is sitting right there in
-  # checkpoint.json/run.json — including its phase timeline, so the operator
-  # can see what actually ran before the crash, not just the terminal status.
+  # No live Coordinator (fresh boot, no resume yet) — fall back to the store's
+  # current in-flight run (018, contracts/console-runs.md) so Mission Control
+  # shows last-known per-feature state instead of the blank "no active run"
+  # empty state, including each feature's phase timeline, so the operator can
+  # see what actually ran before the crash, not just the terminal status.
   defp overlay_manifest(view) do
-    record = manifest_record()
-    ConsoleReadModel.overlay_last_known_statuses(view, record, checkpoints_for(record))
+    ConsoleReadModel.overlay_last_known_statuses(view, current_run_detail())
   end
 
-  defp manifest_record do
-    case RunManifest.read() do
-      {:ok, record} -> record
-      _ -> nil
+  defp current_run_detail do
+    case SpeckitOrchestrator.current_run_id() do
+      nil ->
+        nil
+
+      run_id ->
+        case SpeckitOrchestrator.run_detail(run_id) do
+          {:ok, detail} -> detail
+          _ -> nil
+        end
     end
   end
-
-  defp checkpoints_for(%{"statuses" => statuses}) when is_map(statuses) do
-    Map.new(statuses, fn {id, _status} -> {id, Checkpoint.read(id)} end)
-  end
-
-  defp checkpoints_for(_record), do: %{}
 
   defp coordinator_status do
     if Process.whereis(Coordinator), do: Coordinator.status(Coordinator)

@@ -3,7 +3,7 @@ defmodule SpeckitOrchestrator.CoordinatorTest do
   # by Coordinator.set_cap/2), same convention as run_context_test.exs.
   use ExUnit.Case, async: false
 
-  alias SpeckitOrchestrator.{Config, Coordinator, Feature, Ledger, RepoIdentity, RunContext}
+  alias SpeckitOrchestrator.{Coordinator, Feature, Ledger, RunContext}
 
   defp feat(id, prereqs \\ []),
     do: %Feature{id: id, slug: "f#{id}", path: "#{id}.md", prereqs: prereqs}
@@ -236,72 +236,5 @@ defmodule SpeckitOrchestrator.CoordinatorTest do
 
     assert_receive {:run_complete, report}, 1_000
     assert report.done == ["001", "002"]
-  end
-
-  # ---- :manifest seam (crash recovery, T021) --------------------------------
-
-  defmodule FakeManifest do
-    use Agent
-
-    def start_link(test_pid), do: Agent.start_link(fn -> test_pid end, name: __MODULE__)
-
-    def write(payload) do
-      __MODULE__ |> Agent.get(& &1) |> send({:manifest_write, payload})
-      :ok
-    end
-  end
-
-  defp start_fake_manifest(test_pid) do
-    {:ok, pid} = FakeManifest.start_link(test_pid)
-    on_exit(fn -> if Process.alive?(pid), do: Agent.stop(pid) end)
-  end
-
-  test "a fake injected via :manifest receives write/1 on init, each spawn_feature, and each finish" do
-    start_fake_manifest(self())
-    features = [feat("001")]
-    start(features, max_concurrency: 2, manifest: FakeManifest)
-
-    assert_receive {:manifest_write, init_payload}, 1_000
-    assert init_payload.statuses == %{"001" => :pending}
-
-    assert_receive {:manifest_write, spawn_payload}, 1_000
-    assert spawn_payload.statuses == %{"001" => :running}
-
-    n1 = await_started("001")
-    n1.("001", :done, nil)
-
-    assert_receive {:manifest_write, finish_payload}, 1_000
-    assert finish_payload.statuses == %{"001" => :done}
-  end
-
-  test "the default manifest seam (when :manifest is omitted) is RunManifest" do
-    # RunManifest.write/1 resolves run.json under Config.autonomous_root (012),
-    # partitioned by this repo's identity segment (no layout here → segment
-    # resolved from Config.repo()) — not :transcript_root.
-    root = Path.join(System.tmp_dir!(), "coord_rm_#{System.unique_integer([:positive])}")
-    prev = Application.get_env(:speckit_orchestrator, :autonomous_root)
-    Application.put_env(:speckit_orchestrator, :autonomous_root, root)
-
-    on_exit(fn ->
-      File.rm_rf(root)
-      if prev, do: Application.put_env(:speckit_orchestrator, :autonomous_root, prev)
-    end)
-
-    features = [feat("001")]
-    start(features, max_concurrency: 2)
-    n1 = await_started("001")
-    n1.("001", :done, nil)
-
-    assert_receive {:run_complete, _report}, 1_000
-    assert File.exists?(manifest_path(root))
-  end
-
-  # Mirrors RunManifest's segment resolution (Config.repo() → origin segment,
-  # nil → flat bucket) so this assertion targets the same slot the module wrote.
-  defp manifest_path(root) do
-    case RepoIdentity.resolve(Config.repo()) do
-      {:ok, segment} -> Path.join([root, "transcripts", segment, "run.json"])
-      {:error, _} -> Path.join([root, "transcripts", "run.json"])
-    end
   end
 end

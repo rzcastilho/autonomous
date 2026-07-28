@@ -51,18 +51,6 @@ defmodule SpeckitOrchestrator.Config do
   def worktree_root, do: get(:worktree_root, "../.speckit-worktrees")
 
   @doc """
-  **Legacy (pre-012).** Root for durable per-phase transcripts, resolved
-  relative to `repo/0`. Defaults to `<repo>/.speckit-transcripts` — the
-  in-repo-per-target default `Layout.transcript_root` (machine-global,
-  keyed by repository identity + run scope, FR-004) superseded. No new write
-  path resolves through this function; `Transcripts`/`Checkpoint`/`Describe`'s
-  `layout: nil` (test/legacy) fallback is its only remaining caller. Gitignore
-  `.speckit-transcripts/` in the target repo if still relied on.
-  """
-  @spec transcript_root() :: String.t()
-  def transcript_root, do: Path.expand(get(:transcript_root, ".speckit-transcripts"), repo())
-
-  @doc """
   Machine-global base for worktrees + durable transcripts, keyed by repository
   identity (`RepoIdentity.segment/1`). Default `~/.autonomous`, expanded at read
   time; overridable via `Application.put_env/3` (tests point it at a tmp dir).

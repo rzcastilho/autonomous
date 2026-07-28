@@ -1,49 +1,29 @@
 defmodule SpeckitOrchestrator.Web.MissionControlLiveTest do
   # Starts the real named Coordinator (see layout_test.exs for the same
   # rationale) — must not run concurrently with another test claiming that
-  # name.
-  use ExUnit.Case, async: false
+  # name. StoreCase (018) clears every store table before each test, so an
+  # earlier test's in-flight run for this repo never leaks into this test's
+  # "no live Coordinator" assertions (the store is one node-global instance
+  # for the whole suite).
+  use SpeckitOrchestrator.StoreCase, async: false
 
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
 
   alias SpeckitOrchestrator.{
-    Checkpoint,
     Config,
     ConsoleProjection,
     Coordinator,
     Feature,
     Layout,
     RepoIdentity,
-    RunContext,
-    RunManifest
+    RunContext
   }
-
-  alias SpeckitOrchestrator.Store.Writer
 
   @endpoint SpeckitOrchestrator.Web.Endpoint
 
   setup do
-    prior_transcript_root = Application.get_env(:speckit_orchestrator, :transcript_root)
-
-    on_exit(fn ->
-      case prior_transcript_root do
-        nil -> Application.delete_env(:speckit_orchestrator, :transcript_root)
-        v -> Application.put_env(:speckit_orchestrator, :transcript_root, v)
-      end
-    end)
-
-    # :transcript_root is pinned to one shared tmp path for the whole test env
-    # (config/config.exs) — any earlier test's real Coordinator (default
-    # :manifest seam) may have left a run manifest there. Clear it so this
-    # test's "no live Coordinator" assertions see a clean slot, not another
-    # test's leftover state (specs/009-crash-recovery overlay).
-    RunManifest.clear()
     {:ok, conn: Phoenix.ConnTest.build_conn()}
-  end
-
-  defp point_transcripts_at(dir) do
-    Application.put_env(:speckit_orchestrator, :transcript_root, dir)
   end
 
   defp feat(id, prereqs \\ []),
@@ -191,18 +171,13 @@ defmodule SpeckitOrchestrator.Web.MissionControlLiveTest do
     assert html =~ "No active run"
   end
 
-  test "after a restart with no live Coordinator, shows last-known status from the run manifest via the recovered-run banner",
+  test "after a restart with no live Coordinator, shows last-known status from the store's in-flight run via the recovered-run banner",
        %{conn: conn} do
     refute Process.whereis(Coordinator)
 
-    :ok =
-      RunManifest.write(%{
-        features: [feat("mc5"), feat("mc6", ["mc5"])],
-        statuses: %{"mc5" => :halted, "mc6" => :pending},
-        context: %{},
-        spend: 2.0,
-        updated_at: 1
-      })
+    features = [feat("mc5"), feat("mc6", ["mc5"])]
+    run_key = open_store_run(features)
+    :ok = Writer.record_feature_terminal(run_key, "mc5", :halted, "test fixture", [])
 
     {:ok, _view, html} = live(conn, "/")
 
@@ -220,28 +195,23 @@ defmodule SpeckitOrchestrator.Web.MissionControlLiveTest do
 
   test "after a restart, a halted feature's row shows its phase progress from the checkpoint, and clicking it opens a drawer with the same timeline",
        %{conn: conn} do
-    point_transcripts_at(Path.join(System.tmp_dir!(), "mc_checkpoint_#{System.unique_integer()}"))
     refute Process.whereis(Coordinator)
 
-    :ok =
-      RunManifest.write(%{
-        features: [feat("mc7")],
-        statuses: %{"mc7" => :halted},
-        context: %{},
-        spend: 1.0,
-        updated_at: 1
-      })
+    run_key = open_store_run([feat("mc7")])
 
     :ok =
-      Checkpoint.write(%{
-        feature_id: "mc7",
-        last_phase: :analyze,
-        status: :halted,
-        reason: :critical_finding,
-        session_id: "s1",
-        slug: "slug-mc7",
-        path: "mc7.md"
+      Writer.record_phase_attempt(run_key, %{
+        attempt: minimal_attempt("mc7", :analyze),
+        checkpoint: %{
+          phase: :analyze,
+          last_completed_phase: :analyze,
+          status: :halted,
+          reason: :critical_finding,
+          session_id: "s1"
+        }
       })
+
+    :ok = Writer.record_feature_terminal(run_key, "mc7", :halted, :critical_finding, [])
 
     {:ok, view, html} = live(conn, "/")
 
@@ -258,45 +228,12 @@ defmodule SpeckitOrchestrator.Web.MissionControlLiveTest do
     html = render_click(view, "select_feature", %{"id" => "mc7"})
     [drawer] = Regex.run(~r/<aside class="feature-drawer".*?<\/aside>/s, html)
     assert drawer =~ ~s(data-phase="analyze" data-phase-state="halted")
-    assert drawer =~ "/transcripts?feature=mc7&amp;phase=analyze"
+    assert drawer =~ "/transcripts?run_id="
+    assert drawer =~ "feature=mc7&amp;phase=analyze"
   end
 
   # ---- 016 T039: resume lists the whole restored run (FR-022) ---------------
 
-  defp write_run_manifest(overrides) do
-    :ok =
-      RunManifest.write(
-        Map.merge(
-          %{
-            features: [],
-            statuses: %{},
-            context: %RunContext{pr_workflow: false, max_concurrency: 2, budget_usd: 100.0},
-            spend: 1.0,
-            updated_at: 1
-          },
-          overrides
-        )
-      )
-  end
-
-  defp write_run_checkpoint(id, last_phase, status) do
-    :ok =
-      Checkpoint.write(%{
-        feature_id: id,
-        last_phase: last_phase,
-        status: status,
-        reason: "test fixture",
-        session_id: "s1",
-        slug: "slug-#{id}",
-        path: "#{id}.md"
-      })
-  end
-
-  # 018: `resume/2` now reads the target's checkpoint and the run's whole
-  # state from the store — seeds a store-backed run alongside the
-  # RunManifest/Checkpoint writes above (Coordinator still dual-writes
-  # RunManifest through Phase 3, which is what this view actually renders
-  # from; not re-pointed at `run_detail/1` until Phase 7, T074).
   defp minimal_attempt(feature_id, phase) do
     now = DateTime.utc_now()
 
@@ -347,15 +284,7 @@ defmodule SpeckitOrchestrator.Web.MissionControlLiveTest do
        %{conn: conn} do
     refute Process.whereis(Coordinator)
 
-    write_run_checkpoint("mc10", :analyze, :halted)
-
     features = [feat("mc10"), feat("mc11", ["mc10"]), feat("mc12", ["mc11"])]
-
-    write_run_manifest(%{
-      features: features,
-      statuses: %{"mc10" => :halted, "mc11" => :pending, "mc12" => :pending}
-    })
-
     run_key = open_store_run(features)
 
     :ok =

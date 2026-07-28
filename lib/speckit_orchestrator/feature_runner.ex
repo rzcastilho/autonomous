@@ -31,7 +31,6 @@ defmodule SpeckitOrchestrator.FeatureRunner do
     Pipeline,
     Remediation,
     Store,
-    Transcripts,
     Worktree
   }
 
@@ -77,9 +76,8 @@ defmodule SpeckitOrchestrator.FeatureRunner do
       threaded into a diverted-terminal checkpoint write so a resume reapplies
       the original run shape. Defaults to `nil` (tests and non-context callers).
     * `:layout` — the run's resolved `%Layout{}` (`RepoIdentity` + `Layout`,
-      FR-011), threaded alongside `:run_context` into checkpoint writes for
-      scope-partitioned lookup once `Checkpoint` reads it (Phase 4). Defaults
-      to `nil` (tests and non-layout callers).
+      FR-011), threaded alongside `:run_context` into checkpoint writes.
+      Defaults to `nil` (tests and non-layout callers).
     * `:start_task_phase` — an explicit `TaskPhaseRef.t()` or ordinal
       (`pos_integer()`) that overrides `implement`'s recorded checkpoint
       position (checkpoint-implement-chunk.md §3); threaded straight into
@@ -135,15 +133,7 @@ defmodule SpeckitOrchestrator.FeatureRunner do
           )
 
         {status, reason, agent} =
-          case maybe_run_remediation(
-                 pid,
-                 feature,
-                 worktree,
-                 layout,
-                 timeout,
-                 remediation_prompt,
-                 run_key
-               ) do
+          case maybe_run_remediation(pid, feature, timeout, remediation_prompt, run_key) do
             {:error, agent} ->
               {:failed, :remediation_failed, agent}
 
@@ -195,20 +185,12 @@ defmodule SpeckitOrchestrator.FeatureRunner do
   # guarantees "at most once, before the target phase only" (FR-005/SC-003).
   # Blank prompt = zero overhead (FR-004/SC-002): no signal, no telemetry span,
   # no cost.
-  defp maybe_run_remediation(pid, feature, worktree, layout, timeout, remediation_prompt, run_key) do
+  defp maybe_run_remediation(pid, feature, timeout, remediation_prompt, run_key) do
     if blank?(remediation_prompt) do
       :ok
     else
       agent =
-        remediation_with_retry(
-          pid,
-          feature,
-          timeout,
-          worktree,
-          layout,
-          Config.phase_max_retries(),
-          run_key
-        )
+        remediation_with_retry(pid, feature, timeout, Config.phase_max_retries(), run_key)
 
       if agent.state.last_outcome == :error, do: {:error, agent}, else: :ok
     end
@@ -217,8 +199,8 @@ defmodule SpeckitOrchestrator.FeatureRunner do
   # Same transient-retry policy as a phase (FR-006): a server/API drop is
   # retried up to Config.phase_max_retries() times before it counts as a
   # genuine failure.
-  defp remediation_with_retry(pid, feature, timeout, worktree, layout, retries, run_key) do
-    agent = run_remediation(pid, feature, timeout, worktree, layout, run_key)
+  defp remediation_with_retry(pid, feature, timeout, retries, run_key) do
+    agent = run_remediation(pid, feature, timeout, run_key)
     st = agent.state
 
     if retries > 0 and st.last_outcome == :error and PhaseResult.transient?(st.last_result) do
@@ -226,7 +208,7 @@ defmodule SpeckitOrchestrator.FeatureRunner do
         "feature #{feature.id} remediation failed transiently — retrying (#{retries} left)"
       )
 
-      remediation_with_retry(pid, feature, timeout, worktree, layout, retries - 1, run_key)
+      remediation_with_retry(pid, feature, timeout, retries - 1, run_key)
     else
       agent
     end
@@ -237,14 +219,13 @@ defmodule SpeckitOrchestrator.FeatureRunner do
   # (ordinal 1 — this step runs at most once, before the phase loop starts),
   # so it precedes the target phase's own attempt in any store-sourced
   # listing.
-  defp run_remediation(pid, feature, timeout, worktree, layout, run_key) do
+  defp run_remediation(pid, feature, timeout, run_key) do
     meta = %{feature_id: feature.id, phase: :remediation, step: 0}
     started_at = DateTime.utc_now()
 
     :telemetry.span([:speckit, :phase], meta, fn ->
       {:ok, agent} = call(pid, "remediation.run", %{}, timeout)
       entry = List.first(agent.state.history) || %{}
-      Transcripts.write(worktree, layout, 0, :remediation, agent.state.last_result)
       record_attempt(run_key, feature, :remediation, 0, 1, started_at, agent, nil)
 
       Logger.info("feature #{feature.id} remediation -> #{inspect(Map.get(entry, :outcome))}")
@@ -402,22 +383,17 @@ defmodule SpeckitOrchestrator.FeatureRunner do
     })
   end
 
-  defp run_step(pid, feature, phase, step, timeout, _ledger, worktree, layout, _step_opts) do
-    PhaseStep.run(pid, feature, phase,
-      step: step,
-      timeout: timeout,
-      worktree: worktree,
-      layout: layout
-    )
+  defp run_step(pid, feature, phase, step, timeout, _ledger, _worktree, _layout, _step_opts) do
+    PhaseStep.run(pid, feature, phase, step: step, timeout: timeout)
   end
 
   # The same [:speckit, :phase] span every other phase gets, wrapping the
   # *whole* chunked step (so existing console/cost observability keeps
   # working) — a finer per-chunk span is added in Phase 5 (T031), inside
-  # `ChunkRunner` itself. `ChunkRunner` writes its own per-chunk + roll-up
-  # transcripts (contracts/chunk_session.md §5), so the generic
-  # `Transcripts.write/5` call `run_phase/7` makes below is skipped here to
-  # avoid clobbering the roll-up with just the last chunk's raw result.
+  # `ChunkRunner` itself. Only the roll-up (the whole step's own result)
+  # becomes this feature run's durable `:implement` phase attempt, recorded
+  # below by the caller — each intermediate chunk's own result is not
+  # separately persisted (018).
   defp run_chunked_phase(pid, feature, step, timeout, ledger, worktree, layout, chunk_opts) do
     meta = %{
       feature_id: feature.id,

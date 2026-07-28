@@ -29,26 +29,36 @@ Everything here was validated against the LedgerLite Phase 7 target — see
 
 ---
 
-## Run directory layout (012)
+## Run directory layout (012, store 018)
 
 Working data lives in two places, keyed by **repository identity**
 (`<repo-name>-<shorthash>`, derived from the target's `origin` remote — a repo
-with no `origin` is refused at preflight) and **run scope** (a breakdown
-package slug, or the literal `ad-hoc`):
+with no `origin` falls back to a local-path-derived id, `l:...`) and **run
+scope** (a breakdown package slug, or the literal `ad-hoc`):
 
 ```text
 ~/.autonomous/                                  # config :autonomous_root (machine-global; default ~/.autonomous)
 ├── worktrees/<repo-name>-<shorthash>/<feature_id>-<slug>/   # per-feature git worktrees
-└── transcripts/
-    ├── run.json                                # single-slot crash-recovery manifest
-    └── <repo-name>-<shorthash>/
-        ├── <breakdown-slug>/<feature_id>/{NN-<phase>.md, checkpoint.json, pr.json}
-        └── ad-hoc/<feature_id>/ ...
+└── mnesia/                                      # config :store_dir — the ONE durable record (018)
+                                                   # runs, features, phase attempts, checkpoints,
+                                                   # escalations, remediation attempts, transcripts —
+                                                   # everything the old run.json/checkpoint.json/
+                                                   # NN-<phase>.md/pr.json files used to hold
 
 <target_repo>/specs/autonomous/                 # config :specs_root (in-repo, committed)
 ├── breakdown/<breakdown-slug>/NNN-slug.md       # feature files, one dir per package (§3)
 └── ad-hoc/NNN-slug.md                           # single-spec-run seeds
 ```
+
+**Nothing durable lives on disk under a feature id or a phase name anymore.**
+Every phase attempt, checkpoint, escalation, remediation attempt, and
+transcript is a row in the Mnesia store at `store_dir` (default
+`~/.autonomous/mnesia`) — read it through
+`SpeckitOrchestrator.{run_history/1, run_detail/1, transcript/1}` or the
+console's `/runs` and `/runs/:run_id` views (see "Run history & detail" below),
+never by grepping a file. The worktree itself still exists on disk (kept for a
+non-`:done` outcome, removed on `:done`) but carries no state the orchestrator
+reads back.
 
 A **breakdown run** (`SpeckitOrchestrator.run/1`) selects one package by
 `:slug`/`:package` opt, or — with none given — the sole package directory
@@ -63,10 +73,14 @@ scope — its seed lands under `specs/autonomous/ad-hoc/`, never inside any
 breakdown package, and its transcripts key off the literal `ad-hoc` segment.
 
 **Migration note.** Nothing under the old paths (`../.speckit-worktrees`,
-`<repo>/.speckit-transcripts`, `docs/breakdown`) is moved, copied, or deleted —
-the new layout applies only to runs started after upgrading. **Drain
-in-flight runs before upgrading**: a checkpoint written under the old
-transcript path cannot be resumed once the layout changes.
+`<repo>/.speckit-transcripts`, `docs/breakdown`, and — pre-018 — `run.json`/
+`checkpoint.json`/`NN-<phase>.md`/`pr.json` under `~/.autonomous/transcripts/`)
+is moved, copied, or deleted — the new layout applies only to runs started
+after upgrading. **Drain in-flight runs before upgrading**: a run's state
+written under the pre-018 file scheme cannot be resumed once the store
+replaces it (FR-037, clean break — no migration path). Pre-existing files
+under the old paths may be deleted by hand once every run is drained; the
+orchestrator never reads them.
 
 ---
 
@@ -276,15 +290,15 @@ state:  running
 
 - Phase transitions are logged (attach the default logger); telemetry is emitted
   under `[:speckit, :phase, …]` and `[:speckit, :feature, :terminal]`.
-- **Transcripts (two locations):**
-  - Live, in-worktree: `<worktree>/.speckit_logs/NN-<phase>.md`.
-  - **Durable**: `~/.autonomous/transcripts/<repo-name>-<shorthash>/<scope>/<feature_id>/NN-<phase>.md`
-    (`config :autonomous_root`, default `~/.autonomous` — **machine-global**,
-    keyed by repository identity, so different targets never share a
-    transcript dir). These survive worktree teardown on `:done`, so a
-    completed run's plan/tasks/implement transcripts stay inspectable. Read
-    these to diagnose any phase, or browse them in the console's Transcripts
-    view (`/transcripts`).
+- **Transcripts live in the store, not on disk (018).** Every phase attempt's
+  transcript survives worktree teardown on `:done`, retrievable on demand:
+  ```elixir
+  {:ok, detail} = SpeckitOrchestrator.run_detail(run_id)
+  attempt = detail.features |> Enum.find(& &1.feature_id == "003") |> Map.fetch!(:phase_attempts) |> List.last()
+  {:ok, %{body: body}} = SpeckitOrchestrator.transcript(attempt.transcript_ref)
+  ```
+  or browse them in the console's run detail view (`/runs/:run_id`) or the
+  Transcripts view (`/transcripts`) — never by reading a file.
 - Rough cost: a full 7-phase feature build runs **~$10–12** (`clarify` and
   `implement` dominate). `config :budget_usd` (default 74.0) is the breaker cap.
 
@@ -314,9 +328,17 @@ cd /tmp/verify && PYTHONPATH=src python3 -m unittest discover -s tests
 git -C $T worktree remove --force /tmp/verify
 ```
 
-If plan/tasks/implement produced nothing, read
-`~/.autonomous/transcripts/<repo-name>-<shorthash>/<scope>/<feature_id>/03-plan.md` (etc.) for the blocker — usually a
-missing tech stack or a Bash approval denial.
+If plan/tasks/implement produced nothing, read that phase's transcript for the
+blocker — usually a missing tech stack or a Bash approval denial:
+
+```elixir
+{:ok, detail} = SpeckitOrchestrator.run_detail(run_id)
+plan_attempt = detail.features |> Enum.find(& &1.feature_id == "NNN") |> Map.fetch!(:phase_attempts) |> Enum.find(& &1.phase == :plan)
+{:ok, %{body: body}} = SpeckitOrchestrator.transcript(plan_attempt.transcript_ref)
+IO.puts(body)
+```
+
+or open `/runs/:run_id` in the console and expand the feature's `plan` attempt.
 
 ---
 
@@ -331,9 +353,10 @@ expose the next round's second-order questions (e.g. deciding a date sort key
 opens "does `add` take a date input?"). This is the gate converging, not a
 failure.
 
-1. **Read the escalation.** `~/.autonomous/transcripts/<repo-name>-<shorthash>/<scope>/<feature_id>/02-clarify.md` (or the
-   kept worktree's `.speckit_logs/02-clarify.md`) and the spec's `## NEEDS HUMAN`
-   section. Each item lists a precise question and the options considered.
+1. **Read the escalation.** The clarify transcript (via `transcript/1`/the
+   console's `/runs/:run_id` or `/escalations` view — see "Watch a run" above)
+   and the spec's `## NEEDS HUMAN` section. Each item lists a precise question
+   and the options considered.
 2. **Answer in the BREAKDOWN, not just the spec.** A re-run's `specify`
    regenerates `spec.md` from the breakdown, so spec-only edits are discarded.
    Put the decisions in `specs/autonomous/breakdown/<slug>/NNN-slug.md` under a `## Decisions`
@@ -462,19 +485,23 @@ closed with a distinct error and no run:
 crashed (BEAM node died, machine restarted) mid-run, the whole backlog needs
 reconstructing: some features `:done`, one `:running` when the crash hit, the
 rest still `:pending`. That's what `SpeckitOrchestrator.resume_run/1` and
-`resumable_run/0` are for — see `specs/009-crash-recovery`.
+`resumable_run/0` are for.
 
-Recovery relies only on durable on-disk state — git commits in each feature's
-worktree/branch plus two small JSON files under the run's `%Layout{}.transcript_root`
-(`<feature_id>/checkpoint.json` per feature, `run.json` for the run as a
-whole). No datastore, no in-memory state required (SC-005, SC-007).
+Recovery relies on the one durable store record (018) — every phase attempt,
+checkpoint, escalation, and remediation attempt for the run — plus git commits
+in each feature's worktree/branch as corroborating evidence
+(`Recovery.reconcile_run/2`). There is no separate on-disk manifest/checkpoint
+file to go stale or disagree with the store; a disagreement between the store
+and git evidence surfaces as a `Recovery.Report` conflict rather than being
+resolved silently.
 
-**Per-phase checkpoint + commit.** Since feature 009, `FeatureRunner` writes a
-checkpoint (`status: :in_progress`, `last_phase:` the phase that just
-finished) and commits the worktree after **every** phase, not only on a gate
-divert. On `:done` those per-phase commits are squashed into one clean commit
-(`Worktree.squash/3`); a kept terminal (`:escalated`/`:halted`/`:failed`)
-keeps them as the post-mortem trail.
+**Per-phase checkpoint + commit.** `FeatureRunner` records a checkpoint
+(`status: :in_progress`, `last_completed_phase:` the phase that just
+finished) in the same store transaction as the phase attempt, and commits the
+worktree, after **every** phase — not only on a gate divert. On `:done` those
+per-phase commits are squashed into one clean commit (`Worktree.squash/3`); a
+kept terminal (`:escalated`/`:halted`/`:failed`) keeps them as the post-mortem
+trail.
 
 **Operator flow (boot → detect → resume):**
 
@@ -482,32 +509,39 @@ keeps them as the post-mortem trail.
    is resumable — this starts no work:
    ```elixir
    iex> SpeckitOrchestrator.resumable_run()
-   {:ok, %{features: [...], statuses: %{...}, spend: 12.4, context: %{...}}}
+   {:ok, %{report: %{...}, statuses: %{...}, resume_phases: %{...}, gap_possible?: false}}
    # or :none — every feature was already terminal/diverted, nothing to resume
    # or {:error, :no_manifest} / {:error, :corrupt_manifest}
    ```
+   `gap_possible?: true` means a persistence-failure halt may have left the
+   record incomplete (see "Persistence failure" below) — the same crash, plus
+   a warning to double-check evidence against the store before trusting it.
 2. **Resume explicitly.** Recovery is operator-initiated — it is never
    triggered automatically on boot, because resuming spends money (FR-014):
    ```elixir
    iex> SpeckitOrchestrator.resume_run()
    {:ok, coordinator_pid}
    ```
-   This reconstructs `{features, statuses}` from the manifest — `:done` and
-   gate-diverted features are kept as-is and never re-run; `:running`
-   (interrupted) and `:pending` (never released) features reset to `:pending`
-   and release in the normal dependency-and-cap order. A checkpointed feature
-   resumes at the phase after its `last_phase` (reusing `resume/2`'s
-   machinery internally, including `Worktree.restore/1` to discard any
-   uncommitted partial output the crash left behind); a never-started feature
-   runs fresh from `specify`.
+   This reconstructs `{features, statuses}` from the store's run record —
+   `:done` and gate-diverted features are kept as-is and never re-run;
+   `:running` (interrupted) and `:pending` (never released) features reset to
+   `:pending` and release in the normal dependency-and-cap order. A
+   checkpointed feature resumes at the phase after its
+   `last_completed_phase` (reusing `resume/2`'s machinery internally,
+   including `Worktree.restore/1` to discard any uncommitted partial output
+   the crash left behind); a never-started feature runs fresh from `specify`.
+   Continues the **same `run_id`** — never opens a new run, so spend stays
+   attributable across the resume.
 3. **Cost continuity.** Before any wave releases, `resume_run/1` restores the
-   `Ledger`'s committed spend from the manifest's recorded figure (FR-012) —
-   never from zero. If the restored figure is already at/above budget, the
-   breaker is treated as tripped and the resumed run releases **zero** new
-   features (drain, not kill — same invariant as a live breaker trip).
-4. **Run-shaping context.** The resumed run re-executes under the manifest's
+   `Ledger`'s committed spend from the run's recorded cost-entry roll-up
+   (FR-012) — never from zero. If the restored figure is already at/above
+   budget, the breaker is treated as tripped and the resumed run releases
+   **zero** new features (drain, not kill — same invariant as a live breaker
+   trip).
+4. **Run-shaping context.** The resumed run re-executes under the store's
    recorded `pr_workflow`/`max_concurrency`/`budget_usd`/`plan_stack`/
-   `pr_base`/`pr_remote`, not live `Config` defaults — same
+   `pr_base`/`pr_remote` (captured once at `open_run`, in `speckit_run_settings`
+   — not re-recorded on every checkpoint), not live `Config` defaults — same
    explicit-opt > recorded > live-Config precedence as `resume/2` (FR-007).
 5. **Guard against clobbering a live run.** If a `Coordinator` is already
    alive and unfinished, `resume_run/1` refuses:
@@ -518,14 +552,138 @@ keeps them as the post-mortem trail.
    Pass `force: true` only when you're certain the live process is stuck, not
    genuinely still working.
 
-**Single-manifest-slot rule.** Only one run's manifest exists at a time —
-`run/1` calls `RunManifest.clear/0` before starting, so a fresh run
-supersedes whatever a prior crashed run left behind. There is no history of
-past runs to resume from; resume only ever targets the most recent one.
+**Supersession, not a single slot.** A fresh `run/1` opens a new store record
+and supersedes whatever prior in-flight run exists for the same repository
+(`FR-023/FR-034`) — the superseded run's non-terminal features are marked
+`:ended_by_supersession` and the run itself stays in the store, retained and
+distinguishable from a normal completion. Unlike the pre-018 single manifest
+slot, **every prior run is retained** — see "Run history & detail" below to
+review any of them, not only the most recent.
 
 For the single-feature case (one feature stuck, rest of the run fine), reach
 for `resume/2` (previous section) instead of `resume_run/1` — restarting the
 whole run to fix one feature is unnecessary churn.
+
+### Persistence failure (018)
+
+If the store itself becomes unwritable mid-run (disk full, permissions
+changed), the run **drains, never kills mid-phase**: the in-flight phase
+finishes, its result is attempted-written, and only then does the feature halt
+with a persistence-failure reason — the same drain-don't-kill invariant the
+cost breaker uses. Check `Store.Health.status/0` to see a failure the moment
+it's recorded:
+
+```elixir
+iex> SpeckitOrchestrator.Store.Health.status()
+{:failed, reason, at}   # or :ok
+```
+
+`run_history/1` shows a run drained this way with `record_complete?: false`,
+and `resumable/1`'s `gap_possible?: true` flags it on the next resume. Restore
+writability, then `resume_run/1` continues the same run id from its last
+recorded position.
+
+---
+
+## Run history & detail (018)
+
+Every run for a repository is retained, successful or not — review any of them
+without a live `Coordinator`, from `iex` or the console.
+
+```elixir
+{:ok, runs} = SpeckitOrchestrator.run_history()
+Enum.map(runs, &{&1.run_id, &1.state, &1.outcome, &1.spend_usd})
+# most recent first
+
+SpeckitOrchestrator.run_history(outcome: [:halted, :escalated])
+SpeckitOrchestrator.run_history(feature: "003")
+
+{:ok, d} = SpeckitOrchestrator.run_detail("r000004")
+f = Enum.find(d.features, & &1.feature_id == "003")
+f.phase_attempts       # execution order, with outcome/model/cost/duration
+f.escalations          # reason, originating phase, triggering evidence
+f.remediation_attempts # each attempt, with the limit and threshold in force
+
+{:ok, %{body: body}} = SpeckitOrchestrator.transcript(List.first(f.phase_attempts).transcript_ref)
+```
+
+In the console: `/runs` lists history (state badge, outcome, spend, per-feature
+status chips, filters by outcome/feature); `/runs/:run_id` shows one run's full
+detail — settings and amendments, per-feature phase attempts, escalations,
+remediation attempts, and on-demand transcripts — plus **export** and
+**resolve escalation** actions. The existing views (`/`, pipeline DAG,
+escalations, transcripts) render the same store-sourced facts.
+
+### Store capacity and pruning
+
+The store has a capacity ceiling (`config :store_capacity_bytes`, default
+1.5 GB) with headroom (`config :store_headroom_bytes`, default 150 MB).
+Check it any time:
+
+```elixir
+iex> SpeckitOrchestrator.store_capacity()
+%{status: :ok, used_bytes: _, capacity_bytes: 1_500_000_000, shortfall_bytes: nil, reclaimable_bytes: _}
+```
+
+A `run/1`/`resume/2`/`resume_run/1` refuses **before spending anything** when
+headroom is gone:
+
+```elixir
+iex> SpeckitOrchestrator.run()
+{:error, {:preflight, [{:store_capacity, %{shortfall_bytes: _, reclaimable_bytes: _}}]}}
+```
+
+Nothing else is affected by a capacity refusal — history, detail, transcript
+retrieval, export, and prune all keep working, and any in-flight run is
+untouched. Hitting the ceiling **mid-run** (not at preflight) is a write
+failure, not a refusal — it drains the same way persistence failure does
+(above), discarding nothing.
+
+**Pruning is the only mechanism that deletes recorded state**, and it's always
+operator-initiated — preview first, confirm explicitly:
+
+```elixir
+{:ok, plan} = SpeckitOrchestrator.prune_preview(before: ~U[2026-06-01 00:00:00Z])
+plan.removable          # what would go
+plan.retained           # in-flight / resumable runs, each with a reason — never removed
+plan.bytes_reclaimable
+
+{:ok, res} = SpeckitOrchestrator.prune(before: ~U[2026-06-01 00:00:00Z], confirm: true)
+```
+
+A resumable run (in-flight, or with an open escalation/halt) is never removed
+regardless of the boundary; `prune_preview/1` performs nothing on its own.
+
+### Export
+
+```elixir
+{:ok, path} = SpeckitOrchestrator.export_run("r000004", "/tmp/r000004.json")
+```
+
+One self-describing JSON file: every feature, phase attempt, escalation,
+remediation attempt, setting, cost entry, and transcript, recoverable from
+that file alone with zero external references (transcript bytes round-trip
+byte-identically, including non-UTF-8 bodies via `"encoding": "base64"`).
+Read-only — works mid-run and under a capacity refusal, and changes nothing in
+the store.
+
+### Node-name failure mode
+
+The store is a single-node Mnesia schema, keyed to the node name that created
+it. Starting the orchestrator under a **different** node name than the one
+that created the schema is a **hard failure that names both names**, not a
+silent new (empty-looking) store:
+
+```elixir
+{:error, {:schema_node_mismatch, expected: node(), schema: [...]}}
+```
+
+The app does not boot. This is deliberate (Constitution Principle II) — a
+foreign schema silently presenting as "no history" would be exactly the kind
+of silent data loss the store exists to prevent. If you see this, you're
+running with a different `--name`/`--sname` (or none) than whichever process
+created `store_dir`; start with the same node name, or — only if you're
+certain the old store is truly abandoned — move `store_dir` aside by hand.
 
 ---
 
@@ -542,9 +700,10 @@ drained features under `not_started`. Raise the budget and re-run to continue.
 
 `:failed` means a phase errored, the runner crashed/timed out, or the worktree
 couldn't be created (missing scaffold — run `TargetPack.verify/1`). The worktree
-is kept and its generated artifacts are committed to the branch. Inspect
-`~/.autonomous/transcripts/<repo-name>-<shorthash>/<scope>/<feature_id>/` (or the worktree's `.speckit_logs/`), fix the
-cause, and re-run (`resolve/1` first if a worktree/branch is in the way).
+is kept and its generated artifacts are committed to the branch. Inspect the
+feature's phase attempts and transcripts via `run_detail/1`/`transcript/1` (or
+the console's `/runs/:run_id`), fix the cause, and re-run (`resolve/1` first
+if a worktree/branch is in the way).
 
 Common `:failed` / no-output causes seen in practice:
 - **Phase action timed out.** Long phases (implement) need headroom;
@@ -586,4 +745,5 @@ stack open:
 export SPECKIT_PLAN_STACK="Python 3 (standard library only: argparse, unittest)"
 ```
 
-Read `~/.autonomous/transcripts/<repo-name>-<shorthash>/<scope>/<feature_id>/03-plan.md` to see exactly what plan said.
+Read the feature's `plan` transcript (`transcript/1`, or `/runs/:run_id` in the
+console) to see exactly what plan said.

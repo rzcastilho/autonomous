@@ -427,10 +427,12 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
 
     on_exit(fn -> :telemetry.detach(handler) end)
 
+    run_key = open_store_run()
+
     # No run_context ⇒ the shipped defaults ⇒ the loop is on. The finding
     # persists, so both attempts are spent and the gate then decides from the
     # final run, with the reason naming exhaustion (FR-006).
-    result = FeatureRunner.run(feature(), worktree: wt, notify: self())
+    result = FeatureRunner.run(feature(), worktree: wt, notify: self(), run_key: run_key)
 
     assert result.status == :escalated
     assert result.reason == {:high_findings, :auto_remediation_exhausted}
@@ -439,8 +441,10 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
     assert_received {:attempt, %{phase: :analyze, attempt: 2, limit: 2}}
     refute_received {:attempt, %{attempt: 3}}
 
-    assert File.exists?(Path.join(wt.path, ".speckit_logs/05-remediation-a1.md"))
-    assert File.exists?(Path.join(wt.path, ".speckit_logs/05-analyze.md"))
+    {:ok, detail} = SpeckitOrchestrator.Store.run(run_key)
+    [feature_detail] = detail.features
+    assert Enum.map(feature_detail.remediation_attempts, & &1.ordinal) == [1, 2]
+    assert Enum.any?(feature_detail.phase_attempts, &(&1.phase == :analyze))
   end
 
   test "pinning the loop off makes no remediation call and leaves the reason bare (SC-007a)" do
@@ -481,9 +485,10 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
     assert result.reason == {:analyze, :error}
   end
 
-  test "emits phase + terminal telemetry and writes per-phase transcripts" do
+  test "emits phase + terminal telemetry and records per-phase transcripts in the store" do
     Application.put_env(:speckit_orchestrator, :test_fake_scenario, :escalate)
     wt = scaffolded_worktree()
+    run_key = open_store_run()
 
     test_pid = self()
     handler = "tele-#{System.unique_integer([:positive])}"
@@ -497,16 +502,20 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
 
     on_exit(fn -> :telemetry.detach(handler) end)
 
-    FeatureRunner.run(feature(), worktree: wt, notify: self())
+    FeatureRunner.run(feature(), worktree: wt, notify: self(), run_key: run_key)
 
     assert_received {:tele, [:speckit, :phase, :stop],
                      %{phase: :specify, outcome: :ok, model: "sonnet"}}
 
     assert_received {:tele, [:speckit, :feature, :terminal], %{status: :escalated}}
 
-    # worktree kept on escalation -> transcripts present
-    assert File.exists?(Path.join(wt.path, ".speckit_logs/01-specify.md"))
-    assert File.read!(Path.join(wt.path, ".speckit_logs/02-clarify.md")) =~ "# clarify"
+    # worktree kept on escalation -> phase attempts + transcripts recorded
+    {:ok, detail} = SpeckitOrchestrator.Store.run(run_key)
+    [feature_detail] = detail.features
+    assert Enum.find(feature_detail.phase_attempts, &(&1.phase == :specify))
+    clarify = Enum.find(feature_detail.phase_attempts, &(&1.phase == :clarify))
+    assert {:ok, %{body: clarify_body}} = SpeckitOrchestrator.Store.transcript(clarify.attempt_id)
+    assert clarify_body =~ "NEEDS HUMAN"
   end
 
   test "per-phase checkpoint written after each successful phase — overwritten (not appended) as the pipeline advances (018, store-backed)" do
@@ -550,7 +559,7 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
   end
 
   @tag :integration
-  test "commits the worktree once per phase — a phase-boundary commit exists after each successful phase" do
+  test "commits the worktree once per phase — a phase-boundary commit exists after each phase that changed something" do
     Application.put_env(:speckit_orchestrator, :test_fake_scenario, :halt)
     wt = scaffolded_worktree()
 
@@ -558,8 +567,13 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
 
     {log, 0} = System.cmd("git", ["-C", wt.repo, "log", "--format=%s", wt.branch])
 
+    # specify/plan/tasks each write a real artifact (FakeArtifacts), so each
+    # gets its own phase-boundary commit. clarify and analyze write nothing in
+    # this harness (018: no durable-transcript-file side effect to fall back
+    # on) — `Worktree.commit/2` correctly no-ops when there is nothing staged,
+    # so neither appears in the log.
     assert log =~ "speckit: 001 checkpoint after specify"
-    assert log =~ "speckit: 001 checkpoint after clarify"
+    refute log =~ "speckit: 001 checkpoint after clarify"
     assert log =~ "speckit: 001 checkpoint after plan"
     assert log =~ "speckit: 001 checkpoint after tasks"
     refute log =~ "speckit: 001 checkpoint after analyze"
@@ -596,7 +610,13 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
     {count, 0} =
       System.cmd("git", ["-C", wt.repo, "rev-list", "--count", "#{base_sha}..#{wt.branch}"])
 
-    assert String.to_integer(String.trim(count)) > 1
+    # specify wrote a real artifact and got its own phase-boundary commit;
+    # clarify (which escalates) wrote nothing in this harness, so there is
+    # exactly one commit — the point of this test is that it is still the
+    # per-phase message, not squash's, proving squash was never called for a
+    # kept terminal (contrast the :done test above, which asserts the
+    # opposite: no "checkpoint after" message survives the squash).
+    assert String.trim(count) == "1"
 
     {log, 0} = System.cmd("git", ["-C", wt.repo, "log", "--format=%s", wt.branch])
     assert log =~ "speckit: 001 checkpoint after specify"
@@ -613,31 +633,36 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
   end
 
   test "start_phase: :plan resumes mid-pipeline, skipping specify/clarify" do
-    # :halt keeps the worktree (analyze critical -> :halted) so the transcripts
-    # written along the way survive for inspection; :done removes the worktree
+    # :halt keeps the worktree (analyze critical -> :halted); :done removes it
     # entirely, which would defeat this assertion regardless of start phase.
     Application.put_env(:speckit_orchestrator, :test_fake_scenario, :halt)
     wt = scaffolded_worktree()
+    run_key = open_store_run()
 
     result =
       FeatureRunner.run(feature(),
         start_phase: :plan,
         worktree: wt,
         notify: self(),
-        run_context: loop_off()
+        run_context: loop_off(),
+        run_key: run_key
       )
 
     assert result.status == :halted
-    assert File.exists?(Path.join(wt.path, ".speckit_logs/03-plan.md"))
-    refute File.exists?(Path.join(wt.path, ".speckit_logs/01-specify.md"))
-    refute File.exists?(Path.join(wt.path, ".speckit_logs/02-clarify.md"))
+
+    {:ok, detail} = SpeckitOrchestrator.Store.run(run_key)
+    phases = detail.features |> hd() |> Map.fetch!(:phase_attempts) |> Enum.map(& &1.phase)
+    assert :plan in phases
+    refute :specify in phases
+    refute :clarify in phases
   end
 
   test "no start_phase: begins at :specify, step 1 (explicit no-regression)" do
-    # :halt keeps the worktree (analyze critical -> :halted) so the transcript
-    # written along the way survives for inspection.
+    # :halt keeps the worktree (analyze critical -> :halted) so the recorded
+    # attempt survives for inspection.
     Application.put_env(:speckit_orchestrator, :test_fake_scenario, :halt)
     wt = scaffolded_worktree()
+    run_key = open_store_run()
 
     test_pid = self()
     handler = "tele-#{System.unique_integer([:positive])}"
@@ -651,10 +676,19 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
 
     on_exit(fn -> :telemetry.detach(handler) end)
 
-    FeatureRunner.run(feature(), worktree: wt, notify: self(), run_context: loop_off())
+    FeatureRunner.run(feature(),
+      worktree: wt,
+      notify: self(),
+      run_context: loop_off(),
+      run_key: run_key
+    )
 
     assert_received {:tele, [:speckit, :phase, :stop], %{phase: :specify, step: 1}}
-    assert File.exists?(Path.join(wt.path, ".speckit_logs/01-specify.md"))
+
+    {:ok, detail} = SpeckitOrchestrator.Store.run(run_key)
+    specify = detail.features |> hd() |> Map.fetch!(:phase_attempts) |> hd()
+    assert specify.phase == :specify
+    assert specify.step == 1
   end
 
   test "start_phase: :plan begins at step 3, matching its pipeline position" do
@@ -757,12 +791,15 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
 
       on_exit(fn -> :telemetry.detach(handler) end)
 
+      run_key = open_store_run()
+
       result =
         FeatureRunner.run(feature(),
           worktree: wt,
           notify: self(),
           remediation_prompt: "Fix the money-type Critical.",
-          run_context: loop_off()
+          run_context: loop_off(),
+          run_key: run_key
         )
 
       assert result.status == :halted
@@ -771,8 +808,10 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
       assert_received {:phase_start, :remediation}
       assert_received {:phase_start, :specify}
 
-      assert File.exists?(Path.join(wt.path, ".speckit_logs/00-remediation.md"))
-      assert File.exists?(Path.join(wt.path, ".speckit_logs/01-specify.md"))
+      {:ok, detail} = SpeckitOrchestrator.Store.run(run_key)
+      phases = detail.features |> hd() |> Map.fetch!(:phase_attempts) |> Enum.map(& &1.phase)
+      assert :remediation in phases
+      assert :specify in phases
 
       # the marker remediation wrote is still there — the target phase (and
       # every phase after it) ran against the artifacts remediation left

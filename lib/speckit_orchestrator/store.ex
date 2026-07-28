@@ -21,12 +21,14 @@ defmodule SpeckitOrchestrator.Store do
   @callback record_settings_amendment(run_key(), map(), term()) :: :ok | {:error, term()}
   @callback close_run(run_key(), atom(), keyword()) :: :ok | {:error, term()}
   @callback flag_record_incomplete(run_key(), term()) :: :ok | {:error, term()}
+  @callback prune_run(run_key()) :: :ok | {:error, term()}
   @callback runs(binary(), keyword()) :: {:ok, [map()]} | {:error, term()}
   @callback run(run_key()) :: {:ok, map()} | {:error, term()}
   @callback checkpoint(run_key(), binary()) :: {:ok, map()} | {:error, term()}
   @callback transcript(tuple()) :: {:ok, map()} | {:error, term()}
   @callback in_flight_run(binary()) :: {:ok, map()} | :none | {:error, term()}
   @callback capacity() :: map()
+  @callback run_bytes(run_key()) :: non_neg_integer()
 
   @doc "See `Store.Writer.open_run/2`."
   @spec open_run(binary(), map()) :: {:ok, binary()} | {:error, term()}
@@ -97,6 +99,14 @@ defmodule SpeckitOrchestrator.Store do
   @doc "See `Store.Query.capacity/0`."
   @spec capacity() :: map()
   def capacity, do: Query.capacity()
+
+  @doc "See `Store.Query.run_bytes/1`."
+  @spec run_bytes(run_key()) :: non_neg_integer()
+  def run_bytes(run_key), do: Query.run_bytes(run_key)
+
+  @doc "See `Store.Writer.prune_run/1`."
+  @spec prune_run(run_key()) :: :ok | {:error, term()}
+  def prune_run(run_key), do: Writer.prune_run(run_key)
 
   @doc """
   `{repo_id, run_id}` of `repo_id`'s current `:in_flight` run, or `nil` if

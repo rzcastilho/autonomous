@@ -142,11 +142,12 @@ defmodule SpeckitOrchestrator.ResumeBacklogE2ETest do
     assert first_report.halted == ["001"]
     assert first_report.done == []
 
-    # Manifest still names all three going into the resume — this is the
-    # exact defect surface: a pre-016 resume/2 would collapse this to one.
-    {:ok, record} = SpeckitOrchestrator.RunManifest.read()
-    assert Enum.sort(Enum.map(record["features"], & &1["id"])) == ["001", "002", "003"]
-    assert Enum.sort(Map.keys(record["statuses"])) == ["001", "002", "003"]
+    # The store's run record still names all three going into the resume —
+    # this is the exact defect surface: a pre-016 resume/2 would collapse
+    # this to one (018: the record is `run_detail/1`, not a JSON manifest).
+    run_id = SpeckitOrchestrator.current_run_id()
+    {:ok, detail} = SpeckitOrchestrator.run_detail(run_id)
+    assert Enum.sort(Enum.map(detail.features, & &1.feature_id)) == ["001", "002", "003"]
 
     # Operator fix: the condition that produced the critical finding is
     # resolved before the resume — mirrors a real remediation.

@@ -379,6 +379,32 @@ defmodule SpeckitOrchestrator.ResumeTest do
     :ok
   end
 
+  # 018: durable transcripts live in the store, not `.speckit_logs/` — these
+  # read back what `resume/2`'s spawned FeatureRunner recorded, mirroring
+  # `write_checkpoint/5`'s own store-backed fixtures.
+  defp phase_attempts(run_key, feature_id) do
+    {:ok, detail} = Store.run(run_key)
+    detail.features |> Enum.find(&(&1.feature_id == feature_id)) |> Map.fetch!(:phase_attempts)
+  end
+
+  defp remediation_attempts(run_key, feature_id) do
+    {:ok, detail} = Store.run(run_key)
+
+    detail.features
+    |> Enum.find(&(&1.feature_id == feature_id))
+    |> Map.fetch!(:remediation_attempts)
+  end
+
+  defp phase_recorded?(run_key, feature_id, phase),
+    do: Enum.any?(phase_attempts(run_key, feature_id), &(&1.phase == phase))
+
+  defp transcript_body!(run_key, feature_id, phase) do
+    attempt = Enum.find(phase_attempts(run_key, feature_id), &(&1.phase == phase))
+    assert attempt, "no #{phase} phase attempt recorded for #{feature_id}"
+    {:ok, %{body: body}} = SpeckitOrchestrator.transcript(attempt.attempt_id)
+    body
+  end
+
   # ---- distinct failures, no run started (hermetic) ------------------------
 
   describe "resume/2 — distinct failures, no run started" do
@@ -625,11 +651,11 @@ defmodule SpeckitOrchestrator.ResumeTest do
       assert_receive {:run_complete, report}, 30_000
       assert report.halted == [id]
 
-      refute File.exists?(Path.join(wt.path, ".speckit_logs/01-specify.md"))
-      refute File.exists?(Path.join(wt.path, ".speckit_logs/02-clarify.md"))
-      refute File.exists?(Path.join(wt.path, ".speckit_logs/03-plan.md"))
-      refute File.exists?(Path.join(wt.path, ".speckit_logs/04-tasks.md"))
-      assert File.exists?(Path.join(wt.path, ".speckit_logs/05-analyze.md"))
+      refute phase_recorded?(run_key, id, :specify)
+      refute phase_recorded?(run_key, id, :clarify)
+      refute phase_recorded?(run_key, id, :plan)
+      refute phase_recorded?(run_key, id, :tasks)
+      assert phase_recorded?(run_key, id, :analyze)
     end
   end
 
@@ -660,7 +686,7 @@ defmodule SpeckitOrchestrator.ResumeTest do
       assert_receive {:run_complete, report}, 30_000
       assert report.halted == [id]
 
-      analyze_log = File.read!(Path.join(wt.path, ".speckit_logs/05-analyze.md"))
+      analyze_log = transcript_body!(run_key, id, :analyze)
       assert analyze_log =~ "guidance-present"
     end
 
@@ -684,7 +710,7 @@ defmodule SpeckitOrchestrator.ResumeTest do
       assert_receive {:run_complete, report}, 30_000
       assert report.halted == [id]
 
-      analyze_log = File.read!(Path.join(wt.path, ".speckit_logs/05-analyze.md"))
+      analyze_log = transcript_body!(run_key, id, :analyze)
       assert analyze_log =~ "guidance-present"
     end
 
@@ -705,7 +731,7 @@ defmodule SpeckitOrchestrator.ResumeTest do
       assert_receive {:run_complete, report}, 30_000
       assert report.halted == [id]
 
-      analyze_log = File.read!(Path.join(wt.path, ".speckit_logs/05-analyze.md"))
+      analyze_log = transcript_body!(run_key, id, :analyze)
       assert analyze_log =~ "guidance-absent"
     end
   end
@@ -737,11 +763,11 @@ defmodule SpeckitOrchestrator.ResumeTest do
       assert_receive {:run_complete, report}, 30_000
       assert report.halted == [id]
 
-      remediation_log = File.read!(Path.join(wt.path, ".speckit_logs/00-remediation.md"))
+      remediation_log = transcript_body!(run_key, id, :remediation)
       assert remediation_log =~ "Fix the money-type Critical the analyze gate flagged."
 
       # the target phase still ran, after remediation
-      assert File.exists?(Path.join(wt.path, ".speckit_logs/05-analyze.md"))
+      assert phase_recorded?(run_key, id, :analyze)
     end
 
     test ":remediation_model override applies only to the remediation request — the target phase's own model routing is unchanged" do
@@ -769,11 +795,11 @@ defmodule SpeckitOrchestrator.ResumeTest do
       assert_receive {:run_complete, report}, 30_000
       assert report.halted == [id]
 
-      remediation_log = File.read!(Path.join(wt.path, ".speckit_logs/00-remediation.md"))
+      remediation_log = transcript_body!(run_key, id, :remediation)
       assert remediation_log =~ "model=sonnet"
 
       # analyze's own model routing (Config.model_for(:analyze) == "opus") is untouched
-      analyze_log = File.read!(Path.join(wt.path, ".speckit_logs/05-analyze.md"))
+      analyze_log = transcript_body!(run_key, id, :analyze)
       assert analyze_log =~ "model=opus"
     end
 
@@ -794,7 +820,7 @@ defmodule SpeckitOrchestrator.ResumeTest do
       assert_receive {:run_complete, report}, 30_000
       assert report.halted == [id]
 
-      refute File.exists?(Path.join(wt.path, ".speckit_logs/00-remediation.md"))
+      refute phase_recorded?(run_key, id, :remediation)
     end
 
     test "FR-010: :prompt and :remediation_prompt are independent — both apply, neither suppresses the other" do
@@ -822,11 +848,11 @@ defmodule SpeckitOrchestrator.ResumeTest do
       assert_receive {:run_complete, report}, 30_000
       assert report.halted == [id]
 
-      remediation_log = File.read!(Path.join(wt.path, ".speckit_logs/00-remediation.md"))
+      remediation_log = transcript_body!(run_key, id, :remediation)
       assert remediation_log =~ "Fix the money-type Critical the analyze gate flagged."
 
       # the target phase's own :prompt (feature-004 note) still carries through
-      analyze_log = File.read!(Path.join(wt.path, ".speckit_logs/05-analyze.md"))
+      analyze_log = transcript_body!(run_key, id, :analyze)
       assert analyze_log =~ "guidance-present"
     end
 
@@ -878,10 +904,13 @@ defmodule SpeckitOrchestrator.ResumeTest do
       assert_receive {:run_complete, report}, 30_000
       assert report.halted == [id]
 
-      refute File.exists?(Path.join(wt.path, ".speckit_logs/01-specify.md"))
-      refute File.exists?(Path.join(wt.path, ".speckit_logs/04-tasks.md"))
-      assert File.exists?(Path.join(wt.path, ".speckit_logs/05-analyze.md"))
-      refute File.exists?(Path.join(wt.path, ".speckit_logs/07-converge.md"))
+      refute phase_recorded?(run_key, id, :specify)
+      refute phase_recorded?(run_key, id, :tasks)
+      assert phase_recorded?(run_key, id, :analyze)
+      # :converge itself is never reached this run (the seeded checkpoint
+      # fixture's own :converge phase attempt predates this resume call —
+      # `report.halted == [id]` above is what proves the pipeline stopped at
+      # :analyze rather than skipping straight to :converge).
     end
 
     test "invalid :from is rejected with {:error, {:unknown_phase, phase}} and starts no run" do
@@ -932,8 +961,8 @@ defmodule SpeckitOrchestrator.ResumeTest do
       assert report.halted == [id]
 
       assert File.read!(Path.join(wt.path, "fixed.txt")) == "operator fix"
-      refute File.exists?(Path.join(wt.path, ".speckit_logs/01-specify.md"))
-      assert File.exists?(Path.join(wt.path, ".speckit_logs/05-analyze.md"))
+      refute phase_recorded?(run_key, id, :specify)
+      assert phase_recorded?(run_key, id, :analyze)
     end
 
     @tag :integration
@@ -1036,7 +1065,7 @@ defmodule SpeckitOrchestrator.ResumeTest do
 
       assert_receive {:run_complete, report}, 30_000
       assert report.halted == [id]
-      refute File.exists?(Path.join(wt.path, ".speckit_logs/01-specify.md"))
+      refute phase_recorded?(run_key, id, :specify)
 
       # 018: the store no longer round-trips the full run context into every
       # checkpoint write (`FeatureRunner.checkpoint_for/3` only carries
@@ -1097,7 +1126,7 @@ defmodule SpeckitOrchestrator.ResumeTest do
 
       assert_receive {:run_complete, report}, 30_000
       assert report.halted == [id]
-      assert File.exists?(Path.join(wt.path, ".speckit_logs/05-analyze.md"))
+      assert phase_recorded?(run_key, id, :analyze)
     end
 
     test "a checkpoint with no context key falls back to live Config for all six settings, succeeds without crashing, and logs the fallen-back settings" do
@@ -1464,9 +1493,7 @@ defmodule SpeckitOrchestrator.ResumeTest do
       assert report.halted == [id]
 
       # A full, fresh budget of two attempts ran — not zero, and not one.
-      assert File.exists?(Path.join(wt.path, ".speckit_logs/05-remediation-a1.md"))
-      assert File.exists?(Path.join(wt.path, ".speckit_logs/05-remediation-a2.md"))
-      refute File.exists?(Path.join(wt.path, ".speckit_logs/05-remediation-a3.md"))
+      assert Enum.map(remediation_attempts(run_key, id), & &1.ordinal) == [1, 2]
 
       # …and the new run's own provenance replaces the old, still at the limit.
       assert {:ok, checkpoint} = Store.checkpoint(run_key, id)

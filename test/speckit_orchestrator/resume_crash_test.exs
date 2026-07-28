@@ -193,7 +193,7 @@ defmodule SpeckitOrchestrator.ResumeCrashTest do
 
     # Checkpoint pointing at the last completed phase, status in_progress —
     # exactly what the per-phase write leaves behind after :plan.
-    seed_checkpoint(repo, layout, id)
+    run_key = seed_checkpoint(repo, layout, id)
 
     # The crash left an uncommitted partial file from the interrupted :tasks phase.
     File.write!(Path.join(spec_dir, "tasks.md"), "# Tasks\npartial and incomplete")
@@ -214,10 +214,12 @@ defmodule SpeckitOrchestrator.ResumeCrashTest do
     refute File.exists?(Path.join(spec_dir, "tasks.md"))
 
     # resumed at tasks (the phase after the last completed plan), not at plan
-    # itself and not from Pipeline.first().
-    refute File.exists?(Path.join(wt.path, ".speckit_logs/01-specify.md"))
-    refute File.exists?(Path.join(wt.path, ".speckit_logs/03-plan.md"))
-    assert File.exists?(Path.join(wt.path, ".speckit_logs/04-tasks.md"))
-    assert File.exists?(Path.join(wt.path, ".speckit_logs/05-analyze.md"))
+    # itself and not from Pipeline.first() — checked via the store's recorded
+    # phase attempts (018), since durable transcripts no longer live on disk.
+    {:ok, detail} = Store.run(run_key)
+    phases = detail.features |> hd() |> Map.fetch!(:phase_attempts) |> Enum.map(& &1.phase)
+    refute :specify in phases
+    assert :tasks in phases
+    assert :analyze in phases
   end
 end

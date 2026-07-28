@@ -32,17 +32,14 @@ defmodule SpeckitOrchestrator.Coordinator do
   a tripped `Store.Health` — checked in `advance/1` at the same point as the
   breaker, releasing nothing new — and `Store.Writer.close_run/3` on drain,
   so the run's terminal outcome is durable the moment the report is built.
-
-  The pre-018 `:manifest` seam keeps writing alongside the store through
-  Phase 3 — `MissionControlLive`/`PipelineDagLive`/`EscalationsLive` still
-  read `RunManifest` until Phase 7 re-points them at `run_detail/1`
-  (T074–T077); removed only at the clean break (FR-037, T072), same
-  dual-write shape `Transcripts`/`PhaseStep` already use.
+  The console reads this same store via `run_detail/1` (`MissionControlLive`/
+  `PipelineDagLive`/`EscalationsLive`) rather than any state this process
+  holds directly.
   """
 
   use GenServer
 
-  alias SpeckitOrchestrator.{Feature, Ledger, Release, RunContext, RunManifest}
+  alias SpeckitOrchestrator.{Feature, Ledger, Release, RunContext}
   alias SpeckitOrchestrator.Store.{Health, Writer}
 
   @type status :: Feature.status()
@@ -58,7 +55,6 @@ defmodule SpeckitOrchestrator.Coordinator do
             self_pid: nil,
             finished?: false,
             report: nil,
-            manifest: nil,
             run_key: nil,
             context: %{},
             layout: nil
@@ -82,14 +78,8 @@ defmodule SpeckitOrchestrator.Coordinator do
       by the caller via `Store.Writer.open_run/2`; `nil` for a store-less
       test Coordinator, in which case the health check and `close_run/3` are
       silent no-ops.
-    * `:context` — the run-shaping context (`RunContext.t()` or its map)
-      recorded into the manifest alongside each write (FR-007), also
+    * `:context` — the run-shaping context (`RunContext.t()` or its map),
       reported in `status/0`'s snapshot.
-    * `:manifest` — module implementing `RunManifest`'s `write/1` (default
-      `RunManifest`; tests inject a fake). Written on `init`, each
-      `spawn_feature`, and each feature's `{:finished, ...}` notification —
-      best-effort, never affects wave logic. Kept alongside the store
-      through Phase 3 (see moduledoc).
     * `:layout` — the run's resolved `%Layout{}` (`RepoIdentity` + `Layout`,
       FR-011), resolved once at facade preflight and held here so every
       runner spawned for this run carries it (optional; `nil` for tests
@@ -141,14 +131,11 @@ defmodule SpeckitOrchestrator.Coordinator do
       ledger: Keyword.get(opts, :ledger),
       runner: runner,
       owner: Keyword.get(opts, :owner),
-      manifest: Keyword.get(opts, :manifest, RunManifest),
       run_key: Keyword.get(opts, :run_key),
       context: Keyword.get(opts, :context, %{}),
       layout: Keyword.get(opts, :layout),
       self_pid: self()
     }
-
-    write_manifest(state)
 
     {:ok, state, {:continue, :release}}
   end
@@ -163,8 +150,6 @@ defmodule SpeckitOrchestrator.Coordinator do
       | statuses: Map.put(state.statuses, id, status),
         inflight: MapSet.delete(state.inflight, id)
     }
-
-    write_manifest(state)
 
     {:noreply, advance(state)}
   end
@@ -214,8 +199,6 @@ defmodule SpeckitOrchestrator.Coordinator do
         inflight: MapSet.put(state.inflight, id),
         started_at: Map.put(state.started_at, id, now_ms())
     }
-
-    write_manifest(new_state)
 
     new_state
   end
@@ -375,23 +358,6 @@ defmodule SpeckitOrchestrator.Coordinator do
 
   defp spend(%__MODULE__{ledger: nil}), do: 0.0
   defp spend(%__MODULE__{ledger: ledger}), do: Ledger.spent(ledger)
-
-  # Best-effort manifest write (Principle I — the seam keeps the wave/DAG/
-  # breaker scheduler unit-testable without disk); a write failure never
-  # affects wave logic (data-model.md Entity 3). Kept alongside the store
-  # through Phase 3 (see moduledoc).
-  defp write_manifest(state) do
-    state.manifest.write(%{
-      features: feature_list(state),
-      statuses: state.statuses,
-      context: state.context,
-      spend: spend(state),
-      updated_at: System.system_time(),
-      layout: state.layout
-    })
-
-    state
-  end
 
   defp default_cap, do: SpeckitOrchestrator.Config.max_concurrency()
 end

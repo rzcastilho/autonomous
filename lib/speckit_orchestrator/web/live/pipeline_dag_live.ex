@@ -19,15 +19,12 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
 
   alias SpeckitOrchestrator.{
     Backlog,
-    Checkpoint,
     Config,
     ConsoleProjection,
     ConsoleReadModel,
     Coordinator,
     Ledger,
-    Release,
-    RepoIdentity,
-    RunManifest
+    Release
   }
 
   alias SpeckitOrchestrator.Web.PipelineDagLayout
@@ -39,9 +36,8 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
     end
 
     repo = Config.repo()
-    segment = resolve_segment(repo)
     packages = package_slugs(Path.join([repo, Config.specs_root(), "breakdown"]))
-    selected_package = default_package(packages, manifest_record(), segment)
+    selected_package = default_package(packages, current_run_detail())
 
     {:ok,
      socket
@@ -50,7 +46,6 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
        current_path: "/dag",
        selected_feature_id: nil,
        repo: repo,
-       segment: segment,
        packages: packages,
        selected_package: selected_package,
        known_backlog_ids: known_backlog_ids(repo, packages)
@@ -59,28 +54,15 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
      |> seed()}
   end
 
-  # Default the drawn wave to the active/last run's package (manifest scope,
-  # gated on a matching segment so a stale manifest from another repo can't
-  # steer this view); otherwise the first alphabetical package (U2, FR-012).
-  defp default_package(packages, record, segment) do
-    with true <- matching_segment?(record, segment),
-         %{"breakdown" => slug} <- record["scope"],
-         true <- slug in packages do
-      slug
-    else
-      _ -> List.first(packages)
-    end
+  # Default the drawn wave to the current in-flight run's package; otherwise
+  # the first alphabetical package (U2, FR-012). `Store.current_run_key/1` is
+  # already scoped to this repo's `repo_id` (018), so no cross-repo staleness
+  # check is needed — unlike the pre-018 manifest file.
+  defp default_package(packages, %{run: %{scope: {:breakdown, slug}}}) do
+    if slug in packages, do: slug, else: List.first(packages)
   end
 
-  # Best-effort — a repo with no origin (or not yet a git repo) still renders
-  # the DAG from the backlog; it simply never overlays a manifest (no segment
-  # to match against, U2).
-  defp resolve_segment(repo) do
-    case RepoIdentity.resolve(repo) do
-      {:ok, segment} -> segment
-      {:error, _reason} -> nil
-    end
-  end
+  defp default_package(packages, _run_detail), do: List.first(packages)
 
   defp load_layout(socket) do
     try do
@@ -136,7 +118,7 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
     view = ConsoleReadModel.merge(status, ledger_snapshot(), ConsoleProjection.read())
 
     socket
-    |> assign(view: overlay_manifest(socket, view))
+    |> assign(view: overlay_manifest(view))
     |> assign_release_order(status)
   end
 
@@ -161,40 +143,28 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
 
   defp release_order(_features, _status), do: %{}
 
-  # No live Coordinator (fresh boot, no resume yet) — fall back to the
-  # durable run manifest (specs/009-crash-recovery) so the DAG reflects the
-  # last known status instead of every node defaulting to :pending, and each
-  # feature's own checkpoint so its phase timeline shows what actually ran
-  # rather than looking like nothing happened. Only overlays when the
-  # manifest's recorded segment matches the repo this DAG is viewing (resolves
-  # analyze finding U2) — a stale manifest from a different target repo must
-  # not paint this DAG.
-  defp overlay_manifest(socket, view) do
-    record = manifest_record()
+  # No live Coordinator (fresh boot, no resume yet) — fall back to the store's
+  # current in-flight run (018) so the DAG reflects the last known status
+  # instead of every node defaulting to :pending, and each feature's own
+  # checkpoint so its phase timeline shows what actually ran rather than
+  # looking like nothing happened. `Store.current_run_key/1` is already
+  # scoped to this repo, so no cross-repo staleness check is needed.
+  defp overlay_manifest(view) do
+    ConsoleReadModel.overlay_last_known_statuses(view, current_run_detail())
+  end
 
-    if matching_segment?(record, socket.assigns.segment) do
-      layout = RunManifest.rebuild_layout(record, socket.assigns.repo)
-      ConsoleReadModel.overlay_last_known_statuses(view, record, checkpoints_for(record, layout))
-    else
-      view
+  defp current_run_detail do
+    case SpeckitOrchestrator.current_run_id() do
+      nil ->
+        nil
+
+      run_id ->
+        case SpeckitOrchestrator.run_detail(run_id) do
+          {:ok, detail} -> detail
+          _ -> nil
+        end
     end
   end
-
-  defp matching_segment?(%{"segment" => segment}, segment) when is_binary(segment), do: true
-  defp matching_segment?(_record, _segment), do: false
-
-  defp manifest_record do
-    case RunManifest.read() do
-      {:ok, record} -> record
-      _ -> nil
-    end
-  end
-
-  defp checkpoints_for(%{"statuses" => statuses}, layout) when is_map(statuses) do
-    Map.new(statuses, fn {id, _status} -> {id, Checkpoint.read(id, layout)} end)
-  end
-
-  defp checkpoints_for(_record, _layout), do: %{}
 
   defp coordinator_status do
     if Process.whereis(Coordinator), do: Coordinator.status(Coordinator)
@@ -225,7 +195,7 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
 
     {:noreply,
      socket
-     |> assign(view: overlay_manifest(socket, view))
+     |> assign(view: overlay_manifest(view))
      |> assign_release_order(coordinator_status)}
   end
 

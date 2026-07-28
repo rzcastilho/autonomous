@@ -23,7 +23,6 @@ defmodule SpeckitOrchestrator do
     Report,
     RepoIdentity,
     RunContext,
-    RunManifest,
     SingleSpec,
     StackTracker,
     Store,
@@ -132,13 +131,6 @@ defmodule SpeckitOrchestrator do
       :error ->
         with :ok <- preflight_store_writable(),
              :ok <- preflight_store_capacity() do
-          # Single-slot rule (FR-005): a fresh run supersedes the prior
-          # manifest before the Coordinator's first write — bypasses the
-          # anti-narrowing guard for a run over a differently-shaped feature
-          # set. Kept alongside the store's own supersession (below)
-          # through Phase 3 (dual-write, see Coordinator moduledoc).
-          RunManifest.clear()
-
           repo_id = RepoIdentity.partition(Config.repo())
           features = resolve_features(opts, layout)
 
@@ -167,8 +159,20 @@ defmodule SpeckitOrchestrator do
     {:ok, capacity} = store_capacity()
 
     case capacity.status do
-      :ok -> :ok
-      :refusing -> {:error, {:preflight, [{:store_capacity, capacity}]}}
+      :ok ->
+        :ok
+
+      :refusing ->
+        :telemetry.execute(
+          [:speckit, :store, :capacity_refused],
+          %{
+            shortfall_bytes: capacity.shortfall_bytes,
+            reclaimable_bytes: capacity.reclaimable_bytes
+          },
+          %{repo: Config.repo()}
+        )
+
+        {:error, {:preflight, [{:store_capacity, capacity}]}}
     end
   end
 
@@ -510,8 +514,13 @@ defmodule SpeckitOrchestrator do
   # already carry context overrides (e.g. resume/2's own context merge) —
   # `RunContext.merge/2` never overrides a key already present, so merging
   # again here is idempotent.
+  # A resume starts new phases, which record — refused on the same capacity
+  # basis as a fresh `run/1` (contracts/capacity-and-prune.md § What a
+  # refusal does and does not block), before any state mutation
+  # (`restore_ledger/1`) below.
   defp restore_run_scope(detail, opts) do
-    with {:ok, %{statuses: statuses, resume_phases: resume_phases}} <-
+    with :ok <- preflight_store_capacity(),
+         {:ok, %{statuses: statuses, resume_phases: resume_phases}} <-
            Recovery.reconcile_run(detail) do
       features = Enum.map(detail.features, &Recovery.to_feature/1)
       restore_ledger(detail.cost_entries)
@@ -921,12 +930,26 @@ defmodule SpeckitOrchestrator do
      }}
   end
 
-  # `bytes` per run isn't tracked yet (that lands with 018 Phase 6's prune
-  # facade, which sums each run's recorded transcript sizes) — until then this
-  # conservatively reports 0 reclaimable rather than a guessed figure.
   defp reclaimable_bytes(_capacity_bytes, _headroom_bytes) do
-    case Store.runs(RepoIdentity.partition(Config.repo())) do
+    case build_prune_plan([]) do
+      {:ok, _repo_id, plan} -> plan.bytes_reclaimable
+      {:error, _} -> 0
+    end
+  end
+
+  # Shared by `reclaimable_bytes/2`, `prune_preview/1`, and `prune/1`:
+  # `Store.runs/2`'s summaries plus each non-damaged run's real byte figure
+  # (`Store.run_bytes/1` — its transcripts' recorded bytes plus a fixed
+  # per-row estimate for its control rows, contracts/capacity-and-prune.md §
+  # Prune rule 5), fed to the pure `Prune.plan/3`.
+  defp build_prune_plan(opts) do
+    repo = Keyword.get(opts, :repo, Config.repo())
+    repo_id = RepoIdentity.partition(repo)
+
+    case Store.runs(repo_id) do
       {:ok, summaries} ->
+        boundary = prune_boundary(opts, repo_id)
+
         protected =
           summaries
           |> Enum.filter(&resumable_summary?/1)
@@ -936,14 +959,94 @@ defmodule SpeckitOrchestrator do
           summaries
           |> Enum.reject(&Map.get(&1, :damaged, false))
           |> Enum.map(fn s ->
-            %{run_id: s.run_id, state: s.state, ended_at: s.ended_at, bytes: 0}
+            %{
+              run_id: s.run_id,
+              state: s.state,
+              ended_at: s.ended_at,
+              bytes: Store.run_bytes({repo_id, s.run_id})
+            }
           end)
 
-        Prune.plan(run_summaries, DateTime.utc_now(), protected).bytes_reclaimable
+        {:ok, repo_id, Prune.plan(run_summaries, boundary, protected)}
 
-      {:error, _} ->
-        0
+      {:error, reason} ->
+        {:error, reason}
     end
+  end
+
+  defp prune_boundary(opts, repo_id) do
+    case Keyword.get(opts, :before) do
+      nil ->
+        DateTime.utc_now()
+
+      %DateTime{} = boundary ->
+        boundary
+
+      run_id when is_binary(run_id) ->
+        run_id_boundary(repo_id, run_id)
+    end
+  end
+
+  defp run_id_boundary(repo_id, run_id) do
+    case Store.run({repo_id, run_id}) do
+      {:ok, %{run: %{ended_at: %DateTime{} = ended_at}}} -> ended_at
+      {:ok, %{run: %{started_at: %DateTime{} = started_at}}} -> started_at
+      _ -> DateTime.utc_now()
+    end
+  end
+
+  @doc """
+  Preview what pruning `opts[:before]` would remove and how much it would
+  reclaim, performing nothing (018, FR-031e). Options: `:repo`, `:before` (a
+  `DateTime` or a run_id boundary — defaults to now, i.e. everything ended so
+  far). An in-flight or resumable run is never removable regardless of
+  boundary and is reported in `retained` with its reason, never silently
+  skipped (contracts/capacity-and-prune.md § Prune).
+  """
+  @spec prune_preview(keyword()) :: {:ok, Prune.plan()} | {:error, term()}
+  def prune_preview(opts \\ []) do
+    with {:ok, _repo_id, plan} <- build_prune_plan(opts), do: {:ok, plan}
+  end
+
+  @doc """
+  Prune runs at or before a boundary — the only mechanism in the system that
+  removes recorded state (018, FR-031a). Requires `opts[:confirm] == true`;
+  otherwise refuses with `{:error, :confirmation_required}` and performs
+  nothing. Deletes each removable run in its own transaction
+  (`Store.Writer.prune_run/1`), so a transcript can never be pruned out of
+  step with the phase attempt it belongs to (FR-035). Options: same as
+  `prune_preview/1`, plus `:confirm`.
+  """
+  @spec prune(keyword()) ::
+          {:ok, %{removed: [String.t()], bytes_reclaimed: non_neg_integer()}} | {:error, term()}
+  def prune(opts \\ []) do
+    if Keyword.get(opts, :confirm, false) do
+      with {:ok, repo_id, plan} <- build_prune_plan(opts) do
+        {removed, bytes_reclaimed} = prune_removable(repo_id, plan.removable)
+
+        :telemetry.execute(
+          [:speckit, :store, :pruned],
+          %{bytes_reclaimed: bytes_reclaimed},
+          %{repo_id: repo_id, removed: removed}
+        )
+
+        {:ok, %{removed: removed, bytes_reclaimed: bytes_reclaimed}}
+      end
+    else
+      {:error, :confirmation_required}
+    end
+  end
+
+  defp prune_removable(repo_id, removable) do
+    {removed, bytes_reclaimed} =
+      Enum.reduce(removable, {[], 0}, fn %{run_id: run_id, bytes: bytes}, {ids, total} ->
+        case Store.prune_run({repo_id, run_id}) do
+          :ok -> {[run_id | ids], total + bytes}
+          {:error, _reason} -> {ids, total}
+        end
+      end)
+
+    {Enum.reverse(removed), bytes_reclaimed}
   end
 
   defp resumable_summary?(%{damaged: true}), do: true
@@ -1038,6 +1141,21 @@ defmodule SpeckitOrchestrator do
 
   defp attach_transcript_ref(attempt) do
     attempt |> Map.from_struct() |> Map.put(:transcript_ref, attempt.attempt_id)
+  end
+
+  @doc """
+  `run_id` of `repo`'s current in-flight run, or `nil` (018,
+  contracts/console-runs.md). Lets the console (`MissionControlLive`,
+  `PipelineDagLive`) find the run to pass to `run_detail/1` for its cold-boot
+  overlay — a fresh boot or a crash before any resume, when there is no live
+  `Coordinator` to read from — without reading the store directly (FR-030c).
+  """
+  @spec current_run_id(String.t()) :: String.t() | nil
+  def current_run_id(repo \\ Config.repo()) do
+    case Store.current_run_key(RepoIdentity.partition(repo)) do
+      nil -> nil
+      {_repo_id, run_id} -> run_id
+    end
   end
 
   @doc """

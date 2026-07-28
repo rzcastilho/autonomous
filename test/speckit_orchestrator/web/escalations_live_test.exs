@@ -1,22 +1,15 @@
 defmodule SpeckitOrchestrator.Web.EscalationsLiveTest do
   # Starts the real named Coordinator and mutates transcript_root/worktree_root
   # app env — must not run concurrently with another test claiming that name.
-  use ExUnit.Case, async: false
+  # StoreCase (018) clears every store table before each test, so an earlier
+  # test's (in this file or another) in-flight run never leaks into this
+  # file's checkpoint/escalation assertions.
+  use SpeckitOrchestrator.StoreCase, async: false
 
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
 
-  alias SpeckitOrchestrator.{
-    Checkpoint,
-    Config,
-    Coordinator,
-    Feature,
-    Layout,
-    RepoIdentity,
-    RunContext
-  }
-
-  alias SpeckitOrchestrator.Store.Writer
+  alias SpeckitOrchestrator.{Config, Coordinator, Feature, Layout, RepoIdentity, RunContext}
 
   @endpoint SpeckitOrchestrator.Web.Endpoint
 
@@ -50,11 +43,10 @@ defmodule SpeckitOrchestrator.Web.EscalationsLiveTest do
 
   defp feat(id, slug), do: %Feature{id: id, slug: slug, path: "#{id}.md"}
 
-  # 018: `resume/2` now reads the target's checkpoint and the run's whole
-  # state from the store — seeds a store-backed run matching each
-  # `Checkpoint.write/1` fixture above alongside it (Coordinator still
-  # dual-writes RunManifest through Phase 3, which is what this view actually
-  # renders from; not re-pointed at `run_detail/1` until Phase 7, T077).
+  # 018: `resume/2` and `EscalationsLive` both read the target's checkpoint
+  # and the run's state from the store — every fixture below seeds a
+  # store-backed run via `seed_store_checkpoint/4` (or `seed_store_run/1` for
+  # several features at once).
   defp minimal_attempt(feature_id, phase) do
     now = DateTime.utc_now()
 
@@ -76,42 +68,66 @@ defmodule SpeckitOrchestrator.Web.EscalationsLiveTest do
     }
   end
 
-  defp seed_store_checkpoint(feature, phase, status, opts \\ []) do
+  # One store run carrying every entry's feature + checkpoint, so a test
+  # exercising several diverted features at once (the Escalations list) sees
+  # them all from a single `run_detail/1` read — three separate `open_run/2`
+  # calls would each supersede the last, leaving only the final feature's
+  # checkpoint visible (018, FR-034).
+  defp seed_store_run(entries) do
     repo_id = RepoIdentity.partition(Config.repo())
     {:ok, segment} = RepoIdentity.resolve(Config.repo())
     {:ok, layout} = Layout.build(Config.repo(), segment, :ad_hoc)
 
+    features =
+      Enum.map(entries, fn {feature, _phase, _status, _opts} ->
+        %{feature_id: feature.id, slug: feature.slug, path: feature.path, prereqs: []}
+      end)
+
+    settings =
+      entries
+      |> List.first()
+      |> elem(3)
+      |> Keyword.get(
+        :run_context,
+        %RunContext{pr_workflow: false, max_concurrency: 2, budget_usd: 100.0}
+      )
+      |> RunContext.to_map()
+
     {:ok, run_id} =
       Writer.open_run(repo_id, %{
-        features: [%{feature_id: feature.id, slug: feature.slug, path: feature.path, prereqs: []}],
-        settings:
-          RunContext.to_map(%RunContext{
-            pr_workflow: false,
-            max_concurrency: 2,
-            budget_usd: 100.0
-          }),
+        features: features,
+        settings: settings,
         scope: :ad_hoc,
         layout: layout
       })
 
     run_key = {repo_id, run_id}
 
-    :ok =
-      Writer.record_phase_attempt(run_key, %{
-        attempt: minimal_attempt(feature.id, phase),
-        checkpoint: %{
-          phase: phase,
-          last_completed_phase: phase,
-          status: status,
-          reason: "test fixture",
-          session_id: "s1",
-          implement_chunk: Keyword.get(opts, :implement_chunk)
-        }
-      })
+    Enum.each(entries, fn {feature, phase, status, opts} ->
+      reason = Keyword.get(opts, :reason, "test fixture")
 
-    :ok = Writer.record_feature_terminal(run_key, feature.id, status, "test fixture", [])
+      :ok =
+        Writer.record_phase_attempt(run_key, %{
+          attempt: minimal_attempt(feature.id, phase),
+          checkpoint: %{
+            phase: phase,
+            last_completed_phase: phase,
+            status: status,
+            reason: reason,
+            session_id: Keyword.get(opts, :session_id, "s1"),
+            implement_chunk: Keyword.get(opts, :implement_chunk),
+            analyze_remediation: Keyword.get(opts, :analyze_remediation)
+          }
+        })
+
+      :ok = Writer.record_feature_terminal(run_key, feature.id, status, reason, [])
+    end)
 
     run_key
+  end
+
+  defp seed_store_checkpoint(feature, phase, status, opts \\ []) do
+    seed_store_run([{feature, phase, status, opts}])
   end
 
   # `outcomes` maps feature id -> {status, reason}; any feature without an
@@ -132,35 +148,12 @@ defmodule SpeckitOrchestrator.Web.EscalationsLiveTest do
   end
 
   test "lists every diverted feature with divert reason + checkpoint pointer", %{conn: conn} do
-    Checkpoint.write(%{
-      feature_id: "e1",
-      last_phase: :clarify,
-      status: :escalated,
-      reason: "needs human",
-      session_id: "sess-1",
-      slug: "slug-e1",
-      path: "e1.md"
-    })
-
-    Checkpoint.write(%{
-      feature_id: "e2",
-      last_phase: :analyze,
-      status: :halted,
-      reason: "critical finding",
-      session_id: "sess-2",
-      slug: "slug-e2",
-      path: "e2.md"
-    })
-
-    Checkpoint.write(%{
-      feature_id: "e3",
-      last_phase: :implement,
-      status: :failed,
-      reason: :timeout,
-      session_id: nil,
-      slug: "slug-e3",
-      path: "e3.md"
-    })
+    seed_store_run([
+      {feat("e1", "slug-e1"), :clarify, :escalated, reason: "needs human", session_id: "sess-1"},
+      {feat("e2", "slug-e2"), :analyze, :halted,
+       reason: "critical finding", session_id: "sess-2"},
+      {feat("e3", "slug-e3"), :implement, :failed, reason: :timeout}
+    ])
 
     pid =
       start_coordinator(
@@ -228,16 +221,11 @@ defmodule SpeckitOrchestrator.Web.EscalationsLiveTest do
       pr_remote: "origin"
     }
 
-    Checkpoint.write(%{
-      feature_id: "e4",
-      last_phase: :clarify,
-      status: :escalated,
+    seed_store_checkpoint(feat("e4", "slug-e4"), :clarify, :escalated,
       reason: "needs human",
       session_id: "sess-4",
-      slug: "slug-e4",
-      path: "e4.md",
       run_context: ctx
-    })
+    )
 
     pid = start_coordinator([feat("e4", "slug-e4")], %{"e4" => {:escalated, "needs human"}})
     on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
@@ -255,16 +243,6 @@ defmodule SpeckitOrchestrator.Web.EscalationsLiveTest do
 
   test "guidance + start-phase override submit calls resume/2 and clears the escalation on success",
        %{conn: conn} do
-    Checkpoint.write(%{
-      feature_id: "e5",
-      last_phase: :clarify,
-      status: :escalated,
-      reason: "needs human",
-      session_id: "sess-5",
-      slug: "slug-e5",
-      path: "e5.md"
-    })
-
     seed_store_checkpoint(feat("e5", "slug-e5"), :clarify, :escalated)
     pid = start_coordinator([feat("e5", "slug-e5")], %{"e5" => {:escalated, "needs human"}})
     on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
@@ -294,16 +272,6 @@ defmodule SpeckitOrchestrator.Web.EscalationsLiveTest do
 
   test "remediation prompt + model submit alongside guidance calls resume/2 and clears the escalation",
        %{conn: conn} do
-    Checkpoint.write(%{
-      feature_id: "e9",
-      last_phase: :analyze,
-      status: :halted,
-      reason: "critical finding",
-      session_id: "sess-9",
-      slug: "slug-e9",
-      path: "e9.md"
-    })
-
     seed_store_checkpoint(feat("e9", "slug-e9"), :analyze, :halted)
     pid = start_coordinator([feat("e9", "slug-e9")], %{"e9" => {:halted, "critical finding"}})
     on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
@@ -331,16 +299,6 @@ defmodule SpeckitOrchestrator.Web.EscalationsLiveTest do
 
   test "full-restart action calls resolve/2 then run/1, restarting from phase 1 and freeing the worktree",
        %{conn: conn} do
-    Checkpoint.write(%{
-      feature_id: "e6",
-      last_phase: :tasks,
-      status: :halted,
-      reason: "budget",
-      session_id: "sess-6",
-      slug: "slug-e6",
-      path: "e6.md"
-    })
-
     pid = start_coordinator([feat("e6", "slug-e6")], %{"e6" => {:halted, "budget"}})
     on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
 
@@ -366,40 +324,19 @@ defmodule SpeckitOrchestrator.Web.EscalationsLiveTest do
     {:ok, _view, html} = live(conn, "/escalations")
 
     assert html =~ ~s(data-escalation="e7")
-    assert html =~ "No usable checkpoint (no_checkpoint)"
+    assert html =~ "No usable checkpoint — full restart only."
     refute html =~ ~s(data-form="resume")
     assert html =~ ~s(data-action="full-restart-e7")
-  end
-
-  test "corrupt checkpoint steers to full restart only, no resume option offered", %{conn: conn} do
-    path = Path.join([Config.transcript_root(), "e8", "checkpoint.json"])
-    File.mkdir_p!(Path.dirname(path))
-    File.write!(path, "not valid json{")
-
-    pid = start_coordinator([feat("e8", "slug-e8")], %{"e8" => {:failed, :timeout}})
-    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
-
-    {:ok, _view, html} = live(conn, "/escalations")
-
-    assert html =~ ~s(data-escalation="e8")
-    assert html =~ "No usable checkpoint (corrupt)"
-    refute html =~ ~s(data-form="resume")
-    assert html =~ ~s(data-action="full-restart-e8")
   end
 
   # ---- 016 T038: resume panel states whole-run continuation + active-run refusal (S7) ----
 
   test "resume panel copy states that resuming continues the whole run, not only the selected feature",
        %{conn: conn} do
-    Checkpoint.write(%{
-      feature_id: "e14",
-      last_phase: :clarify,
-      status: :escalated,
+    seed_store_checkpoint(feat("e14", "slug-e14"), :clarify, :escalated,
       reason: "needs human",
-      session_id: "sess-14",
-      slug: "slug-e14",
-      path: "e14.md"
-    })
+      session_id: "sess-14"
+    )
 
     pid = start_coordinator([feat("e14", "slug-e14")], %{"e14" => {:escalated, "needs human"}})
     on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
@@ -412,16 +349,6 @@ defmodule SpeckitOrchestrator.Web.EscalationsLiveTest do
 
   test "a resume attempted while another run is live renders the active-run refusal instead of starting work",
        %{conn: conn} do
-    Checkpoint.write(%{
-      feature_id: "e15",
-      last_phase: :clarify,
-      status: :escalated,
-      reason: "needs human",
-      session_id: "sess-15",
-      slug: "slug-e15",
-      path: "e15.md"
-    })
-
     # A blocker feature with no outcome entry never notifies — the Coordinator
     # this starts stays unfinished for the duration of the test, matching
     # `guard_active_run/1`'s `finished?` check (FR-010a).
@@ -492,14 +419,9 @@ defmodule SpeckitOrchestrator.Web.EscalationsLiveTest do
     - [ ] T003 third thing
     """)
 
-    Checkpoint.write(%{
-      feature_id: "e10",
-      last_phase: :implement,
-      status: :failed,
+    seed_store_checkpoint(feat("e10", "slug-e10"), :implement, :failed,
       reason: "stuck",
       session_id: "sess-10",
-      slug: "slug-e10",
-      path: "e10.md",
       implement_chunk: %{
         ordinal: 2,
         number: "2",
@@ -509,7 +431,7 @@ defmodule SpeckitOrchestrator.Web.EscalationsLiveTest do
         ceiling: 10,
         scope: :task_phase
       }
-    })
+    )
 
     pid = start_coordinator([feat("e10", "slug-e10")], %{"e10" => {:failed, "stuck"}})
     on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
@@ -525,15 +447,7 @@ defmodule SpeckitOrchestrator.Web.EscalationsLiveTest do
   end
 
   test "task-phase picker absent when the recorded task list is unstructured", %{conn: conn} do
-    Checkpoint.write(%{
-      feature_id: "e11",
-      last_phase: :implement,
-      status: :failed,
-      reason: "stuck",
-      session_id: "sess-11",
-      slug: "slug-e11",
-      path: "e11.md"
-    })
+    seed_store_checkpoint(feat("e11", "slug-e11"), :implement, :failed, reason: "stuck")
 
     pid = start_coordinator([feat("e11", "slug-e11")], %{"e11" => {:failed, "stuck"}})
     on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
@@ -553,15 +467,7 @@ defmodule SpeckitOrchestrator.Web.EscalationsLiveTest do
     - [ ] T001 first thing
     """)
 
-    Checkpoint.write(%{
-      feature_id: "e12",
-      last_phase: :analyze,
-      status: :halted,
-      reason: "critical finding",
-      session_id: "sess-12",
-      slug: "slug-e12",
-      path: "e12.md"
-    })
+    seed_store_checkpoint(feat("e12", "slug-e12"), :analyze, :halted, reason: "critical finding")
 
     pid = start_coordinator([feat("e12", "slug-e12")], %{"e12" => {:halted, "critical finding"}})
     on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
@@ -585,25 +491,6 @@ defmodule SpeckitOrchestrator.Web.EscalationsLiveTest do
 
     - [ ] T002 second thing
     """)
-
-    Checkpoint.write(%{
-      feature_id: "e13",
-      last_phase: :implement,
-      status: :failed,
-      reason: "stuck",
-      session_id: "sess-13",
-      slug: "slug-e13",
-      path: "e13.md",
-      implement_chunk: %{
-        ordinal: 2,
-        number: "2",
-        title: "Core",
-        total: 2,
-        sessions_used: 1,
-        ceiling: 8,
-        scope: :task_phase
-      }
-    })
 
     seed_store_checkpoint(feat("e13", "slug-e13"), :implement, :failed,
       implement_chunk: %{
@@ -642,21 +529,11 @@ defmodule SpeckitOrchestrator.Web.EscalationsLiveTest do
   # ---- auto-remediation attempt history (017, SC-005) ------------------------
 
   test "renders the exhausted-attempts summary above the resume controls", %{conn: conn} do
-    Checkpoint.write(%{
-      feature_id: "e14",
-      last_phase: :analyze,
-      status: :escalated,
+    seed_store_checkpoint(feat("e14", "slug-e14"), :analyze, :escalated,
       reason: "{:high_findings, :auto_remediation_exhausted}",
       session_id: "sess-14",
-      slug: "slug-e14",
-      path: "e14.md",
-      analyze_remediation: %{
-        attempts_used: 2,
-        limit: 2,
-        threshold: "high",
-        enabled: true
-      }
-    })
+      analyze_remediation: %{attempts_used: 2, limit: 2, threshold: "high", enabled: true}
+    )
 
     pid = start_coordinator([feat("e14", "slug-e14")], %{"e14" => {:escalated, "exhausted"}})
     on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
@@ -668,21 +545,11 @@ defmodule SpeckitOrchestrator.Web.EscalationsLiveTest do
   end
 
   test "a partial attempt budget reads as spent, not exhausted", %{conn: conn} do
-    Checkpoint.write(%{
-      feature_id: "e15",
-      last_phase: :analyze,
-      status: :failed,
+    seed_store_checkpoint(feat("e15", "slug-e15"), :analyze, :failed,
       reason: "{:failed, :remediation_failed}",
       session_id: "sess-15",
-      slug: "slug-e15",
-      path: "e15.md",
-      analyze_remediation: %{
-        attempts_used: 1,
-        limit: 4,
-        threshold: "critical",
-        enabled: true
-      }
-    })
+      analyze_remediation: %{attempts_used: 1, limit: 4, threshold: "critical", enabled: true}
+    )
 
     pid =
       start_coordinator([feat("e15", "slug-e15")], %{"e15" => {:failed, "remediation failed"}})
@@ -695,15 +562,7 @@ defmodule SpeckitOrchestrator.Web.EscalationsLiveTest do
   end
 
   test "a pre-017 checkpoint renders no auto-remediation line at all", %{conn: conn} do
-    Checkpoint.write(%{
-      feature_id: "e16",
-      last_phase: :analyze,
-      status: :halted,
-      reason: "critical finding",
-      session_id: "sess-16",
-      slug: "slug-e16",
-      path: "e16.md"
-    })
+    seed_store_checkpoint(feat("e16", "slug-e16"), :analyze, :halted, reason: "critical finding")
 
     pid = start_coordinator([feat("e16", "slug-e16")], %{"e16" => {:halted, "critical finding"}})
     on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
