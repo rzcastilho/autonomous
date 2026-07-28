@@ -164,14 +164,14 @@ earlier one.
 
 ### Implementation for User Story 2
 
-- [ ] T055 [US2] Implement `run_history/1` facade — options `:repo`, `:outcome`, `:feature`, `:limit`, `:before`; delegates to `Store.Query.runs/2`; unknown repository returns `{:ok, []}` in `lib/speckit_orchestrator.ex` (depends on T014)
-- [ ] T056 [US2] New `RunsLive` — `/runs` history list: run id, state badge, outcome, started/duration/spend, per-feature status chips, incomplete-record marker, outcome/feature filters, capacity banner from `store_capacity/0` when refusing, empty state for a repository with no runs in `lib/speckit_orchestrator/web/live/runs_live.ex` (depends on T018, T055)
-- [ ] T057 [US2] Wire `/runs` route and nav link in `lib/speckit_orchestrator/web/router.ex` and `lib/speckit_orchestrator/web/components/layouts.ex`
+- [X] T055 [US2] Implement `run_history/1` facade — options `:repo`, `:outcome`, `:feature`, `:limit`, `:before`; delegates to `Store.Query.runs/2`; unknown repository returns `{:ok, []}` in `lib/speckit_orchestrator.ex` (depends on T014)
+- [X] T056 [US2] New `RunsLive` — `/runs` history list: run id, state badge, outcome, started/duration/spend, per-feature status chips, incomplete-record marker, outcome/feature filters, capacity banner from `store_capacity/0` when refusing, empty state for a repository with no runs in `lib/speckit_orchestrator/web/live/runs_live.ex` (depends on T018, T055)
+- [X] T057 [US2] Wire `/runs` route and nav link in `lib/speckit_orchestrator/web/router.ex` and `lib/speckit_orchestrator/web/components/layouts.ex`
 
 ### Tests for User Story 2
 
-- [ ] T058 [P] [US2] `test/speckit_orchestrator/run_history_test.exs` — most-recent-first ordering (FR-021), outcome/feature filters (FR-024), starting a new run destroys 0 prior records (SC-004), superseded run retained and distinguishable (FR-023), unknown repo → `{:ok, []}` (US2 acceptance 4). **Needs T039** — supersession is written by the Coordinator's `open_run/2`
-- [ ] T059 [P] [US2] `test/speckit_orchestrator/web/runs_live_test.exs` — list renders facade data only, filters, capacity banner, empty state
+- [X] T058 [P] [US2] `test/speckit_orchestrator/run_history_test.exs` — most-recent-first ordering (FR-021), outcome/feature filters (FR-024), starting a new run destroys 0 prior records (SC-004), superseded run retained and distinguishable (FR-023), unknown repo → `{:ok, []}` (US2 acceptance 4). **Needs T039** — supersession is written by the Coordinator's `open_run/2`
+- [X] T059 [P] [US2] `test/speckit_orchestrator/web/runs_live_test.exs` — list renders facade data only, filters, capacity banner, empty state
 
 **Checkpoint**: User Stories 1 and 2 both work independently.
 
@@ -191,16 +191,16 @@ record.
 
 ### Implementation for User Story 3
 
-- [ ] T060 [US3] Implement `run_detail/1` facade — assembles `run`, `settings`, `amendments`, and per-feature `phase_attempts`/`escalations`/`remediation_attempts`/`checkpoint` (each attempt carries a `transcript_ref`, never the body) from `Store.Query.run/1` in `lib/speckit_orchestrator.ex` (depends on T014)
-- [ ] T061 [US3] Implement `transcript/1` facade — on-demand retrieval via `Store.Query.transcript/1`, verbatim body, works after worktree removal (SC-006) in `lib/speckit_orchestrator.ex`
-- [ ] T062 [US3] Implement `resolve_escalation/2` facade wrapping `Store.Writer.resolve_escalation/2` in `lib/speckit_orchestrator.ex`
-- [ ] T063 [US3] New `RunDetailLive` — `/runs/:run_id`: settings + amendments with effective point, per-feature phase attempts in execution order, escalations with reason/phase/evidence, remediation attempts with limit/threshold in force, checkpoint, on-demand transcript affordance, export (`export_run/3`) and resolve-escalation actions in `lib/speckit_orchestrator/web/live/run_detail_live.ex` (depends on T019, T060, T061, T062)
-- [ ] T064 [US3] Wire `/runs/:run_id` route in `lib/speckit_orchestrator/web/router.ex` (depends on T057)
+- [X] T060 [US3] Implement `run_detail/1` facade — assembles `run`, `settings`, `amendments`, and per-feature `phase_attempts`/`escalations`/`remediation_attempts`/`checkpoint` (each attempt carries a `transcript_ref`, never the body) from `Store.Query.run/1` in `lib/speckit_orchestrator.ex` (depends on T014)
+- [X] T061 [US3] Implement `transcript/1` facade — on-demand retrieval via `Store.Query.transcript/1`, verbatim body, works after worktree removal (SC-006) in `lib/speckit_orchestrator.ex`
+- [X] T062 [US3] Implement `resolve_escalation/2` facade wrapping `Store.Writer.resolve_escalation/2` in `lib/speckit_orchestrator.ex`
+- [X] T063 [US3] New `RunDetailLive` — `/runs/:run_id`: settings + amendments with effective point, per-feature phase attempts in execution order, escalations with reason/phase/evidence, remediation attempts with limit/threshold in force, checkpoint, on-demand transcript affordance, export (`export_run/3`) and resolve-escalation actions in `lib/speckit_orchestrator/web/live/run_detail_live.ex` (depends on T019, T060, T061, T062)
+- [X] T064 [US3] Wire `/runs/:run_id` route in `lib/speckit_orchestrator/web/router.ex` (depends on T057)
 
 ### Tests for User Story 3
 
-- [ ] T065 [P] [US3] `test/speckit_orchestrator/run_detail_test.exs` — phase sequence in execution order with outcome/model/cost/duration (US3 acceptance 1), escalation reason/phase/evidence (US3 acceptance 2), transcript retrievable after worktree removal (US3 acceptance 3), each remediation attempt individually listed with limit/threshold (US3 acceptance 4), amendments with their effective point (FR-027). **Needs T032/T033/T035/T047** to have populated the rows
-- [ ] T066 [P] [US3] `test/speckit_orchestrator/web/run_detail_live_test.exs` — renders facade data only, on-demand transcript fetch, export/resolve actions
+- [X] T065 [P] [US3] `test/speckit_orchestrator/run_detail_test.exs` — phase sequence in execution order with outcome/model/cost/duration (US3 acceptance 1), escalation reason/phase/evidence (US3 acceptance 2), transcript retrievable after worktree removal (US3 acceptance 3), each remediation attempt individually listed with limit/threshold (US3 acceptance 4), amendments with their effective point (FR-027). **Needs T032/T033/T035/T047** to have populated the rows
+- [X] T066 [P] [US3] `test/speckit_orchestrator/web/run_detail_live_test.exs` — renders facade data only, on-demand transcript fetch, export/resolve actions
 
 **Checkpoint**: All three user stories are independently functional.
 

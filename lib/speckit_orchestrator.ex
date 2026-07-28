@@ -762,6 +762,22 @@ defmodule SpeckitOrchestrator do
   end
 
   @doc """
+  A repository's runs, most recent first, successful and unsuccessful alike
+  (018, FR-021, US2). Never loads transcript content (FR-036, SC-009).
+
+  Options: `:repo` (default `Config.repo/0`), `:outcome` (atom or list —
+  FR-024), `:feature` (feature id — every run in which it appears, FR-024),
+  `:limit`, `:before` (run_id, for paging). An unknown repository returns
+  `{:ok, []}` — an empty history, not an error (US2 acceptance 4).
+  """
+  @spec run_history(keyword()) :: {:ok, [map()]} | {:error, term()}
+  def run_history(opts \\ []) do
+    repo = Keyword.get(opts, :repo, Config.repo())
+    repo_id = RepoIdentity.partition(repo)
+    Store.runs(repo_id, Keyword.take(opts, [:outcome, :feature, :limit, :before]))
+  end
+
+  @doc """
   Reconstruct and continue a crashed run from the durable store run record
   (018, FR-006/007). `:done` and gate-diverted (`:escalated`/`:halted`/
   `:failed`) features are kept as-is and never re-run (SC-002, FR-015);
@@ -995,6 +1011,58 @@ defmodule SpeckitOrchestrator do
       end
 
     %{attempt: attempt, transcript: transcript}
+  end
+
+  @doc """
+  Everything about one run except transcript bodies (018,
+  contracts/store-api.md § run_detail, FR-022, US3): settings, amendments,
+  and per feature its phase attempts (execution order), escalations,
+  remediation attempts, and checkpoint. Each phase attempt carries a
+  `transcript_ref` (its `attempt_id`) rather than the body — retrieve one on
+  demand via `transcript/1` (FR-036, SC-009).
+  """
+  @spec run_detail(String.t(), keyword()) ::
+          {:ok, map()} | {:error, :absent} | {:error, {:damaged, term(), term()}}
+  def run_detail(run_id, opts \\ []) do
+    repo = Keyword.get(opts, :repo, Config.repo())
+    repo_id = RepoIdentity.partition(repo)
+
+    with {:ok, detail} <- Store.run({repo_id, run_id}) do
+      {:ok, Map.put(detail, :features, Enum.map(detail.features, &feature_run_detail/1))}
+    end
+  end
+
+  defp feature_run_detail(f) do
+    Map.put(f, :phase_attempts, Enum.map(f.phase_attempts, &attach_transcript_ref/1))
+  end
+
+  defp attach_transcript_ref(attempt) do
+    attempt |> Map.from_struct() |> Map.put(:transcript_ref, attempt.attempt_id)
+  end
+
+  @doc """
+  On-demand retrieval of one phase attempt's transcript, verbatim (018,
+  FR-029). Works after the feature's worktree has been removed — the
+  transcript never lived there (SC-006).
+  """
+  @spec transcript(tuple()) ::
+          {:ok, map()} | {:error, :absent} | {:error, {:damaged, term(), term()}}
+  def transcript(attempt_ref), do: Store.transcript(attempt_ref)
+
+  @doc """
+  Record a resolution against an escalation (018, FR-026). Never deletes the
+  entry — the history shows both that it was raised and that it was
+  resolved. Options: `:note`, `:by`.
+  """
+  @spec resolve_escalation(tuple(), keyword()) :: :ok | {:error, term()}
+  def resolve_escalation(escalation_id, opts \\ []) do
+    resolution = %{
+      resolved_at: DateTime.utc_now(),
+      note: Keyword.get(opts, :note),
+      by: Keyword.get(opts, :by)
+    }
+
+    Store.resolve_escalation(escalation_id, resolution)
   end
 
   # 018: no single record to overwrite wholesale — persists the union rule's

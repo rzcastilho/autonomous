@@ -201,7 +201,7 @@ defmodule SpeckitOrchestrator.Store.Query do
         :speckit_phase_attempt
         |> Mnesia.index_read(f.key, :feature_key)
         |> index_decode(:speckit_phase_attempt)
-        |> Enum.sort_by(& &1.attempt_id),
+        |> Enum.sort_by(& &1.step),
       escalations:
         :speckit_escalation
         |> Mnesia.index_read(f.run_key, :run_key)
