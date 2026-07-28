@@ -129,6 +129,52 @@ defmodule SpeckitOrchestrator.PipelineTest do
     end
   end
 
+  # The run's severity threshold is one knob: it decides both when
+  # auto-remediation runs and when the gate diverts to a human (amended
+  # Constitution Principle V, 017 FR-006).
+  describe "analyze gate severity threshold" do
+    test "an absent threshold defaults to :high — the pre-threshold gate exactly" do
+      assert Pipeline.next(:analyze, :ok, %{high?: true}) == {:escalated, :high_findings}
+
+      assert Pipeline.next(:analyze, :ok, %{high?: true, gate_threshold: :high}) ==
+               {:escalated, :high_findings}
+    end
+
+    test "threshold :critical lets a High finding advance instead of escalating" do
+      assert Pipeline.next(:analyze, :ok, %{high?: true, gate_threshold: :critical}) ==
+               {:cont, :implement}
+    end
+
+    test "threshold :critical still halts on a Critical finding" do
+      assert Pipeline.next(:analyze, :ok, %{critical?: true, gate_threshold: :critical}) ==
+               {:halted, :critical_finding}
+
+      assert Pipeline.next(:analyze, :ok, %{
+               critical?: true,
+               high?: true,
+               gate_threshold: :critical
+             }) == {:halted, :critical_finding}
+    end
+
+    test "Critical outranks every threshold, so it always halts" do
+      for threshold <- [:low, :medium, :high, :critical] do
+        assert Pipeline.next(:analyze, :ok, %{critical?: true, gate_threshold: threshold}) ==
+                 {:halted, :critical_finding}
+      end
+    end
+
+    test "a threshold below :high creates no new terminal state (FR-006)" do
+      for threshold <- [:low, :medium] do
+        assert Pipeline.next(:analyze, :ok, %{high?: true, gate_threshold: threshold}) ==
+                 {:escalated, :high_findings}
+
+        # Low/Medium findings have no gate signal at all, so they advance —
+        # exactly as they do today.
+        assert Pipeline.next(:analyze, :ok, %{gate_threshold: threshold}) == {:cont, :implement}
+      end
+    end
+  end
+
   describe "artifact gate" do
     test "a missing artifact fails the phase that should have written it" do
       for {phase, artifact} <- [

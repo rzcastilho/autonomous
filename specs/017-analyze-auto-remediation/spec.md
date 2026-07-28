@@ -127,9 +127,10 @@ every run will use. The loop delivers its value with defaults alone.
 
 **Independent Test**: Launch three runs against the same feature reporting a
 High finding — one with auto-remediation off, one on with threshold Critical,
-one on with threshold High. Verify the finding escalates untouched, escalates
-untouched, and is remediated, respectively; then launch a fourth run specifying
-nothing and verify it defaults to on.
+one on with threshold High. Verify the finding escalates untouched, **advances
+untouched** (High is below the Critical threshold, so the gate does not divert
+it either), and is remediated, respectively; then launch a fourth run
+specifying nothing and verify it defaults to on.
 
 **Acceptance Scenarios**:
 
@@ -137,7 +138,9 @@ nothing and verify it defaults to on.
    auto-remediation is on, the threshold is High, and the attempt limit is 2.
 2. **Given** the threshold is set to Critical, **When** analyze reports a High
    finding and no Critical one, **Then** no remediation runs and the feature
-   escalates as it does today.
+   **advances to the next phase** — the threshold governs the gate as well as
+   the loop, so a finding below it is neither remediated nor human-facing
+   (amended Constitution Principle V, 2.0.0).
 3. **Given** a run launched with auto-remediation off, **When** analyze reports
    a finding of any severity, **Then** the feature's behavior is
    indistinguishable from the behavior before this feature existed.
@@ -222,11 +225,18 @@ nothing and verify it defaults to on.
   recent analyze run only.
 - **FR-006**: When the attempt limit is reached with at-or-above-threshold
   findings still present, the system MUST hand the feature to the gate unchanged
-  and let the gate's existing rules decide the outcome — halted for a Critical
-  finding, escalated for a High one, and advancing when only lower severities
-  remain — and MUST record a reason that identifies exhausted auto-remediation
-  as the cause. Lowering the threshold below High MUST NOT create a new
-  human-facing terminal state for a severity that has none today.
+  and let the gate's rules decide the outcome — halted for a Critical finding,
+  escalated for a High one **when the threshold is High or lower**, and
+  advancing when every remaining finding is below the threshold — and MUST
+  record a reason that identifies exhausted auto-remediation as the cause.
+  Lowering the threshold below High MUST NOT create a new human-facing terminal
+  state for a severity that has none today.
+- **FR-006a**: The configured severity threshold MUST govern the analyze gate
+  as well as the remediation loop: a finding below the threshold is neither
+  remediated nor diverted to a human, and the feature advances. A Critical
+  finding is the one exception — it outranks every threshold and MUST halt
+  unconditionally, so no configuration can pass a constitution violation
+  through unattended (amended Constitution Principle V, 2.0.0).
 - **FR-007**: The system MUST NOT run any remediation attempt after a feature has
   been diverted to a human, so a human-facing gate decision is never
   automatically retried.

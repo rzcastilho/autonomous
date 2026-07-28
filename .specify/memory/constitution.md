@@ -1,35 +1,63 @@
 <!--
 Sync Impact Report
-Version change: 1.2.0 → 1.3.0
-Bump rationale: MINOR — the Technology Stack section is materially expanded with a
-  new normative "Persistence (run state)" subsection adopting Mnesia, and its
-  previous "there is no database" clause is replaced. No principle was removed,
-  redefined, or made backward-incompatible; Principles I–VI are unchanged in text
-  and in force. Treated as MINOR rather than MAJOR by the same reasoning that made
-  1.1.0 (which introduced the Technology Stack section) a MINOR bump: the section is
-  normative stack guidance, not a governance principle.
-Modified principles: none (I–VI unchanged)
+Version change: 1.3.0 → 2.0.0
+Bump rationale: MAJOR — Principle V's analyze-gate rule is redefined in a
+  backward-incompatible way. The unconditional guarantee "the analyze gate MUST
+  escalate to `:escalated` on a High finding" no longer holds: the gate is now
+  governed by the run's severity threshold, so a run configured with threshold
+  Critical advances past a High finding instead of diverting it to a human.
+  Under the default threshold (High) behaviour is byte-identical to 1.3.0, but
+  the *guarantee* is weakened — an operator can now configure away a
+  human-facing terminal state that was previously unconditional. That is a
+  relaxation of a governance bound, not an expansion of one, so it is MAJOR
+  rather than MINOR (contrast 1.2.0, which only *added* a bounded pre-gate loop
+  underneath an unchanged gate).
+Modified principles:
+  - V. Human-in-the-Loop Escalation (analyze gate is now threshold-governed;
+    Critical still unconditionally halts)
 Added principles: none
-Added sections:
-  - Technology Stack → Persistence (run state)
-Modified sections:
-  - Technology Stack → Backend: "there is no database — run/checkpoint state is
-    file-backed" replaced with a pointer to the Persistence subsection
-  - Technology Stack → Frontend: console authority clause now names persisted run
-    state rather than file-backed run state
+Added sections: none
 Removed sections: none
 Templates requiring updates:
   ✅ .specify/templates/plan-template.md — Constitution Check is principle-agnostic
-     ("[Gates determined based on constitution file]"); no change needed
-  ✅ .specify/templates/spec-template.md — no stack-specific references; no change
-  ✅ .specify/templates/tasks-template.md — no stack-specific references; no change
+  ✅ .specify/templates/spec-template.md — no principle-specific references
+  ✅ .specify/templates/tasks-template.md — no principle-specific references
   ✅ .specify/templates/checklist-template.md — generic; no change
-  ✅ CLAUDE.md — contains no no-database claim; no change
-  ⚠ Historical artifacts NOT rewritten (deliberate): specs/008, 014, 015, 016, 017
-     plan.md/data-model.md state "no database — durable state is file-backed". Those
-     are accurate records of what those features shipped against and are left as-is;
-     specs/018-unified-run-persistence supersedes them going forward.
+  ✅ specs/017-analyze-auto-remediation/spec.md — US3 acceptance scenario 2 and
+     FR-006 updated to the threshold-governed gate
 Follow-up TODOs: none
+
+Prior report (1.3.0):
+  Version change: 1.2.0 → 1.3.0
+  Bump rationale: MINOR — the Technology Stack section is materially expanded with a
+    new normative "Persistence (run state)" subsection adopting Mnesia, and its
+    previous "there is no database" clause is replaced. No principle was removed,
+    redefined, or made backward-incompatible; Principles I–VI are unchanged in text
+    and in force. Treated as MINOR rather than MAJOR by the same reasoning that made
+    1.1.0 (which introduced the Technology Stack section) a MINOR bump: the section is
+    normative stack guidance, not a governance principle.
+  Modified principles: none (I–VI unchanged)
+  Added principles: none
+  Added sections:
+    - Technology Stack → Persistence (run state)
+  Modified sections:
+    - Technology Stack → Backend: "there is no database — run/checkpoint state is
+      file-backed" replaced with a pointer to the Persistence subsection
+    - Technology Stack → Frontend: console authority clause now names persisted run
+      state rather than file-backed run state
+  Removed sections: none
+  Templates requiring updates:
+    ✅ .specify/templates/plan-template.md — Constitution Check is principle-agnostic
+       ("[Gates determined based on constitution file]"); no change needed
+    ✅ .specify/templates/spec-template.md — no stack-specific references; no change
+    ✅ .specify/templates/tasks-template.md — no stack-specific references; no change
+    ✅ .specify/templates/checklist-template.md — generic; no change
+    ✅ CLAUDE.md — contains no no-database claim; no change
+    ⚠ Historical artifacts NOT rewritten (deliberate): specs/008, 014, 015, 016, 017
+       plan.md/data-model.md state "no database — durable state is file-backed". Those
+       are accurate records of what those features shipped against and are left as-is;
+       specs/018-unified-run-persistence supersedes them going forward.
+  Follow-up TODOs: none
 
 Prior report (1.2.0):
   Version change: 1.1.0 → 1.2.0
@@ -137,11 +165,22 @@ within budget plus one outstanding reservation.
 
 The pipeline MUST NOT fabricate resolution of ambiguity or of a quality
 failure. The clarify gate MUST escalate a feature to `:escalated` on an
-unresolved `## NEEDS HUMAN` marker in `spec.md`. The analyze gate MUST halt to
-`:halted` on a constitution Critical finding and escalate to `:escalated` on a
-High one. A **bounded, pre-gate auto-remediation loop** MAY attempt to fix
-findings at or above a configured severity threshold before the gate is
-evaluated, subject to all of:
+unresolved `## NEEDS HUMAN` marker in `spec.md`.
+
+The analyze gate MUST halt to `:halted` on a constitution Critical finding.
+Critical outranks every threshold, so this halt is unconditional and MUST NOT
+be configurable away. The gate MUST escalate to `:escalated` on a High finding
+**when the run's configured severity threshold is High or lower** — the same
+single threshold that decides when auto-remediation runs. A run configured
+with threshold Critical therefore advances past a High finding rather than
+diverting it to a human; that is an explicit, recorded operator choice, and
+the default threshold (High) preserves the escalation. Lowering the threshold
+below High MUST NOT create a terminal state for a severity that has none
+(Low and Medium never divert).
+
+A **bounded, pre-gate auto-remediation loop** MAY attempt to fix findings at
+or above that same severity threshold before the gate is evaluated, subject to
+all of:
 
 - it runs **strictly before** the gate decides, never after — a gate
   diversion is still never retried;
@@ -165,6 +204,15 @@ ship wrong or non-compliant work at machine speed. A bounded, fully-recorded,
 switchable pre-gate remediation loop does not relax that bound — it only
 delays a still-mandatory human handoff by a capped number of self-fix
 attempts, and restores today's exact behaviour when disabled.
+
+Making the gate threshold-governed *does* relax it, deliberately and only for
+High: one knob now answers one question — "how severe must a finding be before
+a human is involved?" — instead of splitting that answer between a remediation
+threshold and a separate hardcoded gate. The bound that remains absolute is
+Critical: a constitution Critical finding always halts, at every threshold, so
+no configuration can ship a constitution violation unattended. Raising the
+threshold to Critical is a recorded, per-run decision to accept High findings
+automatically; operators who want the old guarantee keep the default.
 
 ### VI. Idiomatic Elixir/OTP & Functional Design
 
@@ -327,4 +375,4 @@ deviation already is. Reviews and PRs MUST verify compliance with these
 principles; the constitution and the implementation plan together are the
 runtime guidance for autonomous and human contributors alike.
 
-**Version**: 1.3.0 | **Ratified**: 2026-07-11 | **Last Amended**: 2026-07-27
+**Version**: 2.0.0 | **Ratified**: 2026-07-11 | **Last Amended**: 2026-07-28

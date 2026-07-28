@@ -411,6 +411,57 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
     assert File.dir?(wt.path)
   end
 
+  # One knob: the severity threshold decides both when auto-remediation runs
+  # and when the gate diverts to a human (amended Constitution Principle V).
+  test "threshold :critical lets a High finding advance to implement, not escalate" do
+    Application.put_env(:speckit_orchestrator, :test_fake_scenario, :analyze_high)
+    wt = scaffolded_worktree()
+
+    test_pid = self()
+    handler = "gate-threshold-#{System.unique_integer([:positive])}"
+
+    :telemetry.attach(
+      handler,
+      [:speckit, :remediation, :start],
+      fn _event, _meas, meta, _ -> send(test_pid, {:attempt, meta}) end,
+      nil
+    )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+
+    result =
+      FeatureRunner.run(feature(),
+        worktree: wt,
+        notify: self(),
+        run_context: %RunContext{auto_remediation_threshold: "critical"}
+      )
+
+    # High is below the threshold, so nothing is remediated AND the gate does
+    # not divert — the feature runs through to the end of the pipeline.
+    refute result.status == :escalated
+    refute result.reason == :high_findings
+    assert result.status == :done
+    refute_received {:attempt, _meta}
+  end
+
+  test "threshold :critical still halts the feature on a Critical finding" do
+    Application.put_env(:speckit_orchestrator, :test_fake_scenario, :halt)
+    wt = scaffolded_worktree()
+
+    result =
+      FeatureRunner.run(feature(),
+        worktree: wt,
+        notify: self(),
+        run_context: %RunContext{
+          auto_remediation: false,
+          auto_remediation_threshold: "critical"
+        }
+      )
+
+    assert result.status == :halted
+    assert result.reason == :critical_finding
+  end
+
   test "phase :analyze delegates to AnalyzeRunner — the loop runs below the gate (017)" do
     Application.put_env(:speckit_orchestrator, :test_fake_scenario, :analyze_high)
     wt = scaffolded_worktree()

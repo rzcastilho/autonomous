@@ -19,10 +19,13 @@ defmodule SpeckitOrchestrator.AnalyzeResult do
   (`Pipeline.next(:analyze, :ok, %{critical?: true})` → `:halted`).
 
   A finding with `severity` `"high"` sets `high?: true`, which escalates for a
-  human (`Pipeline.next(:analyze, :ok, %{high?: true})` → `:escalated`). A live
-  run surfaced why this matters: analyze reported `high` findings that plan.md
-  and tasks.md were missing entirely, and — because only Critical halted — the
-  feature sailed through to `:done` and opened a PR for a spec-only branch.
+  human (`Pipeline.next(:analyze, :ok, %{high?: true})` → `:escalated`) as long
+  as the run's severity threshold is High or lower — the gate is
+  threshold-governed, so a run pinned to threshold Critical advances past a
+  High finding instead. A live run surfaced why the default matters: analyze
+  reported `high` findings that plan.md and tasks.md were missing entirely,
+  and — because only Critical halted — the feature sailed through to `:done`
+  and opened a PR for a spec-only branch.
   """
 
   alias SpeckitOrchestrator.{AnalyzeResult, Severity}

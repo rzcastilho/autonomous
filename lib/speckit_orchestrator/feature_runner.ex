@@ -34,6 +34,7 @@ defmodule SpeckitOrchestrator.FeatureRunner do
     Worktree
   }
 
+  alias SpeckitOrchestrator.Remediation.Settings
   alias SpeckitOrchestrator.Store.Writer
 
   # Kept strictly larger than the jido_action `:default_timeout` (config.exs, 45
@@ -258,7 +259,8 @@ defmodule SpeckitOrchestrator.FeatureRunner do
     st = agent.state
 
     transition =
-      terminal_override(st) || Pipeline.next(phase, st.last_outcome, st.last_signals)
+      terminal_override(st) ||
+        Pipeline.next(phase, st.last_outcome, gate_signals(phase, st, step_opts))
 
     decorated = decorate(transition, phase, st)
 
@@ -650,6 +652,23 @@ defmodule SpeckitOrchestrator.FeatureRunner do
 
     :ok
   end
+
+  # The analyze gate is governed by the run's severity threshold — the same
+  # single knob that decides when auto-remediation runs (017 FR-001a, amended
+  # Constitution Principle V). It is a run setting, not phase output, so it is
+  # injected here rather than extracted upstream in `RunFeaturePhase`. Every
+  # other phase's signals pass through untouched, and an absent setting leaves
+  # `Pipeline` on its `:high` default.
+  defp gate_signals(:analyze, st, step_opts) do
+    signals = st.last_signals || %{}
+
+    case Map.get(step_opts, :remediation_settings) do
+      %Settings{threshold: threshold} -> Map.put(signals, :gate_threshold, threshold)
+      _absent -> signals
+    end
+  end
+
+  defp gate_signals(_phase, st, _step_opts), do: st.last_signals
 
   # Almost every phase runs exactly once per feature run, so its attempt is
   # ordinal 1. `:analyze` is the exception: `AnalyzeRunner`'s bounded loop can
