@@ -4,16 +4,20 @@ defmodule SpeckitOrchestrator.Recovery.Rebuild do
   closes: unions the (possibly narrowed) record's features with the backlog
   on disk, reconciles each unioned feature against durable per-feature
   evidence — reusing `Recovery.Evidence`/`Recovery.Reconcile` and
-  `Recovery`'s own `run_shape_of/1`/`recorded_statuses/1`/`persisted_status/1`
+  `Recovery`'s own `to_feature/1`/`store_recorded_status/1`/`persisted_status/1`
   helpers verbatim (research.md D9: no second decision table) — and reports
   everything it could not reconcile rather than guessing (Principle II). See
   `specs/016-resume-backlog-scope/contracts/record-recovery.md`.
+
+  018: `record` is `Store.Query.run/1`'s run-detail map; `run.layout` and
+  each feature's already-atom `status` replace
+  `RunManifest.rebuild_layout/2`/`reconstruct/1`.
 
   Operator-invoked only, via `SpeckitOrchestrator.recover_record/1` — never
   runs automatically inside `resume/2`/`resume_run/1` (FR-019).
   """
 
-  alias SpeckitOrchestrator.{Config, Feature, Pipeline, RunManifest}
+  alias SpeckitOrchestrator.{Feature, Pipeline}
   alias SpeckitOrchestrator.Recovery
   alias SpeckitOrchestrator.Recovery.{Evidence, Reconcile, Report}
 
@@ -35,16 +39,13 @@ defmodule SpeckitOrchestrator.Recovery.Rebuild do
         }
 
   @doc """
-  Build a rebuild proposal from an already-read run manifest `record` and an
-  already-loaded `backlog` (`Backlog.load!/1`). Pure aside from the evidence
-  collection `opts` forward to (`Evidence.collect/3`'s own edge I/O) — never
-  writes anything itself; that is `SpeckitOrchestrator.recover_record/1`'s
-  job on `:confirm`.
+  Build a rebuild proposal from an already-read store run-detail `record`
+  (`Store.Query.run/1`'s shape) and an already-loaded `backlog`
+  (`Backlog.load!/1`). Pure aside from the evidence collection `opts`
+  forward to (`Evidence.collect/3`'s own edge I/O) — never writes anything
+  itself; that is `SpeckitOrchestrator.recover_record/1`'s job on `:confirm`.
 
   `opts`:
-    * `:repo` — repo path for layout rebuild (default `Config.repo/0`),
-      used only when `:layout` is not given.
-    * `:layout` — test seam; skips `RunManifest.rebuild_layout/2`.
     * `:git` / `:remote` — forwarded to `Evidence.collect/3` (test seams).
     * `:backlog_root` — recorded verbatim into `proposal.source` for the
       caller's provenance display.
@@ -72,13 +73,11 @@ defmodule SpeckitOrchestrator.Recovery.Rebuild do
   """
   @spec propose(map(), [Feature.t()], keyword()) ::
           {:ok, proposal()} | {:error, {:inconsistent, [discrepancy()]}}
-  def propose(record, backlog, opts \\ []) do
-    repo = Keyword.get(opts, :repo, Config.repo())
-    layout = Keyword.get(opts, :layout) || RunManifest.rebuild_layout(record, repo)
-    run_shape = Recovery.run_shape_of(record)
-    recorded = Recovery.recorded_statuses(record)
+  def propose(%{run: run, features: store_features}, backlog, opts \\ []) do
+    run_shape = run.scope
+    feature_records = Map.new(store_features, &{&1.feature_id, &1})
 
-    {record_features, _legacy_statuses} = RunManifest.reconstruct(record)
+    record_features = Enum.map(store_features, &Recovery.to_feature/1)
     backlog_ids = MapSet.new(backlog, & &1.id)
     record_only = Enum.reject(record_features, &MapSet.member?(backlog_ids, &1.id))
     features = backlog ++ record_only
@@ -91,13 +90,12 @@ defmodule SpeckitOrchestrator.Recovery.Rebuild do
       [] ->
         {:ok,
          build_proposal(
-           record,
+           run,
            features,
            backlog,
            record_features,
            backlog_ids,
-           recorded,
-           layout,
+           feature_records,
            run_shape,
            opts
          )}
@@ -107,19 +105,18 @@ defmodule SpeckitOrchestrator.Recovery.Rebuild do
   # ---- proposal assembly -----------------------------------------------------
 
   defp build_proposal(
-         record,
+         run,
          features,
          backlog,
          record_features,
          backlog_ids,
-         recorded,
-         layout,
+         feature_records,
          run_shape,
          opts
        ) do
     {rows, statuses, resume_phases, discrepancies} =
       Enum.reduce(features, {[], %{}, %{}, []}, fn feature, acc ->
-        reconcile_union_feature(feature, backlog_ids, recorded, layout, run_shape, opts, acc)
+        reconcile_union_feature(feature, backlog_ids, feature_records, run_shape, opts, acc)
       end)
 
     discrepancies = Enum.reverse(discrepancies)
@@ -132,7 +129,7 @@ defmodule SpeckitOrchestrator.Recovery.Rebuild do
       features: Enum.reverse(rows),
       conflicts: conflicts,
       next_runnable: Recovery.next_runnable(features, statuses),
-      spend: Map.get(record, "spend", 0),
+      spend: run.spend_usd,
       run_shape: run_shape,
       discrepancies: discrepancies
     }
@@ -155,13 +152,15 @@ defmodule SpeckitOrchestrator.Recovery.Rebuild do
 
   # In both the record and the backlog: reconcile normally against the
   # record's own recorded status.
-  defp reconcile_union_feature(feature, backlog_ids, recorded, layout, run_shape, opts, acc) do
+  defp reconcile_union_feature(feature, backlog_ids, feature_records, run_shape, opts, acc) do
+    feature_record = Map.get(feature_records, feature.id)
+
     cond do
-      MapSet.member?(backlog_ids, feature.id) and Map.has_key?(recorded, feature.id) ->
+      MapSet.member?(backlog_ids, feature.id) and feature_record != nil ->
         reconciled_row(
           feature,
-          Map.fetch!(recorded, feature.id),
-          layout,
+          Recovery.store_recorded_status(feature_record),
+          feature_record,
           run_shape,
           opts,
           nil,
@@ -169,10 +168,13 @@ defmodule SpeckitOrchestrator.Recovery.Rebuild do
         )
 
       MapSet.member?(backlog_ids, feature.id) ->
-        reconciled_row(feature, :pending, layout, run_shape, opts, :absent_from_record, acc)
+        reconciled_row(feature, :pending, nil, run_shape, opts, :absent_from_record, acc)
 
       true ->
-        unreconciled_row(feature, Map.get(recorded, feature.id, :pending), acc)
+        recorded_status =
+          if feature_record, do: Recovery.store_recorded_status(feature_record), else: :pending
+
+        unreconciled_row(feature, recorded_status, acc)
     end
   end
 
@@ -182,13 +184,13 @@ defmodule SpeckitOrchestrator.Recovery.Rebuild do
   defp reconciled_row(
          feature,
          recorded_status,
-         layout,
+         feature_record,
          run_shape,
          opts,
          extra_kind,
          {rows, statuses, resume_phases, discrepancies}
        ) do
-    evidence = Evidence.collect(feature, layout, opts)
+    evidence = Evidence.collect(feature, feature_record, opts)
     reconciled = Reconcile.status(recorded_status, evidence, run_shape)
     {status_atom, resume_phase} = Recovery.persisted_status(reconciled)
 

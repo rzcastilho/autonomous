@@ -10,9 +10,7 @@ defmodule SpeckitOrchestrator do
 
   alias SpeckitOrchestrator.{
     Backlog,
-    Checkpoint,
     Config,
-    Describe,
     Coordinator,
     Feature,
     FeatureRunner,
@@ -28,9 +26,12 @@ defmodule SpeckitOrchestrator do
     RunManifest,
     SingleSpec,
     StackTracker,
+    Store,
     TargetPack,
     Worktree
   }
+
+  alias SpeckitOrchestrator.Store.{Capacity, Export, Migrations, Prune, Writer}
 
   require Logger
 
@@ -51,10 +52,12 @@ defmodule SpeckitOrchestrator do
       the branch is pushed and a PR opened against that base.
     * `:publisher` — override the PR opener (tests inject a fake);
       `(repo, spec) -> {:ok, url} | {:error, term}`.
-    * `:supersede` — default `true`; when `true`, `RunManifest.clear/0` runs
-      first (a fresh run supersedes the prior manifest). Resume paths pass
-      `false` to write into the existing record instead, where
-      `RunManifest.write/1`'s anti-narrowing guard applies (016).
+    * `:run_key` — a resume path (016/018) that already resolved the store's
+      `{repo_id, run_id}` to continue (`resume/2`, `resume_run/1`) supplies
+      it here, skipping `Store.Writer.open_run/2` entirely so the resumed
+      run writes into its existing record instead of superseding it. Absent
+      (default) — a fresh run opens (and, per FR-034, supersedes any prior
+      in-flight run for the repo).
 
   Captures the six run-shaping settings (`pr_workflow`, `max_concurrency`,
   `budget_usd`, `plan_stack`, `pr_base`, `pr_remote`) from the effective opts
@@ -76,8 +79,14 @@ defmodule SpeckitOrchestrator do
   the run with e.g. `{:error, {:preflight, [{:invalid_attempt_limit, 0}]}}` and
   starts no work — no clamping, no silent default.
 
+  Also preflights the store (018, FR-009/FR-031b): unwritable at start, or
+  under its capacity ceiling with no reclaimable headroom, both refuse with
+  `{:error, {:preflight, [...]}}` before a single phase runs and before the
+  prior in-flight run (if any) is superseded.
+
   Returns `{:ok, coordinator_pid}`, or `{:error, {:preflight, problems}}` if
-  the remediation-settings, layout, or PR workflow remote/pack preflight fails.
+  the remediation-settings, layout, store, or PR workflow remote/pack
+  preflight fails.
   """
   @spec run(keyword()) :: GenServer.on_start() | {:error, term()}
   def run(opts \\ []) do
@@ -85,33 +94,94 @@ defmodule SpeckitOrchestrator do
 
     # Auto-remediation settings are validated *first* (017, FR-011): an invalid
     # threshold/limit/model refuses the run before any side effect at all —
-    # before the manifest is superseded and before a run directory is ensured.
+    # before the store run opens and before a run directory is ensured.
     # Never clamped, never defaulted around.
-    with {:ok, _settings} <- preflight_remediation(run_context) do
-      # Single-slot rule (FR-005): a new run supersedes the prior manifest — the
-      # fresh Coordinator's first write (from `init/1`) replaces it immediately.
-      # `:supersede` (default true) lets a resume path (016) skip the clear and
-      # write into the existing record instead, where the anti-narrowing guard
-      # applies (contracts/manifest-guard.md "Supersede").
-      if Keyword.get(opts, :supersede, true), do: RunManifest.clear()
+    with {:ok, _settings} <- preflight_remediation(run_context),
+         {:ok, layout} <- preflight_layout(opts),
+         {:ok, run_key} <- open_or_continue_run(opts, run_context, layout) do
+      opts = Keyword.put(opts, :features, resolve_features(opts, layout))
 
-      with {:ok, layout} <- preflight_layout(opts) do
-        if Keyword.get(opts, :pr_workflow, Config.pr_workflow?()) do
-          run_stacked(opts, run_context, layout)
-        else
-          start_run(opts,
-            max_concurrency: Keyword.get(opts, :max_concurrency, Config.max_concurrency()),
-            context: run_context,
-            layout: layout,
-            runner:
-              Keyword.get(opts, :runner, fn feature, notify ->
-                default_runner(feature, notify, run_context, layout)
-              end)
-          )
-        end
+      if Keyword.get(opts, :pr_workflow, Config.pr_workflow?()) do
+        run_stacked(opts, run_context, layout, run_key)
+      else
+        start_run(opts,
+          max_concurrency: Keyword.get(opts, :max_concurrency, Config.max_concurrency()),
+          context: run_context,
+          layout: layout,
+          run_key: run_key,
+          runner:
+            Keyword.get(opts, :runner, fn feature, notify ->
+              default_runner(feature, notify, run_context, layout)
+            end)
+        )
       end
     end
   end
+
+  # 018: a resume path already resolved the run to continue (`:run_key`) —
+  # writing into the existing record, never superseding it. A fresh run
+  # opens a new one, which *does* supersede any prior in-flight run for this
+  # repo (FR-023/FR-034), inside the same transaction — preflighted for
+  # writability and capacity first (FR-009/FR-031b), so a refusal supersedes
+  # nothing.
+  defp open_or_continue_run(opts, run_context, layout) do
+    case Keyword.fetch(opts, :run_key) do
+      {:ok, run_key} ->
+        {:ok, run_key}
+
+      :error ->
+        with :ok <- preflight_store_writable(),
+             :ok <- preflight_store_capacity() do
+          # Single-slot rule (FR-005): a fresh run supersedes the prior
+          # manifest before the Coordinator's first write — bypasses the
+          # anti-narrowing guard for a run over a differently-shaped feature
+          # set. Kept alongside the store's own supersession (below)
+          # through Phase 3 (dual-write, see Coordinator moduledoc).
+          RunManifest.clear()
+
+          repo_id = RepoIdentity.partition(Config.repo())
+          features = resolve_features(opts, layout)
+
+          case Store.open_run(repo_id, %{
+                 features: store_features(features),
+                 settings: RunContext.to_map(run_context),
+                 scope: layout_scope(layout),
+                 layout: layout
+               }) do
+            {:ok, run_id} -> {:ok, {repo_id, run_id}}
+            {:error, reason} -> {:error, {:preflight, [{:store_open_failed, reason}]}}
+          end
+        end
+    end
+  end
+
+  defp preflight_store_writable do
+    if Store.Health.failed?() do
+      {:error, {:preflight, [{:store_unwritable, Store.Health.status()}]}}
+    else
+      :ok
+    end
+  end
+
+  defp preflight_store_capacity do
+    {:ok, capacity} = store_capacity()
+
+    case capacity.status do
+      :ok -> :ok
+      :refusing -> {:error, {:preflight, [{:store_capacity, capacity}]}}
+    end
+  end
+
+  defp resolve_features(opts, layout) do
+    Keyword.get_lazy(opts, :features, fn -> load_backlog(layout) end)
+  end
+
+  defp store_features(features) do
+    Enum.map(features, &%{feature_id: &1.id, slug: &1.slug, path: &1.path, prereqs: &1.prereqs})
+  end
+
+  defp layout_scope(%Layout{breakdown_root: nil}), do: :ad_hoc
+  defp layout_scope(%Layout{in_repo_rel: rel}), do: {:breakdown, Path.basename(rel)}
 
   # FR-011: the loop's three knobs go through the single validator
   # (`Remediation.Settings.validate/1`, reached via the captured context so an
@@ -276,10 +346,31 @@ defmodule SpeckitOrchestrator do
         {:error, {:unknown_feature, feature_id}}
 
       feature ->
+        resolve_store_escalation(feature_id)
         worktree = Worktree.locate(feature, opts)
         if File.dir?(worktree.path), do: Worktree.remove(worktree), else: :ok
     end
   end
+
+  # Records the escalation's resolution (018, FR-026) against the feature's
+  # current in-flight run, if one has an unresolved escalation open for it —
+  # a silent no-op with nothing to resolve or no store-backed run (most unit
+  # tests calling this facade directly).
+  defp resolve_store_escalation(feature_id) do
+    case current_run_key() do
+      nil -> :ok
+      run_key -> resolve_open_escalation(Store.run(run_key), feature_id)
+    end
+  end
+
+  defp resolve_open_escalation({:ok, detail}, feature_id) do
+    feature_record = Enum.find(detail.features, &(&1.feature_id == feature_id))
+    escalation = feature_record && Enum.find(feature_record.escalations, &(&1.resolution == nil))
+    if escalation, do: Store.resolve_escalation(escalation.id, %{resolved_at: DateTime.utc_now()})
+    :ok
+  end
+
+  defp resolve_open_escalation(_error, _feature_id), do: :ok
 
   @doc """
   Restart a previously-escalated/halted feature at its checkpointed phase,
@@ -363,12 +454,12 @@ defmodule SpeckitOrchestrator do
     remediation_model = Keyword.get(opts, :remediation_model)
 
     with :ok <- guard_active_run(opts),
-         {:ok, record, checkpoint_layout} <-
-           read_checkpoint(feature_id, layout_from_manifest(opts)),
-         {:ok, feature} <- resolve_identity(feature_id, record, opts),
-         {:ok, start_phase} <- resolve_start_phase(record, opts),
+         {:ok, run_key, detail} <- read_current_run(),
+         {:ok, feature_record} <- find_feature_record(detail, feature_id),
+         {:ok, feature} <- resolve_identity(feature_id, feature_record, opts),
+         {:ok, start_phase} <- resolve_start_phase(feature_record.checkpoint, opts),
          {:ok, _resolved} <- Config.remediation_model(start_phase, remediation_model) do
-      {merged_opts, fell_back} = RunContext.merge(opts, RunContext.from_map(record["context"]))
+      {merged_opts, fell_back} = RunContext.merge(opts, RunContext.from_map(detail.settings))
       log_context_fallback(feature_id, fell_back)
 
       run_context = RunContext.capture(merged_opts)
@@ -376,14 +467,15 @@ defmodule SpeckitOrchestrator do
       remediation_prompt = Keyword.get(opts, :remediation_prompt)
       start_task_phase = task_phase_override(start_phase, opts)
 
-      with {:ok, scope} <- resume_scope(merged_opts, feature) do
+      with {:ok, scope} <- restore_run_scope(detail, merged_opts) do
+        scope = merge_resume_target(scope, feature)
         pr_workflow? = Keyword.get(scope.merged_opts, :pr_workflow, Config.pr_workflow?())
 
         scope.merged_opts
-        |> maybe_put_layout(checkpoint_layout)
+        |> maybe_put_layout(detail.run.layout)
         |> Keyword.put(:features, scope.features)
         |> Keyword.put(:statuses, dispatch_statuses(scope.statuses, scope.resume_phases))
-        |> Keyword.put(:supersede, false)
+        |> Keyword.put(:run_key, run_key)
         |> inject_resume_scope_strategy(
           feature.id,
           pr_workflow?,
@@ -392,37 +484,41 @@ defmodule SpeckitOrchestrator do
           remediation_prompt,
           remediation_model,
           run_context,
-          checkpoint_layout,
+          detail.run.layout,
           scope.layout,
           start_task_phase,
-          scope.resume_phases
+          scope.resume_phases,
+          run_key
         )
         |> run()
       end
     end
   end
 
-  # T008/D1: the restored-run assembly both `resume/2` and `resume_run/1`
-  # need, given an already-read manifest `record` — reconciles every feature
-  # against durable evidence (`Recovery.reconcile_run/2`), reconstructs the
-  # feature list, restores the `Ledger`'s spend, rebuilds the run's
-  # `%Layout{}`, and reapplies the recorded run-shaping context. `opts` may
-  # already carry context overrides (e.g. resume/2's checkpoint-context
-  # merge) — `RunContext.merge/2` never overrides a key already present, so
-  # merging again here is idempotent.
-  defp restore_run_scope(record, opts) do
+  defp find_feature_record(detail, feature_id) do
+    case Enum.find(detail.features, &(&1.feature_id == feature_id)) do
+      nil -> {:error, :no_checkpoint}
+      feature_record -> {:ok, feature_record}
+    end
+  end
+
+  # 018: `record` is `Store.Query.run/1`'s run-detail map — reconciles every
+  # feature against durable evidence (`Recovery.reconcile_run/2`), restores
+  # the `Ledger`'s committed spend from the run's `speckit_cost_entry`
+  # roll-up (T040 — attributable across a resume, not a single recorded
+  # scalar), and reapplies the recorded run-shaping context. `opts` may
+  # already carry context overrides (e.g. resume/2's own context merge) —
+  # `RunContext.merge/2` never overrides a key already present, so merging
+  # again here is idempotent.
+  defp restore_run_scope(detail, opts) do
     with {:ok, %{statuses: statuses, resume_phases: resume_phases}} <-
-           Recovery.reconcile_run(record) do
-      {features, _legacy_statuses} = RunManifest.reconstruct(record)
-      Ledger.restore(Ledger, record["spend"] || 0)
+           Recovery.reconcile_run(detail) do
+      features = Enum.map(detail.features, &Recovery.to_feature/1)
+      restore_ledger(detail.cost_entries)
 
-      layout =
-        case Keyword.fetch(opts, :layout) do
-          {:ok, layout} -> layout
-          :error -> RunManifest.rebuild_layout(record, Config.repo())
-        end
+      layout = Keyword.get(opts, :layout) || detail.run.layout
 
-      {merged_opts, fell_back} = RunContext.merge(opts, RunContext.from_map(record["context"]))
+      {merged_opts, fell_back} = RunContext.merge(opts, RunContext.from_map(detail.settings))
       log_context_fallback("run", fell_back)
 
       run_context = RunContext.capture(merged_opts)
@@ -439,26 +535,12 @@ defmodule SpeckitOrchestrator do
     end
   end
 
-  # D8: no readable manifest — today's single-feature path, unchanged
-  # (nothing recorded to restore or narrow).
-  defp resume_scope(opts, feature) do
-    case RunManifest.read() do
-      {:ok, record} ->
-        with {:ok, scope} <- restore_run_scope(record, opts) do
-          {:ok, merge_resume_target(scope, feature)}
-        end
-
-      {:error, _reason} ->
-        {:ok,
-         %{
-           features: [feature],
-           statuses: %{feature.id => :pending},
-           resume_phases: %{},
-           layout: nil,
-           run_context: RunContext.capture(opts),
-           merged_opts: opts
-         }}
-    end
+  # T040: seed from the run's cost-entry roll-up (attributable per boundary)
+  # instead of a single recorded scalar — idempotent/monotonic via
+  # `Ledger.restore/2` regardless of how many times a resume attempt sums it.
+  defp restore_ledger(cost_entries) do
+    total = Enum.reduce(cost_entries, 0.0, &(&1.amount_usd + &2))
+    Ledger.restore(Ledger, total)
   end
 
   # T009 (contracts/resume-scope.md steps 8-9): append the target feature
@@ -482,16 +564,16 @@ defmodule SpeckitOrchestrator do
   end
 
   # T010 (contracts/resume-scope.md "Dispatch matrix"): the target id
-  # dispatches through today's byte-identical resume_runner/7 /
-  # resume_executor/7 (G5); every other restored feature dispatches through
-  # resume_run/1's existing checkpoint-driven dispatch_resume/6.
-  defp split_resume_runner(target_id, target_runner, run_context, layout, resume_phases) do
+  # dispatches through today's byte-identical resume_runner/8 /
+  # resume_executor/8 (G5); every other restored feature dispatches through
+  # resume_run/1's existing checkpoint-driven dispatch_resume/7.
+  defp split_resume_runner(target_id, target_runner, run_context, layout, resume_phases, run_key) do
     fn feature, notify ->
       if feature.id == target_id do
         target_runner.(feature, notify)
       else
         Task.Supervisor.start_child(SpeckitOrchestrator.RunnerSup, fn ->
-          dispatch_resume(feature, nil, notify, run_context, layout, resume_phases)
+          dispatch_resume(feature, nil, notify, run_context, layout, resume_phases, run_key)
         end)
 
         :ok
@@ -499,13 +581,20 @@ defmodule SpeckitOrchestrator do
     end
   end
 
-  defp split_resume_executor(target_id, target_executor, run_context, layout, resume_phases) do
+  defp split_resume_executor(
+         target_id,
+         target_executor,
+         run_context,
+         layout,
+         resume_phases,
+         run_key
+       ) do
     fn feature, base, notify ->
       if feature.id == target_id do
         target_executor.(feature, base, notify)
       else
         Task.Supervisor.start_child(SpeckitOrchestrator.RunnerSup, fn ->
-          dispatch_resume(feature, base, notify, run_context, layout, resume_phases)
+          dispatch_resume(feature, base, notify, run_context, layout, resume_phases, run_key)
         end)
 
         :ok
@@ -514,10 +603,10 @@ defmodule SpeckitOrchestrator do
   end
 
   # A caller-supplied :runner/:executor still wins (test seam), same
-  # precedence as inject_resume_run_strategy/5. `target_layout` is the
-  # checkpoint-resolved layout (byte-identical target dispatch, G5);
-  # `scope_layout` is the manifest-derived layout used for every other
-  # restored feature (matches resume_run/1).
+  # precedence as inject_resume_run_strategy/6. `target_layout` and
+  # `scope_layout` both come from the same store `run.layout` (018 collapses
+  # what were once two possibly-different rebuilds into one, since both the
+  # target and every other restored feature read the same run record).
   defp inject_resume_scope_strategy(
          opts,
          target_id,
@@ -530,7 +619,8 @@ defmodule SpeckitOrchestrator do
          target_layout,
          scope_layout,
          start_task_phase,
-         resume_phases
+         resume_phases,
+         run_key
        ) do
     cond do
       Keyword.has_key?(opts, :runner) or Keyword.has_key?(opts, :executor) ->
@@ -545,7 +635,8 @@ defmodule SpeckitOrchestrator do
             remediation_model,
             run_context,
             target_layout,
-            start_task_phase
+            start_task_phase,
+            run_key
           )
 
         Keyword.put(
@@ -556,7 +647,8 @@ defmodule SpeckitOrchestrator do
             target_executor,
             run_context,
             scope_layout,
-            resume_phases
+            resume_phases,
+            run_key
           )
         )
 
@@ -569,13 +661,21 @@ defmodule SpeckitOrchestrator do
             remediation_model,
             run_context,
             target_layout,
-            start_task_phase
+            start_task_phase,
+            run_key
           )
 
         Keyword.put(
           opts,
           :runner,
-          split_resume_runner(target_id, target_runner, run_context, scope_layout, resume_phases)
+          split_resume_runner(
+            target_id,
+            target_runner,
+            run_context,
+            scope_layout,
+            resume_phases,
+            run_key
+          )
         )
     end
   end
@@ -587,85 +687,101 @@ defmodule SpeckitOrchestrator do
   defp task_phase_override(:implement, opts), do: Keyword.get(opts, :from_task_phase)
   defp task_phase_override(_start_phase, _opts), do: nil
 
-  # T033 (resolves I2): rebuild the run's `%Layout{}` from the single-slot
-  # manifest's recorded `segment`/`scope` so a resume locates the
-  # scope-partitioned checkpoint without re-resolving repo identity (which may
-  # legitimately fail post-crash — e.g. the repo path moved/vanished). A
-  # caller-supplied `:layout` wins (test seam); a missing/unreadable manifest,
-  # or one written before this feature (no `"segment"`), falls back to `nil` —
-  # `Checkpoint.read/2` and `run/1`'s own preflight then behave exactly as
-  # they did pre-012.
-  defp layout_from_manifest(opts) do
-    case Keyword.fetch(opts, :layout) do
-      {:ok, layout} ->
-        layout
-
-      :error ->
-        case RunManifest.read() do
-          {:ok, record} -> RunManifest.rebuild_layout(record, Config.repo())
-          {:error, _reason} -> nil
-        end
-    end
-  end
-
   defp maybe_put_layout(opts, nil), do: opts
   defp maybe_put_layout(opts, %Layout{} = layout), do: Keyword.put_new(opts, :layout, layout)
 
   @doc """
   Detect & report a resumable run without starting any work (FR-008, SC-006).
-  Safe to call on boot. Reads the single-slot run manifest and classifies it:
-  a summary map when at least one feature is `:running`/`:pending` (an
-  interrupted or never-released feature), `:none` when every feature is
-  `:done` or a gate divert, or a loud error on a missing/corrupt manifest.
+  Safe to call on boot. Looks up `repo_id`'s current in-flight store run
+  (018) and classifies it: a summary map — plus `gap_possible?`, `true` when
+  a persistence-failure drain left the record incomplete (FR-010a) — when at
+  least one feature is non-terminal (interrupted or never-released), `:none`
+  when every feature is `:done` or a gate divert, or a loud error on a
+  missing/damaged run record.
 
   See `specs/009-crash-recovery/contracts/resume_run.md`.
   """
+  @spec resumable(String.t()) ::
+          {:ok,
+           %{
+             report: Recovery.Report.t(),
+             statuses: %{String.t() => Feature.status()},
+             resume_phases: %{String.t() => Pipeline.phase()},
+             gap_possible?: boolean()
+           }}
+          | :none
+          | {:error, :no_manifest}
+          | {:error, :corrupt_manifest}
+          | {:error, term()}
+  def resumable(repo_id) do
+    case Store.current_run_key(repo_id) do
+      nil ->
+        {:error, :no_manifest}
+
+      run_key ->
+        case Store.run(run_key) do
+          {:error, {:damaged, _key, _reason}} -> {:error, :corrupt_manifest}
+          {:error, reason} -> {:error, reason}
+          {:ok, detail} -> resumable_from_detail(detail)
+        end
+    end
+  end
+
+  defp resumable_from_detail(detail) do
+    if resumable_detail?(detail) do
+      with {:ok, reconciled} <- Recovery.reconcile_run(detail) do
+        {:ok, Map.put(reconciled, :gap_possible?, not detail.run.record_complete?)}
+      end
+    else
+      :none
+    end
+  end
+
+  defp resumable_detail?(%{features: features}) do
+    Enum.any?(
+      features,
+      &(&1.status not in [:done, :escalated, :halted, :failed, :ended_by_supersession])
+    )
+  end
+
+  @doc "`resumable/1` for the configured `Config.repo/0`."
   @spec resumable_run() ::
           {:ok,
            %{
              report: Recovery.Report.t(),
              statuses: %{String.t() => Feature.status()},
-             resume_phases: %{String.t() => Pipeline.phase()}
+             resume_phases: %{String.t() => Pipeline.phase()},
+             gap_possible?: boolean()
            }}
           | :none
           | {:error, :no_manifest}
           | {:error, :corrupt_manifest}
           | {:error, term()}
   def resumable_run do
-    case read_manifest() do
-      {:error, _} = err ->
-        err
-
-      {:ok, record} ->
-        if RunManifest.resumable?() do
-          Recovery.reconcile_run(record)
-        else
-          :none
-        end
-    end
+    resumable(RepoIdentity.partition(Config.repo()))
   end
 
   @doc """
-  Reconstruct and continue a crashed run from the durable run manifest
-  (FR-006/007). `:done` and gate-diverted (`:escalated`/`:halted`/`:failed`)
-  features are kept as-is and never re-run (SC-002, FR-015); `:running`
-  (interrupted) and `:pending` (never released) features are reset to
-  `:pending` and released in dependency-and-cap order — a checkpointed
-  feature resumes at the phase after its `last_phase` (reusing feature 007's
-  `resume/2` machinery); a never-started feature runs fresh from
-  `Pipeline.first()`.
+  Reconstruct and continue a crashed run from the durable store run record
+  (018, FR-006/007). `:done` and gate-diverted (`:escalated`/`:halted`/
+  `:failed`) features are kept as-is and never re-run (SC-002, FR-015);
+  every other feature is reconciled against durable evidence and released in
+  dependency-and-cap order — a checkpointed feature resumes at its
+  checkpoint's recorded phase (reusing feature 007's `resume/2` machinery); a
+  never-started feature runs fresh from `Pipeline.first()`.
 
-  Restores the `Ledger`'s committed spend from the manifest's recorded figure
-  (FR-012) before any wave releases, and reapplies the manifest's run-shaping
-  context (`RunContext.merge/2` precedence: explicit opt > recorded > live
-  Config) so the resumed run continues under its original shape (FR-007).
+  Restores the `Ledger`'s committed spend from the run's cost-entry roll-up
+  (FR-012, T040) before any wave releases, and reapplies the run's recorded
+  run-shaping context (`RunContext.merge/2` precedence: explicit opt >
+  recorded > live Config) so the resumed run continues under its original
+  shape (FR-007). Continues the same `run_id` — never opens a new run.
 
   Options: same as `run/1`, plus:
     * `:force` — proceed even if a different `Coordinator` is already alive
       with an unfinished run (default `false` — refuses without it, FR-017).
 
   Returns `{:error, :no_manifest}` / `{:error, :corrupt_manifest}` on a
-  missing/corrupt manifest, or `{:error, {:active_run, pid}}` when a live
+  missing/damaged run record, or `{:error, {:active_run, pid}}` when a live
   unfinished run is present and `:force` was not given — every failure starts
   no work (Principle II).
 
@@ -678,20 +794,21 @@ defmodule SpeckitOrchestrator do
           | {:error, {:active_run, pid()}}
   def resume_run(opts \\ []) do
     with :ok <- guard_active_run(opts),
-         {:ok, record} <- read_manifest(),
-         {:ok, scope} <- restore_run_scope(record, opts) do
+         {:ok, run_key, detail} <- read_current_run(),
+         {:ok, scope} <- restore_run_scope(detail, opts) do
       pr_workflow? = Keyword.get(scope.merged_opts, :pr_workflow, Config.pr_workflow?())
 
       scope.merged_opts
       |> maybe_put_layout(scope.layout)
       |> Keyword.put(:features, scope.features)
       |> Keyword.put(:statuses, dispatch_statuses(scope.statuses, scope.resume_phases))
-      |> Keyword.put(:supersede, false)
+      |> Keyword.put(:run_key, run_key)
       |> inject_resume_run_strategy(
         pr_workflow?,
         scope.run_context,
         scope.layout,
-        scope.resume_phases
+        scope.resume_phases,
+        run_key
       )
       |> run()
     end
@@ -700,34 +817,33 @@ defmodule SpeckitOrchestrator do
   @doc """
   Preview, or (with `:confirm`) write, a repaired run record for a
   repository whose recorded scope was narrowed by the defect this feature
-  closes (016 US3, FR-016-020). Unions the (possibly narrowed) manifest
+  closes (016 US3, FR-016-020). Unions the (possibly narrowed) store run
   record's features with the backlog on disk plus per-feature durable
   evidence (`Recovery.Rebuild.propose/3`) and returns the proposal. Never
   runs a phase, never spends budget, never starts a `Coordinator`.
 
   Options:
-    * `:confirm` — `true` writes the rebuilt record via
-      `RunManifest.write/1` and returns `{:ok, :written, proposal}`;
+    * `:confirm` — `true` persists the union rule through the store: every
+      feature the union names but the store never recorded (`kind:
+      :absent_from_record`) is added via `Store.Writer.add_features/2`
+      (`:pending`), and any feature genuine evidence proved `:done` that the
+      store hadn't yet recorded as terminal is persisted the same way
+      `reconcile_run/2` does — and returns `{:ok, :written, proposal}`;
       default `false` previews only, with **no durable effect** (FR-019a).
-    * `:backlog_root` — override the backlog source (default the rebuilt
+    * `:backlog_root` — override the backlog source (default the run's
       layout's `breakdown_root`).
-    * `:layout` — test seam; skips layout rebuild.
+    * `:layout` — test seam; overrides the run's recorded layout.
     * `:git` / `:remote` — forwarded to `Recovery.Evidence.collect/3`.
-    * `:manifest` — module implementing `RunManifest.write/1` (test seam;
-      default `RunManifest`).
-    * `:repo` — repo path for layout rebuild (default `Config.repo/0`).
+    * `:writer` — module implementing `Store.Writer`'s write API (test seam;
+      default `Store.Writer`).
 
-  The confirmed write is always a superset of the currently-recorded
-  features (the union rule), so `RunManifest.write/1`'s anti-narrowing
-  guard (016 US2) never refuses it.
-
-  Refuses with no write when: there is no record (`{:error, :no_manifest}`);
-  the record is corrupt (`{:error, :corrupt_manifest}`); the backlog cannot
-  be loaded — missing directory, dangling prereq, or a cycle —
-  (`{:error, {:backlog, reason}}`, catching `Backlog.load!/1`'s raises at
-  this boundary rather than propagating them into an operator session); or
-  the proposal names a feature whose prereq is absent from the union
-  (`{:error, {:inconsistent, discrepancies}}`, FR-020).
+  Refuses with no write when: there is no run record (`{:error,
+  :no_manifest}`); the record is damaged (`{:error, :corrupt_manifest}`);
+  the backlog cannot be loaded — missing directory, dangling prereq, or a
+  cycle — (`{:error, {:backlog, reason}}`, catching `Backlog.load!/1`'s
+  raises at this boundary rather than propagating them into an operator
+  session); or the proposal names a feature whose prereq is absent from the
+  union (`{:error, {:inconsistent, discrepancies}}`, FR-020).
 
   Never runs automatically inside `resume/2`/`resume_run/1` — operator-
   invoked only (FR-019). See
@@ -741,51 +857,195 @@ defmodule SpeckitOrchestrator do
           | {:error, {:backlog, term()}}
           | {:error, {:inconsistent, [Recovery.Rebuild.discrepancy()]}}
   def recover_record(opts \\ []) do
-    repo = Keyword.get(opts, :repo, Config.repo())
+    with {:ok, run_key, detail} <- read_current_run() do
+      layout = Keyword.get(opts, :layout) || detail.run.layout
 
-    with {:ok, record} <- read_manifest() do
-      layout = Keyword.get(opts, :layout) || RunManifest.rebuild_layout(record, repo)
-
-      with {:ok, backlog} <- load_recovery_backlog(record, layout, opts),
+      with {:ok, backlog} <- load_recovery_backlog(layout, opts),
            {:ok, proposal} <-
-             Recovery.Rebuild.propose(record, backlog, recovery_propose_opts(opts, layout)) do
-        maybe_write_recovered_record(record, layout, proposal, opts)
+             Recovery.Rebuild.propose(detail, backlog, recovery_propose_opts(opts)) do
+        maybe_write_recovered_record(run_key, proposal, opts)
       end
     end
   end
 
-  defp maybe_write_recovered_record(record, layout, proposal, opts) do
+  @doc """
+  Store capacity snapshot (018, contracts/capacity-and-prune.md § Capacity):
+  measures via `Store.Query.capacity/0`, decides via `Store.Capacity.check/1`,
+  and estimates `reclaimable_bytes` via `Store.Prune.plan/3` over
+  `Store.Query.runs/2` for the configured repo. Backs the run-start capacity
+  preflight (FR-031b) and the console's capacity banner.
+  """
+  @spec store_capacity() :: {:ok, map()}
+  def store_capacity do
+    %{used_bytes: used_bytes, transcript_bytes: transcript_bytes} = Store.capacity()
+    capacity_bytes = Config.store_capacity_bytes()
+    headroom_bytes = Config.store_headroom_bytes()
+    reclaimable_bytes = reclaimable_bytes(capacity_bytes, headroom_bytes)
+
+    {status, shortfall_bytes} =
+      case Capacity.check(%{
+             used_bytes: used_bytes,
+             capacity_bytes: capacity_bytes,
+             headroom_bytes: headroom_bytes,
+             reclaimable_bytes: reclaimable_bytes
+           }) do
+        :ok -> {:ok, nil}
+        {:refuse, refusal} -> {:refusing, refusal.shortfall_bytes}
+      end
+
+    {:ok,
+     %{
+       used_bytes: used_bytes,
+       transcript_bytes: transcript_bytes,
+       capacity_bytes: capacity_bytes,
+       headroom_bytes: headroom_bytes,
+       status: status,
+       shortfall_bytes: shortfall_bytes,
+       reclaimable_bytes: reclaimable_bytes
+     }}
+  end
+
+  # `bytes` per run isn't tracked yet (that lands with 018 Phase 6's prune
+  # facade, which sums each run's recorded transcript sizes) — until then this
+  # conservatively reports 0 reclaimable rather than a guessed figure.
+  defp reclaimable_bytes(_capacity_bytes, _headroom_bytes) do
+    case Store.runs(RepoIdentity.partition(Config.repo())) do
+      {:ok, summaries} ->
+        protected =
+          summaries
+          |> Enum.filter(&resumable_summary?/1)
+          |> Enum.map(& &1[:run_id])
+
+        run_summaries =
+          summaries
+          |> Enum.reject(&Map.get(&1, :damaged, false))
+          |> Enum.map(fn s ->
+            %{run_id: s.run_id, state: s.state, ended_at: s.ended_at, bytes: 0}
+          end)
+
+        Prune.plan(run_summaries, DateTime.utc_now(), protected).bytes_reclaimable
+
+      {:error, _} ->
+        0
+    end
+  end
+
+  defp resumable_summary?(%{damaged: true}), do: true
+
+  defp resumable_summary?(summary) do
+    summary.state == :in_flight or
+      Enum.any?(summary.feature_statuses, fn {_id, status} -> status in [:escalated, :halted] end)
+  end
+
+  @doc """
+  Write exactly one self-describing JSON export of `run_id` to `path` (018,
+  contracts/export-format.md). Read-only: modifies, locks, and prunes
+  nothing, and is available mid-run and under a capacity refusal (FR-032c).
+  """
+  @spec export_run(String.t(), String.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
+  def export_run(run_id, path, opts \\ []) do
+    repo = Keyword.get(opts, :repo, Config.repo())
+    repo_id = RepoIdentity.partition(repo)
+
+    with {:ok, detail} <- Store.run({repo_id, run_id}) do
+      input = %{
+        exported_at: DateTime.utc_now(),
+        app_version: Application.spec(:speckit_orchestrator, :vsn) |> to_string(),
+        schema_version: Migrations.current_version(),
+        repo_id: repo_id,
+        origin: origin_for(repo),
+        run: detail.run,
+        settings: detail.settings,
+        amendments: detail.amendments,
+        cost_entries: detail.cost_entries,
+        features: Enum.map(detail.features, &feature_export/1)
+      }
+
+      case File.write(path, Export.encode(input)) do
+        :ok -> {:ok, path}
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  # The export's "origin" field is the canonicalized remote (FR-032b's
+  # self-contained record), not the store's derived `repo_id` segment.
+  defp origin_for(repo) do
+    case System.cmd("git", ["-C", repo, "remote", "get-url", "origin"], stderr_to_stdout: true) do
+      {out, 0} ->
+        case out |> String.trim() |> RepoIdentity.canonicalize() do
+          {:ok, canonical} -> canonical
+          :error -> nil
+        end
+
+      {_out, _status} ->
+        nil
+    end
+  end
+
+  defp feature_export(f) do
+    Map.put(f, :phase_attempts, Enum.map(f.phase_attempts, &phase_attempt_export/1))
+  end
+
+  defp phase_attempt_export(attempt) do
+    transcript =
+      case Store.transcript(attempt.attempt_id) do
+        {:ok, transcript} -> transcript
+        {:error, _} -> nil
+      end
+
+    %{attempt: attempt, transcript: transcript}
+  end
+
+  # 018: no single record to overwrite wholesale — persists the union rule's
+  # two effects individually: a feature the union names but the store never
+  # recorded (`:absent_from_record`) is added via `Store.Writer.add_features/2`
+  # (`:pending`, same as a fresh `open_run/2` would write it), and any
+  # feature genuine evidence proved `:done` that the store didn't yet record
+  # as terminal is persisted the same way `Recovery.reconcile_run/2` does.
+  defp maybe_write_recovered_record(run_key, proposal, opts) do
     if Keyword.get(opts, :confirm, false) do
-      writer = Keyword.get(opts, :manifest, RunManifest)
-
-      writer.write(%{
-        features: proposal.features,
-        statuses: proposal.statuses,
-        context: Map.get(record, "context", %{}),
-        spend: Map.get(record, "spend", 0),
-        updated_at: System.system_time(),
-        layout: layout,
-        segment: Map.get(record, "segment")
-      })
-
+      writer = Keyword.get(opts, :writer, Writer)
+      write_absent_features(run_key, proposal, writer)
+      write_recovered_corrections(run_key, proposal.report.features, writer)
       {:ok, :written, proposal}
     else
       {:ok, proposal}
     end
   end
 
-  defp recovery_propose_opts(opts, layout) do
-    opts
-    |> Keyword.take([:git, :remote, :repo, :backlog_root])
-    |> Keyword.put(:layout, layout)
+  defp write_absent_features(run_key, proposal, writer) do
+    absent_ids =
+      proposal.discrepancies
+      |> Enum.filter(&(&1.kind == :absent_from_record))
+      |> MapSet.new(& &1.id)
+
+    features =
+      proposal.features
+      |> Enum.filter(&MapSet.member?(absent_ids, &1.id))
+      |> store_features()
+
+    if features != [], do: writer.add_features(run_key, features)
+  end
+
+  defp write_recovered_corrections(run_key, feature_rows, writer) do
+    Enum.each(feature_rows, fn row ->
+      if row.reconciled == :done and row.recorded != :done do
+        writer.record_feature_terminal(run_key, row.id, :done, :reconciled_done_signal, [])
+      end
+    end)
+  end
+
+  defp recovery_propose_opts(opts) do
+    Keyword.take(opts, [:git, :remote, :backlog_root])
   end
 
   # A `Backlog.load!/1` raise (missing dir, dangling prereq, cycle) is
   # caught here rather than propagated into an operator session (Principle
   # II's boundary is `recover_record/1`, not `Backlog`, which fails loud by
   # design). No usable layout/backlog_root — nothing to load from.
-  defp load_recovery_backlog(record, layout, opts) do
-    case Keyword.get(opts, :backlog_root) || backlog_root(layout, record) do
+  defp load_recovery_backlog(layout, opts) do
+    case Keyword.get(opts, :backlog_root) || backlog_root(layout) do
       nil ->
         {:error, {:backlog, :no_backlog_root}}
 
@@ -798,16 +1058,16 @@ defmodule SpeckitOrchestrator do
     end
   end
 
-  defp backlog_root(%Layout{breakdown_root: root}, _record) when is_binary(root), do: root
-  defp backlog_root(_layout, _record), do: nil
+  defp backlog_root(%Layout{breakdown_root: root}) when is_binary(root), do: root
+  defp backlog_root(_layout), do: nil
 
   # Recovery.reconcile_run/2's `statuses` map persists a `{:resume, phase}`
-  # feature as `:running` (the manifest's human-facing/report value — the
-  # feature genuinely is mid-run, not never-started). The Coordinator's own
+  # feature as `:running` (the report's human-facing value — the feature
+  # genuinely is mid-run, not never-started). The Coordinator's own
   # `Release.next_wave/4`, however, only releases `:pending` features
   # (`:running` counts as already in-flight and is never (re-)dispatched) —
   # so the *seed* fed to the Coordinator flips every `resume_phases` feature
-  # to `:pending` here, letting it release normally while `dispatch_resume/6`
+  # to `:pending` here, letting it release normally while `dispatch_resume/7`
   # (via `resume_phases`) still starts it at the reconciled phase, not
   # `Pipeline.first()`.
   defp dispatch_statuses(statuses, resume_phases) do
@@ -825,33 +1085,46 @@ defmodule SpeckitOrchestrator do
     end
   end
 
-  defp read_manifest do
-    case RunManifest.read() do
-      {:ok, record} -> {:ok, record}
-      {:error, :no_manifest} -> {:error, :no_manifest}
-      {:error, :corrupt} -> {:error, :corrupt_manifest}
+  # 018: the store's current in-flight run for the configured repo, replacing
+  # `RunManifest.read/0` — a `:no_manifest`/`:corrupt_manifest` tag is kept
+  # on the error for API compatibility with existing callers/tests.
+  defp read_current_run(repo \\ Config.repo()) do
+    case Store.current_run_key(RepoIdentity.partition(repo)) do
+      nil ->
+        {:error, :no_manifest}
+
+      run_key ->
+        case Store.run(run_key) do
+          {:ok, detail} -> {:ok, run_key, detail}
+          {:error, {:damaged, _key, _reason}} -> {:error, :corrupt_manifest}
+          {:error, reason} -> {:error, reason}
+        end
     end
   end
 
   # A caller-supplied :runner/:executor still wins (test seam), same
-  # precedence as inject_resume_scope_strategy/12 below.
-  defp inject_resume_run_strategy(opts, pr_workflow?, run_context, layout, resume_phases) do
+  # precedence as inject_resume_scope_strategy/13 above.
+  defp inject_resume_run_strategy(opts, pr_workflow?, run_context, layout, resume_phases, run_key) do
     cond do
       Keyword.has_key?(opts, :runner) or Keyword.has_key?(opts, :executor) ->
         opts
 
       pr_workflow? ->
-        Keyword.put(opts, :executor, resume_run_executor(run_context, layout, resume_phases))
+        Keyword.put(
+          opts,
+          :executor,
+          resume_run_executor(run_context, layout, resume_phases, run_key)
+        )
 
       true ->
-        Keyword.put(opts, :runner, resume_run_runner(run_context, layout, resume_phases))
+        Keyword.put(opts, :runner, resume_run_runner(run_context, layout, resume_phases, run_key))
     end
   end
 
-  defp resume_run_runner(run_context, layout, resume_phases) do
+  defp resume_run_runner(run_context, layout, resume_phases, run_key) do
     fn feature, notify ->
       Task.Supervisor.start_child(SpeckitOrchestrator.RunnerSup, fn ->
-        dispatch_resume(feature, nil, notify, run_context, layout, resume_phases)
+        dispatch_resume(feature, nil, notify, run_context, layout, resume_phases, run_key)
       end)
 
       :ok
@@ -861,10 +1134,10 @@ defmodule SpeckitOrchestrator do
   # Executor shape for the PR workflow — `base` (the stack's current top) is
   # used only for a never-started :pending feature; a checkpointed feature
   # ignores it and reuses/recreates its own existing worktree/branch.
-  defp resume_run_executor(run_context, layout, resume_phases) do
+  defp resume_run_executor(run_context, layout, resume_phases, run_key) do
     fn feature, base, notify ->
       Task.Supervisor.start_child(SpeckitOrchestrator.RunnerSup, fn ->
-        dispatch_resume(feature, base, notify, run_context, layout, resume_phases)
+        dispatch_resume(feature, base, notify, run_context, layout, resume_phases, run_key)
       end)
 
       :ok
@@ -874,41 +1147,45 @@ defmodule SpeckitOrchestrator do
   # `resume_phases` is `Recovery.reconcile_run/2`'s corrected `{:resume,
   # phase}` map (FR-004/005) — a reconciled mid-run feature resumes at the
   # phase *after* its latest committed boundary, overriding whatever the
-  # checkpoint's own `last_phase` would otherwise resolve to (never resumes
-  # within a phase, always at a full phase boundary).
-  defp dispatch_resume(feature, base, notify, run_context, layout, resume_phases) do
-    case find_checkpoint(feature.id, layout) do
-      {:ok, record} ->
-        run_from_checkpoint(feature, record, notify, run_context, layout, resume_phases)
+  # checkpoint's own recorded phase would otherwise resolve to (never
+  # resumes within a phase, always at a full phase boundary).
+  defp dispatch_resume(feature, base, notify, run_context, layout, resume_phases, run_key) do
+    case Store.checkpoint(run_key, feature.id) do
+      {:ok, checkpoint} ->
+        run_from_checkpoint(
+          feature,
+          checkpoint,
+          notify,
+          run_context,
+          layout,
+          resume_phases,
+          run_key
+        )
 
-      {:error, :no_checkpoint} ->
-        run_fresh(feature, base, notify, run_context, layout)
-
-      {:error, :corrupt} ->
+      {:error, {:damaged, _key, _reason}} ->
         notify.(feature.id, :failed, {:checkpoint, :corrupt})
+
+      {:error, _absent_or_other} ->
+        run_fresh(feature, base, notify, run_context, layout, run_key)
     end
   end
 
-  # Mirrors read_checkpoint/2's legacy-path fallback (FR-013) without
-  # disturbing which `layout` a never-started :pending feature runs fresh
-  # under — `run_fresh/5` always gets the run's own layout, never a
-  # checkpoint-lookup fallback's `nil`.
-  defp find_checkpoint(feature_id, layout) do
-    case Checkpoint.read(feature_id, layout) do
-      {:ok, record} -> {:ok, record}
-      {:error, :no_checkpoint} when not is_nil(layout) -> Checkpoint.read(feature_id, nil)
-      other -> other
-    end
-  end
-
-  defp run_from_checkpoint(feature, record, notify, run_context, layout, resume_phases) do
+  defp run_from_checkpoint(
+         feature,
+         checkpoint,
+         notify,
+         run_context,
+         layout,
+         resume_phases,
+         run_key
+       ) do
     from_opts =
       case Map.get(resume_phases, feature.id) do
         nil -> []
         phase -> [from: phase]
       end
 
-    case resolve_start_phase(record, from_opts) do
+    case resolve_start_phase(checkpoint, from_opts) do
       {:ok, start_phase} ->
         case resume_worktree(feature, layout) do
           {:ok, worktree} ->
@@ -918,7 +1195,8 @@ defmodule SpeckitOrchestrator do
               notify: notify,
               start_phase: start_phase,
               run_context: run_context,
-              layout: layout
+              layout: layout,
+              run_key: run_key
             )
 
           {:error, reason} ->
@@ -930,7 +1208,7 @@ defmodule SpeckitOrchestrator do
     end
   end
 
-  defp run_fresh(feature, base, notify, run_context, layout) do
+  defp run_fresh(feature, base, notify, run_context, layout, run_key) do
     create_opts = if base, do: [base: base], else: []
     create_opts = create_opts ++ worktree_create_opts(layout)
 
@@ -941,7 +1219,8 @@ defmodule SpeckitOrchestrator do
           ledger: Ledger,
           notify: notify,
           run_context: run_context,
-          layout: layout
+          layout: layout,
+          run_key: run_key
         )
 
       {:error, reason} ->
@@ -958,16 +1237,16 @@ defmodule SpeckitOrchestrator do
     )
   end
 
-  # FR-002/003/004: an explicit/backlog feature wins over checkpoint identity
-  # whenever both exist; else the checkpoint's own slug/path rebuilds the
-  # feature; else unknown-feature. A best-effort backlog load never raises
-  # past resume/2 — a missing/unloadable backlog is non-fatal once checkpoint
-  # identity is available (FR-004).
-  defp resolve_identity(feature_id, record, opts) do
+  # FR-002/003/004: an explicit/backlog feature wins over the store's
+  # recorded identity whenever both exist; else the store's `feature_record`
+  # slug/path rebuilds the feature; else unknown-feature. A best-effort
+  # backlog load never raises past resume/2 — a missing/unloadable backlog
+  # is non-fatal once store identity is available (FR-004).
+  defp resolve_identity(feature_id, feature_record, opts) do
     features = resolve_features(opts)
 
     case Enum.find(features, &(&1.id == feature_id)) do
-      nil -> checkpoint_identity(feature_id, record)
+      nil -> checkpoint_identity(feature_id, feature_record)
       feature -> {:ok, feature}
     end
   end
@@ -985,71 +1264,31 @@ defmodule SpeckitOrchestrator do
     _ -> []
   end
 
-  defp checkpoint_identity(feature_id, %{"slug" => slug, "path" => path})
+  defp checkpoint_identity(feature_id, %{slug: slug, path: path})
        when is_binary(slug) and is_binary(path) do
     {:ok, %Feature{id: feature_id, slug: slug, path: path, status: :pending}}
   end
 
-  defp checkpoint_identity(feature_id, _record), do: {:error, {:unknown_feature, feature_id}}
+  defp checkpoint_identity(feature_id, _feature_record),
+    do: {:error, {:unknown_feature, feature_id}}
 
-  # A layout rebuilt from the manifest (T033) is a best-effort locator — a
-  # checkpoint written before this feature (or under a stale/unrelated
-  # manifest) lives at the legacy flat path instead. Fall back to it rather
-  # than surfacing a false `:no_checkpoint` (FR-013 old-layout compatibility),
-  # returning whichever layout actually located the checkpoint so the rest of
-  # the resume (worktree, FeatureRunner) is consistent with where it was found.
-  defp read_checkpoint(feature_id, layout) do
-    case Checkpoint.read(feature_id, layout) do
-      {:ok, record} ->
-        {:ok, record, layout}
-
-      {:error, :no_checkpoint} when not is_nil(layout) ->
-        read_checkpoint(feature_id, nil)
-
-      {:error, :no_checkpoint} ->
-        {:error, :no_checkpoint}
-
-      {:error, :corrupt} ->
-        {:error, :corrupt_checkpoint}
-    end
-  end
-
-  # `:from` takes precedence over the checkpoint's stored phase (validated the
-  # same way). Never String.to_atom/1 on file contents (atom-table safety) —
-  # guarded by Pipeline.phase?/1, catching the case where the stored string
-  # never was a real atom at all (a hand-corrupted checkpoint).
-  defp resolve_start_phase(%{"last_phase" => last_phase} = record, opts) do
+  # `:from` takes precedence over the checkpoint's recorded `phase` — already
+  # the correct resume-at phase either way (`FeatureRunner.checkpoint_for/3`
+  # records the *next* phase for an in-progress boundary and the diverted
+  # phase itself for a gate/halt/failure, so no `Pipeline.next/3` re-derivation
+  # is needed here, unlike the pre-018 file checkpoint's `last_phase`).
+  defp resolve_start_phase(%{phase: phase}, opts) do
     case Keyword.fetch(opts, :from) do
       {:ok, from} -> validate_phase(from)
-      :error -> parse_checkpoint_phase(last_phase, Map.get(record, "status"))
+      :error -> validate_phase(phase)
     end
   end
+
+  defp resolve_start_phase(nil, _opts), do: {:error, :no_checkpoint}
 
   defp validate_phase(phase) do
     if Pipeline.phase?(phase), do: {:ok, phase}, else: {:error, {:unknown_phase, phase}}
   end
-
-  defp parse_checkpoint_phase(last_phase, status) do
-    with {:ok, phase} <- validate_phase(String.to_existing_atom(last_phase)) do
-      resume_from_phase(phase, status)
-    end
-  rescue
-    ArgumentError -> {:error, {:unknown_phase, last_phase}}
-  end
-
-  # An "in_progress" checkpoint records the phase that already completed
-  # cleanly (FR-001) — resume continues at the *next* phase, not a re-run of
-  # one already done. A divert checkpoint (escalated/halted/failed, or an
-  # old-shape record with no status at all) records the phase that needs
-  # re-running itself — unchanged from feature 007.
-  defp resume_from_phase(phase, "in_progress") do
-    case Pipeline.next(phase, :ok, %{}) do
-      {:cont, next} -> {:ok, next}
-      {:done, :done} -> {:ok, phase}
-    end
-  end
-
-  defp resume_from_phase(phase, _status), do: {:ok, phase}
 
   # Reuse the kept worktree if one exists (a prior resolve/1 froze it, or the
   # feature never tore it down); else recreate it from the existing branch.
@@ -1062,7 +1301,8 @@ defmodule SpeckitOrchestrator do
          remediation_model,
          run_context,
          layout,
-         start_task_phase
+         start_task_phase,
+         run_key
        ) do
     fn feature, notify ->
       Task.Supervisor.start_child(SpeckitOrchestrator.RunnerSup, fn ->
@@ -1079,7 +1319,8 @@ defmodule SpeckitOrchestrator do
               run_context: run_context,
               layout: layout,
               start_task_phase: start_task_phase,
-              reset_implement_sessions: true
+              reset_implement_sessions: true,
+              run_key: run_key
             )
 
           {:error, reason} ->
@@ -1091,7 +1332,7 @@ defmodule SpeckitOrchestrator do
     end
   end
 
-  # PR-workflow resume counterpart to resume_runner/4 — same worktree
+  # PR-workflow resume counterpart to resume_runner/8 — same worktree
   # reuse/recreate logic, but shaped as an `:executor` (feature, base, notify)
   # so run_stacked/1's stacked_runner wraps it with stacking + preflight +
   # PR-on-:done (FR-009). `base` (the current stack top) is ignored: a resumed
@@ -1104,7 +1345,8 @@ defmodule SpeckitOrchestrator do
          remediation_model,
          run_context,
          layout,
-         start_task_phase
+         start_task_phase,
+         run_key
        ) do
     fn feature, _base, notify ->
       Task.Supervisor.start_child(SpeckitOrchestrator.RunnerSup, fn ->
@@ -1121,7 +1363,8 @@ defmodule SpeckitOrchestrator do
               run_context: run_context,
               layout: layout,
               start_task_phase: start_task_phase,
-              reset_implement_sessions: true
+              reset_implement_sessions: true,
+              run_key: run_key
             )
 
           {:error, reason} ->
@@ -1232,7 +1475,8 @@ defmodule SpeckitOrchestrator do
             ledger: Ledger,
             notify: notify,
             run_context: run_context,
-            layout: layout
+            layout: layout,
+            run_key: current_run_key()
           )
 
         {:error, reason} ->
@@ -1386,7 +1630,8 @@ defmodule SpeckitOrchestrator do
           ledger: Ledger,
           notify: notify,
           run_context: run_context,
-          layout: layout
+          layout: layout,
+          run_key: current_run_key()
         )
 
       {:error, reason} ->
@@ -1417,7 +1662,7 @@ defmodule SpeckitOrchestrator do
   #     branch and opens the PR (default: `publish_feature/3`, layout-closed).
   # A `:runner` override bypasses stacking entirely (used to test cap-1 sequencing).
 
-  defp run_stacked(opts, run_context, layout) do
+  defp run_stacked(opts, run_context, layout, run_key) do
     test_mode? = Keyword.has_key?(opts, :runner) or Keyword.has_key?(opts, :executor)
 
     # This branch is what pins the cap to 1 (below), so it is also where the
@@ -1444,7 +1689,13 @@ defmodule SpeckitOrchestrator do
 
       runner = Keyword.get(opts, :runner) || stacked_runner(tracker, publisher, executor)
 
-      start_run(opts, max_concurrency: 1, context: run_context, layout: layout, runner: runner)
+      start_run(opts,
+        max_concurrency: 1,
+        context: run_context,
+        layout: layout,
+        run_key: run_key,
+        runner: runner
+      )
     end
   end
 
@@ -1500,7 +1751,8 @@ defmodule SpeckitOrchestrator do
             ledger: Ledger,
             notify: notify,
             run_context: run_context,
-            layout: layout
+            layout: layout,
+            run_key: current_run_key()
           )
 
         {:error, reason} ->
@@ -1516,16 +1768,17 @@ defmodule SpeckitOrchestrator do
     wt = Worktree.locate(feature, worktree_create_opts(layout))
 
     with :ok <- Worktree.push(wt, Config.pr_remote()) do
-      {title, body} = pr_text(feature, base, layout)
+      {title, body} = pr_text(feature, base)
       PullRequest.open(Config.repo(), %{head: wt.branch, base: base, title: title, body: body})
     end
   end
 
-  # Prefer the Claude-authored PR text the describe step wrote on :done; fall back
-  # to a template if it is absent/empty.
-  defp pr_text(feature, base, layout) do
-    case Describe.read_pr(feature.id, layout) do
-      {:ok, %{pr_title: t, pr_body: b}} when t != "" and b != "" ->
+  # Prefer the Claude-authored PR text `Store.Writer.record_feature_terminal/5`
+  # recorded on :done (018 — replaces `Describe.read_pr/2`); fall back to a
+  # template if it is absent/empty or this run isn't store-backed.
+  defp pr_text(feature, base) do
+    case store_pr_description(feature.id) do
+      %{pr_title: t, pr_body: b} when t not in [nil, ""] and b not in [nil, ""] ->
         {t, b}
 
       _ ->
@@ -1533,5 +1786,25 @@ defmodule SpeckitOrchestrator do
          "Autonomous build of feature #{feature.id} (#{feature.slug}) by " <>
            "speckit_orchestrator.\n\nStacked on `#{base}`."}
     end
+  end
+
+  defp store_pr_description(feature_id) do
+    with run_key when run_key != nil <- current_run_key(),
+         {:ok, detail} <- Store.run(run_key),
+         %{pr_description: %{} = pr} <-
+           Enum.find(detail.features, &(&1.feature_id == feature_id)) do
+      pr
+    else
+      _ -> nil
+    end
+  end
+
+  # The store's `{repo_id, run_id}` for `repo`'s current in-flight run, or
+  # `nil` (018) — the lookup a closure built *before* the run's `run_key` is
+  # known (`run_spec/2`'s seed closures) or reused across a resume (which
+  # continues rather than re-opens) resolves at call time instead of having
+  # a freshly-minted run_id threaded through it.
+  defp current_run_key(repo \\ Config.repo()) do
+    Store.current_run_key(RepoIdentity.partition(repo))
   end
 end

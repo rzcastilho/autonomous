@@ -9,7 +9,7 @@ defmodule SpeckitOrchestrator.Describe do
   mechanical templates, so a describe hiccup never blocks a commit or PR.
   """
 
-  alias SpeckitOrchestrator.{Config, Layout, PhaseRequest, PhaseResult}
+  alias SpeckitOrchestrator.{Layout, PhaseRequest, PhaseResult}
 
   @type description :: %{commit_message: String.t(), pr_title: String.t(), pr_body: String.t()}
 
@@ -61,51 +61,6 @@ defmodule SpeckitOrchestrator.Describe do
   end
 
   def parse(_), do: {:error, :no_description_json}
-
-  # ---- PR text handoff ----------------------------------------------------
-  #
-  # The describe step runs in the data plane (FeatureRunner, while the worktree
-  # still exists); the facade opens the PR later (after teardown). The PR title/
-  # body travel between them via a small file under the durable transcript dir.
-
-  @doc """
-  Persist the PR title/body for `feature_id` under the run's `%Layout{}`
-  transcript dir (scope-keyed); `layout: nil` falls back to the pre-012 flat
-  `Config.transcript_root/0`.
-  """
-  @spec write_pr(String.t(), %{pr_title: String.t(), pr_body: String.t()}, Layout.t() | nil) ::
-          :ok
-  def write_pr(feature_id, description, layout \\ nil)
-
-  def write_pr(feature_id, %{pr_title: title, pr_body: body}, layout) do
-    dir = Path.join(durable_root(layout), feature_id)
-    File.mkdir_p!(dir)
-
-    File.write!(
-      Path.join(dir, "pr.json"),
-      Jason.encode!(%{pr_title: title, pr_body: body}, pretty: true)
-    )
-
-    :ok
-  end
-
-  @doc "Read a previously-written PR title/body, or `:error` if absent/malformed."
-  @spec read_pr(String.t(), Layout.t() | nil) ::
-          {:ok, %{pr_title: String.t(), pr_body: String.t()}} | :error
-  def read_pr(feature_id, layout \\ nil) do
-    path = Path.join([durable_root(layout), feature_id, "pr.json"])
-
-    with {:ok, raw} <- File.read(path),
-         {:ok, %{"pr_title" => t, "pr_body" => b}} when is_binary(t) and is_binary(b) <-
-           Jason.decode(raw) do
-      {:ok, %{pr_title: t, pr_body: b}}
-    else
-      _ -> :error
-    end
-  end
-
-  defp durable_root(nil), do: Config.transcript_root()
-  defp durable_root(%Layout{transcript_root: root}), do: root
 
   # ---- JSON recovery ------------------------------------------------------
 

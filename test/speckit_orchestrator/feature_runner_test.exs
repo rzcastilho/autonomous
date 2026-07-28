@@ -5,8 +5,6 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
   alias Jido.{AgentServer, Signal}
 
   alias SpeckitOrchestrator.{
-    Checkpoint,
-    Describe,
     Feature,
     FeatureAgent,
     FeatureRunner,
@@ -185,6 +183,26 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
   # are *about* the loop live in analyze_runner_test.exs.
   defp loop_off, do: %RunContext{auto_remediation: false}
 
+  # --- store-backed run_key for tests exercising 018 recording (T032-T034) ---
+  defp open_store_run(feature_ids \\ ["001"]) do
+    repo_id = "o:feature-runner-test-#{System.unique_integer([:positive])}"
+
+    features =
+      Enum.map(feature_ids, fn id ->
+        %{feature_id: id, slug: "feature-#{id}", path: "specs/#{id}", prereqs: []}
+      end)
+
+    {:ok, run_id} =
+      SpeckitOrchestrator.Store.Writer.open_run(repo_id, %{
+        features: features,
+        settings: %{},
+        scope: :ad_hoc,
+        layout: %{}
+      })
+
+    {repo_id, run_id}
+  end
+
   # --- real base repo + worktree for the containment assertions ---
   defp git!(repo, args),
     do: {_, 0} = System.cmd("git", ["-C", repo | args], stderr_to_stdout: true)
@@ -292,15 +310,20 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
     # Give the commit something to include so the authored message actually lands.
     File.write!(Path.join(wt.path, "note.txt"), "generated\n")
 
-    result = FeatureRunner.run(feature(), worktree: wt, notify: self())
+    run_key = open_store_run()
+    result = FeatureRunner.run(feature(), worktree: wt, notify: self(), run_key: run_key)
     assert result.status == :done
 
     # Commit message on the branch is the Claude-authored one (not the template).
     {subject, 0} = System.cmd("git", ["-C", wt.repo, "log", "-1", "--format=%s", wt.branch])
     assert subject =~ "feat(001): built core ledger"
 
-    # PR title/body were written for the facade to open the PR with.
-    assert {:ok, %{pr_title: "Add core ledger", pr_body: body}} = Describe.read_pr("001")
+    # PR title/body were recorded (018 — replaces `Describe.write_pr/3`) in
+    # the same transaction as the feature's terminal status, for the facade
+    # to open the PR with.
+    {:ok, detail} = SpeckitOrchestrator.Store.run(run_key)
+    feature_record = Enum.find(detail.features, &(&1.feature_id == "001"))
+    assert %{pr_title: "Add core ledger", pr_body: body} = feature_record.pr_description
     assert body =~ "Summary"
   end
 
@@ -486,9 +509,10 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
     assert File.read!(Path.join(wt.path, ".speckit_logs/02-clarify.md")) =~ "# clarify"
   end
 
-  test "per-phase checkpoint written after each successful phase — overwritten (not appended) as the pipeline advances" do
+  test "per-phase checkpoint written after each successful phase — overwritten (not appended) as the pipeline advances (018, store-backed)" do
     wt = scaffolded_worktree()
     run_context = %RunContext{pr_workflow: false, max_concurrency: 1}
+    run_key = open_store_run()
 
     test_pid = self()
     handler = "checkpoint-tele-#{System.unique_integer([:positive])}"
@@ -498,7 +522,10 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
       [:speckit, :phase, :start],
       fn _event, _meas, %{phase: phase}, _ ->
         if phase in [:clarify, :plan] do
-          send(test_pid, {:checkpoint_at, phase, Checkpoint.read("001")})
+          send(
+            test_pid,
+            {:checkpoint_at, phase, SpeckitOrchestrator.Store.checkpoint(run_key, "001")}
+          )
         end
       end,
       nil
@@ -506,16 +533,20 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
 
     on_exit(fn -> :telemetry.detach(handler) end)
 
-    FeatureRunner.run(feature(), worktree: wt, notify: self(), run_context: run_context)
+    FeatureRunner.run(feature(),
+      worktree: wt,
+      notify: self(),
+      run_context: run_context,
+      run_key: run_key
+    )
 
     assert_received {:checkpoint_at, :clarify, {:ok, record}}
-    assert record["last_phase"] == "specify"
-    assert record["status"] == "in_progress"
-    assert is_map(record["context"])
+    assert record.last_completed_phase == :specify
+    assert record.status == :in_progress
 
     assert_received {:checkpoint_at, :plan, {:ok, record2}}
-    assert record2["last_phase"] == "clarify"
-    assert record2["status"] == "in_progress"
+    assert record2.last_completed_phase == :clarify
+    assert record2.status == :in_progress
   end
 
   @tag :integration

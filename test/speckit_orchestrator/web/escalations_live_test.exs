@@ -6,7 +6,17 @@ defmodule SpeckitOrchestrator.Web.EscalationsLiveTest do
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
 
-  alias SpeckitOrchestrator.{Checkpoint, Config, Coordinator, Feature, RunContext}
+  alias SpeckitOrchestrator.{
+    Checkpoint,
+    Config,
+    Coordinator,
+    Feature,
+    Layout,
+    RepoIdentity,
+    RunContext
+  }
+
+  alias SpeckitOrchestrator.Store.Writer
 
   @endpoint SpeckitOrchestrator.Web.Endpoint
 
@@ -39,6 +49,70 @@ defmodule SpeckitOrchestrator.Web.EscalationsLiveTest do
   end
 
   defp feat(id, slug), do: %Feature{id: id, slug: slug, path: "#{id}.md"}
+
+  # 018: `resume/2` now reads the target's checkpoint and the run's whole
+  # state from the store — seeds a store-backed run matching each
+  # `Checkpoint.write/1` fixture above alongside it (Coordinator still
+  # dual-writes RunManifest through Phase 3, which is what this view actually
+  # renders from; not re-pointed at `run_detail/1` until Phase 7, T077).
+  defp minimal_attempt(feature_id, phase) do
+    now = DateTime.utc_now()
+
+    %{
+      feature_id: feature_id,
+      phase: phase,
+      ordinal: 1,
+      step: 1,
+      label: Atom.to_string(phase),
+      started_at: now,
+      ended_at: now,
+      duration_ms: 0,
+      outcome: :error,
+      model: "sonnet",
+      cost_usd: 0.0,
+      cost_kind: :estimate,
+      session_id: "s1",
+      error: nil
+    }
+  end
+
+  defp seed_store_checkpoint(feature, phase, status, opts \\ []) do
+    repo_id = RepoIdentity.partition(Config.repo())
+    {:ok, segment} = RepoIdentity.resolve(Config.repo())
+    {:ok, layout} = Layout.build(Config.repo(), segment, :ad_hoc)
+
+    {:ok, run_id} =
+      Writer.open_run(repo_id, %{
+        features: [%{feature_id: feature.id, slug: feature.slug, path: feature.path, prereqs: []}],
+        settings:
+          RunContext.to_map(%RunContext{
+            pr_workflow: false,
+            max_concurrency: 2,
+            budget_usd: 100.0
+          }),
+        scope: :ad_hoc,
+        layout: layout
+      })
+
+    run_key = {repo_id, run_id}
+
+    :ok =
+      Writer.record_phase_attempt(run_key, %{
+        attempt: minimal_attempt(feature.id, phase),
+        checkpoint: %{
+          phase: phase,
+          last_completed_phase: phase,
+          status: status,
+          reason: "test fixture",
+          session_id: "s1",
+          implement_chunk: Keyword.get(opts, :implement_chunk)
+        }
+      })
+
+    :ok = Writer.record_feature_terminal(run_key, feature.id, status, "test fixture", [])
+
+    run_key
+  end
 
   # `outcomes` maps feature id -> {status, reason}; any feature without an
   # entry just releases and stays :running (no-op runner, same trick
@@ -191,6 +265,7 @@ defmodule SpeckitOrchestrator.Web.EscalationsLiveTest do
       path: "e5.md"
     })
 
+    seed_store_checkpoint(feat("e5", "slug-e5"), :clarify, :escalated)
     pid = start_coordinator([feat("e5", "slug-e5")], %{"e5" => {:escalated, "needs human"}})
     on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
 
@@ -229,6 +304,7 @@ defmodule SpeckitOrchestrator.Web.EscalationsLiveTest do
       path: "e9.md"
     })
 
+    seed_store_checkpoint(feat("e9", "slug-e9"), :analyze, :halted)
     pid = start_coordinator([feat("e9", "slug-e9")], %{"e9" => {:halted, "critical finding"}})
     on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
 
@@ -528,6 +604,18 @@ defmodule SpeckitOrchestrator.Web.EscalationsLiveTest do
         scope: :task_phase
       }
     })
+
+    seed_store_checkpoint(feat("e13", "slug-e13"), :implement, :failed,
+      implement_chunk: %{
+        ordinal: 2,
+        number: "2",
+        title: "Core",
+        total: 2,
+        sessions_used: 1,
+        ceiling: 8,
+        scope: :task_phase
+      }
+    )
 
     pid = start_coordinator([feat("e13", "slug-e13")], %{"e13" => {:failed, "stuck"}})
     on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)

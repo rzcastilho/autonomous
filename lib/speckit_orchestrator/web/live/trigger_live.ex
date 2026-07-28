@@ -84,8 +84,7 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
   def handle_event("update_remediation", params, socket) do
     {:noreply,
      assign(socket,
-       remediation_threshold:
-         Map.get(params, "threshold", socket.assigns.remediation_threshold),
+       remediation_threshold: Map.get(params, "threshold", socket.assigns.remediation_threshold),
        remediation_limit: Map.get(params, "attempt_limit", socket.assigns.remediation_limit),
        remediation_error: nil
      )}
@@ -219,7 +218,8 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
         {:error, {"auto-remediation-threshold", "Unrecognized severity threshold: #{value}"}}
 
       {:error, {:invalid_attempt_limit, value}} ->
-        {:error, {"auto-remediation-limit", "Attempt limit must be a whole number 1–5, got: #{value}"}}
+        {:error,
+         {"auto-remediation-limit", "Attempt limit must be a whole number 1–5, got: #{value}"}}
 
       {:error, {:unknown_model, value}} ->
         {:error, {"auto-remediation-model", "Unknown model: #{inspect(value)}"}}

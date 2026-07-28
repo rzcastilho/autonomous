@@ -1,15 +1,17 @@
 defmodule SpeckitOrchestrator.PhaseStep do
   @moduledoc """
-  Run one phase: `[:speckit, :phase]` telemetry span, transient-retry policy,
-  transcript write. Extracted from `FeatureRunner` (research R8) so
-  `AnalyzeRunner`'s attempt-numbered analyze/remediation records can share
-  this exact machinery via `:label`/`:span_meta` without duplicating it.
+  Run one phase: `[:speckit, :phase]` telemetry span, transient-retry policy.
+  Extracted from `FeatureRunner` (research R8) so `AnalyzeRunner`'s
+  attempt-numbered analyze/remediation records can share this exact machinery
+  via `:label`/`:span_meta` without duplicating it.
 
-  A caller that passes no `:label`/`:span_meta` gets byte-identical behaviour
-  to `FeatureRunner`'s original private `run_phase/7` +
-  `run_phase_with_retry/8` (same span, same meta, same retry policy, same
-  transcript write) — see `specs/017-analyze-auto-remediation/contracts/analyze_loop.md`
-  §6.
+  Writes the pre-018 `Transcripts.write_labelled/6` copy (worktree +
+  durable-file) exactly as before **and** returns the agent so a store-backed
+  caller (`FeatureRunner`, `AnalyzeRunner`) can additionally persist the
+  attempt/checkpoint/transcript through `Store.Writer` in its own boundary
+  transaction. Both mechanisms coexist through Phase 3 — the file writer is
+  removed only at the clean break (FR-037, T072/T073), once every caller
+  threads a real `run_key` end to end.
   """
 
   require Logger

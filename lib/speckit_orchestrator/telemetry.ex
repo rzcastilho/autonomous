@@ -46,6 +46,14 @@ defmodule SpeckitOrchestrator.Telemetry do
       Fires when a write would drop a currently-recorded feature id; the
       write is refused and the existing record is left untouched.
 
+  Events (emitted by `Store.Writer` — 018, persistence-failure.md): a write
+  failure is recorded in `Store.Health` and, so it is observable outside the
+  breaker flag too, emitted here:
+
+    * `[:speckit, :store, :write_failed]` — measurements `%{}`, metadata
+      `%{reason}`. Fires on any aborted `Store.Writer` transaction, driving
+      `FeatureRunner`'s drain check and `Coordinator`'s release check.
+
   Call `attach_default_logger/0` from `iex` to log every event.
   """
 
@@ -66,7 +74,8 @@ defmodule SpeckitOrchestrator.Telemetry do
     [:speckit, :remediation, :start],
     [:speckit, :remediation, :stop],
     [:speckit, :remediation, :exception],
-    [:speckit, :run, :scope_narrowing_refused]
+    [:speckit, :run, :scope_narrowing_refused],
+    [:speckit, :store, :write_failed]
   ]
 
   @doc "The `:telemetry.span/3` prefix for phase events."
@@ -119,6 +128,10 @@ defmodule SpeckitOrchestrator.Telemetry do
       "run scope narrowing refused: dropped=#{inspect(meta.dropped)} " <>
         "recorded=#{inspect(meta.recorded)} segment=#{inspect(meta.segment)}"
     )
+  end
+
+  def handle_event([:speckit, :store, :write_failed], _meas, meta, _cfg) do
+    Logger.error("store write failed: reason=#{inspect(meta.reason)}")
   end
 
   def handle_event(_event, _meas, _meta, _cfg), do: :ok

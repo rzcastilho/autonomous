@@ -945,7 +945,11 @@ defmodule SpeckitOrchestrator.ConsoleReadModelTest do
         |> ConsoleReadModel.apply_event(
           [:speckit, :feature, :terminal],
           %{cost_total: 2.0},
-          %{feature_id: "001", status: :escalated, reason: {:high_findings, :auto_remediation_exhausted}}
+          %{
+            feature_id: "001",
+            status: :escalated,
+            reason: {:high_findings, :auto_remediation_exhausted}
+          }
         )
 
       assert model.features["001"].remediation == nil

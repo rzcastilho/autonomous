@@ -9,12 +9,17 @@ defmodule SpeckitOrchestrator.Web.MissionControlLiveTest do
 
   alias SpeckitOrchestrator.{
     Checkpoint,
+    Config,
     ConsoleProjection,
     Coordinator,
     Feature,
+    Layout,
+    RepoIdentity,
     RunContext,
     RunManifest
   }
+
+  alias SpeckitOrchestrator.Store.Writer
 
   @endpoint SpeckitOrchestrator.Web.Endpoint
 
@@ -287,16 +292,85 @@ defmodule SpeckitOrchestrator.Web.MissionControlLiveTest do
       })
   end
 
+  # 018: `resume/2` now reads the target's checkpoint and the run's whole
+  # state from the store — seeds a store-backed run alongside the
+  # RunManifest/Checkpoint writes above (Coordinator still dual-writes
+  # RunManifest through Phase 3, which is what this view actually renders
+  # from; not re-pointed at `run_detail/1` until Phase 7, T074).
+  defp minimal_attempt(feature_id, phase) do
+    now = DateTime.utc_now()
+
+    %{
+      feature_id: feature_id,
+      phase: phase,
+      ordinal: 1,
+      step: 1,
+      label: Atom.to_string(phase),
+      started_at: now,
+      ended_at: now,
+      duration_ms: 0,
+      outcome: :error,
+      model: "sonnet",
+      cost_usd: 0.0,
+      cost_kind: :estimate,
+      session_id: "s1",
+      error: nil
+    }
+  end
+
+  defp open_store_run(features) do
+    repo_id = RepoIdentity.partition(Config.repo())
+    {:ok, segment} = RepoIdentity.resolve(Config.repo())
+    {:ok, layout} = Layout.build(Config.repo(), segment, :ad_hoc)
+
+    {:ok, run_id} =
+      Writer.open_run(repo_id, %{
+        features:
+          Enum.map(
+            features,
+            &%{feature_id: &1.id, slug: &1.slug, path: &1.path, prereqs: &1.prereqs}
+          ),
+        settings:
+          RunContext.to_map(%RunContext{
+            pr_workflow: false,
+            max_concurrency: 2,
+            budget_usd: 100.0
+          }),
+        scope: :ad_hoc,
+        layout: layout
+      })
+
+    {repo_id, run_id}
+  end
+
   test "after a resume, every feature in the restored run is listed, including ones still waiting on prerequisites",
        %{conn: conn} do
     refute Process.whereis(Coordinator)
 
     write_run_checkpoint("mc10", :analyze, :halted)
 
+    features = [feat("mc10"), feat("mc11", ["mc10"]), feat("mc12", ["mc11"])]
+
     write_run_manifest(%{
-      features: [feat("mc10"), feat("mc11", ["mc10"]), feat("mc12", ["mc11"])],
+      features: features,
       statuses: %{"mc10" => :halted, "mc11" => :pending, "mc12" => :pending}
     })
+
+    run_key = open_store_run(features)
+
+    :ok =
+      Writer.record_phase_attempt(run_key, %{
+        attempt: minimal_attempt("mc10", :analyze),
+        checkpoint: %{
+          phase: :analyze,
+          last_completed_phase: :analyze,
+          status: :halted,
+          reason: "test fixture",
+          session_id: "s1"
+        }
+      })
+
+    :ok = Writer.record_feature_terminal(run_key, "mc10", :halted, "test fixture", [])
 
     me = self()
 

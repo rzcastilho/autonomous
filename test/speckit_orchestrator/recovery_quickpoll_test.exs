@@ -1,9 +1,10 @@
 defmodule SpeckitOrchestrator.RecoveryQuickpollTest do
   # async: false — real-named Coordinator/Ledger + global :transcript_root/
-  # :autonomous_root/:repo app env (mirrors resume_run_test.exs conventions).
-  use ExUnit.Case, async: false
+  # :autonomous_root/:repo app env, plus the shared store (StoreCase clears
+  # tables per test).
+  use SpeckitOrchestrator.StoreCase, async: false
 
-  alias SpeckitOrchestrator.{Feature, Layout, Recovery, RepoIdentity, RunContext, RunManifest}
+  alias SpeckitOrchestrator.{Feature, Layout, Recovery, RepoIdentity, RunContext}
 
   @coordinator SpeckitOrchestrator.Coordinator
 
@@ -68,13 +69,6 @@ defmodule SpeckitOrchestrator.RecoveryQuickpollTest do
     git!(repo, ["commit", "-q", "-m", message])
   end
 
-  defp write_durable(root, id, filename, content) do
-    dir = Path.join(root, id)
-    File.mkdir_p!(dir)
-    File.write!(Path.join(dir, filename), content)
-  end
-
-  defp pr_json, do: Jason.encode!(%{pr_title: "core ledger", pr_body: "b"})
   defp converge_ready, do: "Tests green, committed.\n\n## CONVERGE: READY\n"
 
   defp feat(id, prereqs \\ []),
@@ -84,30 +78,59 @@ defmodule SpeckitOrchestrator.RecoveryQuickpollTest do
     fn feature, notify -> send(test_pid, {:started, feature.id, notify}) end
   end
 
-  defp write_manifest(overrides) do
-    :ok =
-      RunManifest.write(
-        Map.merge(
-          %{
-            features: [],
-            statuses: %{},
-            context: %RunContext{pr_workflow: false, max_concurrency: 2, budget_usd: 100.0},
-            spend: 42.5,
-            updated_at: 1
-          },
-          overrides
-        )
-      )
+  # ---- store fixtures (018) --------------------------------------------------
+
+  defp open_run(repo, layout, features) do
+    repo_id = RepoIdentity.partition(repo)
+
+    {:ok, run_id} =
+      Writer.open_run(repo_id, %{
+        features:
+          Enum.map(
+            features,
+            &%{feature_id: &1.id, slug: &1.slug, path: &1.path, prereqs: &1.prereqs}
+          ),
+        settings:
+          RunContext.to_map(%RunContext{
+            pr_workflow: false,
+            max_concurrency: 2,
+            budget_usd: 100.0
+          }),
+        scope: :ad_hoc,
+        layout: layout
+      })
+
+    {repo_id, run_id}
   end
 
-  # Reproduces the exact quickpoll first-wave defect (SC-001): manifest says
-  # `001: running`, but on disk 001 already finished — branch committed,
-  # `pr.json` present, converge marker present. The fixture repo carries an
-  # `origin` remote so `RepoIdentity.resolve/1` yields the same segment
-  # `RunManifest.read/0`/`write/1` and `run/1`'s own preflight resolve — the
-  # self-built `%Layout{}` here is built from that same segment so
-  # `Recovery.reconcile_run/2`'s `RunManifest.rebuild_layout/2` lands on
-  # exactly the same durable paths this seed wrote.
+  defp minimal_attempt(feature_id, phase) do
+    now = DateTime.utc_now()
+
+    %{
+      feature_id: feature_id,
+      phase: phase,
+      ordinal: 1,
+      step: 1,
+      label: Atom.to_string(phase),
+      started_at: now,
+      ended_at: now,
+      duration_ms: 42_500,
+      outcome: :ok,
+      model: "sonnet",
+      cost_usd: 42.5,
+      cost_kind: :estimate,
+      session_id: "s1",
+      error: nil
+    }
+  end
+
+  # Reproduces the exact quickpoll first-wave defect (SC-001): the store
+  # never recorded "001" terminal (still `:pending`, so
+  # `store_recorded_status/1` derives `:running`), but on disk 001 already
+  # finished — branch committed, converge marker present. `report.spend`
+  # comes from this same phase attempt's cost entry (T040 — the roll-up, not
+  # a separately recorded scalar), so the fixture's $42.50 is carried
+  # entirely by this one attempt.
   defp seed_quickpoll_state do
     repo = base_repo()
     Application.put_env(:speckit_orchestrator, :repo, repo)
@@ -125,25 +148,26 @@ defmodule SpeckitOrchestrator.RecoveryQuickpollTest do
     commit(repo, "speckit: 001 checkpoint after converge")
     git!(repo, ["checkout", "-q", "main"])
 
-    write_durable(layout.transcript_root, "001", "pr.json", pr_json())
-    write_durable(layout.transcript_root, "001", "07-converge.md", converge_ready())
+    run_key = open_run(repo, layout, [feat("001"), feat("002", ["001"])])
 
-    write_manifest(%{
-      features: [feat("001"), feat("002", ["001"])],
-      statuses: %{"001" => :running, "002" => :pending},
-      layout: layout
-    })
+    :ok =
+      Writer.record_phase_attempt(run_key, %{
+        attempt: minimal_attempt("001", :converge),
+        cost: %{amount_usd: 42.5, kind: :estimate},
+        transcript: converge_ready()
+      })
 
-    layout
+    {layout, run_key}
   end
 
   test "reconcile_run/2 reconciles the stale 001:running to :done, releases 002, preserves spend once" do
-    seed_quickpoll_state()
+    {layout, run_key} = seed_quickpoll_state()
+    on_exit(fn -> File.rm_rf(layout.worktree_root) end)
 
-    {:ok, record} = RunManifest.read()
+    {:ok, detail} = Store.run(run_key)
 
     assert {:ok, %{statuses: statuses, report: report, resume_phases: resume_phases}} =
-             Recovery.reconcile_run(record)
+             Recovery.reconcile_run(detail)
 
     assert statuses["001"] == :done
     assert statuses["002"] == :pending
@@ -159,14 +183,14 @@ defmodule SpeckitOrchestrator.RecoveryQuickpollTest do
     assert row_001.corrected? == true
 
     # Immediately persisted — a fresh read reflects the correction (FR-009).
-    {:ok, reread} = RunManifest.read()
-    assert reread["statuses"]["001"] == "done"
-    assert reread["statuses"]["002"] == "pending"
-    assert reread["spend"] == 42.5
+    {:ok, reread} = Store.run(run_key)
+    assert Enum.find(reread.features, &(&1.feature_id == "001")).status == :done
+    assert Enum.find(reread.features, &(&1.feature_id == "002")).status == :pending
   end
 
   test "resume_run/1 continues from the reconciled state: 002 dispatches, 001 never re-runs" do
-    seed_quickpoll_state()
+    {layout, _run_key} = seed_quickpoll_state()
+    on_exit(fn -> File.rm_rf(layout.worktree_root) end)
 
     me = self()
 

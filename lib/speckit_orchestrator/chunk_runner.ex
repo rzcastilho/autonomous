@@ -26,6 +26,7 @@ defmodule SpeckitOrchestrator.ChunkRunner do
     Config,
     Ledger,
     PhaseResult,
+    Store,
     TaskPhaseRef,
     TaskPlan,
     Telemetry,
@@ -64,7 +65,7 @@ defmodule SpeckitOrchestrator.ChunkRunner do
   @spec run(opts()) :: struct()
   def run(%{pid: pid, worktree: worktree, feature: feature, layout: layout} = ctx) do
     plan = TaskPlan.load(worktree_path(worktree))
-    record = checkpoint_record(feature, layout)
+    record = checkpoint_record(Map.get(ctx, :run_key), feature, layout)
 
     {ref, override?} = start_ref(ctx, record)
     sessions_used = start_sessions_used(ctx, record)
@@ -85,10 +86,21 @@ defmodule SpeckitOrchestrator.ChunkRunner do
 
   # ---- resume resolution (checkpoint-implement-chunk.md §3) ------------------
 
-  defp checkpoint_record(feature, layout) do
+  # Store-backed when a store-backed run supplied a `run_key` (018); falls
+  # back to the pre-018 file (`Checkpoint.read/2`) otherwise, so a caller that
+  # hasn't been threaded onto the store yet (facade cutover, T044-T046) keeps
+  # resolving its resume position exactly as before.
+  defp checkpoint_record(nil, feature, layout) do
     case Checkpoint.read(feature.id, layout) do
       {:ok, record} -> record
-      _ -> %{}
+      _ -> nil
+    end
+  end
+
+  defp checkpoint_record(run_key, feature, _layout) do
+    case Store.checkpoint(run_key, feature.id) do
+      {:ok, record} -> record
+      _ -> nil
     end
   end
 
@@ -98,6 +110,17 @@ defmodule SpeckitOrchestrator.ChunkRunner do
       %TaskPhaseRef{} = ref -> {ref, true}
       ordinal when is_integer(ordinal) -> {%TaskPhaseRef{ordinal: ordinal}, true}
     end
+  end
+
+  # Atom-keyed (018, `Store.Records.Checkpoint`) or string-keyed (pre-018,
+  # `Checkpoint.read/2`'s JSON) — both shapes are read until every caller
+  # threads a real `run_key` (T044-T046).
+  defp ref_from_record(%{implement_chunk: %{} = chunk}) do
+    %TaskPhaseRef{
+      ordinal: Map.get(chunk, :ordinal),
+      number: Map.get(chunk, :number),
+      title: Map.get(chunk, :title)
+    }
   end
 
   defp ref_from_record(%{"implement_chunk" => %{} = chunk}) do
@@ -115,6 +138,7 @@ defmodule SpeckitOrchestrator.ChunkRunner do
       0
     else
       case record do
+        %{implement_chunk: %{sessions_used: n}} when is_integer(n) -> n
         %{"implement_chunk" => %{"sessions_used" => n}} when is_integer(n) -> n
         _ -> 0
       end
@@ -197,7 +221,7 @@ defmodule SpeckitOrchestrator.ChunkRunner do
       after_count = TaskPlan.completed_tasks(after_plan)
       progress? = after_count > before_count
 
-      write_chunk_transcript(ctx, state1, scope, result)
+      write_chunk_worktree_copy(ctx, state1, scope, result)
       maybe_commit_boundary(ctx, scope, outcome, after_plan)
 
       signals = %{
@@ -276,19 +300,6 @@ defmodule SpeckitOrchestrator.ChunkRunner do
 
   defp maybe_commit_boundary(_ctx, _scope, _outcome, _after_plan), do: :ok
 
-  # ---- transcripts (FR-026) ---------------------------------------------------
-
-  defp write_chunk_transcript(ctx, state1, scope, result) do
-    label = chunk_label(scope, state1.attempt)
-    Transcripts.write_labelled(ctx.worktree, ctx.layout, ctx.step, label, :implement, result)
-  end
-
-  defp chunk_label({:task_phase, tp}, attempt), do: "implement-p#{pad2(tp.ordinal)}-a#{attempt}"
-  defp chunk_label({:sweep, _tasks}, attempt), do: "implement-sweep-a#{attempt}"
-  defp chunk_label(:whole_list, attempt), do: "implement-wl-a#{attempt}"
-
-  defp pad2(n), do: n |> Integer.to_string() |> String.pad_leading(2, "0")
-
   # ---- terminal handling -------------------------------------------------------
 
   # The artifact gate (research R10) is evaluated exactly once here, on the
@@ -299,9 +310,15 @@ defmodule SpeckitOrchestrator.ChunkRunner do
       RunFeaturePhase.missing_implement_artifact(ctx.worktree, since: ctx[:start_ref])
 
     signals = if artifact, do: %{missing_artifact: artifact}, else: %{}
+    result = rollup(:ok, signals, nil)
+    write_rollup_worktree_copy(ctx, result)
 
-    write_rollup(ctx, :ok, signals, nil)
-    patch(agent, last_outcome: :ok, last_signals: signals, terminal_reason: nil)
+    patch(agent,
+      last_outcome: :ok,
+      last_signals: signals,
+      last_result: result,
+      terminal_reason: nil
+    )
   end
 
   # A halt/failure below has no `Pipeline.next/3` vocabulary of its own
@@ -310,24 +327,40 @@ defmodule SpeckitOrchestrator.ChunkRunner do
   # to the specific SC-002 reason (or the breaker halt) instead of the
   # generic `{:implement, :error}` `Pipeline.next/3` would otherwise produce.
   defp halt(ctx, agent) do
-    write_rollup(ctx, :halted, %{}, :breaker)
-    patch(agent, last_outcome: :error, terminal_reason: {:halted, :breaker})
+    result = rollup(:halted, %{}, :breaker)
+    write_rollup_worktree_copy(ctx, result)
+
+    patch(agent,
+      last_outcome: :error,
+      last_result: result,
+      terminal_reason: {:halted, :breaker}
+    )
   end
 
   defp fail(ctx, agent, reason) do
-    write_rollup(ctx, :error, %{}, reason)
-    patch(agent, last_outcome: :error, terminal_reason: {:failed, reason})
+    result = rollup(:error, %{}, reason)
+    write_rollup_worktree_copy(ctx, result)
+
+    patch(agent,
+      last_outcome: :error,
+      last_result: result,
+      terminal_reason: {:failed, reason}
+    )
   end
 
   defp patch(agent, kvs), do: %{agent | state: Map.merge(agent.state, Map.new(kvs))}
 
-  defp write_rollup(ctx, status, signals, reason) do
-    result = %PhaseResult{
-      status: status,
-      final_text: rollup_text(status, signals, reason),
-      error: reason
-    }
+  # The roll-up ALSO becomes this feature run's durable `:implement` phase
+  # attempt (018) — the caller (`FeatureRunner`) additionally persists
+  # `agent.state.last_result` via `Store.Writer.record_phase_attempt/2`. The
+  # file writes below (`write_labelled/6`, worktree + durable-file) stay
+  # exactly as before through Phase 3, removed only at the clean break
+  # (FR-037, T072/T073) once every caller threads a real `run_key`.
+  defp rollup(status, signals, reason) do
+    %PhaseResult{status: status, final_text: rollup_text(status, signals, reason), error: reason}
+  end
 
+  defp write_rollup_worktree_copy(ctx, result) do
     Transcripts.write_labelled(
       ctx.worktree,
       ctx.layout,
@@ -337,6 +370,19 @@ defmodule SpeckitOrchestrator.ChunkRunner do
       result
     )
   end
+
+  # ---- chunk transcripts (unchanged until T073) ------------------------------
+
+  defp write_chunk_worktree_copy(ctx, state1, scope, result) do
+    label = chunk_label(scope, state1.attempt)
+    Transcripts.write_labelled(ctx.worktree, ctx.layout, ctx.step, label, :implement, result)
+  end
+
+  defp chunk_label({:task_phase, tp}, attempt), do: "implement-p#{pad2(tp.ordinal)}-a#{attempt}"
+  defp chunk_label({:sweep, _tasks}, attempt), do: "implement-sweep-a#{attempt}"
+  defp chunk_label(:whole_list, attempt), do: "implement-wl-a#{attempt}"
+
+  defp pad2(n), do: n |> Integer.to_string() |> String.pad_leading(2, "0")
 
   defp rollup_text(:ok, %{missing_artifact: artifact}, _reason),
     do: "implement step complete, but missing: #{artifact}"

@@ -12,9 +12,15 @@ defmodule SpeckitOrchestrator.LiveConfig do
   friends are read at call time); budget and max concurrency go through the
   additive `Ledger.set_budget/2` / `Coordinator.set_cap/2` setters, which touch
   no in-flight work (Constitution IV: drain, don't kill).
+
+  018/FR-027: a successful apply against a live run also records a settings
+  amendment through the store — changed keys only, old -> new — so the
+  record explains why later work behaved differently from earlier work. A
+  no-op with no live `Coordinator` (most unit tests) or no store-backed run.
   """
 
-  alias SpeckitOrchestrator.{Config, Coordinator, Ledger, RunContext}
+  alias SpeckitOrchestrator.{Config, Coordinator, Ledger, RepoIdentity, RunContext, Store}
+  alias SpeckitOrchestrator.Store.Writer
 
   @app :speckit_orchestrator
   @valid_models ~w(opus sonnet)
@@ -33,6 +39,7 @@ defmodule SpeckitOrchestrator.LiveConfig do
   def apply(changes) when is_map(changes) do
     case validate(changes) do
       :ok ->
+        record_amendment(changes)
         Enum.each(changes, &dispatch/1)
         {:ok, changes}
 
@@ -40,6 +47,32 @@ defmodule SpeckitOrchestrator.LiveConfig do
         error
     end
   end
+
+  # ---- store amendment (018, FR-027) ---------------------------------------
+
+  defp record_amendment(changes) do
+    if Process.whereis(Coordinator) do
+      case Store.current_run_key(RepoIdentity.partition(Config.repo())) do
+        nil ->
+          :ok
+
+        run_key ->
+          diff =
+            Map.new(changes, fn {field, new} -> {field, %{old: old_value(field), new: new}} end)
+
+          Writer.record_settings_amendment(run_key, diff, DateTime.utc_now())
+      end
+    end
+
+    :ok
+  end
+
+  defp old_value(:models), do: Config.models()
+  defp old_value(:budget_usd), do: Config.budget_usd()
+  defp old_value(:max_concurrency), do: Config.max_concurrency()
+  defp old_value(:pr_workflow), do: Config.pr_workflow?()
+  defp old_value(:pr_base), do: Config.pr_base()
+  defp old_value(:pr_remote), do: Config.pr_remote()
 
   # ---- validation (bounds, Fail Loud) --------------------------------------
 

@@ -22,11 +22,28 @@ defmodule SpeckitOrchestrator.Coordinator do
   drain (finish their current phase, then halt — enforced in `FeatureRunner`).
   When the in-flight set empties with nothing releasable, the run finalizes;
   undelivered `:pending` features are reported as `blocked` or `not_started`.
+
+  ## Persistence (018)
+
+  The run record itself is opened by the caller (`SpeckitOrchestrator.run/1`,
+  before this process starts — the runner closures it hands to `:runner`
+  need the same `run_key` this process holds) via
+  `Store.Writer.open_run/2`. The Coordinator's own store touch-points are:
+  a tripped `Store.Health` — checked in `advance/1` at the same point as the
+  breaker, releasing nothing new — and `Store.Writer.close_run/3` on drain,
+  so the run's terminal outcome is durable the moment the report is built.
+
+  The pre-018 `:manifest` seam keeps writing alongside the store through
+  Phase 3 — `MissionControlLive`/`PipelineDagLive`/`EscalationsLive` still
+  read `RunManifest` until Phase 7 re-points them at `run_detail/1`
+  (T074–T077); removed only at the clean break (FR-037, T072), same
+  dual-write shape `Transcripts`/`PhaseStep` already use.
   """
 
   use GenServer
 
   alias SpeckitOrchestrator.{Feature, Ledger, Release, RunContext, RunManifest}
+  alias SpeckitOrchestrator.Store.{Health, Writer}
 
   @type status :: Feature.status()
 
@@ -42,6 +59,7 @@ defmodule SpeckitOrchestrator.Coordinator do
             finished?: false,
             report: nil,
             manifest: nil,
+            run_key: nil,
             context: %{},
             layout: nil
 
@@ -60,12 +78,18 @@ defmodule SpeckitOrchestrator.Coordinator do
     * `:statuses` — seed `%{feature_id => status}` map (default: all
       `:pending`) — lets a crash-recovered run reconstruct which features are
       already `:done`/diverted so they are never re-released (FR-006, SC-002).
+    * `:run_key` — this run's store `{repo_id, run_id}` (018), already opened
+      by the caller via `Store.Writer.open_run/2`; `nil` for a store-less
+      test Coordinator, in which case the health check and `close_run/3` are
+      silent no-ops.
+    * `:context` — the run-shaping context (`RunContext.t()` or its map)
+      recorded into the manifest alongside each write (FR-007), also
+      reported in `status/0`'s snapshot.
     * `:manifest` — module implementing `RunManifest`'s `write/1` (default
       `RunManifest`; tests inject a fake). Written on `init`, each
       `spawn_feature`, and each feature's `{:finished, ...}` notification —
-      best-effort, never affects wave logic.
-    * `:context` — the run-shaping context (`RunContext.t()` or its map)
-      recorded into the manifest alongside each write (FR-007).
+      best-effort, never affects wave logic. Kept alongside the store
+      through Phase 3 (see moduledoc).
     * `:layout` — the run's resolved `%Layout{}` (`RepoIdentity` + `Layout`,
       FR-011), resolved once at facade preflight and held here so every
       runner spawned for this run carries it (optional; `nil` for tests
@@ -118,6 +142,7 @@ defmodule SpeckitOrchestrator.Coordinator do
       runner: runner,
       owner: Keyword.get(opts, :owner),
       manifest: Keyword.get(opts, :manifest, RunManifest),
+      run_key: Keyword.get(opts, :run_key),
       context: Keyword.get(opts, :context, %{}),
       layout: Keyword.get(opts, :layout),
       self_pid: self()
@@ -168,7 +193,12 @@ defmodule SpeckitOrchestrator.Coordinator do
 
   defp advance(state) do
     wave =
-      Release.next_wave(feature_list(state), state.statuses, state.cap, breaker_tripped?(state))
+      Release.next_wave(
+        feature_list(state),
+        state.statuses,
+        state.cap,
+        breaker_tripped?(state) or store_unwritable?(state)
+      )
 
     state = Enum.reduce(wave, state, &spawn_feature/2)
     maybe_finish(state)
@@ -191,17 +221,62 @@ defmodule SpeckitOrchestrator.Coordinator do
   end
 
   # The run ends when nothing is in flight and nothing more can be released
-  # (all remaining pending features are blocked, or the breaker drained them).
+  # (all remaining pending features are blocked, or the breaker/persistence
+  # drained them). Closes the store's run record on drain (018, R7 "run
+  # drained" boundary) — but ONLY when every feature actually reached `:done`
+  # (`run_outcome/1` is `:all_done`). A gate divert (escalated/halted),
+  # `:failed`, or anything left `blocked`/`not_started` (a breaker or
+  # persistence-failure drain) is exactly what `resume/2`/`resume_run/1`
+  # exist to revisit — closing the record there would make
+  # `Store.current_run_key/1` unable to find it again, breaking resume
+  # outright. The run instead stays `:in_flight` until either a later wave
+  # of THIS same Coordinator finishes it for real, or a fresh `run/1`
+  # supersedes it. A no-op when this run isn't store-backed (`run_key: nil`,
+  # most test Coordinators).
   defp maybe_finish(state) do
     releasable =
-      Release.next_wave(feature_list(state), state.statuses, state.cap, breaker_tripped?(state))
+      Release.next_wave(
+        feature_list(state),
+        state.statuses,
+        state.cap,
+        breaker_tripped?(state) or store_unwritable?(state)
+      )
 
     if MapSet.size(state.inflight) == 0 and releasable == [] do
       report = build_report(state)
+      maybe_close_run(state, report)
       if state.owner, do: send(state.owner, {:run_complete, report})
       %{state | finished?: true, report: report}
     else
       state
+    end
+  end
+
+  defp maybe_close_run(%__MODULE__{run_key: nil}, _report), do: :ok
+
+  defp maybe_close_run(%__MODULE__{run_key: run_key}, report) do
+    if run_outcome(report) == :all_done do
+      _ = Writer.close_run(run_key, :all_done, spend_usd: report.spend)
+    end
+
+    # Independent of whether this drain also closed the run — a write
+    # failure anywhere during this run's lifetime makes its completeness
+    # suspect regardless of how "done" the final report looks, so
+    # `resumable/1` reports `gap_possible?` either way (FR-010a).
+    if Health.failed?(), do: Writer.flag_record_incomplete(run_key, store_health_reason())
+    :ok
+  end
+
+  defp run_outcome(%{halted: h}) when h != [], do: :halted
+  defp run_outcome(%{escalated: e}) when e != [], do: :escalated
+  defp run_outcome(%{failed: f}) when f != [], do: :failed
+  defp run_outcome(%{blocked: b, not_started: n}) when b != [] or n != [], do: :mixed
+  defp run_outcome(_report), do: :all_done
+
+  defp store_health_reason do
+    case Health.status() do
+      {:failed, reason, _at} -> reason
+      :ok -> :unknown
     end
   end
 
@@ -292,12 +367,19 @@ defmodule SpeckitOrchestrator.Coordinator do
   defp breaker_tripped?(%__MODULE__{ledger: nil}), do: false
   defp breaker_tripped?(%__MODULE__{ledger: ledger}), do: Ledger.breaker_tripped?(ledger)
 
+  # A store-less Coordinator (`run_key: nil`, most tests) never treats the
+  # store as unwritable — the seam is inert without a real run to record
+  # against, same shape as `breaker_tripped?/1` with a `nil` ledger.
+  defp store_unwritable?(%__MODULE__{run_key: nil}), do: false
+  defp store_unwritable?(%__MODULE__{run_key: _}), do: Health.failed?()
+
   defp spend(%__MODULE__{ledger: nil}), do: 0.0
   defp spend(%__MODULE__{ledger: ledger}), do: Ledger.spent(ledger)
 
   # Best-effort manifest write (Principle I — the seam keeps the wave/DAG/
   # breaker scheduler unit-testable without disk); a write failure never
-  # affects wave logic (data-model.md Entity 3).
+  # affects wave logic (data-model.md Entity 3). Kept alongside the store
+  # through Phase 3 (see moduledoc).
   defp write_manifest(state) do
     state.manifest.write(%{
       features: feature_list(state),

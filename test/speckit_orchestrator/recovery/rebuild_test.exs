@@ -1,41 +1,93 @@
 defmodule SpeckitOrchestrator.Recovery.RebuildTest do
-  # async: true — pure/hermetic (research.md D10 layer 1): no global app env,
-  # no real git; :git/:remote are always injected, and each test builds its
-  # own isolated %Layout{} tmp dir so Checkpoint/Describe reads never collide
-  # across tests.
-  use ExUnit.Case, async: true
+  # async: false — the shared store (StoreCase clears tables per test); :git
+  # is always injected, so no real git/worktree I/O beyond the store.
+  use SpeckitOrchestrator.StoreCase, async: false
 
-  alias SpeckitOrchestrator.{Feature, Layout}
+  alias SpeckitOrchestrator.Feature
   alias SpeckitOrchestrator.Recovery.Rebuild
+
+  @repo_id "o:rebuild-test"
 
   defp feat(id, prereqs \\ []),
     do: %Feature{id: id, slug: "core-ledger", path: "#{id}.md", prereqs: prereqs}
-
-  defp record_feature(id, prereqs \\ []),
-    do: %{"id" => id, "slug" => "core-ledger", "path" => "#{id}.md", "prereqs" => prereqs}
-
-  defp isolated_layout do
-    dir = Path.join(System.tmp_dir!(), "rb_#{System.unique_integer([:positive])}")
-    File.mkdir_p!(dir)
-    on_exit(fn -> File.rm_rf(dir) end)
-    %Layout{worktree_root: dir, transcript_root: dir, in_repo_rel: "ad-hoc"}
-  end
-
-  defp write_converge_marker(layout, id) do
-    path = Path.join([layout.transcript_root, id, "07-converge.md"])
-    File.mkdir_p!(Path.dirname(path))
-    File.write!(path, "Tests green.\n\n## CONVERGE: READY\n")
-  end
 
   # No evidence of any kind, for any feature — a hermetic default matching
   # `Evidence.default_git/1`'s "no branch" shape without touching git.
   defp no_evidence(_feature), do: %{branch_committed?: false, last_boundary_phase: nil}
 
+  # ---- store fixtures (018) --------------------------------------------------
+
+  defp open_record(features) do
+    {:ok, run_id} =
+      Writer.open_run(@repo_id, %{
+        features:
+          Enum.map(
+            features,
+            &%{feature_id: &1.id, slug: &1.slug, path: &1.path, prereqs: &1.prereqs}
+          ),
+        settings: %{},
+        scope: :ad_hoc,
+        layout: %{}
+      })
+
+    {@repo_id, run_id}
+  end
+
+  defp minimal_attempt(feature_id, phase) do
+    now = DateTime.utc_now()
+
+    %{
+      feature_id: feature_id,
+      phase: phase,
+      ordinal: 1,
+      step: 1,
+      label: Atom.to_string(phase),
+      started_at: now,
+      ended_at: now,
+      duration_ms: 0,
+      outcome: :ok,
+      model: "sonnet",
+      cost_usd: 0.0,
+      cost_kind: :estimate,
+      session_id: nil,
+      error: nil
+    }
+  end
+
+  defp seed_terminal(run_key, feature_id, status) do
+    :ok = Writer.record_feature_terminal(run_key, feature_id, status, :test_fixture, [])
+  end
+
+  defp seed_running(run_key, feature_id) do
+    :ok =
+      Writer.record_phase_attempt(run_key, %{
+        attempt: minimal_attempt(feature_id, :plan),
+        checkpoint: %{
+          phase: :tasks,
+          last_completed_phase: :plan,
+          status: :in_progress,
+          reason: nil,
+          session_id: nil
+        }
+      })
+  end
+
+  defp seed_converge_marker(run_key, feature_id) do
+    :ok =
+      Writer.record_phase_attempt(run_key, %{
+        attempt: minimal_attempt(feature_id, :converge),
+        transcript: "Tests green.\n\n## CONVERGE: READY\n"
+      })
+  end
+
+  defp record(run_key), do: Store.run(run_key) |> elem(1)
+
   # ---- union rule + status mapping table (T027) ------------------------------
 
   test "propose/3: union order, both-present-clean, and absent_from_record" do
-    layout = isolated_layout()
-    write_converge_marker(layout, "001")
+    run_key = open_record([feat("001")])
+    seed_terminal(run_key, "001", :done)
+    seed_converge_marker(run_key, "001")
 
     git = fn
       %{id: "001"} -> %{branch_committed?: true, last_boundary_phase: :converge}
@@ -44,13 +96,7 @@ defmodule SpeckitOrchestrator.Recovery.RebuildTest do
 
     backlog = [feat("001"), feat("002", ["001"]), feat("003", ["002"])]
 
-    record = %{
-      "features" => [record_feature("001")],
-      "statuses" => %{"001" => "done"},
-      "spend" => 0
-    }
-
-    assert {:ok, proposal} = Rebuild.propose(record, backlog, layout: layout, git: git)
+    assert {:ok, proposal} = Rebuild.propose(record(run_key), backlog, git: git)
 
     assert Enum.map(proposal.features, & &1.id) == ["001", "002", "003"]
     assert proposal.statuses == %{"001" => :done, "002" => :pending, "003" => :pending}
@@ -73,18 +119,13 @@ defmodule SpeckitOrchestrator.Recovery.RebuildTest do
   end
 
   test "propose/3: both-present conflict reconciles to :blocked and reports :unreconcilable" do
-    layout = isolated_layout()
+    run_key = open_record([feat("001")])
+    seed_terminal(run_key, "001", :done)
     # No corroborating evidence at all for "001" despite a recorded :done.
 
     backlog = [feat("001")]
 
-    record = %{
-      "features" => [record_feature("001")],
-      "statuses" => %{"001" => "done"},
-      "spend" => 0
-    }
-
-    assert {:ok, proposal} = Rebuild.propose(record, backlog, layout: layout, git: &no_evidence/1)
+    assert {:ok, proposal} = Rebuild.propose(record(run_key), backlog, git: &no_evidence/1)
 
     assert proposal.statuses["001"] == :blocked
 
@@ -95,8 +136,10 @@ defmodule SpeckitOrchestrator.Recovery.RebuildTest do
   end
 
   test "propose/3: record-only feature (absent_from_backlog) is kept verbatim, unreconciled" do
-    layout = isolated_layout()
-    write_converge_marker(layout, "001")
+    run_key = open_record([feat("001"), feat("002")])
+    seed_terminal(run_key, "001", :done)
+    seed_converge_marker(run_key, "001")
+    seed_running(run_key, "002")
 
     git = fn
       %{id: "001"} -> %{branch_committed?: true, last_boundary_phase: :converge}
@@ -105,13 +148,7 @@ defmodule SpeckitOrchestrator.Recovery.RebuildTest do
 
     backlog = [feat("001")]
 
-    record = %{
-      "features" => [record_feature("001"), record_feature("002")],
-      "statuses" => %{"001" => "done", "002" => "running"},
-      "spend" => 0
-    }
-
-    assert {:ok, proposal} = Rebuild.propose(record, backlog, layout: layout, git: git)
+    assert {:ok, proposal} = Rebuild.propose(record(run_key), backlog, git: git)
 
     assert Enum.map(proposal.features, & &1.id) == ["001", "002"]
     assert proposal.statuses["002"] == :running
@@ -125,23 +162,16 @@ defmodule SpeckitOrchestrator.Recovery.RebuildTest do
   end
 
   test "propose/3: a prereq missing from the union refuses without collecting evidence" do
-    layout = isolated_layout()
-
     # Backlog names 001 with a prereq the record never mentions and the
     # backlog never defines — evidence must never be collected once this is
     # found (asserted via a :git seam that raises if invoked).
     exploding_git = fn _ -> raise "evidence must not be collected for a refused proposal" end
 
+    run_key = open_record([feat("001", ["999"])])
     backlog = [feat("001", ["999"])]
 
-    record = %{
-      "features" => [record_feature("001", ["999"])],
-      "statuses" => %{"001" => "pending"},
-      "spend" => 0
-    }
-
     assert {:error, {:inconsistent, discrepancies}} =
-             Rebuild.propose(record, backlog, layout: layout, git: exploding_git)
+             Rebuild.propose(record(run_key), backlog, git: exploding_git)
 
     assert discrepancies == [%{kind: :prereq_missing, id: "001", detail: "999"}]
   end
