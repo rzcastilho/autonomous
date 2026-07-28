@@ -248,8 +248,19 @@ defmodule SpeckitOrchestrator.AnalyzeRunnerTest do
 
     feature_detail = store_feature(run_key)
     assert Enum.map(feature_detail.remediation_attempts, & &1.ordinal) == [1]
-    assert Enum.map(feature_detail.phase_attempts, & &1.step) == [5]
-    assert Enum.map(feature_detail.phase_attempts, & &1.phase) == [:auto_remediation]
+
+    # Every superseded analyze run is individually recorded at its own ordinal
+    # (FR-012a, Constitution Principle V) — never collapsed onto one key. The
+    # *final* analyze run is recorded by `FeatureRunner` at the phase
+    # boundary, so driving `AnalyzeRunner` directly (as here) leaves exactly
+    # the superseded run #1 plus the corrective step, in execution order.
+    assert Enum.map(feature_detail.phase_attempts, &{&1.phase, &1.ordinal}) == [
+             {:analyze, 1},
+             {:auto_remediation, 1}
+           ]
+
+    # Neither consumes a pipeline step number — both sit under analyze's.
+    assert Enum.map(feature_detail.phase_attempts, & &1.step) == [5, 5]
   end
 
   test "the roll-up carries the FINAL analyze run's result, not an earlier pass (FR-005)" do

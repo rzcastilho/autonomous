@@ -12,11 +12,12 @@ defmodule SpeckitOrchestrator.Remediation do
   alias SpeckitOrchestrator.Remediation.Settings
 
   @type state :: %{
-          settings: Settings.t(),
-          attempts_used: non_neg_integer(),
-          analyze_runs: pos_integer(),
-          last_result: AnalyzeResult.t() | nil,
-          last_outcome: :ok | :error
+          :settings => Settings.t(),
+          :attempts_used => non_neg_integer(),
+          :analyze_runs => pos_integer(),
+          :last_result => AnalyzeResult.t() | nil,
+          :last_outcome => :ok | :error,
+          optional(:analyze_started_at) => DateTime.t() | nil
         }
 
   @type signals :: %{

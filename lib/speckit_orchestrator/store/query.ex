@@ -247,7 +247,7 @@ defmodule SpeckitOrchestrator.Store.Query do
         :speckit_phase_attempt
         |> Mnesia.index_read(f.key, :feature_key)
         |> index_decode(:speckit_phase_attempt)
-        |> Enum.sort_by(& &1.step),
+        |> Enum.sort_by(&attempt_order/1),
       escalations:
         :speckit_escalation
         |> Mnesia.index_read(f.run_key, :run_key)
@@ -261,6 +261,18 @@ defmodule SpeckitOrchestrator.Store.Query do
       checkpoint: read_one(:speckit_checkpoint, f.key)
     }
   end
+
+  # `step` alone no longer totally orders a feature's attempts: the analyze
+  # loop writes several under one step (`analyze` #1, `auto_remediation` #1,
+  # `analyze` #2 …). `started_at` breaks the tie into true execution order
+  # (US3 acceptance 1), as an integer — comparing `%DateTime{}` structs under
+  # Erlang term order compares them as maps, which is not chronological.
+  defp attempt_order(attempt) do
+    {attempt.step, started_at_unix(attempt.started_at), attempt.ordinal}
+  end
+
+  defp started_at_unix(%DateTime{} = at), do: DateTime.to_unix(at, :microsecond)
+  defp started_at_unix(_absent), do: 0
 
   defp read_one(table, key) do
     case Mnesia.read(table, key) do

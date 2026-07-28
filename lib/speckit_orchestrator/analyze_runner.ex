@@ -25,6 +25,7 @@ defmodule SpeckitOrchestrator.AnalyzeRunner do
 
   alias SpeckitOrchestrator.{
     AnalyzeResult,
+    Config,
     Cost,
     Ledger,
     PhaseResult,
@@ -77,6 +78,7 @@ defmodule SpeckitOrchestrator.AnalyzeRunner do
       settings: settings,
       attempts_used: 0,
       analyze_runs: 0,
+      analyze_started_at: nil,
       last_result: nil,
       last_outcome: nil
     }
@@ -106,6 +108,13 @@ defmodule SpeckitOrchestrator.AnalyzeRunner do
         halt(ctx, state1, agent)
 
       {:remediate, findings, state1} ->
+        # This analyze run is not the final one — the loop is about to run a
+        # corrective step and re-analyze — so record it here, at its own
+        # ordinal. The final run is recorded by `FeatureRunner` at the phase
+        # boundary, together with the checkpoint it leaves (FR-012a,
+        # Constitution Principle V: every analyze re-run individually
+        # recorded).
+        record_analyze_run(ctx, state1, agent)
         remediate_then_reanalyze(ctx, state1, findings)
     end
   end
@@ -138,15 +147,18 @@ defmodule SpeckitOrchestrator.AnalyzeRunner do
 
   # ---- one analyze run --------------------------------------------------------
 
-  # Only the **final** analyze run's result is durably recorded (as this
-  # feature run's `:analyze` phase attempt, by the caller — `FeatureRunner` —
-  # once the loop finishes); an intermediate re-analyze's own transcript is
-  # not separately persisted under the store (018 — a deliberate
-  # simplification versus the pre-018 per-attempt `analyze-a<k>.md` file
-  # copies). Each remediation attempt's own findings/outcome/cost remain
-  # individually durable via `record_remediation_attempt/8` below.
+  # Every analyze run is durably recorded as its own attempt-numbered
+  # `:analyze` phase attempt, and no run overwrites an earlier one (FR-012a,
+  # Constitution Principle V). Runs that the loop supersedes are recorded here
+  # in `loop/3`'s `{:remediate, ...}` branch; the **final** run is recorded by
+  # `FeatureRunner` at the phase boundary — at ordinal `analyze_runs`, carried
+  # up through the agent state — so it lands in the same transaction as the
+  # checkpoint that boundary leaves (FR-006). Each remediation attempt's own
+  # findings/outcome/cost stay individually durable via
+  # `record_remediation_attempt/8` below.
   defp analyze(ctx, state) do
     k = state.analyze_runs + 1
+    started_at = DateTime.utc_now()
 
     agent =
       PhaseStep.run(ctx.pid, ctx.feature, :analyze,
@@ -155,8 +167,45 @@ defmodule SpeckitOrchestrator.AnalyzeRunner do
         span_meta: %{attempt: k, limit: state.settings.attempt_limit}
       )
 
-    {agent, %{state | analyze_runs: k}}
+    {agent, %{state | analyze_runs: k, analyze_started_at: started_at}}
   end
+
+  # One superseded analyze run, at its own ordinal. No checkpoint: an
+  # intermediate run is not a phase boundary, so the only durable resume
+  # pointer stays the one the final run writes.
+  defp record_analyze_run(%{run_key: run_key} = ctx, state, agent) when not is_nil(run_key) do
+    result = agent.state.last_result
+    ended_at = DateTime.utc_now()
+    {cost_amount, cost_kind} = Cost.for_phase(:analyze, result || %PhaseResult{})
+
+    attempt = %{
+      feature_id: ctx.feature.id,
+      phase: :analyze,
+      ordinal: state.analyze_runs,
+      step: ctx.step,
+      label: "analyze-a#{state.analyze_runs}",
+      started_at: state.analyze_started_at,
+      ended_at: ended_at,
+      duration_ms: DateTime.diff(ended_at, state.analyze_started_at, :millisecond),
+      outcome: agent.state.last_outcome,
+      model: Config.model_for(:analyze),
+      cost_usd: cost_amount,
+      cost_kind: cost_kind,
+      session_id: agent.state.session_id,
+      error: result && result.error
+    }
+
+    _ =
+      Writer.record_phase_attempt(run_key, %{
+        attempt: attempt,
+        cost: %{amount_usd: cost_amount, kind: cost_kind},
+        transcript: result && result.final_text
+      })
+
+    :ok
+  end
+
+  defp record_analyze_run(_ctx, _state, _agent), do: :ok
 
   # `RunFeaturePhase` extracts only the gate booleans; the loop needs the
   # findings themselves, so the transcript is re-parsed here (pure, cheap). A
@@ -314,7 +363,8 @@ defmodule SpeckitOrchestrator.AnalyzeRunner do
     patch(agent,
       last_signals: exhaustion_signals(agent.state.last_signals || %{}, state, exhausted),
       terminal_reason: nil,
-      analyze_remediation: provenance(state)
+      analyze_remediation: provenance(state),
+      analyze_runs: state.analyze_runs
     )
   end
 
@@ -339,7 +389,8 @@ defmodule SpeckitOrchestrator.AnalyzeRunner do
       last_outcome: :error,
       last_signals: %{},
       terminal_reason: {:halted, :breaker},
-      analyze_remediation: provenance(state)
+      analyze_remediation: provenance(state),
+      analyze_runs: state.analyze_runs
     )
   end
 
@@ -353,7 +404,8 @@ defmodule SpeckitOrchestrator.AnalyzeRunner do
       last_outcome: :error,
       last_signals: %{},
       terminal_reason: {:failed, :remediation_failed},
-      analyze_remediation: provenance(state)
+      analyze_remediation: provenance(state),
+      analyze_runs: state.analyze_runs
     )
   end
 

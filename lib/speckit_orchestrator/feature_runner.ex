@@ -272,7 +272,7 @@ defmodule SpeckitOrchestrator.FeatureRunner do
       feature,
       phase,
       step,
-      1,
+      attempt_ordinal(st),
       started_at,
       agent,
       checkpoint_for(decorated, phase, st)
@@ -650,6 +650,16 @@ defmodule SpeckitOrchestrator.FeatureRunner do
 
     :ok
   end
+
+  # Almost every phase runs exactly once per feature run, so its attempt is
+  # ordinal 1. `:analyze` is the exception: `AnalyzeRunner`'s bounded loop can
+  # run it N times and reports N as `analyze_runs`, having already recorded
+  # runs 1..N-1 itself. Recording the final run at N keeps every analyze run
+  # individually addressable instead of collapsing them onto one key
+  # (FR-012a, Constitution Principle V). Absent — every non-analyze phase, and
+  # `:analyze` with the loop disabled — is ordinal 1, byte-identical to
+  # pre-017 behaviour (FR-010).
+  defp attempt_ordinal(st), do: Map.get(st, :analyze_runs) || 1
 
   # `:remediation` (013's pre-phase step) has no `Config.model_for/1` route of
   # its own (it runs under whichever model `Config.remediation_model/2`
