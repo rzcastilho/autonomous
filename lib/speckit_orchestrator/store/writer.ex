@@ -257,6 +257,23 @@ defmodule SpeckitOrchestrator.Store.Writer do
   end
 
   @doc """
+  Write one feature's checkpoint on its own, for the single boundary where the
+  phase attempt it belongs to was already committed by an earlier transaction:
+  the analyze loop's failure/breaker paths, where `AnalyzeRunner` recorded the
+  analyze run before the corrective step ran. Every other boundary MUST go
+  through `record_phase_attempt/2`, which writes the attempt and its checkpoint
+  together (FR-006) — this function does not weaken that, because the attempt
+  this checkpoint refers to is already durable when it is called.
+  """
+  @spec record_checkpoint(run_key(), binary(), map()) :: :ok | {:error, term()}
+  def record_checkpoint({repo_id, run_id} = run_key, feature_id, checkpoint) do
+    run_transaction(fn ->
+      write_checkpoint(run_key, Ids.feature_key(repo_id, run_id, feature_id), checkpoint)
+      :ok
+    end)
+  end
+
+  @doc """
   Record a feature's terminal status (R7 "feature terminal" boundary, one
   transaction): the `feature_run` status/reason/`ended_at`, and — only on
   `:done` — deletes the feature's `checkpoint` (a `:done` feature is never

@@ -382,6 +382,15 @@ defmodule SpeckitOrchestrator.AnalyzeRunner do
   # (`Pipeline` stays untouched) — `terminal_reason` is the existing seam
   # `FeatureRunner` reads to short-circuit straight to the specific reason,
   # shared with `ChunkRunner`.
+  #
+  # Both paths are reachable only from `remediate_then_reanalyze/3`, i.e. only
+  # after the `{:remediate, …}` branch already recorded the analyze run that
+  # triggered the corrective step — and the agent they return is the
+  # **remediation** agent, not that analyze run. So both flag
+  # `analyze_attempt_recorded?`, telling `FeatureRunner` to write the
+  # checkpoint alone rather than record this agent as the `:analyze` attempt.
+  # Without it the remediation step's outcome, cost and transcript overwrite
+  # the analyze run at the same `attempt_id`, and analyze's own record is lost.
   defp halt(ctx, state, agent) do
     Logger.info("feature #{ctx.feature.id} analyze auto-remediation halted — breaker tripped")
 
@@ -390,7 +399,8 @@ defmodule SpeckitOrchestrator.AnalyzeRunner do
       last_signals: %{},
       terminal_reason: {:halted, :breaker},
       analyze_remediation: provenance(state),
-      analyze_runs: state.analyze_runs
+      analyze_runs: state.analyze_runs,
+      analyze_attempt_recorded?: true
     )
   end
 
@@ -405,7 +415,8 @@ defmodule SpeckitOrchestrator.AnalyzeRunner do
       last_signals: %{},
       terminal_reason: {:failed, :remediation_failed},
       analyze_remediation: provenance(state),
-      analyze_runs: state.analyze_runs
+      analyze_runs: state.analyze_runs,
+      analyze_attempt_recorded?: true
     )
   end
 

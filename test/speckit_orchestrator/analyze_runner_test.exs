@@ -422,6 +422,20 @@ defmodule SpeckitOrchestrator.AnalyzeRunnerTest do
     assert Enum.map(store_feature(run_key).remediation_attempts, & &1.ordinal) == [1]
 
     assert result.state.analyze_remediation.attempts_used == 1
+
+    # The analyze run that triggered the corrective step keeps its OWN record:
+    # it succeeded, and its cost/transcript are analyze's, not the failed
+    # remediation's. The agent handed back here is the remediation agent, so
+    # it flags that the analyze attempt is already committed and `FeatureRunner`
+    # must not re-record it over the top.
+    assert result.state.analyze_attempt_recorded? == true
+
+    attempts = store_feature(run_key).phase_attempts
+    analyze = Enum.find(attempts, &(&1.phase == :analyze and &1.ordinal == 1))
+    remediation = Enum.find(attempts, &(&1.phase == :auto_remediation and &1.ordinal == 1))
+
+    assert analyze.outcome == :ok
+    assert remediation.outcome == :error
   end
 
   test "a breaker trip between steps halts after the in-flight step finishes", %{agent: agent} do

@@ -41,6 +41,25 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
 
         # A genuine (non-transient) remediation failure — never retried, stops
         # the resume before the target phase runs (FR-006/SC-005).
+        # The 017 auto-remediation corrective step (distinct from 013's
+        # pre-phase remediation) errors, so the loop stops at
+        # :remediation_failed with the analyze run already recorded.
+        scenario == :auto_remediation_error and auto_remediation_prompt?(prompt) ->
+          [
+            %Message{type: :system, subtype: :init, data: %{session_id: "s"}, raw: %{}},
+            %Message{
+              type: :result,
+              subtype: :error,
+              data: %{
+                session_id: "s",
+                result: "Corrective step failed: cannot resolve the finding.",
+                is_error: true,
+                total_cost_usd: nil
+              },
+              raw: %{}
+            }
+          ]
+
         scenario == :remediation_error and remediation_prompt?(prompt) ->
           [
             %Message{type: :system, subtype: :init, data: %{session_id: "s"}, raw: %{}},
@@ -78,6 +97,9 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
     end
 
     defp remediation_prompt?(prompt), do: String.contains?(prompt, "Remediation for feature")
+
+    defp auto_remediation_prompt?(prompt),
+      do: String.contains?(prompt, "analyze auto-remediation loop")
 
     # First call drops mid-response: an error result carrying a server-drop
     # signature. Must be retried, not fail the feature.
@@ -135,7 +157,7 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
             :bad_analyze ->
               "No JSON here, just prose — malformed analyze output."
 
-            :analyze_high ->
+            scen when scen in [:analyze_high, :auto_remediation_error] ->
               ~s({"summary":"gaps","findings":[{"severity":"high","title":"plan.md missing"}]})
 
             _ ->
@@ -460,6 +482,42 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
 
     assert result.status == :halted
     assert result.reason == :critical_finding
+  end
+
+  # Regression: the failed-remediation path returns the *remediation* agent, so
+  # recording it as the `:analyze` attempt overwrote the analyze run at the same
+  # attempt_id — the stored analyze row showed the corrective step's outcome,
+  # cost and transcript, and analyze's own record was lost.
+  test "a failed corrective step does not overwrite the analyze run's own record" do
+    Application.put_env(:speckit_orchestrator, :test_fake_scenario, :auto_remediation_error)
+    wt = scaffolded_worktree()
+    run_key = open_store_run()
+
+    result = FeatureRunner.run(feature(), worktree: wt, notify: self(), run_key: run_key)
+
+    assert result.status == :failed
+    assert result.reason == :remediation_failed
+
+    {:ok, detail} = SpeckitOrchestrator.Store.run(run_key)
+    [feature_detail] = detail.features
+
+    analyze = Enum.find(feature_detail.phase_attempts, &(&1.phase == :analyze))
+    corrective = Enum.find(feature_detail.phase_attempts, &(&1.phase == :auto_remediation))
+
+    # Both rows exist and each carries its own outcome — analyze succeeded, the
+    # corrective step is the thing that errored.
+    assert analyze.outcome == :ok
+    assert corrective.outcome == :error
+
+    # The analyze row must not have inherited the corrective step's identity.
+    assert analyze.label == "analyze-a1"
+    refute analyze.ended_at == corrective.ended_at
+
+    # The checkpoint is still written for the boundary, at the analyze phase
+    # (FR-012b — auto-remediation is a sub-step, never a pipeline position).
+    assert feature_detail.checkpoint.phase == :analyze
+    assert feature_detail.checkpoint.status == :failed
+    assert feature_detail.checkpoint.reason == :remediation_failed
   end
 
   test "phase :analyze delegates to AnalyzeRunner — the loop runs below the gate (017)" do

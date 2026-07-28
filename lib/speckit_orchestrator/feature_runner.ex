@@ -619,6 +619,25 @@ defmodule SpeckitOrchestrator.FeatureRunner do
   defp record_attempt(nil, _feature, _phase, _step, _ordinal, _started_at, _agent, _checkpoint),
     do: :ok
 
+  # `AnalyzeRunner`'s failure and breaker paths already committed the analyze
+  # run, and hand back the *remediation* agent — recording that here would
+  # overwrite the analyze attempt with the corrective step's outcome, cost and
+  # transcript at the same `attempt_id`. Write the checkpoint alone; the
+  # attempt it refers to is already durable.
+  defp record_attempt(
+         run_key,
+         feature,
+         _phase,
+         _step,
+         _ordinal,
+         _started_at,
+         %{state: %{analyze_attempt_recorded?: true}},
+         checkpoint
+       ) do
+    _ = checkpoint && Writer.record_checkpoint(run_key, feature.id, checkpoint)
+    :ok
+  end
+
   defp record_attempt(run_key, feature, phase, step, ordinal, started_at, agent, checkpoint) do
     st = agent.state
     result = st.last_result
