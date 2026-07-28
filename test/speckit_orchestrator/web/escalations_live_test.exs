@@ -147,6 +147,24 @@ defmodule SpeckitOrchestrator.Web.EscalationsLiveTest do
     pid
   end
 
+  # Regression: divert reasons are arbitrary terms, and the artifact gate
+  # produces a 3-tuple. Rendering it raw raised Protocol.UndefinedError
+  # (Phoenix.HTML.Safe is only implemented for `{:safe, iodata}` tuples), so
+  # the whole page 500'd instead of showing the escalation.
+  test "renders a tuple divert reason instead of crashing the page", %{conn: conn} do
+    reason = {:missing_artifact, :implement, "implementation changes"}
+    seed_store_run([{feat("e20", "slug-e20"), :implement, :failed, reason: reason}])
+
+    pid = start_coordinator([feat("e20", "slug-e20")], %{"e20" => {:failed, reason}})
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    {:ok, _view, html} = live(conn, "/escalations")
+
+    assert html =~ ~s(data-escalation="e20")
+    assert html =~ "missing_artifact"
+    assert html =~ "implementation changes"
+  end
+
   test "lists every diverted feature with divert reason + checkpoint pointer", %{conn: conn} do
     seed_store_run([
       {feat("e1", "slug-e1"), :clarify, :escalated, reason: "needs human", session_id: "sess-1"},

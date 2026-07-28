@@ -366,7 +366,7 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
           </span>
           <.status_pill status={e.feature.status} />
           <span :if={e.divert_reason} class="escalation-reason" data-divert-reason>
-            reason: {e.divert_reason}
+            reason: {inspect(e.divert_reason)}
           </span>
         </div>
 
