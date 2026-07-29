@@ -215,6 +215,70 @@ defmodule SpeckitOrchestrator.WorktreeTest do
     assert String.trim(remote_ref) == String.trim(local_ref)
   end
 
+  describe "merged?/4 — is this branch still a legitimate base?" do
+    test "false for an unmerged branch, true once it lands in the base" do
+      repo = base_repo()
+      {:ok, wt} = Worktree.create(feature(), with_root(repo))
+
+      File.write!(Path.join(wt.path, "work.txt"), "work\n")
+      Worktree.commit(wt, "feature work")
+
+      refute Worktree.merged?(repo, wt.branch, "main")
+
+      git!(repo, ["merge", "--no-ff", "-m", "merge feature", wt.branch])
+
+      assert Worktree.merged?(repo, wt.branch, "main")
+    end
+
+    test "true for a branch that no longer exists — deleted after its PR landed" do
+      repo = base_repo()
+      assert Worktree.merged?(repo, "feature/999-long-gone", "main")
+    end
+
+    test "prefers the remote-tracking base, since the local one lags what actually merged" do
+      repo = base_repo()
+      {:ok, wt} = Worktree.create(feature(), with_root(repo))
+      File.write!(Path.join(wt.path, "work.txt"), "work\n")
+      Worktree.commit(wt, "feature work")
+
+      remote_dir = Path.join(System.tmp_dir!(), "wt_remote_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(remote_dir)
+      git!(remote_dir, ["init", "-q", "--bare"])
+      on_exit(fn -> File.rm_rf(remote_dir) end)
+      git!(repo, ["remote", "add", "origin", remote_dir])
+      git!(repo, ["push", "-q", "origin", "main"])
+
+      # The merge happens upstream only — local `main` never sees it, which is
+      # the normal state after someone merges the PR on the forge.
+      clone = Path.join(System.tmp_dir!(), "wt_clone_#{System.unique_integer([:positive])}")
+      on_exit(fn -> File.rm_rf(clone) end)
+      {_, 0} = System.cmd("git", ["clone", "-q", remote_dir, clone])
+      git!(clone, ["config", "user.email", "m@example.test"])
+      git!(clone, ["config", "user.name", "Merger"])
+      git!(repo, ["push", "-q", "origin", wt.branch])
+      git!(clone, ["fetch", "-q", "origin", wt.branch])
+      git!(clone, ["merge", "--no-ff", "-m", "merge feature", "FETCH_HEAD"])
+      git!(clone, ["push", "-q", "origin", "main"])
+
+      git!(repo, ["fetch", "-q", "origin"])
+
+      # Local main still has no idea, so an unqualified check says unmerged...
+      refute Worktree.merged?(repo, wt.branch, "main")
+      # ...but against origin/main it is plainly merged, and that is the truth
+      # a PR base has to respect.
+      assert Worktree.merged?(repo, wt.branch, "main", remote: "origin")
+    end
+
+    test "falls back to the local base when the remote-tracking ref is absent" do
+      repo = base_repo()
+      {:ok, wt} = Worktree.create(feature(), with_root(repo))
+      File.write!(Path.join(wt.path, "work.txt"), "work\n")
+      Worktree.commit(wt, "feature work")
+
+      refute Worktree.merged?(repo, wt.branch, "main", remote: "nonexistent")
+    end
+  end
+
   test "push/2 replaces a previous run's diverged branch instead of failing non-fast-forward" do
     repo = base_repo()
     root = with_root(repo)

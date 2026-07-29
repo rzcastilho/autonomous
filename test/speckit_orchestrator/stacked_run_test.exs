@@ -68,6 +68,164 @@ defmodule SpeckitOrchestrator.StackedRunTest do
     assert report.done == ["001", "002", "003"]
   end
 
+  test "a resumed run stacks on the last :done feature's branch, not back on pr_base" do
+    me = self()
+
+    executor = fn feature, base, notify ->
+      send(me, {:built, feature.id, base})
+      notify.(feature.id, :done, nil)
+      :ok
+    end
+
+    publisher = fn feature, base ->
+      send(me, {:pr, feature.id, base})
+      {:ok, "https://example/pr/#{feature.id}"}
+    end
+
+    features = [feat("001", "core"), feat("002", "vote"), feat("003", "results")]
+
+    # The shape a resume restores: 001 already built and published in an
+    # earlier run, 002 the target, 003 untouched.
+    {:ok, pid} =
+      SpeckitOrchestrator.run(
+        features: features,
+        statuses: %{"001" => :done, "002" => :pending, "003" => :pending},
+        executor: executor,
+        publisher: publisher,
+        owner: me
+      )
+
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    # 001 is already done, so it never rebuilds. 002 must target 001's branch —
+    # a fresh `pr_base` seed would open its PR against "main", flattening the
+    # stack and carrying 001's commits into it.
+    assert_receive {:built, "002", "feature/001-core"}, 2_000
+    assert_receive {:pr, "002", "feature/001-core"}, 2_000
+    assert_receive {:built, "003", "feature/002-vote"}, 2_000
+    assert_receive {:pr, "003", "feature/002-vote"}, 2_000
+
+    refute_received {:built, "001", _}
+    refute_received {:pr, "001", _}
+  end
+
+  test "a merged branch is skipped as a base — the next feature stacks on pr_base instead" do
+    me = self()
+
+    executor = fn feature, base, notify ->
+      send(me, {:built, feature.id, base})
+      notify.(feature.id, :done, nil)
+      :ok
+    end
+
+    publisher = fn feature, base ->
+      send(me, {:pr, feature.id, base})
+      {:ok, "https://example/pr/#{feature.id}"}
+    end
+
+    features = [feat("001", "core"), feat("002", "vote"), feat("003", "results")]
+
+    # 001 is done AND its PR already landed in main. The stack the operator
+    # expects is:
+    #     main <- 001 (merged), main <- 002, 002 <- 003
+    {:ok, pid} =
+      SpeckitOrchestrator.run(
+        features: features,
+        statuses: %{"001" => :done, "002" => :pending, "003" => :pending},
+        executor: executor,
+        publisher: publisher,
+        merged?: fn branch -> branch == "feature/001-core" end,
+        owner: me
+      )
+
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    # 002 skips the merged 001 and goes straight onto the trunk...
+    assert_receive {:built, "002", "main"}, 2_000
+    assert_receive {:pr, "002", "main"}, 2_000
+    # ...but 003 still stacks on 002, which is open. The chain resumes; it does
+    # not collapse to main for everything after a merge.
+    assert_receive {:built, "003", "feature/002-vote"}, 2_000
+    assert_receive {:pr, "003", "feature/002-vote"}, 2_000
+  end
+
+  test "a chain merged out of order still finds an open base rather than jumping to the trunk" do
+    me = self()
+
+    executor = fn feature, base, notify ->
+      send(me, {:built, feature.id, base})
+      notify.(feature.id, :done, nil)
+      :ok
+    end
+
+    features = [feat("001", "core"), feat("002", "vote"), feat("003", "results")]
+
+    # 002 landed but 001 did not — degenerate, but the walk must not stop at
+    # the newest link and give up on the whole chain.
+    {:ok, pid} =
+      SpeckitOrchestrator.run(
+        features: features,
+        statuses: %{"001" => :done, "002" => :done, "003" => :pending},
+        executor: executor,
+        publisher: fn _f, _b -> {:ok, "u"} end,
+        merged?: fn branch -> branch == "feature/002-vote" end,
+        owner: me
+      )
+
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    assert_receive {:built, "003", "feature/001-core"}, 2_000
+  end
+
+  test "a run with no restored statuses still seeds the stack at pr_base" do
+    me = self()
+
+    executor = fn feature, base, notify ->
+      send(me, {:built, feature.id, base})
+      notify.(feature.id, :done, nil)
+      :ok
+    end
+
+    {:ok, pid} =
+      SpeckitOrchestrator.run(
+        features: [feat("001", "core")],
+        executor: executor,
+        publisher: fn _f, _b -> {:ok, "u"} end,
+        owner: me
+      )
+
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    assert_receive {:built, "001", "main"}, 2_000
+  end
+
+  test "an ad-hoc feature already :done never seeds the stack — it is not part of the chain" do
+    me = self()
+
+    executor = fn feature, base, notify ->
+      send(me, {:built, feature.id, base})
+      notify.(feature.id, :done, nil)
+      :ok
+    end
+
+    features = [feat("001", "core"), ad_hoc_feat("900", "hotfix", ~U[2026-01-01 00:00:00Z])]
+
+    {:ok, pid} =
+      SpeckitOrchestrator.run(
+        features: features,
+        statuses: %{"900" => :done, "001" => :pending},
+        executor: executor,
+        publisher: fn _f, _b -> {:ok, "u"} end,
+        owner: me
+      )
+
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    # FR-028: an ad-hoc feature never advances the chain, so a :done one must
+    # not become a backlog feature's base either.
+    assert_receive {:built, "001", "main"}, 2_000
+  end
+
   test "every run is strictly sequential (one feature at a time), even with an injected runner" do
     me = self()
 
@@ -119,7 +277,12 @@ defmodule SpeckitOrchestrator.StackedRunTest do
     ]
 
     {:ok, pid} =
-      SpeckitOrchestrator.run(features: features, executor: executor, publisher: publisher, owner: me)
+      SpeckitOrchestrator.run(
+        features: features,
+        executor: executor,
+        publisher: publisher,
+        owner: me
+      )
 
     on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
 
@@ -196,8 +359,9 @@ defmodule SpeckitOrchestrator.StackedRunTest do
     on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
 
     assert_receive {:built, "001", "main"}, 2_000
+
     assert_receive {:telemetry, [:speckit, :publish, :failed], %{},
-                     %{feature_id: "001", reason: :push_rejected}},
+                    %{feature_id: "001", reason: :push_rejected}},
                    2_000
 
     # 002 still stacks on 001's local branch, despite 001's PR never opening.

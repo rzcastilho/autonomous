@@ -1,7 +1,12 @@
 defmodule SpeckitOrchestrator.RunSpecTest do
   # async: false — swaps the global :jido_claude sdk_module, :speckit_orchestrator
   # app env (repo/worktree_root), and the fixed-name Coordinator.
-  use ExUnit.Case, async: false
+  #
+  # StoreCase, not a plain Case: these tests drive real facade runs, which record
+  # to the node-global store and park it when a drain ends on a non-`:done`
+  # feature. Without per-test clearing, one test's parked run refuses every later
+  # test's `run_spec/2` with `{:parked_run, …}`.
+  use SpeckitOrchestrator.StoreCase, async: false
 
   alias SpeckitOrchestrator.{Coordinator, Ledger, RepoIdentity, SingleSpec}
 

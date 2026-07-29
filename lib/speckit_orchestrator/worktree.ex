@@ -247,6 +247,42 @@ defmodule SpeckitOrchestrator.Worktree do
     end
   end
 
+  @doc """
+  Whether `branch` has already landed in `into` — its tip is an ancestor of
+  `into`, so stacking anything else on it would be stacking on merged history.
+
+  Used by the stacked PR workflow to skip merged links when choosing a base
+  (`main <- 001 (merged)` means the next feature belongs on `main`, not on
+  `feature/001-…`). `into` is resolved against `<remote>/<into>` when that
+  remote-tracking ref exists, because the local branch is usually behind
+  whatever has actually been merged upstream.
+
+  A branch that no longer exists locally counts as merged: it is gone because
+  its PR landed and the branch was deleted, and either way it is not something
+  to stack on. `false` on any git failure — the conservative answer, since
+  wrongly reporting "merged" silently reparents a PR onto the trunk.
+  """
+  @spec merged?(Path.t(), String.t(), String.t(), keyword()) :: boolean()
+  def merged?(repo, branch, into, opts \\ []) do
+    if branch_exists?(repo, branch) do
+      target = merge_target(repo, into, Keyword.get(opts, :remote))
+      match?({:ok, _}, git(repo, ["merge-base", "--is-ancestor", "refs/heads/#{branch}", target]))
+    else
+      true
+    end
+  end
+
+  defp merge_target(_repo, into, nil), do: into
+
+  defp merge_target(repo, into, remote) do
+    remote_ref = "refs/remotes/#{remote}/#{into}"
+
+    case git(repo, ["rev-parse", "--verify", "--quiet", remote_ref]) do
+      {:ok, _} -> remote_ref
+      {:error, _} -> into
+    end
+  end
+
   # ---- git plumbing -------------------------------------------------------
 
   defp ensure_root(root) do

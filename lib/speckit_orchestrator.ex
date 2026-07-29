@@ -19,6 +19,7 @@ defmodule SpeckitOrchestrator do
     Pipeline,
     PullRequest,
     Recovery,
+    Release,
     Remediation,
     Report,
     RepoIdentity,
@@ -35,6 +36,7 @@ defmodule SpeckitOrchestrator do
   require Logger
 
   @coordinator SpeckitOrchestrator.Coordinator
+  @stack_tracker SpeckitOrchestrator.StackTracker
 
   @doc """
   Start a run. Options (all optional):
@@ -1738,14 +1740,66 @@ defmodule SpeckitOrchestrator do
         :error -> base
       end
 
-    Coordinator.start_link(base ++ extra)
+    start_coordinator(base ++ extra)
   end
 
-  defp stop_previous_run do
-    case Process.whereis(@coordinator) do
+  # Started under `CoordinatorSup`, never linked to the caller. A run's lifetime
+  # is the run's: the console asks for one from inside a transient
+  # `Task.Supervisor.async_nolink` process that exits as soon as the call
+  # returns, and a linked Coordinator died with it — releasing the feature,
+  # spawning its runner under `RunnerSup`, then vanishing. The runner kept going
+  # (it is a separate child of `RunnerSup`, not linked to the Coordinator), so
+  # phases ran and telemetry flowed while the console, seeing no Coordinator,
+  # showed the feature's last recorded status forever.
+  #
+  # `:owner` still defaults to the caller — a drained run's final report goes to
+  # whoever asked for it, and a caller that has since exited simply never reads
+  # its mailbox.
+  defp start_coordinator(args) do
+    case DynamicSupervisor.start_child(
+           SpeckitOrchestrator.CoordinatorSup,
+           %{
+             id: @coordinator,
+             start: {Coordinator, :start_link, [args]},
+             restart: :temporary,
+             type: :worker
+           }
+         ) do
+      {:ok, pid} -> {:ok, pid}
+      {:error, {:already_started, pid}} -> {:error, {:already_started, pid}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp stop_previous_run, do: stop_named(@coordinator)
+
+  defp stop_named(name) do
+    case Process.whereis(name) do
       nil -> :ok
       pid -> GenServer.stop(pid, :normal)
     end
+  end
+
+  # Beside the Coordinator, under the same supervisor, for the same reason: a
+  # tracker linked to whoever asked for the run dies with them, and the
+  # Coordinator — which now correctly outlives its caller — then crashes on the
+  # next `set_top/2` with `no process`.
+  #
+  # Retires any previous run's tracker itself rather than leaving that to
+  # `stop_previous_run/0`, which `start_run/2` calls *after* this — it would
+  # stop the tracker this run just started.
+  defp start_stack_tracker(pr_base, chain) do
+    :ok = stop_named(@stack_tracker)
+
+    DynamicSupervisor.start_child(
+      SpeckitOrchestrator.CoordinatorSup,
+      %{
+        id: @stack_tracker,
+        start: {StackTracker, :start_link, [pr_base, [name: @stack_tracker, chain: chain]]},
+        restart: :temporary,
+        type: :worker
+      }
+    )
   end
 
   defp load_backlog do
@@ -1917,7 +1971,7 @@ defmodule SpeckitOrchestrator do
     test_mode? = Keyword.has_key?(opts, :runner) or Keyword.has_key?(opts, :executor)
 
     with :ok <- preflight_stacked(test_mode?) do
-      {:ok, tracker} = StackTracker.start_link(Config.pr_base())
+      {:ok, tracker} = start_stack_tracker(Config.pr_base(), stack_seed(opts))
 
       publisher =
         Keyword.get(opts, :publisher, fn feature, base ->
@@ -1929,7 +1983,10 @@ defmodule SpeckitOrchestrator do
           default_executor(feature, base, notify, run_context, layout)
         end)
 
-      runner = Keyword.get(opts, :runner) || stacked_runner(tracker, publisher, executor)
+      merged? = Keyword.get(opts, :merged?, default_merged_fun(test_mode?))
+
+      runner =
+        Keyword.get(opts, :runner) || stacked_runner(tracker, publisher, executor, merged?)
 
       start_run(opts,
         context: run_context,
@@ -1938,6 +1995,30 @@ defmodule SpeckitOrchestrator do
         runner: runner
       )
     end
+  end
+
+  # Where the stack already stands when this run starts.
+  #
+  # A fresh run starts at `pr_base` because nothing is built yet. A resume does
+  # not: the features ordered before the resumed one are already `:done`, with
+  # branches pushed and PRs open. Seeding at `pr_base` regardless made the
+  # resumed feature's PR target `main` instead of the feature it actually
+  # builds on — a chain of stacked PRs silently flattened into parallel ones
+  # against the trunk, each carrying its predecessors' commits.
+  #
+  # The seed is therefore the branch of the last `:done` backlog feature in
+  # `Release.order/1` — which is exactly what `set_top/2` would have left there
+  # had this run built them itself. Absent any (a genuinely fresh run, or one
+  # whose statuses were not restored), `pr_base`.
+  defp stack_seed(opts) do
+    statuses = Keyword.get(opts, :statuses) || %{}
+    features = Keyword.get(opts, :features) || []
+
+    features
+    |> Release.order()
+    |> Enum.filter(&(&1.group == :backlog and Map.get(statuses, &1.id) == :done))
+    |> Enum.reverse()
+    |> Enum.map(&"feature/#{&1.id}-#{&1.slug}")
   end
 
   # Preflight the real target (pack scaffold + committed constitution + remote)
@@ -1951,20 +2032,48 @@ defmodule SpeckitOrchestrator do
     end
   end
 
-  # A backlog feature branches from the current stack top; on `:done` its
-  # branch is published and becomes the new top for the next feature. An
-  # ad-hoc feature always branches from `Config.pr_base()` directly, never
-  # the chain top, and never advances it on completion (FR-028) — one feature
-  # at a time makes the tracker race-free either way.
-  defp stacked_runner(tracker, publisher, executor) do
+  # A backlog feature branches from, and targets, the newest completed branch
+  # still open; on `:done` its own branch joins the chain for the next feature.
+  # An ad-hoc feature always branches from `Config.pr_base()` directly, never
+  # the chain, and never joins it on completion (FR-028) — one feature at a
+  # time makes the tracker race-free either way.
+  defp stacked_runner(tracker, publisher, executor, merged?) do
     fn feature, notify ->
-      base = feature_base(feature, tracker)
+      base = feature_base(feature, tracker, merged?)
       executor.(feature, base, pr_notify(feature, base, tracker, publisher, notify))
     end
   end
 
-  defp feature_base(%Feature{group: :ad_hoc}, _tracker), do: Config.pr_base()
-  defp feature_base(%Feature{group: :backlog}, tracker), do: StackTracker.top(tracker)
+  defp feature_base(%Feature{group: :ad_hoc}, _tracker, _merged?), do: Config.pr_base()
+
+  defp feature_base(%Feature{group: :backlog}, tracker, merged?),
+    do: resolve_base(StackTracker.chain(tracker), StackTracker.base(tracker), merged?)
+
+  # The newest link in the chain that is still a legitimate base, else
+  # `pr_base`. A merged branch is skipped rather than stacked on: once 001 is
+  # in `main`, `main <- 002` is the correct shape, and a PR targeting the
+  # merged `feature/001-…` would either be closed by the forge as empty or
+  # replay 001's commits. A branch deleted after its merge is skipped for the
+  # same reason (`Worktree.merged?/4` treats absence as merged).
+  #
+  # Walks rather than checking only the newest link, so a chain merged out of
+  # order still lands on something open instead of jumping to the trunk.
+  defp resolve_base(chain, pr_base, merged?),
+    do: Enum.find(chain, pr_base, &(not merged?.(&1)))
+
+  # Real runs consult git. A seam-injected run has no real repository behind
+  # those branch names, and `merged?/4` reads an absent branch as merged (it is
+  # gone because it landed), which would collapse every seam test's chain onto
+  # `pr_base` — the same reason `preflight_stacked/1` skips the real preflight.
+  defp default_merged_fun(true), do: fn _branch -> false end
+
+  defp default_merged_fun(false) do
+    repo = Config.repo()
+    pr_base = Config.pr_base()
+    remote = Config.pr_remote()
+
+    fn branch -> Worktree.merged?(repo, branch, pr_base, remote: remote) end
+  end
 
   defp pr_notify(feature, base, tracker, publisher, notify) do
     fn id, status, reason ->
@@ -2006,7 +2115,7 @@ defmodule SpeckitOrchestrator do
     end
 
     if feature.group == :backlog do
-      StackTracker.set_top(tracker, Worktree.locate(feature).branch)
+      StackTracker.push(tracker, Worktree.locate(feature).branch)
     end
   end
 
