@@ -187,6 +187,108 @@ defmodule SpeckitOrchestrator.TaskPlanTest do
     end
   end
 
+  # ---- load/2: a stacked worktree holds every earlier feature's specs -------
+
+  describe "load/2 — scoping to the feature being built" do
+    # A stacked run's worktree branches from the previous feature's branch, so
+    # `specs/` holds 001's finished list (every box checked) alongside 002's
+    # fresh one. Alphabetical order puts 001 first.
+    defp stacked_worktree(opts \\ []) do
+      dir = Path.join(System.tmp_dir!(), "tp_wt_#{System.unique_integer([:positive])}")
+      on_exit(fn -> File.rm_rf(dir) end)
+
+      File.mkdir_p!(Path.join(dir, "specs/001-core-ledger"))
+
+      File.write!(
+        Path.join(dir, "specs/001-core-ledger/tasks.md"),
+        "# Tasks: Core\n\n## Phase 1: Setup\n\n- [x] T001 done already\n"
+      )
+
+      if own_dir = Keyword.get(opts, :own, "specs/002-categories") do
+        File.mkdir_p!(Path.join(dir, own_dir))
+
+        File.write!(
+          Path.join(dir, "#{own_dir}/tasks.md"),
+          "# Tasks: Categories\n\n## Phase 1: Setup\n\n- [ ] T001 not done yet\n"
+        )
+      end
+
+      if recorded = Keyword.get(opts, :recorded) do
+        File.mkdir_p!(Path.join(dir, ".specify"))
+
+        File.write!(
+          Path.join(dir, ".specify/feature.json"),
+          JSON.encode!(%{feature_directory: recorded})
+        )
+      end
+
+      dir
+    end
+
+    defp feat(id, slug), do: %{id: id, slug: slug}
+
+    test "load/1 loads the wrong feature's finished list — the defect load/2 exists to fix" do
+      plan = TaskPlan.load(stacked_worktree())
+
+      assert plan.source =~ "001-core-ledger"
+      # Every box checked, so the chunk loop would skip every task-phase and
+      # dispatch nothing at all.
+      assert TaskPlan.complete?(plan)
+    end
+
+    test "resolves specs/<id>-<slug>/tasks.md, not the first match alphabetically" do
+      plan = TaskPlan.load(stacked_worktree(), feat("002", "categories"))
+
+      assert plan.source =~ "002-categories"
+      refute TaskPlan.complete?(plan)
+      assert TaskPlan.total_tasks(plan) == 1
+    end
+
+    test "falls back to the spec dir the Spec Kit CLI recorded when the slug drifted" do
+      worktree =
+        stacked_worktree(own: "specs/002-categorise", recorded: "specs/002-categorise")
+
+      plan = TaskPlan.load(worktree, feat("002", "categories"))
+
+      assert plan.source =~ "002-categorise"
+      refute TaskPlan.complete?(plan)
+    end
+
+    test "falls back to the id prefix when neither the slug nor a recorded dir matches" do
+      worktree = stacked_worktree(own: "specs/002-something-else")
+
+      plan = TaskPlan.load(worktree, feat("002", "categories"))
+
+      assert plan.source =~ "002-something-else"
+      refute TaskPlan.complete?(plan)
+    end
+
+    test "ignores a recorded dir that points outside the worktree" do
+      worktree = stacked_worktree(own: nil, recorded: "../elsewhere")
+
+      plan = TaskPlan.load(worktree, feat("002", "categories"))
+
+      # No file of its own resolved, so the unstructured fallback — never the
+      # escaped path, and never 001's list.
+      refute plan.structured?
+      assert plan.source == nil
+    end
+
+    test "takes the unstructured fallback rather than another feature's list when its own is absent" do
+      plan = TaskPlan.load(stacked_worktree(own: nil), feat("002", "categories"))
+
+      # Unstructured makes the chunk loop dispatch the whole list (FR-004), so
+      # implement still runs. Inheriting 001's completed list runs nothing.
+      refute plan.structured?
+      assert plan.source == nil
+    end
+
+    test "a nil feature is the unscoped path, unchanged" do
+      worktree = stacked_worktree()
+      assert TaskPlan.load(worktree, nil) == TaskPlan.load(worktree)
+    end
+  end
+
   # ---- ref/1 round-trip ------------------------------------------------------
 
   test "ref/1 builds the TaskPhaseRef identity for locate/2 to resolve back" do

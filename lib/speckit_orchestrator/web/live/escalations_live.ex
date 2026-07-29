@@ -140,7 +140,7 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
   defp task_phase_picker(_identity, _checkpoint, phase) when phase != :implement, do: nil
 
   defp task_phase_picker(identity, checkpoint, :implement) do
-    plan = identity |> Worktree.locate() |> Map.fetch!(:path) |> TaskPlan.load()
+    plan = identity |> Worktree.locate() |> Map.fetch!(:path) |> TaskPlan.load(identity)
 
     if plan.structured? do
       ref = ref_from_checkpoint(checkpoint)

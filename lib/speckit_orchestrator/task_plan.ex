@@ -103,19 +103,92 @@ defmodule SpeckitOrchestrator.TaskPlan do
 
   @doc """
   Load and parse the `tasks.md` under a worktree path. The single edge reader
-  for this module — globs `specs/**/tasks.md`, reads the first match, and
-  delegates to `parse/2`. Never raises: an absent, unreadable, or empty file
-  yields the FR-004 fallback plan.
+  for this module — resolves the file, reads it, and delegates to `parse/2`.
+  Never raises: an absent, unreadable, or empty file yields the FR-004
+  fallback plan.
+
+  **Pass the feature.** A stacked run's worktree branches from the previous
+  feature's branch, so it contains every earlier feature's `specs/` directory
+  too — and each of those has a `tasks.md` with every box checked off, because
+  that feature finished. Globbing `specs/**/tasks.md` and taking the first
+  match therefore loads *feature 001's completed list* for every feature after
+  it: `complete?/1` is trivially true, the chunk loop skips every task-phase
+  without dispatching a single session, and `:implement` fails the artifact
+  gate as `{:missing_artifact, :implement, "implementation changes"}` — a
+  wholly misleading reason for "I read the wrong file".
+
+  Resolution order for a scoped call, most authoritative first:
+
+    1. `specs/<id>-<slug>/tasks.md` — `PhaseRequest` pins
+       `SPECIFY_FEATURE_DIRECTORY` to exactly this, matching the branch name.
+    2. `.specify/feature.json`'s `feature_directory` — what the Spec Kit CLI
+       itself recorded, which covers a run whose slug drifted.
+    3. `specs/<id>-*/tasks.md` — the id prefix is the stable part.
+
+  If none of those resolve, a scoped call takes the **unstructured fallback**
+  rather than any other feature's file. That is the safe direction: an
+  unstructured plan makes the chunk loop dispatch the whole list (FR-004), so
+  implement runs. Silently inheriting a completed list makes it run nothing.
+
+  `load/1` keeps the old unscoped glob for callers with no feature in hand.
   """
   @spec load(String.t()) :: t()
-  def load(worktree_path) do
+  def load(worktree_path), do: read_and_parse(unscoped_path(worktree_path))
+
+  @spec load(String.t(), map() | nil) :: t()
+  def load(worktree_path, nil), do: load(worktree_path)
+
+  def load(worktree_path, %{id: id} = feature) when is_binary(id) do
+    read_and_parse(scoped_path(worktree_path, feature))
+  rescue
+    _ -> fallback()
+  end
+
+  defp unscoped_path(worktree_path) do
     worktree_path
     |> Path.join("specs/**/tasks.md")
     |> Path.wildcard()
     |> List.first()
-    |> read_and_parse()
   rescue
-    _ -> fallback()
+    _ -> nil
+  end
+
+  defp scoped_path(worktree_path, %{id: id} = feature) do
+    slug = Map.get(feature, :slug)
+
+    candidates =
+      [
+        slug && Path.join([worktree_path, "specs", "#{id}-#{slug}", "tasks.md"]),
+        recorded_feature_dir(worktree_path) |> maybe_join("tasks.md")
+      ]
+      |> Enum.reject(&is_nil/1)
+
+    Enum.find(candidates, &File.regular?/1) || id_prefix_path(worktree_path, id)
+  end
+
+  defp maybe_join(nil, _leaf), do: nil
+  defp maybe_join(dir, leaf), do: Path.join(dir, leaf)
+
+  # The spec dir the Spec Kit CLI recorded for this worktree. Only a plain
+  # relative path is honoured — an absolute one, or one climbing out with
+  # `..`, would resolve outside this worktree and is exactly the sort of
+  # cross-feature leak this function exists to stop.
+  defp recorded_feature_dir(worktree_path) do
+    with {:ok, raw} <- File.read(Path.join(worktree_path, ".specify/feature.json")),
+         {:ok, %{"feature_directory" => dir}} when is_binary(dir) <- JSON.decode(raw),
+         :relative <- Path.type(dir),
+         false <- ".." in Path.split(dir) do
+      Path.join(worktree_path, dir)
+    else
+      _ -> nil
+    end
+  end
+
+  defp id_prefix_path(worktree_path, id) do
+    worktree_path
+    |> Path.join("specs/#{id}-*/tasks.md")
+    |> Path.wildcard()
+    |> List.first()
   end
 
   @spec read_and_parse(String.t() | nil) :: t()
