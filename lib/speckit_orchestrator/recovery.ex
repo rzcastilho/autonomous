@@ -172,7 +172,14 @@ defmodule SpeckitOrchestrator.Recovery do
   @doc false
   @spec to_feature(map()) :: Feature.t()
   def to_feature(f),
-    do: %Feature{id: f.feature_id, slug: f.slug, path: f.path, prereqs: f.prereqs}
+    do: %Feature{
+      id: f.feature_id,
+      number: Map.get(f, :number) || String.to_integer(f.feature_id),
+      slug: f.slug,
+      path: f.path,
+      group: Map.get(f, :group, :backlog),
+      created_at: Map.get(f, :created_at)
+    }
 
   # Maps a `Reconcile.result()` onto the `Feature.status()` persisted to the
   # manifest, plus the resume phase carried alongside it (data-model.md
@@ -212,16 +219,18 @@ defmodule SpeckitOrchestrator.Recovery do
   # ---- next_runnable ----------------------------------------------------------
 
   # A read-only preview of what would release next under the corrected
-  # statuses — the actual cap/breaker are enforced live by the Coordinator on
-  # continuation; this uses the configured cap and an untripped breaker so the
-  # preview reflects DAG/status correctness, not in-flight scheduling. Public
+  # statuses — the actual breaker is enforced live by the Coordinator on
+  # continuation; this uses an untripped breaker so the preview reflects
+  # ordering/status correctness, not in-flight scheduling. `Release.next/3`
+  # is the one-feature-at-a-time decision (FR-006, no cap parameter). Public
   # — `Recovery.Rebuild.propose/3` previews the same way over its (possibly
   # larger, repaired) union feature set.
   @doc false
   @spec next_runnable([Feature.t()], %{String.t() => Feature.status()}) :: [String.t()]
   def next_runnable(features, statuses) do
-    features
-    |> Release.next_wave(statuses, SpeckitOrchestrator.Config.max_concurrency(), false)
-    |> Enum.map(& &1.id)
+    case Release.next(features, statuses, false) do
+      {:release, feature} -> [feature.id]
+      _ -> []
+    end
   end
 end

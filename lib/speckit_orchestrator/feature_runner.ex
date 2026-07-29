@@ -562,27 +562,22 @@ defmodule SpeckitOrchestrator.FeatureRunner do
     end
   end
 
-  # The commit message (and, on `:done` under the PR workflow, the
-  # `pr_description`) — computed once, before the store write and the
-  # worktree squash, so the recorded `feature_run.pr_description` and the git
-  # history it describes always agree. Claude-authored via `Describe.run/3`
-  # when the PR workflow is on; else the mechanical template. A describe
-  # failure logs and falls back — never blocks.
+  # The commit message and `pr_description` — computed once, before the store
+  # write and the worktree squash, so the recorded `feature_run.pr_description`
+  # and the git history it describes always agree. Claude-authored via
+  # `Describe.run/3` (019: every run publishes a PR, unconditionally). A
+  # describe failure logs and falls back — never blocks.
   defp commit_message_and_pr(feature, :done, %Worktree{} = wt, layout) do
     fallback = "speckit: feature #{feature.id} pipeline artifacts (done)"
 
-    if Config.pr_workflow?() do
-      case Describe.run(feature, wt, layout) do
-        {:ok, d} ->
-          message = if d.commit_message == "", do: fallback, else: d.commit_message
-          {message, %{pr_title: d.pr_title, pr_body: d.pr_body}}
+    case Describe.run(feature, wt, layout) do
+      {:ok, d} ->
+        message = if d.commit_message == "", do: fallback, else: d.commit_message
+        {message, %{pr_title: d.pr_title, pr_body: d.pr_body}}
 
-        {:error, reason} ->
-          Logger.warning("feature #{feature.id} describe failed: #{inspect(reason)}")
-          {fallback, nil}
-      end
-    else
-      {fallback, nil}
+      {:error, reason} ->
+        Logger.warning("feature #{feature.id} describe failed: #{inspect(reason)}")
+        {fallback, nil}
     end
   end
 

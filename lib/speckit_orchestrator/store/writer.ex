@@ -23,7 +23,14 @@ defmodule SpeckitOrchestrator.Store.Writer do
   """
   @spec open_run(binary(), %{
           required(:features) => [
-            %{feature_id: binary(), slug: binary(), path: binary(), prereqs: [binary()]}
+            %{
+              feature_id: binary(),
+              slug: binary(),
+              path: binary(),
+              number: pos_integer(),
+              group: :backlog | :ad_hoc,
+              created_at: DateTime.t() | nil
+            }
           ],
           required(:settings) => map(),
           required(:scope) => term(),
@@ -54,6 +61,8 @@ defmodule SpeckitOrchestrator.Store.Writer do
           spend_usd: 0.0,
           record_complete?: true,
           halt_reason: nil,
+          stopped_by: nil,
+          stopped_reason: nil,
           scope: scope,
           layout: layout,
           superseded_by: nil,
@@ -77,7 +86,9 @@ defmodule SpeckitOrchestrator.Store.Writer do
             feature_id: f.feature_id,
             slug: f.slug,
             path: f.path,
-            prereqs: f.prereqs,
+            number: f.number,
+            group: f.group,
+            created_at: f.created_at,
             status: :pending,
             terminal_reason: nil,
             worktree_path: nil,
@@ -101,7 +112,14 @@ defmodule SpeckitOrchestrator.Store.Writer do
   `SpeckitOrchestrator.recover_record/1`'s `:confirm` write.
   """
   @spec add_features(run_key(), [
-          %{feature_id: binary(), slug: binary(), path: binary(), prereqs: [binary()]}
+          %{
+            feature_id: binary(),
+            slug: binary(),
+            path: binary(),
+            number: pos_integer(),
+            group: :backlog | :ad_hoc,
+            created_at: DateTime.t() | nil
+          }
         ]) :: :ok | {:error, term()}
   def add_features({repo_id, run_id} = run_key, features) do
     run_transaction(fn ->
@@ -117,7 +135,9 @@ defmodule SpeckitOrchestrator.Store.Writer do
                 feature_id: f.feature_id,
                 slug: f.slug,
                 path: f.path,
-                prereqs: f.prereqs,
+                number: f.number,
+                group: f.group,
+                created_at: f.created_at,
                 status: :pending,
                 terminal_reason: nil,
                 worktree_path: nil,
@@ -386,6 +406,119 @@ defmodule SpeckitOrchestrator.Store.Writer do
     end)
   end
 
+  @doc """
+  Park an in-flight run at the feature that broke the chain (FR-017, FR-019),
+  one transaction: `:in_flight -> :parked`. `status` is the stopping feature's
+  own terminal status — already durable on its `feature_run` row — so it is
+  not duplicated onto the run record; only `stopped_by` (the feature id) and
+  `stopped_reason` are written.
+  """
+  @spec park_run(run_key(), %{stopped_by: binary(), status: atom(), reason: term()}) ::
+          :ok | {:error, term()}
+  def park_run(run_key, %{stopped_by: stopped_by, reason: reason}) do
+    run_transaction(fn ->
+      case Mnesia.read(:speckit_run, run_key, :write) do
+        [tuple] ->
+          case Records.decode(:speckit_run, tuple) do
+            {:ok, %Records.Run{state: :in_flight} = run} ->
+              Mnesia.write(
+                Records.encode(%{
+                  run
+                  | state: :parked,
+                    stopped_by: stopped_by,
+                    stopped_reason: reason
+                })
+              )
+
+              :ok
+
+            {:ok, _not_in_flight} ->
+              Mnesia.abort(:not_in_flight)
+
+            {:error, damaged} ->
+              Mnesia.abort(damaged)
+          end
+
+        [] ->
+          Mnesia.abort({:absent, run_key})
+      end
+    end)
+  end
+
+  @doc """
+  Resume a parked run (FR-019a), one transaction: `:parked -> :in_flight`,
+  clearing `stopped_by`/`stopped_reason` — the same `run_id` continues rather
+  than a new run opening.
+  """
+  @spec continue_run(run_key()) :: :ok | {:error, :not_parked} | {:error, term()}
+  def continue_run(run_key) do
+    run_transaction(fn ->
+      case Mnesia.read(:speckit_run, run_key, :write) do
+        [tuple] ->
+          case Records.decode(:speckit_run, tuple) do
+            {:ok, %Records.Run{state: :parked} = run} ->
+              Mnesia.write(
+                Records.encode(%{run | state: :in_flight, stopped_by: nil, stopped_reason: nil})
+              )
+
+              :ok
+
+            {:ok, _not_parked} ->
+              Mnesia.abort(:not_parked)
+
+            {:error, damaged} ->
+              Mnesia.abort(damaged)
+          end
+
+        [] ->
+          Mnesia.abort({:absent, run_key})
+      end
+    end)
+  end
+
+  @doc """
+  Deliberately end a parked run (FR-019b), one transaction: `:parked ->
+  :completed`, `outcome: :ended_by_operator`, every still-`:pending` feature
+  written `:never_started` — so a closed-out record is never momentarily
+  self-inconsistent. `stopped_by`/`stopped_reason` are retained, not cleared.
+  """
+  @spec end_run(run_key(), keyword()) :: :ok | {:error, :not_parked} | {:error, term()}
+  def end_run(run_key, opts \\ []) do
+    run_transaction(fn ->
+      case Mnesia.read(:speckit_run, run_key, :write) do
+        [tuple] ->
+          case Records.decode(:speckit_run, tuple) do
+            {:ok, %Records.Run{state: :parked} = run} ->
+              now = DateTime.utc_now()
+
+              updated = %{
+                run
+                | state: :completed,
+                  outcome: :ended_by_operator,
+                  outcome_index: :ended_by_operator,
+                  ended_at: now,
+                  duration_ms: DateTime.diff(now, run.started_at, :millisecond),
+                  spend_usd: Keyword.get(opts, :spend_usd, run.spend_usd),
+                  record_complete?: Keyword.get(opts, :record_complete?, true)
+              }
+
+              Mnesia.write(Records.encode(updated))
+              mark_pending_never_started!(run_key)
+              :ok
+
+            {:ok, _not_parked} ->
+              Mnesia.abort(:not_parked)
+
+            {:error, damaged} ->
+              Mnesia.abort(damaged)
+          end
+
+        [] ->
+          Mnesia.abort({:absent, run_key})
+      end
+    end)
+  end
+
   @doc "Close a drained run with its final `outcome` (R7 \"run drained\" boundary, one transaction)."
   @spec close_run(run_key(), atom(), keyword()) :: :ok | {:error, term()}
   def close_run(run_key, outcome, opts \\ []) do
@@ -507,15 +640,52 @@ defmodule SpeckitOrchestrator.Store.Writer do
     seq
   end
 
+  # Aborts rather than superseding when the repository has a `:parked` run —
+  # a parked run is never superseded automatically (FR-020a, FR-020b, SC-009).
+  # Checked inside the same transaction `open_run/2` runs in, so the refusal
+  # is race-free rather than best-effort.
   defp supersede_in_flight!(repo_id, new_run_id) do
+    case parked_run_for(repo_id) do
+      nil ->
+        :speckit_run
+        |> Mnesia.index_read(repo_id, :repo_id)
+        |> Enum.each(fn tuple ->
+          case Records.decode(:speckit_run, tuple) do
+            {:ok, %Records.Run{state: :in_flight} = run} -> supersede_run!(run, new_run_id)
+            _ -> :ok
+          end
+        end)
+
+      %Records.Run{run_id: parked_run_id} ->
+        Mnesia.abort({:parked_run, parked_run_id})
+    end
+  end
+
+  defp parked_run_for(repo_id) do
     :speckit_run
     |> Mnesia.index_read(repo_id, :repo_id)
-    |> Enum.each(fn tuple ->
+    |> Enum.find_value(fn tuple ->
       case Records.decode(:speckit_run, tuple) do
-        {:ok, %Records.Run{state: :in_flight} = run} -> supersede_run!(run, new_run_id)
-        _ -> :ok
+        {:ok, %Records.Run{state: :parked} = run} -> run
+        _ -> nil
       end
     end)
+  end
+
+  defp mark_pending_never_started!(run_key) do
+    :speckit_feature_run
+    |> Mnesia.index_read(run_key, :run_key)
+    |> Enum.each(fn tuple ->
+      case Records.decode(:speckit_feature_run, tuple) do
+        {:ok, %Records.FeatureRun{status: :pending} = feature} ->
+          Mnesia.write(Records.encode(%{feature | status: :never_started}))
+
+        _ ->
+          :ok
+      end
+    end)
+
+    :ok
   end
 
   defp supersede_run!(%Records.Run{} = run, new_run_id) do

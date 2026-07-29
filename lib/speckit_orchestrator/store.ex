@@ -27,6 +27,7 @@ defmodule SpeckitOrchestrator.Store do
   @callback checkpoint(run_key(), binary()) :: {:ok, map()} | {:error, term()}
   @callback transcript(tuple()) :: {:ok, map()} | {:error, term()}
   @callback in_flight_run(binary()) :: {:ok, map()} | :none | {:error, term()}
+  @callback parked_run(binary()) :: {:ok, map()} | :none | {:error, term()}
   @callback capacity() :: map()
   @callback run_bytes(run_key()) :: non_neg_integer()
 
@@ -95,6 +96,10 @@ defmodule SpeckitOrchestrator.Store do
   @doc "See `Store.Query.in_flight_run/1`."
   @spec in_flight_run(binary()) :: {:ok, map()} | :none | {:error, term()}
   def in_flight_run(repo_id), do: Query.in_flight_run(repo_id)
+
+  @doc "See `Store.Query.parked_run/1`."
+  @spec parked_run(binary()) :: {:ok, map()} | :none | {:error, term()}
+  def parked_run(repo_id), do: Query.parked_run(repo_id)
 
   @doc "See `Store.Query.capacity/0`."
   @spec capacity() :: map()

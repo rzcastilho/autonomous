@@ -65,6 +65,15 @@ defmodule SpeckitOrchestrator.Telemetry do
       metadata `%{repo_id, removed}`. Fires after `prune/1` executes
       (FR-031a) — the only mechanism that removes recorded state.
 
+  Events (emitted by `SpeckitOrchestrator` — 019, FR-018): a completed
+  feature's PR publish can fail without failing the run — the local branch
+  still becomes the next feature's base regardless — but never merely
+  swallowed:
+
+    * `[:speckit, :publish, :failed]` — measurements `%{}`, metadata
+      `%{feature_id, reason}`. Fires when `publish_feature/3` (push + PR
+      open) fails for a `:done` backlog feature.
+
   Call `attach_default_logger/0` from `iex` to log every event.
   """
 
@@ -88,7 +97,8 @@ defmodule SpeckitOrchestrator.Telemetry do
     [:speckit, :run, :scope_narrowing_refused],
     [:speckit, :store, :write_failed],
     [:speckit, :store, :capacity_refused],
-    [:speckit, :store, :pruned]
+    [:speckit, :store, :pruned],
+    [:speckit, :publish, :failed]
   ]
 
   @doc "The `:telemetry.span/3` prefix for phase events."
@@ -159,6 +169,10 @@ defmodule SpeckitOrchestrator.Telemetry do
       "store pruned: repo_id=#{meta.repo_id} removed=#{inspect(meta.removed)} " <>
         "bytes_reclaimed=#{meas.bytes_reclaimed}"
     )
+  end
+
+  def handle_event([:speckit, :publish, :failed], _meas, meta, _cfg) do
+    Logger.warning("feature #{meta.feature_id} PR publish failed: #{inspect(meta.reason)}")
   end
 
   def handle_event(_event, _meas, _meta, _cfg), do: :ok

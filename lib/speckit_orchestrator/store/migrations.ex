@@ -2,9 +2,12 @@ defmodule SpeckitOrchestrator.Store.Migrations do
   @moduledoc """
   Ordered `{version, description, fun}` list applied at boot inside
   transactions, using `:mnesia.transform_table/3` for attribute changes (018,
-  research R13, contracts/schema.md § Schema versioning). Version 1 is the
-  schema this feature ships with, so its list is empty — a future schema
-  change appends an entry here and never rewrites history.
+  research R13, contracts/schema.md § Schema versioning). Version 1 was the
+  schema this feature ships with. Version 2 (feature 019,
+  contracts/store-schema-v2.md) is a clean break: no v1 record is readable, so
+  its migration **refuses** rather than transforms — a v1 directory aborts
+  startup naming the incompatibility (FR-022, FR-023) instead of being
+  silently migrated or destroyed.
   """
 
   alias SpeckitOrchestrator.Store.Mnesia
@@ -13,11 +16,16 @@ defmodule SpeckitOrchestrator.Store.Migrations do
 
   @doc "The schema version this build of the orchestrator understands."
   @spec current_version() :: pos_integer()
-  def current_version, do: 1
+  def current_version, do: 2
 
   @doc "Every migration, ascending by version."
   @spec all() :: [migration()]
-  def all, do: []
+  def all do
+    [
+      {2, "019 clean break — pre-019 records are not readable",
+       fn -> {:error, {:incompatible_record, 1}} end}
+    ]
+  end
 
   @doc """
   Apply every migration whose version is greater than `from_version`

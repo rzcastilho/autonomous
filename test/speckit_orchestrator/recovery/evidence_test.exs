@@ -30,7 +30,8 @@ defmodule SpeckitOrchestrator.Recovery.EvidenceTest do
     git!(repo, ["commit", "-q", "-m", message])
   end
 
-  defp feature(id \\ "001"), do: %Feature{id: id, slug: "core-ledger", path: "#{id}.md"}
+  defp feature(id \\ "001"),
+    do: %Feature{id: id, number: String.to_integer(id), slug: "core-ledger", path: "#{id}.md"}
 
   defp fake_git(result), do: fn _feature -> result end
 
@@ -54,7 +55,14 @@ defmodule SpeckitOrchestrator.Recovery.EvidenceTest do
     {:ok, run_id} =
       Writer.open_run(@repo_id, %{
         features: [
-          %{feature_id: feature_id, slug: "core-ledger", path: "#{feature_id}.md", prereqs: []}
+          %{
+            feature_id: feature_id,
+            slug: "core-ledger",
+            path: "#{feature_id}.md",
+            number: String.to_integer(feature_id),
+            group: :backlog,
+            created_at: nil
+          }
         ],
         settings: %{},
         scope: :ad_hoc,

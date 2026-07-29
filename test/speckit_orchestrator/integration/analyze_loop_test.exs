@@ -38,7 +38,12 @@ defmodule SpeckitOrchestrator.Integration.AnalyzeLoopTest do
     id = System.get_env("SPECKIT_FIXTURE_FEATURE_ID") || "001"
     slug = System.get_env("SPECKIT_FIXTURE_FEATURE_SLUG") || "smoke"
 
-    %Feature{id: id, slug: slug, path: Path.join(repo, "docs/breakdown/#{id}-#{slug}.md")}
+    %Feature{
+      id: id,
+      number: String.to_integer(id),
+      slug: slug,
+      path: Path.join(repo, "docs/breakdown/#{id}-#{slug}.md")
+    }
   end
 
   defp worktree_for(repo, feature) do

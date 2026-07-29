@@ -106,12 +106,6 @@ config :speckit_orchestrator,
   # unanswerable question in a headless run, so plan writes no plan.md and every
   # later phase silently no-ops. See config/runtime.exs → SPECKIT_PLAN_STACK.
   plan_stack: [],
-  # Max features running concurrently (worktree-level parallelism).
-  max_concurrency: 2,
-  # Stacked sequential PR workflow (off by default). When true, `run/1` forces
-  # cap 1, requires the `:pr_remote` remote on the target, stacks each feature on
-  # the previous feature's branch, and opens a PR per feature on :done.
-  pr_workflow: false,
   # Root base branch for the first feature's PR; later features stack on the prior.
   pr_base: "main",
   # Remote to push feature branches to (and preflight) in the PR workflow.

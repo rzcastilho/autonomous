@@ -1,21 +1,31 @@
 <!--
 Sync Impact Report
-Version change: 1.3.0 → 2.0.0
-Bump rationale: MAJOR — Principle V's analyze-gate rule is redefined in a
-  backward-incompatible way. The unconditional guarantee "the analyze gate MUST
-  escalate to `:escalated` on a High finding" no longer holds: the gate is now
-  governed by the run's severity threshold, so a run configured with threshold
-  Critical advances past a High finding instead of diverting it to a human.
-  Under the default threshold (High) behaviour is byte-identical to 1.3.0, but
-  the *guarantee* is weakened — an operator can now configure away a
-  human-facing terminal state that was previously unconditional. That is a
-  relaxation of a governance bound, not an expansion of one, so it is MAJOR
-  rather than MINOR (contrast 1.2.0, which only *added* a bounded pre-gate loop
-  underneath an unchanged gate).
+Version change: 2.0.0 → 2.1.0
+Bump rationale: MINOR — three clauses are materially rewritten because feature
+  019-stacked-sequential-only retires their *subjects*, not because any
+  governance bound is relaxed. Principle II loses the dangling-prereq/cycle
+  guard (prerequisites cease to exist) and gains three explicitly named
+  refusals, one of which — raise on numerically-equal feature numbers — is the
+  direct replacement guard; the other two (retired settings, records predating
+  a recorded clean break) are new loud failures the principle did not previously
+  mandate. The Persistence subsection admits a "refusal migration" as a
+  legitimate, versioned migration outcome for a recorded clean break, while
+  keeping the existing ban on silently dropping state and adding an explicit
+  ban on auto-deleting it at startup. The Development Workflow worktree clause
+  drops the cross-feature parallelism it assumed; worktrees, branch naming,
+  scaffold travel, and the `specify init` prohibition are unchanged. Net effect
+  is more mandated loud failures and fewer permitted silent ones — an expansion
+  of governance, so MINOR rather than MAJOR (contrast 2.0.0, which weakened an
+  unconditional escalation guarantee and was MAJOR for exactly that reason).
 Modified principles:
-  - V. Human-in-the-Loop Escalation (analyze gate is now threshold-governed;
-    Critical still unconditionally halts)
+  - II. Fail Loud at Boundaries (backlog guard replaced; three named refusals
+    added: ambiguous ordering, retired settings, pre-clean-break records)
 Added principles: none
+Removed principles: none
+Modified sections:
+  - Technology Stack → Persistence (schema-evolution bullet: refusal migrations
+    permitted for a recorded clean break; auto-delete at startup banned)
+  - Development Workflow (worktree bullet: one feature at a time)
 Added sections: none
 Removed sections: none
 Templates requiring updates:
@@ -23,9 +33,45 @@ Templates requiring updates:
   ✅ .specify/templates/spec-template.md — no principle-specific references
   ✅ .specify/templates/tasks-template.md — no principle-specific references
   ✅ .specify/templates/checklist-template.md — generic; no change
-  ✅ specs/017-analyze-auto-remediation/spec.md — US3 acceptance scenario 2 and
-     FR-006 updated to the threshold-governed gate
+  ✅ specs/019-stacked-sequential-only/plan.md — Constitution Check conditionals
+     and Complexity Tracking already cite this amendment by version
+  ⚠ CLAUDE.md — describes `Feature.prereqs`, `Backlog`'s DAG validation,
+     `Release.next_wave/4`, and git-worktree parallelism across features. Left
+     as-is deliberately: those descriptions are accurate for the code on `main`
+     today. They are updated by 019's own implementation, in the same change
+     that makes them false (tracked in specs/019-stacked-sequential-only/plan.md
+     § Project Structure).
+  ⚠ docs/breakdown-format.md, docs/workflow.md, docs/runbook.md — same reason,
+     same tracking.
 Follow-up TODOs: none
+
+Prior report (2.0.0):
+  Version change: 1.3.0 → 2.0.0
+  Bump rationale: MAJOR — Principle V's analyze-gate rule is redefined in a
+    backward-incompatible way. The unconditional guarantee "the analyze gate MUST
+    escalate to `:escalated` on a High finding" no longer holds: the gate is now
+    governed by the run's severity threshold, so a run configured with threshold
+    Critical advances past a High finding instead of diverting it to a human.
+    Under the default threshold (High) behaviour is byte-identical to 1.3.0, but
+    the *guarantee* is weakened — an operator can now configure away a
+    human-facing terminal state that was previously unconditional. That is a
+    relaxation of a governance bound, not an expansion of one, so it is MAJOR
+    rather than MINOR (contrast 1.2.0, which only *added* a bounded pre-gate loop
+    underneath an unchanged gate).
+  Modified principles:
+    - V. Human-in-the-Loop Escalation (analyze gate is now threshold-governed;
+      Critical still unconditionally halts)
+  Added principles: none
+  Added sections: none
+  Removed sections: none
+  Templates requiring updates:
+    ✅ .specify/templates/plan-template.md — Constitution Check is principle-agnostic
+    ✅ .specify/templates/spec-template.md — no principle-specific references
+    ✅ .specify/templates/tasks-template.md — no principle-specific references
+    ✅ .specify/templates/checklist-template.md — generic; no change
+    ✅ specs/017-analyze-auto-remediation/spec.md — US3 acceptance scenario 2 and
+       FR-006 updated to the threshold-governed gate
+  Follow-up TODOs: none
 
 Prior report (1.3.0):
   Version change: 1.2.0 → 1.3.0
@@ -122,16 +168,33 @@ without a CLI or a worktree, and confines every contract drift to one adapter.
 
 ### II. Fail Loud at Boundaries
 
-Invalid input MUST be rejected at the edge, never carried silently inward. The
-backlog loader MUST raise on a dangling prerequisite or a dependency cycle at
-load time. Preflight verification (`TargetPack.verify`) MUST fail while a target
-repo is unready (template constitution marker present, or uncommitted scaffold).
+Invalid input MUST be rejected at the edge, never carried silently inward.
+Preflight verification (`TargetPack.verify`) MUST fail while a target repo is
+unready (template constitution marker present, or uncommitted scaffold).
 Parsers MAY salvage recoverable partial output, but MUST NOT invent data to
 paper over a malformed contract.
 
+Three refusals are named explicitly because each guards an input that would
+otherwise be carried inward silently:
+
+- **Ambiguous ordering.** The backlog loader MUST raise at load time when two
+  features claim numerically equal numbers, naming every conflicting file.
+  Execution order has exactly one input — the operator's numbering — so an
+  ambiguity in it MUST NOT be resolved by picking a file arbitrarily.
+- **Retired settings.** A setting the system no longer honours (a run-mode
+  flag, a concurrency limit) MUST be refused on every surface that can supply
+  it — start options, environment variables, and stored configuration alike —
+  rather than accepted and ignored. Accepting a value the system will not act
+  on is indistinguishable, to an operator, from acting on it.
+- **Records predating a recorded clean break.** A persisted record written
+  under a superseded contract MUST be refused by name rather than interpreted
+  under the current one.
+
 Rationale: An autonomous pipeline runs unattended for long stretches. A silent
 bad state compounds across phases and features; a loud early failure is cheap to
-diagnose and stops waste before spend.
+diagnose and stops waste before spend. The three named refusals are the cases
+where the wrong input is *plausible* — a renumbered backlog, a habitual export,
+an upgraded install — and therefore the cases where silence is most costly.
 
 ### III. Least-Privilege Containment (Fail-Closed)
 
@@ -306,8 +369,16 @@ is held in **Mnesia**, which ships with Erlang/OTP.
   explicitly (fragmentation or operator pruning) and MUST NEVER be handled by
   silently dropping or truncating recorded state.
 - Schema evolution MUST be explicit and versioned: a recorded schema version
-  plus `:mnesia.transform_table` migrations applied at startup. An unrecognized
-  or newer-than-known schema version MUST fail loud, never be auto-coerced.
+  plus migrations applied at startup, ordered by version. An unrecognized or
+  newer-than-known schema version MUST fail loud, never be auto-coerced. A
+  migration's usual outcome is a `:mnesia.transform_table` transform; a
+  **recorded clean break** MAY instead register a *refusal migration* — an
+  ordinary, ordered, versioned entry whose outcome is a loud incompatibility
+  error naming the superseded version (Principle II). A clean break MUST be
+  recorded in the feature's plan with the reason no transform exists. Neither
+  form may silently drop, truncate, or auto-delete recorded state: reclaiming
+  an incompatible store is an explicit operator action, never a startup side
+  effect.
 - Mnesia MUST be started and its schema verified **before** any state consumer
   starts; failure at that point MUST abort startup rather than let a run begin
   spending money it cannot record.
@@ -356,9 +427,9 @@ is held in **Mnesia**, which ships with Erlang/OTP.
 - The clarify gate (human stand-in) and the deterministic analyze gate are
   mandatory quality gates; a phase MAY auto-retry a transient failure, but a gate
   diversion (`:escalated` / `:halted`) MUST NOT be retried past the human.
-- Parallelism across features uses git worktrees on `feature/NNN-slug` branches;
-  the committed `.specify/`/`.claude/` scaffold MUST travel into each worktree,
-  and `specify init` MUST NEVER be run inside a worktree.
+- Each feature runs in its own git worktree on a `feature/NNN-slug` branch, one
+  feature at a time; the committed `.specify/`/`.claude/` scaffold MUST travel
+  into each worktree, and `specify init` MUST NEVER be run inside a worktree.
 - The implementation plan (`docs/speckit-orchestrator-implementation-plan.md`) is
   the source of truth for scope, sequencing, and exit criteria.
 
@@ -375,4 +446,4 @@ deviation already is. Reviews and PRs MUST verify compliance with these
 principles; the constitution and the implementation plan together are the
 runtime guidance for autonomous and human contributors alike.
 
-**Version**: 2.0.0 | **Ratified**: 2026-07-11 | **Last Amended**: 2026-07-28
+**Version**: 2.1.0 | **Ratified**: 2026-07-11 | **Last Amended**: 2026-07-29

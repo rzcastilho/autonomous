@@ -2,18 +2,26 @@
 
 End-to-end flow of the `speckit_orchestrator` autonomous, spec-driven build
 pipeline: operator → control plane (Coordinator + Ledger) → per-feature data
-plane (the 7-phase Spec Kit pipeline) → terminals → human-resolve loop.
+plane (the 7-phase Spec Kit pipeline) → terminals → human-resolve loop, or the
+park/continue/end loop when the chain itself breaks.
+
+Every run is a **stacked sequential run** — there is no other shape. One
+feature builds at a time, in ascending numeric order (the `NNN` in its
+filename), each branching from the previous completed feature's branch and
+published as a PR against that base. There is no concurrency setting and no
+dependency declaration to configure; a `## Prerequisites` section in a
+breakdown file is inert prose.
 
 ```mermaid
 flowchart TB
-  OP([Operator · iex]) -->|SpeckitOrchestrator.run/0| BL[Load backlog<br/>docs/breakdown/NNN-*.md<br/>validate DAG · raises on cycle/dangling]
+  OP([Operator · iex]) -->|SpeckitOrchestrator.run/1| BL[Load backlog<br/>docs/breakdown/NNN-*.md<br/>order by NNN ascending · raises only on<br/>numerically duplicate numbers]
   BL --> CO{{Coordinator · per-run GenServer}}
 
   subgraph CTRL[Control plane]
     direction TB
-    CO -->|release a wave| REL[Release.next_wave<br/>pending with prereqs done<br/>size = cap − in-flight]
+    CO -->|release next| REL[Release.next/3<br/>anything running or breaker tripped ⇒ none<br/>lowest-ordered pending ⇒ release<br/>any non-done terminal ⇒ stopped]
     REL -->|breaker tripped?| LED[(Ledger · budget_usd<br/>reserve / record / trip)]
-    REL -->|spawn per feature<br/>cap = max_concurrency| RUN[FeatureRunner<br/>Task under RunnerSup]
+    REL -->|release one at a time| RUN[FeatureRunner<br/>Task under RunnerSup]
   end
 
   RUN -->|git worktree add<br/>feature/NNN-slug<br/>assert scaffold| WT[[Isolated worktree]]
@@ -36,7 +44,8 @@ flowchart TB
   PIPE -.each phase records cost.-> LED
   PIPE -.transcript per phase.-> TR[(Durable transcripts<br/>transcript_root NNN NN-phase)]
 
-  DONE -->|Worktree.commit → REMOVE| BR[Reviewable branch<br/>plan/tasks/contracts + src + tests<br/>PR-ready]
+  DONE -->|Worktree.commit → REMOVE| BR[Reviewable branch<br/>plan/tasks/contracts + src + tests<br/>pushed · PR opened against previous base]
+  BR -->|next feature stacks here| RUN
   ESC -->|Worktree.commit → KEEP| KEPT[[Kept worktree<br/>for human]]
   HALT -->|Worktree.commit → KEEP| KEPT
   FAIL(((failed))) -->|Worktree.commit → KEEP| KEPT
@@ -44,65 +53,79 @@ flowchart TB
   KEPT -->|human answers in<br/>breakdown Decisions<br/>commit on branch| RES[SpeckitOrchestrator.resolve/1<br/>frees worktree · keeps branch]
   RES -->|re-run reuses branch| CO
 
+  ESC -->|nothing left in flight| PARK[[Run parked<br/>stopped_by = feature, status, reason]]
+  HALT --> PARK
+  FAIL --> PARK
+  PARK -->|new run/1, run_spec/2 refused<br/>for this repo until resolved| PARK
+  PARK -->|operator decides| DEC{continue<br/>or end?}
+  DEC -->|:continue| CO
+  DEC -->|:end| ENDR[[Run completed<br/>outcome: ended_by_operator<br/>remaining pending → never_started]]
+
   LED -->|committed ≥ budget| BRK[Breaker trips<br/>release none · drain in-flight<br/>halt between phases]
-  BRK --> REP
-  DONE --> REP[[Final report<br/>done · escalated · halted · failed<br/>blocked · not_started · spend]]
+  BRK --> PARK
+  DONE --> REP[[Final report<br/>done · escalated · halted · failed<br/>not_started · stopped_by · spend]]
   ESC --> REP
   HALT --> REP
+  ENDR --> REP
 
   classDef term fill:#1f6feb,stroke:#0b3d91,color:#fff;
   classDef gate fill:#b45309,stroke:#7c2d12,color:#fff;
   classDef sink fill:#166534,stroke:#052e16,color:#fff;
+  classDef park fill:#7c3aed,stroke:#4c1d95,color:#fff;
   class ESC,HALT,DONE,FAIL term;
-  class GESC,GHALT gate;
+  class GESC,GHALT,DEC gate;
   class BR,REP sink;
+  class PARK,ENDR park;
 ```
 
 ## Reading it
 
-- **Control plane** (`Coordinator` + `Ledger`) is pure orchestration: it releases
-  features in dependency-and-cap **waves**, records cost per phase, and trips the
-  **breaker** at `budget_usd` (drain-don't-kill — in-flight features finish their
-  current phase then halt).
-- **Data plane** is the Spec Kit loop run through the `claude` CLI, one phase per
-  fresh `claude -p` session, in an isolated **git worktree** per feature.
+- **Control plane** (`Coordinator` + `Ledger`) is pure orchestration:
+  `Release.next/3` releases exactly one feature at a time, in ascending
+  numeric order, records cost per phase, and trips the **breaker** at
+  `budget_usd` (drain-don't-kill — the in-flight feature finishes its current
+  phase then halts). One-feature-at-a-time is a structural property of
+  `Release.next/3` (rule: anything `:running` ⇒ release nothing), not a
+  configured cap — there is no concurrency setting anywhere.
+- **Data plane** is the Spec Kit loop run through the `claude` CLI, one phase
+  per fresh `claude -p` session, in an isolated **git worktree** per feature.
 - **Two gates** divert the linear pipeline: `clarify` escalates on a *material*
   `## NEEDS HUMAN` (→ `escalated`); `analyze` halts on a Critical constitution
   violation (→ `halted`).
-- **Terminals commit before teardown.** `:done` commits the generated branch then
-  removes the worktree; `escalated`/`halted`/`failed` commit then **keep** the
-  worktree. Transcripts are written to a **durable** root that survives teardown.
-- **Human-resolve loop.** For a kept feature, answer the escalation in the
-  breakdown's `## Decisions` (specify regenerates the spec from it), commit on the
-  branch, `resolve/1` to free the worktree, and re-run — the feature reuses its
-  branch. Escalations can span multiple rounds.
+- **Terminals commit before teardown.** `:done` commits the generated branch,
+  pushes it, and opens a PR against the previous feature's branch (or
+  `pr_base` for the first), then removes the worktree; `escalated`/`halted`/
+  `failed` commit then **keep** the worktree. Transcripts are written to a
+  **durable** root that survives teardown.
+- **A broken link stops the chain.** As soon as a feature reaches a
+  non-`:done` terminal state and nothing else is in flight, `Release.next/3`
+  reports `{:stopped, id, status}` instead of an empty wave that looks the
+  same as "backlog exhausted." The Coordinator **parks** the run
+  (`Store.Writer.park_run/2`), records `stopped_by`, and refuses any new
+  `run/1`/`run_spec/2` for that repository until the operator resolves it.
+- **Human-resolve loop** (fixing the stopping feature itself). Answer the
+  escalation in the breakdown's `## Decisions` (specify regenerates the spec
+  from it), commit on the branch, then resolve with an explicit decision.
+- **Park/continue/end loop** (deciding what the *run* does next).
+  `resolve(id, decision: :continue)` flips the run back to `:in_flight`,
+  resets the stopping feature to `:pending`, and resumes the chain in order
+  from there. `resolve(id, decision: :end)` closes the run out —
+  `outcome: :ended_by_operator`, every still-`:pending` feature recorded
+  `:never_started` — and releases nothing further. Absent a decision, both
+  facade entry points refuse to guess.
 
-## Variant — stacked sequential PR workflow (`pr_workflow: true`)
+## Retired settings are refused, not ignored
 
-An opt-in facade mode. The data plane (the 7 phases + gates) is unchanged; only
-release and terminal handling differ: concurrency is forced to **1** (features
-build one at a time), the target repo's remote is **preflighted**, each feature
-branches from the **previous completed feature's branch**, and on `:done` the
-branch is **pushed and a PR opened** against that base — stacked PRs, merged
-bottom-up.
+There is no `pr_workflow` toggle and no `max_concurrency` setting — this
+*is* the only run shape. Both are refused loudly at three independent edges,
+because each is read at a different time:
 
-```mermaid
-flowchart LR
-  M[main] --> F1[feature/001]
-  F1 --> F2[feature/002]
-  F2 --> F3[feature/003]
-  F1 -. PR #1 .-> M
-  F2 -. PR #2 .-> F1
-  F3 -. PR #3 .-> F2
+- `config/runtime.exs` raises at config load if `SPECKIT_PR_WORKFLOW` or
+  `SPECKIT_MAX_CONCURRENCY` is set at all.
+- `Application.start/2` aborts boot if either app-env key is present.
+- `run/1`, `run_spec/2`, `resume/2`, `resume_run/1` refuse either key as a
+  run-start option with `{:error, {:preflight, [{:retired_option, key}]}}`,
+  before any side effect.
 
-  classDef b fill:#166534,stroke:#052e16,color:#fff;
-  class M,F1,F2,F3 b;
-```
-
-Only `:done` opens a PR; escalated/halted/failed keep the branch for the
-human-resolve loop above and open the PR after a resolved re-run reaches `:done`.
-See `docs/runbook.md` → "Stacked sequential PR workflow" for the knobs
-(`pr_workflow` / `pr_base` / `pr_remote`) and prerequisites (remote + `gh`).
-
-See `docs/runbook.md` for the operator step-by-step and
+See `docs/runbook.md` → "Parked runs" for the operator step-by-step and
 `docs/speckit-orchestrator-implementation-plan.md` for scope and rationale.

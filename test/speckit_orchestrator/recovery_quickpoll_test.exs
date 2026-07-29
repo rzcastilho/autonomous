@@ -71,8 +71,13 @@ defmodule SpeckitOrchestrator.RecoveryQuickpollTest do
 
   defp converge_ready, do: "Tests green, committed.\n\n## CONVERGE: READY\n"
 
-  defp feat(id, prereqs \\ []),
-    do: %Feature{id: id, slug: "core-ledger", path: "#{id}.md", prereqs: prereqs}
+  defp feat(id, number \\ nil),
+    do: %Feature{
+      id: id,
+      number: number || String.to_integer(id),
+      slug: "core-ledger",
+      path: "#{id}.md"
+    }
 
   defp capturing_runner(test_pid) do
     fn feature, notify -> send(test_pid, {:started, feature.id, notify}) end
@@ -88,12 +93,17 @@ defmodule SpeckitOrchestrator.RecoveryQuickpollTest do
         features:
           Enum.map(
             features,
-            &%{feature_id: &1.id, slug: &1.slug, path: &1.path, prereqs: &1.prereqs}
+            &%{
+              feature_id: &1.id,
+              slug: &1.slug,
+              path: &1.path,
+              number: &1.number,
+              group: &1.group,
+              created_at: &1.created_at
+            }
           ),
         settings:
           RunContext.to_map(%RunContext{
-            pr_workflow: false,
-            max_concurrency: 2,
             budget_usd: 100.0
           }),
         scope: :ad_hoc,
@@ -148,7 +158,7 @@ defmodule SpeckitOrchestrator.RecoveryQuickpollTest do
     commit(repo, "speckit: 001 checkpoint after converge")
     git!(repo, ["checkout", "-q", "main"])
 
-    run_key = open_run(repo, layout, [feat("001"), feat("002", ["001"])])
+    run_key = open_run(repo, layout, [feat("001"), feat("002")])
 
     :ok =
       Writer.record_phase_attempt(run_key, %{

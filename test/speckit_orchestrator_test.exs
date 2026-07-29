@@ -7,8 +7,8 @@ defmodule SpeckitOrchestratorTest do
 
   test "run/1 with an injected runner drives the backlog to completion; status/0 reflects it" do
     features = [
-      %Feature{id: "001", slug: "a", path: "a.md"},
-      %Feature{id: "002", slug: "b", path: "b.md", prereqs: ["001"]}
+      %Feature{id: "001", number: 1, slug: "a", path: "a.md"},
+      %Feature{id: "002", number: 2, slug: "b", path: "b.md"}
     ]
 
     fake = fn feature, notify -> notify.(feature.id, :done, nil) end

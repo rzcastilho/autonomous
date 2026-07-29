@@ -1,7 +1,7 @@
 defmodule SpeckitOrchestrator.Web.TriggerLiveTest do
-  # Overrides global Config app env (repo/breakdown_dir/pr_workflow) and may
-  # start the real named Coordinator via a successful Start — must not run
-  # concurrently with another test claiming that name or mutating Config.
+  # Overrides global Config app env (repo/breakdown_dir) and may start the
+  # real named Coordinator via a successful Start — must not run concurrently
+  # with another test claiming that name or mutating Config.
   use ExUnit.Case, async: false
 
   import Phoenix.ConnTest
@@ -12,13 +12,11 @@ defmodule SpeckitOrchestrator.Web.TriggerLiveTest do
   @endpoint SpeckitOrchestrator.Web.Endpoint
 
   @valid_dir Path.expand("../../fixtures/breakdown", __DIR__)
-  @cyclic_dir Path.expand("../../fixtures/breakdown_cyclic", __DIR__)
 
   setup do
     prior = %{
       repo: Application.get_env(:speckit_orchestrator, :repo),
       breakdown_dir: Application.get_env(:speckit_orchestrator, :breakdown_dir),
-      pr_workflow: Application.get_env(:speckit_orchestrator, :pr_workflow),
       console_test_runner: Application.get_env(:speckit_orchestrator, :console_test_runner)
     }
 
@@ -82,15 +80,14 @@ defmodule SpeckitOrchestrator.Web.TriggerLiveTest do
     assert html =~ ~s(data-dag-valid="true")
   end
 
-  test "Backlog mode disables Start and surfaces the reason when Backlog.load!/1 raises (cycle)",
+  test "Backlog mode disables Start and surfaces the reason when Backlog.load!/1 raises (duplicate numbers)",
        %{conn: conn} do
-    point_backlog_at(@cyclic_dir)
+    point_backlog_at(Path.expand("../../fixtures/breakdown_duplicate", __DIR__))
 
     {:ok, _view, html} = live(conn, "/trigger")
 
     assert html =~ ~s(data-dag-valid="false")
     assert html =~ ~s(data-action="start-backlog" disabled)
-    assert html =~ "cycle"
   end
 
   test "Backlog mode with no packages names the standard specs/autonomous/breakdown location",
@@ -147,17 +144,18 @@ defmodule SpeckitOrchestrator.Web.TriggerLiveTest do
     refute Process.whereis(Coordinator)
   end
 
-  test "enabling the stacked PR toggle before Start reflects PR-workflow mode + effective concurrency 1",
-       %{conn: conn} do
+  # 019, SC-001: no run-mode or concurrency decision exists anywhere on this
+  # form — the trigger screen only describes the one run shape there is.
+  test "the trigger screen renders zero run-shape inputs", %{conn: conn} do
     point_backlog_at(@valid_dir)
 
-    {:ok, view, html} = live(conn, "/trigger")
-    refute html =~ "effective concurrency: 1"
+    {:ok, _view, html} = live(conn, "/trigger")
 
-    html = render_click(view, "toggle_pr_workflow", %{})
-
-    assert html =~ ~s(data-pr-workflow="true")
-    assert html =~ "effective concurrency: 1"
+    refute html =~ ~s(phx-click="toggle_pr_workflow")
+    refute html =~ "data-pr-workflow"
+    refute html =~ "effective concurrency"
+    refute html =~ ~s(name="max_concurrency")
+    assert html =~ "stacked sequential"
   end
 
   test "successful backlog Start navigates to / and shows a toast confirmation", %{conn: conn} do
@@ -170,34 +168,6 @@ defmodule SpeckitOrchestrator.Web.TriggerLiveTest do
 
     assert mc_html =~ "Backlog run started"
     assert Process.whereis(Coordinator)
-  end
-
-  # Start used to mirror the toggle into app env, so one start with the toggle
-  # off permanently overwrote the node's configured default (including one set
-  # from SPECKIT_PR_WORKFLOW) for every later run and every later mount here.
-  test "Start does not write the toggle into app env — the configured default survives", %{
-    conn: conn
-  } do
-    point_backlog_at(@valid_dir)
-    Application.put_env(:speckit_orchestrator, :pr_workflow, true)
-
-    {:ok, view, html} = live(conn, "/trigger")
-    # Mount seeds the toggle from the configured default...
-    assert html =~ ~s(data-pr-workflow="true")
-
-    # ...the operator turns it off for this one run...
-    html = render_click(view, "toggle_pr_workflow", %{})
-    assert html =~ ~s(data-pr-workflow="false")
-
-    result = render_click(view, "start_backlog", %{})
-    {:ok, _mc_view, _mc_html} = follow_redirect(result, conn)
-
-    # ...and the node-wide default is untouched, so the next run/mount is
-    # still stacked.
-    assert Config.pr_workflow?() == true
-
-    {:ok, _view2, html2} = live(conn, "/trigger")
-    assert html2 =~ ~s(data-pr-workflow="true")
   end
 
   # ---- 017-analyze-auto-remediation launch controls (contracts/telemetry-console.md §4)

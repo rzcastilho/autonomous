@@ -69,7 +69,7 @@ defmodule SpeckitOrchestrator.RunPhaseTest do
   defp restore(app, key, val), do: Application.put_env(app, key, val)
 
   defp feature do
-    %Feature{id: "001", slug: "core-ledger", path: "/x/docs/breakdown/001-core-ledger.md"}
+    %Feature{id: "001", number: 1, slug: "core-ledger", path: "/x/docs/breakdown/001-core-ledger.md"}
   end
 
   test "runs a phase end-to-end, records actual cost to the ledger", %{ledger: ledger} do
@@ -126,6 +126,7 @@ defmodule SpeckitOrchestrator.RunPhaseTest do
 
     feature = %Feature{
       id: "001",
+      number: 1,
       slug: "smoke",
       path: Path.join(repo, "docs/breakdown/001-smoke.md")
     }

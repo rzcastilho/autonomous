@@ -5,6 +5,8 @@ defmodule SpeckitOrchestrator.Application do
 
   @impl true
   def start(_type, _args) do
+    check_no_retired_settings!()
+
     # Store.Boot runs before any child spec (018, FR-009): a run can never
     # begin spending money it cannot record. A failure aborts the OTP
     # application rather than letting a half-ready store be observed.
@@ -39,5 +41,24 @@ defmodule SpeckitOrchestrator.Application do
   def config_change(changed, _new, removed) do
     SpeckitOrchestrator.Web.Endpoint.config_change(changed, removed)
     :ok
+  end
+
+  # 019: an app-env still naming a retired :pr_workflow/:max_concurrency key
+  # (e.g. a stale config file, or an env-var mapping predating the
+  # runtime.exs raise) must never boot a supervision tree that could start a
+  # run against a setting the system will not honour (contracts/run-start.md
+  # § 3).
+  @retired_app_env [:pr_workflow, :max_concurrency]
+
+  defp check_no_retired_settings! do
+    Enum.each(@retired_app_env, fn key ->
+      if Application.get_env(:speckit_orchestrator, key) != nil do
+        raise """
+        speckit_orchestrator config still names retired setting #{inspect(key)}. \
+        019 collapsed every run into one stacked-sequential shape; this key is \
+        refused, not read. Remove it from config.
+        """
+      end
+    end)
   end
 end

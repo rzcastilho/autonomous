@@ -1,16 +1,17 @@
 defmodule SpeckitOrchestrator.Web.ConfigLive do
   @moduledoc """
-  US6 — Configuration (`/config`): per-phase model routing, budget, max
-  concurrency, and PR-workflow mode, applying forward-only to the live run
-  (`specs/008-control-plane/tasks.md` T068-T070).
+  US6 — Configuration (`/config`): per-phase model routing, budget, and PR
+  base/remote, applying forward-only to the live run
+  (`specs/008-control-plane/tasks.md` T068-T070). 019: every run is a
+  stacked sequential run — there is no concurrency or PR-workflow toggle
+  left to configure.
 
   Renders `Config.*` + `Ledger.snapshot/1`; submits through
   `LiveConfig.apply/1`. On success it broadcasts a `:reconciled` message on
   `ConsoleProjection.topic()` (the same shape the projection's own reconcile
   tick sends) so the status bar/gauge and every other mounted LiveView pick up
   the change immediately rather than waiting up to 2s (FR-030), and toasts the
-  change (FR-005). PR workflow forces the displayed effective concurrency to 1
-  (FR-031).
+  change (FR-005).
   """
 
   use SpeckitOrchestrator.Web, :live_view
@@ -21,8 +22,7 @@ defmodule SpeckitOrchestrator.Web.ConfigLive do
     Coordinator,
     Ledger,
     LiveConfig,
-    Pipeline,
-    RunContext
+    Pipeline
   }
 
   @impl true
@@ -37,8 +37,6 @@ defmodule SpeckitOrchestrator.Web.ConfigLive do
     assign(socket,
       models: Config.models(),
       budget_usd: Ledger.snapshot().budget,
-      max_concurrency: Config.max_concurrency(),
-      pr_workflow?: Config.pr_workflow?(),
       pr_base: Config.pr_base(),
       pr_remote: Config.pr_remote()
     )
@@ -67,8 +65,6 @@ defmodule SpeckitOrchestrator.Web.ConfigLive do
     %{
       models: model_changes(params),
       budget_usd: parse_number(params["budget_usd"]),
-      max_concurrency: parse_int(params["max_concurrency"]),
-      pr_workflow: params["pr_workflow"] == "true",
       pr_base: params["pr_base"] || "",
       pr_remote: params["pr_remote"] || ""
     }
@@ -84,15 +80,6 @@ defmodule SpeckitOrchestrator.Web.ConfigLive do
 
   defp parse_number(s) do
     case Float.parse(s) do
-      {n, _rest} -> n
-      :error -> :invalid
-    end
-  end
-
-  defp parse_int(nil), do: 0
-
-  defp parse_int(s) do
-    case Integer.parse(s) do
       {n, _rest} -> n
       :error -> :invalid
     end
@@ -117,13 +104,6 @@ defmodule SpeckitOrchestrator.Web.ConfigLive do
 
   @impl true
   def render(assigns) do
-    assigns =
-      assign(
-        assigns,
-        :effective_concurrency,
-        RunContext.effective_max_concurrency(assigns.pr_workflow?, assigns.max_concurrency)
-      )
-
     ~H"""
     <div class="view-config" data-view="config">
       <form id="config-form" phx-submit="apply" data-form="config">
@@ -183,30 +163,6 @@ defmodule SpeckitOrchestrator.Web.ConfigLive do
               {@errors[:budget_usd]}
             </p>
           </fieldset>
-
-          <fieldset class="config-concurrency form-panel">
-            <legend class="sr-only">Concurrency</legend>
-            <div class="range-row-head">
-              <span class="range-row-title">Max concurrency</span>
-              <span class="range-row-value" id="concurrency-range-value">{@max_concurrency}</span>
-            </div>
-            <input
-              type="range"
-              name="max_concurrency"
-              min="1"
-              max="12"
-              step="1"
-              value={@max_concurrency}
-              class="range-input"
-              oninput="document.getElementById('concurrency-range-value').textContent = this.value"
-            />
-            <p :if={@errors[:max_concurrency]} class="field-error" data-error="max_concurrency">
-              {@errors[:max_concurrency]}
-            </p>
-            <p class="range-row-hint" data-effective-concurrency={@effective_concurrency}>
-              effective concurrency: {@effective_concurrency}
-            </p>
-          </fieldset>
         </div>
 
         <fieldset class="config-pr form-panel">
@@ -214,18 +170,10 @@ defmodule SpeckitOrchestrator.Web.ConfigLive do
           <div class="config-toggle-row">
             <div>
               <div class="config-toggle-title">Stacked PR workflow</div>
-              <div class="config-toggle-sub">Forces cap 1 · one PR per feature · stacked bottom-up.</div>
+              <div class="config-toggle-sub">
+                Every run — one feature at a time, one PR per feature, stacked bottom-up.
+              </div>
             </div>
-            <label class="pr-toggle">
-              <input
-                type="checkbox"
-                name="pr_workflow"
-                value="true"
-                checked={@pr_workflow?}
-                class="switch-input"
-              />
-              <span class="switch-track switch-track-lg"><span class="switch-knob"></span></span>
-            </label>
           </div>
           <div class="config-pr-fields">
             <label>

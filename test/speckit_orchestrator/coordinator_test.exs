@@ -1,12 +1,10 @@
 defmodule SpeckitOrchestrator.CoordinatorTest do
-  # async: false — the set_cap/2 tests mutate global Config app env (mirrored
-  # by Coordinator.set_cap/2), same convention as run_context_test.exs.
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
-  alias SpeckitOrchestrator.{Coordinator, Feature, Ledger, RunContext}
+  alias SpeckitOrchestrator.{Coordinator, Feature, Ledger}
 
-  defp feat(id, prereqs \\ []),
-    do: %Feature{id: id, slug: "f#{id}", path: "#{id}.md", prereqs: prereqs}
+  defp feat(id, number \\ nil),
+    do: %Feature{id: id, number: number || String.to_integer(id), slug: "f#{id}", path: "#{id}.md"}
 
   # A runner that reports each started feature (with its notify fn) to the test,
   # so the test controls when and how each feature finishes.
@@ -14,7 +12,7 @@ defmodule SpeckitOrchestrator.CoordinatorTest do
     fn feature, notify -> send(test_pid, {:started, feature.id, notify}) end
   end
 
-  defp start(features, opts) do
+  defp start(features, opts \\ []) do
     {:ok, pid} =
       Coordinator.start_link(
         [features: features, runner: controllable_runner(self()), owner: self()] ++ opts
@@ -29,207 +27,134 @@ defmodule SpeckitOrchestrator.CoordinatorTest do
     notify
   end
 
-  test "diamond DAG releases wave by wave and completes" do
-    features = [
-      feat("001"),
-      feat("002", ["001"]),
-      feat("003", ["001"]),
-      feat("004", ["002", "003"])
-    ]
-
-    start(features, max_concurrency: 4)
+  test "releases one feature at a time in ascending numeric order and completes" do
+    features = [feat("003"), feat("001"), feat("002")]
+    start(features)
 
     n1 = await_started("001")
     refute_received {:started, "002", _}
+    refute_received {:started, "003", _}
     n1.("001", :done, nil)
 
     n2 = await_started("002")
-    n3 = await_started("003")
+    refute_received {:started, "003", _}
     n2.("002", :done, nil)
+
+    n3 = await_started("003")
     n3.("003", :done, nil)
 
-    n4 = await_started("004")
-    n4.("004", :done, nil)
-
     assert_receive {:run_complete, report}, 1_000
-    assert report.done == ["001", "002", "003", "004"]
+    assert report.done == ["001", "002", "003"]
+    assert report.stopped_by == nil
+    refute Map.has_key?(report, :blocked)
   end
 
-  test "concurrency cap limits in-flight features" do
+  test "empty backlog finishes immediately with no stopped_by" do
+    start([])
+    assert_receive {:run_complete, report}, 1_000
+    assert report.done == []
+    assert report.stopped_by == nil
+  end
+
+  # ---- stop-on-first-broken-link (US3, FR-014/FR-015) ------------------------
+
+  for {status, reason} <- [
+        {:escalated, :needs_human},
+        {:halted, :critical_finding},
+        {:failed, {:phase_error, :boom}}
+      ] do
+    test "stop on #{status}: later features are never started and the report names the stopper" do
+      features = for n <- 1..7, do: feat(String.pad_leading("#{n}", 3, "0"), n)
+      start(features)
+
+      n1 = await_started("001")
+      n1.("001", :done, nil)
+
+      n2 = await_started("002")
+      n2.("002", unquote(status), unquote(Macro.escape(reason)))
+
+      refute_received {:started, "003", _}
+      assert_receive {:run_complete, report}, 1_000
+
+      assert report.done == ["001"]
+      assert Map.get(report, unquote(status)) == ["002"]
+      assert report.not_started == ~w(003 004 005 006 007)
+      assert report.stopped_by == %{feature_id: "002", status: unquote(status), reason: unquote(Macro.escape(reason))}
+      refute Map.has_key?(report, :blocked)
+    end
+  end
+
+  test "when more than one non-done terminal exists on a seeded run, the lowest-ordered is the stopper" do
     features = [feat("001"), feat("002"), feat("003")]
-    start(features, max_concurrency: 2)
 
-    _n1 = await_started("001")
-    n2 = await_started("002")
-    # third must wait behind the cap
+    start(features, statuses: %{"001" => :halted, "002" => :failed, "003" => :pending})
+
     refute_received {:started, "003", _}
-
-    n2.("002", :done, nil)
-    _n3 = await_started("003")
-  end
-
-  test "a dependent of an escalated prereq is reported blocked" do
-    features = [feat("001"), feat("002", ["001"])]
-    start(features, max_concurrency: 2)
-
-    n1 = await_started("001")
-    n1.("001", :escalated, :needs_human)
-
-    refute_received {:started, "002", _}
     assert_receive {:run_complete, report}, 1_000
-    assert report.escalated == ["001"]
-    assert report.blocked == ["002"]
+    assert report.stopped_by == %{feature_id: "001", status: :halted, reason: nil}
   end
+
+  # ---- breaker (drain, don't kill; Principle IV) ------------------------------
 
   test "a tripped breaker releases nothing (pre-tripped ledger)" do
     {:ok, ledger} = Ledger.start_link(budget: 0.0, name: nil)
-    features = [feat("001"), feat("002", ["001"])]
-    start(features, max_concurrency: 2, ledger: ledger)
+    features = [feat("001"), feat("002")]
+    start(features, ledger: ledger)
 
     refute_received {:started, _, _}
     assert_receive {:run_complete, report}, 1_000
     assert report.breaker_tripped
     assert Enum.sort(report.not_started) == ["001", "002"]
     assert report.done == []
+    assert report.stopped_by == nil
   end
 
-  test "breaker tripping mid-run drains in-flight then releases no more" do
+  test "breaker tripping mid-chain drains the in-flight feature then releases no more, and the report names it as the stopper" do
     {:ok, ledger} = Ledger.start_link(budget: 100.0, name: nil)
-    features = [feat("001"), feat("002", ["001"])]
-    start(features, max_concurrency: 2, ledger: ledger)
+    features = [feat("001"), feat("002")]
+    start(features, ledger: ledger)
 
     n1 = await_started("001")
     # trip the breaker while 001 is in flight
     Ledger.record(ledger, nil, 150.0)
-    n1.("001", :done, nil)
+    # the breaker-driven drain halts 001 between phases (FeatureRunner's job;
+    # simulated here via the controllable runner's notify).
+    n1.("001", :halted, :breaker_drain)
 
     refute_received {:started, "002", _}
     assert_receive {:run_complete, report}, 1_000
-    assert report.done == ["001"]
+    assert report.halted == ["001"]
     assert report.not_started == ["002"]
     assert report.breaker_tripped
+    # Reported even though the breaker masks `Release.next/3`'s own return
+    # (rule 1 always wins once tripped) — the Coordinator computes it
+    # independently so the operator can still see what broke (FR-017).
+    assert report.stopped_by == %{feature_id: "001", status: :halted, reason: :breaker_drain}
   end
 
-  test "empty backlog finishes immediately" do
-    start([], max_concurrency: 2)
-    assert_receive {:run_complete, report}, 1_000
-    assert report.done == []
-  end
+  # ---- report/state shape (019: no cap, no blocked) ---------------------------
 
-  # set_cap/2 mirrors to app env (a global, not per-process, side effect) —
-  # every test that calls it must restore the prior value on exit so it
-  # cannot bleed into other test files (e.g. config_test.exs).
-  defp with_restored_max_concurrency(test) do
-    prior = Application.get_env(:speckit_orchestrator, :max_concurrency)
-    on_exit(fn -> Application.put_env(:speckit_orchestrator, :max_concurrency, prior) end)
-    test.()
-  end
-
-  test "set_cap/2 raises the wave cap so a previously-waiting feature releases on the next advance" do
-    with_restored_max_concurrency(fn ->
-      features = [feat("001"), feat("002"), feat("003")]
-      pid = start(features, max_concurrency: 2)
-
-      _n1 = await_started("001")
-      n2 = await_started("002")
-      refute_received {:started, "003", _}
-
-      assert Coordinator.set_cap(pid, 3) == :ok
-      # cap alone doesn't spawn work; the next advance (triggered by a finish) sees it.
-      refute_received {:started, "003", _}
-
-      n2.("002", :done, nil)
-      _n3 = await_started("003")
-    end)
-  end
-
-  test "set_cap/2 mirrors the new cap to app env" do
-    with_restored_max_concurrency(fn ->
-      features = [feat("001")]
-      pid = start(features, max_concurrency: 2)
-      _n1 = await_started("001")
-
-      assert Coordinator.set_cap(pid, 5) == :ok
-      assert Application.get_env(:speckit_orchestrator, :max_concurrency) == 5
-    end)
-  end
-
-  # ---- stacked PR run pins cap 1 -------------------------------------------
-
-  test "set_cap/2 refuses to raise the cap on a stacked PR run, changing neither the cap nor app env" do
-    with_restored_max_concurrency(fn ->
-      Application.put_env(:speckit_orchestrator, :max_concurrency, 1)
-      features = [feat("001"), feat("002")]
-
-      pid =
-        start(features,
-          max_concurrency: 1,
-          context: %RunContext{pr_workflow: true, max_concurrency: 1}
-        )
-
-      _n1 = await_started("001")
-      refute_received {:started, "002", _}
-
-      assert Coordinator.set_cap(pid, 4) == {:error, :stacked_run}
-      assert Coordinator.status(pid).cap == 1
-      assert Application.get_env(:speckit_orchestrator, :max_concurrency) == 1
-
-      # The refusal is not cosmetic — 002 is still held at cap 1.
-      refute_received {:started, "002", _}
-    end)
-  end
-
-  test "set_cap/2 still allows lowering to 1 on a stacked PR run" do
-    with_restored_max_concurrency(fn ->
-      pid = start([feat("001")], context: %RunContext{pr_workflow: true})
-      _n1 = await_started("001")
-
-      assert Coordinator.set_cap(pid, 1) == :ok
-      assert Coordinator.status(pid).cap == 1
-    end)
-  end
-
-  test "set_cap/2 raises the cap normally on a non-stacked run recording pr_workflow: false" do
-    with_restored_max_concurrency(fn ->
-      pid = start([feat("001")], max_concurrency: 1, context: %RunContext{pr_workflow: false})
-      _n1 = await_started("001")
-
-      assert Coordinator.set_cap(pid, 3) == :ok
-      assert Coordinator.status(pid).cap == 3
-    end)
-  end
-
-  test "status/0 exposes the run's own cap and context" do
-    pid = start([feat("001")], max_concurrency: 1, context: %RunContext{pr_workflow: true})
+  test "status/0 exposes no cap field" do
+    pid = start([feat("001")])
     _n1 = await_started("001")
 
-    status = Coordinator.status(pid)
-    assert status.cap == 1
-    assert status.context.pr_workflow == true
+    refute Map.has_key?(Coordinator.status(pid), :cap)
   end
 
-  # ---- :statuses init option (crash recovery, T020) ------------------------
+  # ---- :statuses init option (crash recovery) --------------------------------
 
-  test "a supplied :statuses init option seeds state.statuses instead of the all-:pending default — a :done feature is never released even when its prereqs are also :done" do
-    features = [feat("001"), feat("002", ["001"])]
-
-    start(features,
-      max_concurrency: 2,
-      statuses: %{"001" => :done, "002" => :done}
-    )
+  test "a supplied :statuses init option seeds state.statuses instead of the all-:pending default" do
+    features = [feat("001"), feat("002")]
+    start(features, statuses: %{"001" => :done, "002" => :done})
 
     refute_received {:started, _, _}
     assert_receive {:run_complete, report}, 1_000
     assert report.done == ["001", "002"]
   end
 
-  test "a feature seeded :pending in :statuses releases normally through Release.next_wave/4" do
-    features = [feat("001"), feat("002", ["001"])]
-
-    start(features,
-      max_concurrency: 2,
-      statuses: %{"001" => :done, "002" => :pending}
-    )
+  test "a feature seeded :pending in :statuses releases normally" do
+    features = [feat("001"), feat("002")]
+    start(features, statuses: %{"001" => :done, "002" => :pending})
 
     n2 = await_started("002")
     n2.("002", :done, nil)

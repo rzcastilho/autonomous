@@ -47,12 +47,16 @@ defmodule SpeckitOrchestrator.Web.RunDetailLiveTest do
 
   defp open(repo_id, feature_ids) do
     features =
-      Enum.map(feature_ids, &%{feature_id: &1, slug: "f-#{&1}", path: "specs/#{&1}", prereqs: []})
+      feature_ids
+      |> Enum.with_index(1)
+      |> Enum.map(fn {id, n} ->
+        %{feature_id: id, slug: "f-#{id}", path: "specs/#{id}", number: n, group: :backlog, created_at: nil}
+      end)
 
     {:ok, run_id} =
       Writer.open_run(repo_id, %{
         features: features,
-        settings: %{max_concurrency: 2},
+        settings: %{budget_usd: 100.0},
         scope: :ad_hoc,
         layout: %{}
       })
@@ -149,5 +153,28 @@ defmodule SpeckitOrchestrator.Web.RunDetailLiveTest do
   test "an absent run renders an error instead of crashing", %{conn: conn} do
     {:ok, _view, html} = live(conn, "/runs/r999999")
     assert html =~ "unavailable"
+  end
+
+  test "a parked run's header names the stopper and reason, and a never-started feature renders as such",
+       %{conn: conn, repo_id: repo_id} do
+    run_id = open(repo_id, ["001", "002"])
+
+    :ok =
+      Writer.park_run({repo_id, run_id}, %{
+        stopped_by: "001",
+        status: :halted,
+        reason: :critical_finding
+      })
+
+    :ok = Writer.end_run({repo_id, run_id})
+
+    {:ok, _view, html} = live(conn, "/runs/#{run_id}")
+
+    assert html =~ ~s(data-marker="stopped-by")
+    assert html =~ "001"
+    assert html =~ ":critical_finding"
+
+    assert html =~ ~s(data-feature="002")
+    assert html =~ ~s(data-status="never_started")
   end
 end

@@ -79,7 +79,9 @@ defmodule SpeckitOrchestrator.StoreCapacityTest do
 
     {:ok, _run_id} =
       Store.open_run(repo_id, %{
-        features: [%{feature_id: "001", slug: "f", path: "specs/001", prereqs: []}],
+        features: [
+          %{feature_id: "001", slug: "f", path: "specs/001", number: 1, group: :backlog, created_at: nil}
+        ],
         settings: %{},
         scope: :ad_hoc,
         layout: %{}

@@ -173,14 +173,20 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
   defp identity(id, _feature, %{slug: slug} = feature_detail) when is_binary(slug) do
     %Feature{
       id: id,
+      number: identity_number(id, feature_detail),
       slug: slug,
       path: feature_detail.path || "",
-      prereqs: feature_detail.prereqs || []
+      group: Map.get(feature_detail, :group, :backlog),
+      created_at: Map.get(feature_detail, :created_at)
     }
   end
 
   defp identity(id, feature, _feature_detail) do
-    %Feature{id: id, slug: feature.slug, path: "", prereqs: feature[:prereqs] || []}
+    %Feature{id: id, number: identity_number(id, %{}), slug: feature.slug, path: ""}
+  end
+
+  defp identity_number(id, source) do
+    Map.get(source, :number) || String.to_integer(id)
   end
 
   defp divert_reason(%{reason: reason}), do: reason

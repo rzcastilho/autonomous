@@ -1,16 +1,14 @@
 defmodule SpeckitOrchestrator.LiveConfigTest do
-  # Mutates global app env (:models, :max_concurrency, :pr_*) and the
-  # app-supervised default-named Ledger's budget — must not run concurrently
-  # with another test claiming those globals.
+  # Mutates global app env (:models, :pr_*) and the app-supervised
+  # default-named Ledger's budget — must not run concurrently with another
+  # test claiming those globals.
   use ExUnit.Case, async: false
 
-  alias SpeckitOrchestrator.{Config, Coordinator, Feature, Ledger, LiveConfig, RunContext}
+  alias SpeckitOrchestrator.{Config, Coordinator, Feature, Ledger, LiveConfig}
 
   setup do
     prior = %{
       models: Config.models(),
-      max_concurrency: Application.get_env(:speckit_orchestrator, :max_concurrency),
-      pr_workflow: Application.get_env(:speckit_orchestrator, :pr_workflow),
       pr_base: Application.get_env(:speckit_orchestrator, :pr_base),
       pr_remote: Application.get_env(:speckit_orchestrator, :pr_remote),
       budget_usd: Ledger.snapshot().budget
@@ -18,8 +16,6 @@ defmodule SpeckitOrchestrator.LiveConfigTest do
 
     on_exit(fn ->
       Application.put_env(:speckit_orchestrator, :models, prior.models)
-      restore(:max_concurrency, prior.max_concurrency)
-      restore(:pr_workflow, prior.pr_workflow)
       restore(:pr_base, prior.pr_base)
       restore(:pr_remote, prior.pr_remote)
       Ledger.set_budget(prior.budget_usd)
@@ -38,10 +34,6 @@ defmodule SpeckitOrchestrator.LiveConfigTest do
       assert Ledger.snapshot().budget == before
     end
 
-    test "rejects a zero max concurrency" do
-      assert {:error, %{max_concurrency: _}} = LiveConfig.apply(%{max_concurrency: 0})
-    end
-
     test "rejects an invalid per-phase model" do
       assert {:error, %{models: _}} = LiveConfig.apply(%{models: %{specify: "haiku"}})
       refute Config.models()[:specify] == "haiku"
@@ -50,9 +42,15 @@ defmodule SpeckitOrchestrator.LiveConfigTest do
     test "one invalid field rejects the whole change — no setter call for any field" do
       before = Ledger.snapshot().budget
 
-      assert {:error, errors} = LiveConfig.apply(%{budget_usd: 50, max_concurrency: 0})
-      assert Map.has_key?(errors, :max_concurrency)
+      assert {:error, errors} =
+               LiveConfig.apply(%{budget_usd: 50, models: %{specify: "haiku"}})
+
+      assert Map.has_key?(errors, :models)
       assert Ledger.snapshot().budget == before
+    end
+
+    test "rejects an unknown field" do
+      assert {:error, %{max_concurrency: _}} = LiveConfig.apply(%{max_concurrency: 1})
     end
   end
 
@@ -63,101 +61,39 @@ defmodule SpeckitOrchestrator.LiveConfigTest do
     end
   end
 
-  describe "budget + concurrency dispatch" do
+  describe "budget dispatch" do
     test "a valid budget change calls Ledger.set_budget/2" do
       assert {:ok, _change} = LiveConfig.apply(%{budget_usd: 42.0})
       assert Ledger.snapshot().budget == 42.0
     end
 
-    test "a valid concurrency change calls Coordinator.set_cap/2 when a run is active" do
-      {:ok, pid} =
-        Coordinator.start_link(
-          name: Coordinator,
-          features: [%Feature{id: "lc1", slug: "lc1", path: "lc1.md"}],
-          runner: fn _feature, _notify -> :ok end,
-          owner: self()
-        )
-
-      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
-
-      assert {:ok, _change} = LiveConfig.apply(%{max_concurrency: 5})
-    end
-
-    test "a valid concurrency change mirrors to app env even with no active run" do
+    test "a valid budget change applies with no active run" do
       refute Process.whereis(Coordinator)
-      assert {:ok, _change} = LiveConfig.apply(%{max_concurrency: 3})
-      assert Application.get_env(:speckit_orchestrator, :max_concurrency) == 3
+      assert {:ok, _change} = LiveConfig.apply(%{budget_usd: 33.0})
+      assert Ledger.snapshot().budget == 33.0
     end
 
-    # A stacked PR run pins cap 1 so each feature branches from the previous
-    # one's published branch — raising it would race StackTracker.
-    test "raising concurrency above 1 is refused while a stacked PR run is live, applying nothing" do
-      before = Application.get_env(:speckit_orchestrator, :max_concurrency)
-
+    test "a valid budget change applies while a run is active — 019 retired the cap, nothing to race" do
       {:ok, pid} =
         Coordinator.start_link(
           name: Coordinator,
-          features: [%Feature{id: "lc2", slug: "lc2", path: "lc2.md"}],
+          features: [%Feature{id: "lc1", number: 1, slug: "lc1", path: "lc1.md"}],
           runner: fn _feature, _notify -> :ok end,
-          context: %RunContext{pr_workflow: true, max_concurrency: 1},
-          max_concurrency: 1,
           owner: self()
         )
 
       on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
 
-      assert {:error, errors} = LiveConfig.apply(%{max_concurrency: 4})
-      assert errors[:max_concurrency] =~ "stacked PR run"
-
-      assert Coordinator.status(pid).cap == 1
-      assert Application.get_env(:speckit_orchestrator, :max_concurrency) == before
-    end
-
-    # All-or-nothing (FR-029): the refused cap must take the whole submit with
-    # it, not let a co-submitted budget through.
-    test "the stacked refusal rejects co-submitted fields too" do
-      budget_before = Ledger.snapshot().budget
-
-      {:ok, pid} =
-        Coordinator.start_link(
-          name: Coordinator,
-          features: [%Feature{id: "lc3", slug: "lc3", path: "lc3.md"}],
-          runner: fn _feature, _notify -> :ok end,
-          context: %RunContext{pr_workflow: true},
-          max_concurrency: 1,
-          owner: self()
-        )
-
-      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
-
-      assert {:error, errors} = LiveConfig.apply(%{max_concurrency: 4, budget_usd: 999.0})
-      assert Map.has_key?(errors, :max_concurrency)
-      assert Ledger.snapshot().budget == budget_before
-    end
-
-    test "lowering concurrency to 1 is still accepted while a stacked PR run is live" do
-      {:ok, pid} =
-        Coordinator.start_link(
-          name: Coordinator,
-          features: [%Feature{id: "lc4", slug: "lc4", path: "lc4.md"}],
-          runner: fn _feature, _notify -> :ok end,
-          context: %RunContext{pr_workflow: true},
-          max_concurrency: 1,
-          owner: self()
-        )
-
-      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
-
-      assert {:ok, _change} = LiveConfig.apply(%{max_concurrency: 1})
+      assert {:ok, _change} = LiveConfig.apply(%{budget_usd: 15.0})
+      assert Ledger.snapshot().budget == 15.0
     end
   end
 
   describe "PR settings (app env, forward-only)" do
-    test "pr_workflow/pr_base/pr_remote apply to app env" do
+    test "pr_base/pr_remote apply to app env" do
       assert {:ok, _change} =
-               LiveConfig.apply(%{pr_workflow: true, pr_base: "develop", pr_remote: "upstream"})
+               LiveConfig.apply(%{pr_base: "develop", pr_remote: "upstream"})
 
-      assert Config.pr_workflow?() == true
       assert Config.pr_base() == "develop"
       assert Config.pr_remote() == "upstream"
     end

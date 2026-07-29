@@ -31,7 +31,7 @@ defmodule SpeckitOrchestrator.WorktreeTest do
     dir
   end
 
-  defp feature, do: %Feature{id: "001", slug: "core-ledger", path: "001-core-ledger.md"}
+  defp feature, do: %Feature{id: "001", number: 1, slug: "core-ledger", path: "001-core-ledger.md"}
 
   defp with_root(repo) do
     root = Path.join(System.tmp_dir!(), "wt_root_#{System.unique_integer([:positive])}")

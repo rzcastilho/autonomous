@@ -324,7 +324,7 @@ defmodule SpeckitOrchestrator.ConsoleReadModelTest do
         feature_id: id,
         status: status,
         slug: Keyword.get(opts, :slug),
-        prereqs: Keyword.get(opts, :prereqs, []),
+        group: Keyword.get(opts, :group, :backlog),
         checkpoint: Keyword.get(opts, :checkpoint)
       }
     end
@@ -363,14 +363,16 @@ defmodule SpeckitOrchestrator.ConsoleReadModelTest do
     end
 
     test "populated entries carry the full per-feature slice shape (no missing-key crash downstream)" do
-      detail = run_detail([feature_detail("001", :halted, slug: "core-ledger", prereqs: ["000"])])
+      detail =
+        run_detail([feature_detail("001", :halted, slug: "core-ledger", group: :ad_hoc)])
+
       merged = ConsoleReadModel.overlay_last_known_statuses(inactive_view(), detail)
 
       entry = merged.per_feature["001"]
       assert entry.status == :halted
       assert entry.elapsed_ms == nil
       assert entry.slug == "core-ledger"
-      assert entry.prereqs == ["000"]
+      assert entry.group == :ad_hoc
       assert entry.current_phase == nil
       assert entry.phases == %{}
       assert entry.spend == 0.0

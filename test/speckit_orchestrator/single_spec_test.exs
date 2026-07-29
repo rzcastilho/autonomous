@@ -52,7 +52,7 @@ defmodule SpeckitOrchestrator.SingleSpecTest do
       assert body =~ "None"
     end
 
-    test "round-trips through Backlog as a single no-prereq feature" do
+    test "round-trips through Backlog as a single feature (the seed's own Prerequisites section is inert prose, FR-010)" do
       dir = Path.join(System.tmp_dir!(), "single_spec_seed_#{System.unique_integer([:positive])}")
       File.mkdir_p!(dir)
       on_exit(fn -> File.rm_rf(dir) end)
@@ -62,8 +62,9 @@ defmodule SpeckitOrchestrator.SingleSpecTest do
 
       [feature] = Backlog.load!(dir)
       assert feature.id == "007"
+      assert feature.number == 7
       assert feature.slug == "do-the-thing"
-      assert feature.prereqs == []
+      assert feature.group == :backlog
     end
   end
 
@@ -80,13 +81,20 @@ defmodule SpeckitOrchestrator.SingleSpecTest do
       assert SingleSpec.build("   \n\t  ", []) == {:error, :empty_description}
     end
 
-    test "builds a pending, prereq-free Feature from a valid description" do
+    test "builds a pending, ad-hoc Feature from a valid description (FR-024, FR-025)" do
       assert {:ok, %Feature{} = feature} = SingleSpec.build("Add a health check endpoint", [])
       assert feature.id == "001"
+      assert feature.number == 1
       assert feature.slug == "add-a-health-check-endpoint"
-      assert feature.prereqs == []
+      assert feature.group == :ad_hoc
+      assert %DateTime{} = feature.created_at
       assert feature.status == :pending
       assert feature.path == "docs/breakdown/001-add-a-health-check-endpoint.md"
+    end
+
+    test "every built ad-hoc feature carries a non-nil created_at" do
+      assert {:ok, feature} = SingleSpec.build("Another feature", [])
+      assert %DateTime{} = feature.created_at
     end
 
     test "auto-assigns past already-taken ids" do

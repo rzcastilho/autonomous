@@ -166,7 +166,14 @@ defmodule SpeckitOrchestrator.Web.RunsLive do
                   superseded by {run.superseded_by}
                 </span>
               </td>
-              <td>{run.state}</td>
+              <td>
+                <span class={"badge #{if run.state == :parked, do: "badge-warn", else: "badge-neutral"}"} data-marker="state">
+                  {run.state}
+                </span>
+                <span :if={run.state == :parked} class="run-context-chip" data-marker="stopped-by">
+                  stopped at {run.stopped_by} ({inspect(run.stopped_reason)})
+                </span>
+              </td>
               <td>{run.outcome || "—"}</td>
               <td>{format_datetime(run.started_at)}</td>
               <td>{format_elapsed(run.duration_ms)}</td>

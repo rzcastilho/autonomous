@@ -5,7 +5,14 @@ defmodule SpeckitOrchestrator.Store.WriterTest do
 
   defp features(ids) do
     Enum.map(ids, fn id ->
-      %{feature_id: id, slug: "feature-#{id}", path: "specs/#{id}", prereqs: []}
+      %{
+        feature_id: id,
+        slug: "feature-#{id}",
+        path: "specs/#{id}",
+        number: String.to_integer(id),
+        group: :backlog,
+        created_at: nil
+      }
     end)
   end
 
@@ -515,6 +522,153 @@ defmodule SpeckitOrchestrator.Store.WriterTest do
       assert run.record_complete? == false
       assert run.halt_reason == {:persistence_failed, :write_timeout}
       assert run.state == :in_flight
+    end
+  end
+
+  describe "park_run/2" do
+    test "flips :in_flight -> :parked and records stopped_by/stopped_reason" do
+      {repo, run_id} = open("o:writer-park", ["001", "002"])
+      run_key = {repo, run_id}
+
+      assert :ok =
+               Writer.park_run(run_key, %{
+                 stopped_by: "002",
+                 status: :halted,
+                 reason: "breaker tripped"
+               })
+
+      run = read_run(run_key)
+      assert run.state == :parked
+      assert run.stopped_by == "002"
+      assert run.stopped_reason == "breaker tripped"
+    end
+
+    test "parking a run that is not :in_flight is refused" do
+      {repo, run_id} = open("o:writer-park-notinflight")
+      run_key = {repo, run_id}
+
+      :ok = Writer.park_run(run_key, %{stopped_by: "001", status: :failed, reason: "r"})
+
+      assert {:error, :not_in_flight} =
+               Writer.park_run(run_key, %{stopped_by: "001", status: :failed, reason: "r2"})
+
+      Health.clear()
+    end
+
+    test "an absent run is refused" do
+      assert {:error, {:absent, _}} =
+               Writer.park_run({"o:writer-park-absent", "r000001"}, %{
+                 stopped_by: "001",
+                 status: :failed,
+                 reason: "r"
+               })
+
+      Health.clear()
+    end
+  end
+
+  describe "continue_run/1" do
+    test "flips :parked -> :in_flight and clears stopped_by/stopped_reason, same run_id" do
+      {repo, run_id} = open("o:writer-continue")
+      run_key = {repo, run_id}
+
+      :ok = Writer.park_run(run_key, %{stopped_by: "001", status: :failed, reason: "r"})
+      assert :ok = Writer.continue_run(run_key)
+
+      run = read_run(run_key)
+      assert run.state == :in_flight
+      assert run.stopped_by == nil
+      assert run.stopped_reason == nil
+      assert run.run_id == run_id
+    end
+
+    test "continuing a run that is not parked is refused" do
+      {repo, run_id} = open("o:writer-continue-notparked")
+      run_key = {repo, run_id}
+
+      assert {:error, :not_parked} = Writer.continue_run(run_key)
+      Health.clear()
+    end
+  end
+
+  describe "end_run/2" do
+    test "flips :parked -> :completed, outcome :ended_by_operator, still-:pending features become :never_started" do
+      {repo, run_id} = open("o:writer-end", ["001", "002", "003"])
+      run_key = {repo, run_id}
+
+      Writer.record_feature_terminal(run_key, "001", :done, nil)
+      :ok = Writer.park_run(run_key, %{stopped_by: "002", status: :halted, reason: "r"})
+
+      assert :ok = Writer.end_run(run_key)
+
+      run = read_run(run_key)
+      assert run.state == :completed
+      assert run.outcome == :ended_by_operator
+      assert run.ended_at != nil
+      # stopped_by/stopped_reason are retained, not cleared, on a deliberate end.
+      assert run.stopped_by == "002"
+      assert run.stopped_reason == "r"
+
+      assert read_feature({repo, run_id, "001"}).status == :done
+      assert read_feature({repo, run_id, "003"}).status == :never_started
+    end
+
+    test "ending a run that is not parked is refused" do
+      {repo, run_id} = open("o:writer-end-notparked")
+      run_key = {repo, run_id}
+
+      assert {:error, :not_parked} = Writer.end_run(run_key)
+      Health.clear()
+    end
+  end
+
+  describe "open_run/2 refuses new work while a repository has a parked run (FR-020a, FR-020b, SC-009)" do
+    test "a single open_run/2 call is aborted, naming the parked run_id" do
+      repo = "o:writer-parked-guard"
+      {^repo, run_id} = open(repo, ["001"])
+      run_key = {repo, run_id}
+
+      :ok = Writer.park_run(run_key, %{stopped_by: "001", status: :halted, reason: "r"})
+
+      assert {:error, {:parked_run, ^run_id}} =
+               Writer.open_run(repo, %{
+                 features: features(["001"]),
+                 settings: %{},
+                 scope: :ad_hoc,
+                 layout: %{}
+               })
+
+      Health.clear()
+    end
+
+    test "N concurrent open_run/2 calls against a parked run are ALL refused (race-free)" do
+      repo = "o:writer-parked-guard-concurrent"
+      {^repo, run_id} = open(repo, ["001"])
+      run_key = {repo, run_id}
+
+      :ok = Writer.park_run(run_key, %{stopped_by: "001", status: :halted, reason: "r"})
+
+      results =
+        1..12
+        |> Task.async_stream(
+          fn _ ->
+            Writer.open_run(repo, %{
+              features: features(["001"]),
+              settings: %{},
+              scope: :ad_hoc,
+              layout: %{}
+            })
+          end,
+          max_concurrency: 12
+        )
+        |> Enum.map(fn {:ok, result} -> result end)
+
+      assert Enum.all?(results, &match?({:error, {:parked_run, ^run_id}}, &1))
+
+      {:ok, rows} = Mnesia.transaction(fn -> Mnesia.index_read(:speckit_run, repo, :repo_id) end)
+      assert length(rows) == 1
+
+      Health.clear()
     end
   end
 end

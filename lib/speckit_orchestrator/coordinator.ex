@@ -21,7 +21,19 @@ defmodule SpeckitOrchestrator.Coordinator do
   A tripped `Ledger` breaker releases **no new** features; in-flight features
   drain (finish their current phase, then halt — enforced in `FeatureRunner`).
   When the in-flight set empties with nothing releasable, the run finalizes;
-  undelivered `:pending` features are reported as `blocked` or `not_started`.
+  undelivered `:pending` features are reported `not_started` (019: no
+  prerequisites, so nothing is ever `blocked` — see `Release.next/3`).
+
+  ## Stop-on-first-broken-link and parking (019)
+
+  `Release.next/3` returning `{:stopped, id, status}` (a non-done terminal —
+  `:escalated`/`:halted`/`:failed` — with the breaker not tripped) means the
+  chain broke: once in-flight drains to empty, the Coordinator **parks** the
+  run (`Store.Writer.park_run/2`, `:in_flight -> :parked`) instead of closing
+  it, and the final report's `stopped_by` names the feature and why
+  (FR-017). A breaker/persistence-failure drain is unchanged from pre-019 —
+  it stays `:in_flight` (unless every feature reached `:done`) for
+  `resume/2`/`resume_run/1` to revisit, never parked.
 
   ## Persistence (018)
 
@@ -30,25 +42,26 @@ defmodule SpeckitOrchestrator.Coordinator do
   need the same `run_key` this process holds) via
   `Store.Writer.open_run/2`. The Coordinator's own store touch-points are:
   a tripped `Store.Health` — checked in `advance/1` at the same point as the
-  breaker, releasing nothing new — and `Store.Writer.close_run/3` on drain,
-  so the run's terminal outcome is durable the moment the report is built.
-  The console reads this same store via `run_detail/1` (`MissionControlLive`/
+  breaker, releasing nothing new — `Store.Writer.park_run/2` on a genuine
+  stop, and `Store.Writer.close_run/3` on an ordinary/breaker drain — so the
+  run's terminal outcome is durable the moment the report is built. The
+  console reads this same store via `run_detail/1` (`MissionControlLive`/
   `PipelineDagLive`/`EscalationsLive`) rather than any state this process
   holds directly.
   """
 
   use GenServer
 
-  alias SpeckitOrchestrator.{Feature, Ledger, Release, RunContext}
+  alias SpeckitOrchestrator.{Feature, Ledger, Release}
   alias SpeckitOrchestrator.Store.{Health, Writer}
 
   @type status :: Feature.status()
 
   defstruct features: %{},
             statuses: %{},
+            reasons: %{},
             inflight: MapSet.new(),
             started_at: %{},
-            cap: 2,
             ledger: nil,
             runner: nil,
             owner: nil,
@@ -57,7 +70,8 @@ defmodule SpeckitOrchestrator.Coordinator do
             report: nil,
             run_key: nil,
             context: %{},
-            layout: nil
+            layout: nil,
+            stopped_by: nil
 
   # ---- Client API ---------------------------------------------------------
 
@@ -65,7 +79,6 @@ defmodule SpeckitOrchestrator.Coordinator do
   Start a run. Options:
 
     * `:features` — list of `%Feature{}` (the validated backlog). Required.
-    * `:max_concurrency` — cap (default `Config.max_concurrency/0`).
     * `:ledger` — `Ledger` server for the breaker (optional; no breaker if nil).
     * `:runner` — `fun (feature, notify)` that starts the feature's work and
       arranges for `notify.(id, status, reason)` on terminal. Required.
@@ -101,22 +114,6 @@ defmodule SpeckitOrchestrator.Coordinator do
   def notify(server, id, status, reason),
     do: GenServer.cast(server, {:finished, id, status, reason})
 
-  @doc """
-  Live-config apply (`contracts/live_config.md`): update the wave cap for
-  subsequent releases. Forward-only — `Release.next_wave` picks up the new
-  cap at its next computation; never affects in-flight work.
-
-  Refused with `{:error, :stacked_run}` when the run is a stacked PR run and
-  `n > 1`: that shape pins the cap to 1 so each feature can branch from the
-  previous one's published branch (`run_stacked/3`), and releasing a second
-  feature concurrently would race `StackTracker` and stack a PR on the wrong
-  base. Lowering back to 1 is always allowed.
-  """
-  @spec set_cap(GenServer.server(), pos_integer()) :: :ok | {:error, :stacked_run}
-  def set_cap(server \\ __MODULE__, n) when is_integer(n) and n >= 1 do
-    GenServer.call(server, {:set_cap, n})
-  end
-
   # ---- Server -------------------------------------------------------------
 
   @impl true
@@ -127,7 +124,6 @@ defmodule SpeckitOrchestrator.Coordinator do
     state = %__MODULE__{
       features: Map.new(features, &{&1.id, &1}),
       statuses: Keyword.get(opts, :statuses, Map.new(features, &{&1.id, :pending})),
-      cap: Keyword.get(opts, :max_concurrency, default_cap()),
       ledger: Keyword.get(opts, :ledger),
       runner: runner,
       owner: Keyword.get(opts, :owner),
@@ -144,10 +140,11 @@ defmodule SpeckitOrchestrator.Coordinator do
   def handle_continue(:release, state), do: {:noreply, advance(state)}
 
   @impl true
-  def handle_cast({:finished, id, status, _reason}, state) do
+  def handle_cast({:finished, id, status, reason}, state) do
     state = %{
       state
       | statuses: Map.put(state.statuses, id, status),
+        reasons: Map.put(state.reasons, id, reason),
         inflight: MapSet.delete(state.inflight, id)
     }
 
@@ -159,35 +156,28 @@ defmodule SpeckitOrchestrator.Coordinator do
     {:reply, snapshot(state), state}
   end
 
-  # The stacked PR run's cap-1 invariant outranks a live-config edit: refuse
-  # wholly (no cap change, no app-env mirror) rather than silently clamping,
-  # so the operator learns the edit did not take (Constitution II).
-  def handle_call({:set_cap, n}, _from, state) do
-    if n > 1 and RunContext.stacked?(state.context) do
-      {:reply, {:error, :stacked_run}, state}
-    else
-      Application.put_env(:speckit_orchestrator, :max_concurrency, n)
-      {:reply, :ok, %{state | cap: n}}
-    end
-  end
-
   # ---- orchestration ------------------------------------------------------
 
-  # Release everything the DAG + cap + breaker allow, then check for completion.
+  # Release the next feature `Release.next/3` allows (one at a time is
+  # structural — rule 3 of `next/3`, not a configured cap), then check for
+  # completion.
   defp advance(%__MODULE__{finished?: true} = state), do: state
 
   defp advance(state) do
-    wave =
-      Release.next_wave(
-        feature_list(state),
-        state.statuses,
-        state.cap,
-        breaker_tripped?(state) or store_unwritable?(state)
-      )
+    state =
+      case next_decision(state) do
+        {:release, feature} -> spawn_feature(feature, state)
+        _ -> state
+      end
 
-    state = Enum.reduce(wave, state, &spawn_feature/2)
     maybe_finish(state)
   end
+
+  defp next_decision(state) do
+    Release.next(feature_list(state), state.statuses, blocked?(state))
+  end
+
+  defp blocked?(state), do: breaker_tripped?(state) or store_unwritable?(state)
 
   defp spawn_feature(%Feature{id: id} = feature, state) do
     notify = fn fid, status, reason -> notify(state.self_pid, fid, status, reason) end
@@ -204,35 +194,57 @@ defmodule SpeckitOrchestrator.Coordinator do
   end
 
   # The run ends when nothing is in flight and nothing more can be released
-  # (all remaining pending features are blocked, or the breaker/persistence
-  # drained them). Closes the store's run record on drain (018, R7 "run
-  # drained" boundary) — but ONLY when every feature actually reached `:done`
-  # (`run_outcome/1` is `:all_done`). A gate divert (escalated/halted),
-  # `:failed`, or anything left `blocked`/`not_started` (a breaker or
-  # persistence-failure drain) is exactly what `resume/2`/`resume_run/1`
-  # exist to revisit — closing the record there would make
-  # `Store.current_run_key/1` unable to find it again, breaking resume
-  # outright. The run instead stays `:in_flight` until either a later wave
-  # of THIS same Coordinator finishes it for real, or a fresh `run/1`
-  # supersedes it. A no-op when this run isn't store-backed (`run_key: nil`,
-  # most test Coordinators).
+  # (all remaining pending features are stopped-behind, or the breaker/
+  # persistence drained them). 019: a genuine stop (any non-done terminal,
+  # with the breaker NOT masking it) is a **park**, not a drain — the run
+  # record moves `:in_flight -> :parked` and the operator resolves it via
+  # `continue_run/1`/`end_run/1` (contracts/parked-run.md). A breaker/
+  # persistence-failure drain is unchanged from pre-019: it stays
+  # `:in_flight` unless every feature actually reached `:done`, so
+  # `resume/2`/`resume_run/1` can still find and revisit it. A no-op when
+  # this run isn't store-backed (`run_key: nil`, most test Coordinators).
   defp maybe_finish(state) do
-    releasable =
-      Release.next_wave(
-        feature_list(state),
-        state.statuses,
-        state.cap,
-        breaker_tripped?(state) or store_unwritable?(state)
-      )
+    releasable? = match?({:release, _feature}, next_decision(state))
 
-    if MapSet.size(state.inflight) == 0 and releasable == [] do
-      report = build_report(state)
-      maybe_close_run(state, report)
-      if state.owner, do: send(state.owner, {:run_complete, report})
-      %{state | finished?: true, report: report}
+    if MapSet.size(state.inflight) == 0 and not releasable? do
+      finish_run(state)
     else
       state
     end
+  end
+
+  defp finish_run(state) do
+    stopped = stopped_feature(state)
+    report = build_report(state, stopped)
+
+    if stopped && not blocked?(state) do
+      park_run(state, stopped)
+    else
+      maybe_close_run(state, report)
+    end
+
+    if state.owner, do: send(state.owner, {:run_complete, report})
+    %{state | finished?: true, report: report, stopped_by: stopped}
+  end
+
+  # The stopper `Release.next/3` would report were the breaker not tripped —
+  # computed independently of `next_decision/1` so a tripped breaker (which
+  # forces `next/3` to `:none` unconditionally, rule 1) never hides which
+  # feature broke the chain from the final report's `stopped_by` (FR-017,
+  # contracts/run-start.md § Report — `stopped_by` is non-nil whenever a
+  # non-done terminal feature exists at drain, breaker or not).
+  defp stopped_feature(state) do
+    case Release.next(feature_list(state), state.statuses, false) do
+      {:stopped, id, status} -> {id, status, Map.get(state.reasons, id)}
+      _ -> nil
+    end
+  end
+
+  defp park_run(%__MODULE__{run_key: nil}, _stopped), do: :ok
+
+  defp park_run(%__MODULE__{run_key: run_key}, {id, status, reason}) do
+    _ = Writer.park_run(run_key, %{stopped_by: id, status: status, reason: reason})
+    :ok
   end
 
   defp maybe_close_run(%__MODULE__{run_key: nil}, _report), do: :ok
@@ -253,7 +265,7 @@ defmodule SpeckitOrchestrator.Coordinator do
   defp run_outcome(%{halted: h}) when h != [], do: :halted
   defp run_outcome(%{escalated: e}) when e != [], do: :escalated
   defp run_outcome(%{failed: f}) when f != [], do: :failed
-  defp run_outcome(%{blocked: b, not_started: n}) when b != [] or n != [], do: :mixed
+  defp run_outcome(%{not_started: n}) when n != [], do: :mixed
   defp run_outcome(_report), do: :all_done
 
   defp store_health_reason do
@@ -265,40 +277,30 @@ defmodule SpeckitOrchestrator.Coordinator do
 
   # ---- report -------------------------------------------------------------
 
-  defp build_report(state) do
+  defp build_report(state, stopped) do
     grouped =
-      Enum.group_by(state.statuses, fn {_id, status} -> classify(state, status) end, fn {id, _} ->
-        id
-      end)
+      Enum.group_by(state.statuses, fn {_id, status} -> classify(status) end, fn {id, _} -> id end)
 
     %{
       done: ids(grouped, :done),
       escalated: ids(grouped, :escalated),
       halted: ids(grouped, :halted),
       failed: ids(grouped, :failed),
-      blocked: blocked_ids(state),
-      not_started: not_started_ids(state),
+      not_started: ids(grouped, :pending),
+      stopped_by: format_stopped(stopped),
       spend: spend(state),
       breaker_tripped: breaker_tripped?(state)
     }
   end
 
-  # A pending feature is `:blocked` when a prereq ended non-done, else it simply
-  # never got released (breaker drain / cap exhaustion at finalize).
-  defp classify(_state, status) when status in [:done, :escalated, :halted, :failed], do: status
-  defp classify(_state, _pending), do: :pending
+  defp format_stopped(nil), do: nil
+  defp format_stopped({id, status, reason}), do: %{feature_id: id, status: status, reason: reason}
 
-  defp blocked_ids(state) do
-    for {id, :pending} <- state.statuses,
-        Release.blocked?(state.features[id], state.statuses),
-        do: id
-  end
-
-  defp not_started_ids(state) do
-    for {id, :pending} <- state.statuses,
-        not Release.blocked?(state.features[id], state.statuses),
-        do: id
-  end
+  # 019: no prerequisites, so a pending feature that never released is simply
+  # `:not_started` (its own `stopped_by` map, if any, says why the chain
+  # never reached it) — there is no `:blocked` classification anymore.
+  defp classify(status) when status in [:done, :escalated, :halted, :failed], do: status
+  defp classify(_pending), do: :pending
 
   defp ids(grouped, key), do: grouped |> Map.get(key, []) |> Enum.sort()
 
@@ -313,8 +315,7 @@ defmodule SpeckitOrchestrator.Coordinator do
          %{
            status: status,
            elapsed_ms: elapsed_ms(state, id),
-           slug: feature && feature.slug,
-           prereqs: (feature && feature.prereqs) || []
+           slug: feature && feature.slug
          }}
       end)
 
@@ -328,10 +329,6 @@ defmodule SpeckitOrchestrator.Coordinator do
       finished?: state.finished?,
       report: state.report,
       layout: state.layout,
-      # This run's own shape, so consumers (the console status bar) report what
-      # is actually running rather than re-deriving it from live global Config,
-      # which any later edit or another run would have moved out from under them.
-      cap: state.cap,
       context: state.context
     }
   end
@@ -358,6 +355,4 @@ defmodule SpeckitOrchestrator.Coordinator do
 
   defp spend(%__MODULE__{ledger: nil}), do: 0.0
   defp spend(%__MODULE__{ledger: ledger}), do: Ledger.spent(ledger)
-
-  defp default_cap, do: SpeckitOrchestrator.Config.max_concurrency()
 end

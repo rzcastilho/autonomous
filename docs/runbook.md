@@ -585,6 +585,95 @@ recorded position.
 
 ---
 
+## Parked runs (019)
+
+Every run is a single stacked sequential chain — one feature at a time, in
+ascending numeric order. When a feature reaches a non-done terminal state
+(`:escalated`/`:halted`/`:failed`) and nothing else is in flight, the chain
+**stops** and the run is **parked**: `:in_flight -> :parked`, recording which
+feature stopped it and why (`stopped_by`/`stopped_reason`). This is distinct
+from a cost-breaker drain (which still leaves the run `:in_flight` for
+`resume_run/1`, unchanged from before) — parking is specifically the
+stop-on-first-broken-link outcome, and it is never automatic to resolve:
+the system never decides on the operator's behalf.
+
+**A parked run blocks new work for its repository.** Both `run/1` and
+`run_spec/2` refuse while one exists, naming it and both ways out:
+
+```elixir
+iex> SpeckitOrchestrator.run()
+{:error, {:parked_run, "r000007", [:continue, :end]}}
+```
+
+**Resolve it — pick one:**
+
+1. **Continue** the chain — re-runs the stopping feature at its checkpointed
+   phase (same machinery as `resume/2`), then releases the remainder in
+   order, under the **same `run_id`**:
+   ```elixir
+   iex> SpeckitOrchestrator.continue_run()
+   {:ok, coordinator_pid}
+   # or {:error, :no_parked_run} / {:error, {:active_run, pid}} / a preflight error
+   ```
+   Accepts the same per-feature options as `resume/2` (`:prompt`, `:from`,
+   `:remediation_prompt`, `:remediation_model`, `:from_task_phase`, `:force`),
+   plus every `run/1` option except the two retired ones. If the stopping
+   feature breaks again, the run parks a second time with the new reason
+   recorded distinctly from the first.
+2. **End** the chain — closes the run out without releasing anything further:
+   ```elixir
+   iex> SpeckitOrchestrator.end_run()
+   {:ok, run_summary}
+   # or {:error, :no_parked_run}
+   ```
+   `state: :parked -> :completed`, `outcome: :ended_by_operator`; every
+   still-`:pending` feature is written `:never_started` in the same
+   transaction. `stopped_by`/`stopped_reason` are retained, so the closed
+   record still says what stopped the chain. `run/1` for the repository is
+   accepted again immediately afterward.
+
+**Via `resolve/2`.** When the repository has a parked run, `resolve/2` gains
+a required `:decision`, frees the stopping feature's worktree and records its
+escalation resolution first, then dispatches to whichever of the above you
+chose:
+
+```elixir
+iex> SpeckitOrchestrator.resolve("003", decision: :continue)
+iex> SpeckitOrchestrator.resolve("003", decision: :end)
+iex> SpeckitOrchestrator.resolve("003")
+{:error, :decision_required}   # nothing changes — the choice is never made for you
+```
+
+With no parked run, `resolve/1` behaves exactly as before and `:decision` is
+not required.
+
+**In the console**, Mission Control (`/`) shows a parked banner naming the
+stopping feature and reason with both actions as buttons; Run History (`/runs`)
+and Run Detail (`/runs/:id`) render `:parked` distinctly from `:in_flight`/
+`:completed` and list never-started features as such.
+
+### Store reset procedure (schema v2)
+
+019 bumps the store schema `1 -> 2` as a **clean break** — a v1 directory
+aborts startup naming the incompatibility rather than being migrated (there is
+no compatibility path). Before upgrading:
+
+```bash
+# 1. Export anything worth keeping from the v1 store, BEFORE upgrading.
+mise exec -- iex -S mix
+iex> SpeckitOrchestrator.export_run("r000007", "/tmp/r000007.json")
+
+# 2. Upgrade, then remove the v1 store directory.
+rm -rf ~/.autonomous/mnesia
+
+# 3. Start. A fresh v2 schema is created; the next run is run number one.
+```
+
+See `specs/019-stacked-sequential-only/contracts/store-schema-v2.md` § 6 for
+the full contract.
+
+---
+
 ## Run history & detail (018)
 
 Every run for a repository is retained, successful or not — review any of them

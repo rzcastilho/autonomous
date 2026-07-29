@@ -196,7 +196,12 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
   end
 
   defp feature,
-    do: %Feature{id: "001", slug: "core-ledger", path: "docs/breakdown/001-core-ledger.md"}
+    do: %Feature{
+      id: "001",
+      number: 1,
+      slug: "core-ledger",
+      path: "docs/breakdown/001-core-ledger.md"
+    }
 
   # 017's auto-remediation loop defaults to **on**, so every test that uses an
   # at-or-above-threshold analyze finding purely as a mechanism to reach a
@@ -211,7 +216,14 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
 
     features =
       Enum.map(feature_ids, fn id ->
-        %{feature_id: id, slug: "feature-#{id}", path: "specs/#{id}", prereqs: []}
+        %{
+          feature_id: id,
+          slug: "feature-#{id}",
+          path: "specs/#{id}",
+          number: String.to_integer(id),
+          group: :backlog,
+          created_at: nil
+        }
       end)
 
     {:ok, run_id} =
@@ -319,15 +331,14 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
     result = FeatureRunner.run(feature(), worktree: wt, notify: self())
 
     # First (specify) call dropped mid-response; the phase was retried and the
-    # feature still reached :done. Calls = 1 dropped + 7 phases.
+    # feature still reached :done. Calls = 1 dropped + 7 phases + 1 describe
+    # (019: every run authors a PR description via Describe.run/3 on :done,
+    # unconditionally).
     assert result.status == :done
-    assert Agent.get(counter, & &1) == 8
+    assert Agent.get(counter, & &1) == 9
   end
 
-  test "PR workflow :done — describe authors the commit message + PR text" do
-    Application.put_env(:speckit_orchestrator, :pr_workflow, true)
-    on_exit(fn -> Application.delete_env(:speckit_orchestrator, :pr_workflow) end)
-
+  test "stacked PR publish :done — describe authors the commit message + PR text" do
     wt = scaffolded_worktree()
     # Give the commit something to include so the authored message actually lands.
     File.write!(Path.join(wt.path, "note.txt"), "generated\n")
@@ -629,7 +640,7 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
 
   test "per-phase checkpoint written after each successful phase — overwritten (not appended) as the pipeline advances (018, store-backed)" do
     wt = scaffolded_worktree()
-    run_context = %RunContext{pr_workflow: false, max_concurrency: 1}
+    run_context = %RunContext{}
     run_key = open_store_run()
 
     test_pid = self()

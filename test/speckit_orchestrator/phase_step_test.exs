@@ -75,7 +75,7 @@ defmodule SpeckitOrchestrator.PhaseStepTest do
     :ok
   end
 
-  defp feature, do: %Feature{id: "042", slug: "phase-step", path: "docs/breakdown/042.md"}
+  defp feature, do: %Feature{id: "042", number: 42, slug: "phase-step", path: "docs/breakdown/042.md"}
 
   defp start_agent! do
     {:ok, pid} =

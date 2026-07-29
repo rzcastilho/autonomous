@@ -5,8 +5,6 @@ defmodule SpeckitOrchestrator.RunContextTest do
   alias SpeckitOrchestrator.RunContext
 
   @config_keys [
-    :pr_workflow,
-    :max_concurrency,
     :budget_usd,
     :plan_stack,
     :pr_base,
@@ -34,8 +32,6 @@ defmodule SpeckitOrchestrator.RunContextTest do
   describe "capture/1" do
     test "resolves each field from opts when present" do
       opts = [
-        pr_workflow: true,
-        max_concurrency: 3,
         budget_usd: 7.5,
         plan_stack: ["a", "b"],
         pr_base: "develop",
@@ -47,8 +43,6 @@ defmodule SpeckitOrchestrator.RunContextTest do
       ]
 
       assert RunContext.capture(opts) == %RunContext{
-               pr_workflow: true,
-               max_concurrency: 3,
                budget_usd: 7.5,
                plan_stack: ["a", "b"],
                pr_base: "develop",
@@ -61,8 +55,6 @@ defmodule SpeckitOrchestrator.RunContextTest do
     end
 
     test "falls back to live Config when opts is absent/empty" do
-      Application.put_env(:speckit_orchestrator, :pr_workflow, true)
-      Application.put_env(:speckit_orchestrator, :max_concurrency, 5)
       Application.put_env(:speckit_orchestrator, :budget_usd, 12.0)
       Application.put_env(:speckit_orchestrator, :plan_stack, ["x"])
       Application.put_env(:speckit_orchestrator, :pr_base, "trunk")
@@ -73,8 +65,6 @@ defmodule SpeckitOrchestrator.RunContextTest do
       Application.put_env(:speckit_orchestrator, :auto_remediation_model, "sonnet")
 
       assert RunContext.capture([]) == %RunContext{
-               pr_workflow: true,
-               max_concurrency: 5,
                budget_usd: 12.0,
                plan_stack: ["x"],
                pr_base: "trunk",
@@ -87,11 +77,11 @@ defmodule SpeckitOrchestrator.RunContextTest do
     end
 
     test "resolves each field independently — opts-present for one, Config-fallback for the rest" do
-      Application.put_env(:speckit_orchestrator, :max_concurrency, 9)
+      Application.put_env(:speckit_orchestrator, :pr_base, "trunk")
 
-      ctx = RunContext.capture(pr_workflow: true)
-      assert ctx.pr_workflow == true
-      assert ctx.max_concurrency == 9
+      ctx = RunContext.capture(pr_remote: "upstream")
+      assert ctx.pr_remote == "upstream"
+      assert ctx.pr_base == "trunk"
     end
 
     test "defaults (no opts, no Config override) resolve auto_remediation on with threshold \"high\"" do
@@ -112,10 +102,8 @@ defmodule SpeckitOrchestrator.RunContextTest do
   end
 
   describe "to_map/1" do
-    test "produces a JSON-ready string-keyed map of exactly the ten settings" do
+    test "produces a JSON-ready string-keyed map of exactly the eight settings" do
       ctx = %RunContext{
-        pr_workflow: true,
-        max_concurrency: 2,
         budget_usd: 25.0,
         plan_stack: ["research", "plan"],
         pr_base: "main",
@@ -127,8 +115,6 @@ defmodule SpeckitOrchestrator.RunContextTest do
       }
 
       assert RunContext.to_map(ctx) == %{
-               "pr_workflow" => true,
-               "max_concurrency" => 2,
                "budget_usd" => 25.0,
                "plan_stack" => ["research", "plan"],
                "pr_base" => "main",
@@ -140,13 +126,11 @@ defmodule SpeckitOrchestrator.RunContextTest do
              }
     end
 
-    test "map keys are exactly the ten settings, nothing else" do
+    test "map keys are exactly the eight settings, nothing else" do
       map = RunContext.to_map(%RunContext{})
 
       assert Map.keys(map) |> Enum.sort() ==
                Enum.sort([
-                 "pr_workflow",
-                 "max_concurrency",
                  "budget_usd",
                  "plan_stack",
                  "pr_base",
@@ -169,13 +153,13 @@ defmodule SpeckitOrchestrator.RunContextTest do
     end
 
     test "partial map populates only present keys, leaving the rest nil" do
-      assert RunContext.from_map(%{"pr_workflow" => true, "budget_usd" => 10.0}) ==
-               %RunContext{pr_workflow: true, budget_usd: 10.0}
+      assert RunContext.from_map(%{"pr_base" => "trunk", "budget_usd" => 10.0}) ==
+               %RunContext{pr_base: "trunk", budget_usd: 10.0}
     end
 
     test "never raises on an unexpected/extra key" do
-      assert RunContext.from_map(%{"pr_workflow" => true, "unexpected" => "ignored"}) ==
-               %RunContext{pr_workflow: true}
+      assert RunContext.from_map(%{"pr_base" => "trunk", "unexpected" => "ignored"}) ==
+               %RunContext{pr_base: "trunk"}
     end
 
     test "round-trips the four auto-remediation fields through to_map/from_map" do
@@ -192,19 +176,19 @@ defmodule SpeckitOrchestrator.RunContextTest do
 
   describe "merge/2" do
     test "an opts-supplied key always wins over recorded" do
-      recorded = %RunContext{pr_workflow: true}
-      {merged, fell_back} = RunContext.merge([pr_workflow: false], recorded)
+      recorded = %RunContext{pr_base: "trunk"}
+      {merged, fell_back} = RunContext.merge([pr_base: "develop"], recorded)
 
-      assert Keyword.get(merged, :pr_workflow) == false
-      refute :pr_workflow in fell_back
+      assert Keyword.get(merged, :pr_base) == "develop"
+      refute :pr_base in fell_back
     end
 
     test "a recorded non-nil value is injected into merged_opts when opts lacks the key" do
-      recorded = %RunContext{max_concurrency: 4}
+      recorded = %RunContext{budget_usd: 4.0}
       {merged, fell_back} = RunContext.merge([], recorded)
 
-      assert Keyword.get(merged, :max_concurrency) == 4
-      refute :max_concurrency in fell_back
+      assert Keyword.get(merged, :budget_usd) == 4.0
+      refute :budget_usd in fell_back
     end
 
     test "a key present in neither is left absent and reported in fell_back_keys" do
@@ -212,7 +196,7 @@ defmodule SpeckitOrchestrator.RunContextTest do
 
       assert Keyword.fetch(merged, :pr_base) == :error
       assert :pr_base in fell_back
-      assert length(fell_back) == 10
+      assert length(fell_back) == 8
     end
 
     test "explicit opt > recorded > absent precedence holds for the auto-remediation fields too" do
@@ -242,41 +226,8 @@ defmodule SpeckitOrchestrator.RunContextTest do
     end
 
     test "never injects a nil value for a field the recorded struct doesn't have" do
-      {merged, _fell_back} = RunContext.merge([], %RunContext{pr_workflow: nil})
-      refute Keyword.has_key?(merged, :pr_workflow)
-    end
-  end
-
-  describe "effective_max_concurrency/2" do
-    test "a stacked run releases at 1 regardless of the requested cap" do
-      assert RunContext.effective_max_concurrency(true, 7) == 1
-      assert RunContext.effective_max_concurrency(true, 1) == 1
-    end
-
-    test "a non-stacked run releases at the requested cap" do
-      assert RunContext.effective_max_concurrency(false, 7) == 7
-      assert RunContext.effective_max_concurrency(nil, 7) == 7
-    end
-  end
-
-  describe "stacked?/1" do
-    test "true only for a context positively recording pr_workflow: true" do
-      assert RunContext.stacked?(%RunContext{pr_workflow: true})
-      refute RunContext.stacked?(%RunContext{pr_workflow: false})
-      refute RunContext.stacked?(%RunContext{pr_workflow: nil})
-    end
-
-    test "reads a manifest-decoded string-keyed map and a bare atom-keyed map" do
-      assert RunContext.stacked?(%{"pr_workflow" => true})
-      refute RunContext.stacked?(%{"pr_workflow" => false})
-      assert RunContext.stacked?(%{pr_workflow: true})
-    end
-
-    # A test Coordinator starts with `context: %{}`; nothing may read that as
-    # stacked, or every such run would refuse a live cap raise.
-    test "false for the empty/absent context a contextless run carries" do
-      refute RunContext.stacked?(%{})
-      refute RunContext.stacked?(nil)
+      {merged, _fell_back} = RunContext.merge([], %RunContext{pr_base: nil})
+      refute Keyword.has_key?(merged, :pr_base)
     end
   end
 end

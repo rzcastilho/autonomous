@@ -306,6 +306,20 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
     )
   end
 
+  # ---- publish failure (019, FR-018) -----------------------------------------
+  # A completed feature's PR publish can fail without failing the run — the
+  # local branch still becomes the next base regardless — but the failure
+  # must never be merely swallowed: it shows up here on the live feed.
+
+  def apply_event(
+        model,
+        [:speckit, :publish, :failed],
+        _measurements,
+        %{feature_id: id, reason: reason}
+      ) do
+    push_feed(model, entry(id, nil, :warn, "PR publish failed: #{inspect(reason)}"))
+  end
+
   def apply_event(model, _event_name, _measurements, _metadata), do: model
 
   @doc """
@@ -368,7 +382,7 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
           status: f.status,
           elapsed_ms: nil,
           slug: f.slug,
-          prereqs: f.prereqs || [],
+          group: f.group,
           current_phase: checkpoint_phase(f.checkpoint),
           phases: checkpoint_phases(f.checkpoint, f.status),
           spend: 0.0,
@@ -381,6 +395,28 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
   end
 
   def overlay_last_known_statuses(view, _run_detail), do: view
+
+  @doc """
+  The parked-run projection (019, contracts/parked-run.md § 6): `state`,
+  `stopped_by`, `stopped_reason` from a `SpeckitOrchestrator.run_detail/1`
+  (or `current_run_detail`-shaped) map. Sourced from the store directly
+  (`run.state`/`stopped_by`/`stopped_reason`, already present on every run
+  summary) rather than gated on `active?` — a `:parked` run's Coordinator
+  process is normally still alive (it parks on drain, it does not exit), but
+  this must also read correctly after a cold boot with no live Coordinator
+  at all, so callers compute it unconditionally alongside (not inside)
+  `merge/3`/`overlay_last_known_statuses/2`.
+  """
+  @spec run_state(map() | nil) :: %{
+          state: atom() | nil,
+          stopped_by: String.t() | nil,
+          stopped_reason: term()
+        }
+  def run_state(nil), do: %{state: nil, stopped_by: nil, stopped_reason: nil}
+
+  def run_state(%{run: run}) do
+    %{state: run.state, stopped_by: run.stopped_by, stopped_reason: run.stopped_reason}
+  end
 
   defp checkpoint_phase(nil), do: nil
   defp checkpoint_phase(%{last_completed_phase: phase}), do: phase

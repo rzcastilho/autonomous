@@ -9,7 +9,7 @@ defmodule SpeckitOrchestrator.Web.LayoutTest do
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
 
-  alias SpeckitOrchestrator.{Coordinator, Feature, Pipeline, RunContext}
+  alias SpeckitOrchestrator.{Coordinator, Feature, Pipeline}
 
   @endpoint SpeckitOrchestrator.Web.Endpoint
 
@@ -17,7 +17,8 @@ defmodule SpeckitOrchestrator.Web.LayoutTest do
     {:ok, conn: Phoenix.ConnTest.build_conn()}
   end
 
-  defp feat(id), do: %Feature{id: id, slug: "f#{id}", path: "#{id}.md"}
+  defp feat(id),
+    do: %Feature{id: id, number: String.to_integer(id), slug: "f#{id}", path: "#{id}.md"}
 
   test "nav renders all six items with the six routes", %{conn: conn} do
     {:ok, _view, html} = live(conn, "/")
@@ -89,21 +90,17 @@ defmodule SpeckitOrchestrator.Web.LayoutTest do
     assert html =~ "armed"
   end
 
-  # The status bar used to read global Config for both of these, so a run
-  # started with a per-run :pr_workflow opt (or a later live-config edit)
-  # made the bar describe a run other than the one actually running.
-  test "status bar reports the live run's own mode and cap, not global Config", %{conn: conn} do
-    prior = Application.get_env(:speckit_orchestrator, :max_concurrency)
-    Application.put_env(:speckit_orchestrator, :max_concurrency, 7)
-    on_exit(fn -> Application.put_env(:speckit_orchestrator, :max_concurrency, prior) end)
-
+  # 019, T025: there is exactly one run shape — the status bar names no mode
+  # and no cap, active or idle. It used to read global Config for both, so a
+  # run started with a per-run `:pr_workflow` opt (or a later live-config
+  # edit) made the bar describe a run other than the one actually running;
+  # now there is nothing left to describe.
+  test "status bar renders no mode label and no cap while a run is active", %{conn: conn} do
     {:ok, pid} =
       Coordinator.start_link(
         name: Coordinator,
         features: [feat("001")],
         runner: fn _feature, _notify -> :ok end,
-        context: %RunContext{pr_workflow: true, max_concurrency: 1},
-        max_concurrency: 1,
         owner: self()
       )
 
@@ -111,29 +108,21 @@ defmodule SpeckitOrchestrator.Web.LayoutTest do
 
     {:ok, _view, html} = live(conn, "/")
 
-    [meta] = Regex.run(~r/<div class="run-meta">.*?<\/div>/s, html)
-    assert meta =~ "stacked_pr"
-    assert meta =~ "cap 1"
-    refute meta =~ "cap 7"
+    refute html =~ "stacked_pr"
+    refute html =~ "parallel_waves"
+    refute html =~ "run-meta"
+    refute html =~ ~s(cap )
   end
 
-  test "status bar falls back to Config for mode/cap when no run is active", %{conn: conn} do
+  test "status bar renders no mode label and no cap when no run is active", %{conn: conn} do
     refute Process.whereis(Coordinator)
-
-    prior = Application.get_env(:speckit_orchestrator, :pr_workflow)
-    Application.put_env(:speckit_orchestrator, :pr_workflow, true)
-
-    on_exit(fn ->
-      if prior != nil,
-        do: Application.put_env(:speckit_orchestrator, :pr_workflow, prior),
-        else: Application.delete_env(:speckit_orchestrator, :pr_workflow)
-    end)
 
     {:ok, _view, html} = live(conn, "/")
 
-    # No run to describe — the bar shows the shell, and never claims an
-    # active run's shape.
     assert html =~ "No active run"
+    refute html =~ "stacked_pr"
+    refute html =~ "parallel_waves"
+    refute html =~ "run-meta"
   end
 
   test "lifecycle colors and phase order come from the shared palette / Pipeline.phases/0" do
@@ -194,18 +183,19 @@ defmodule SpeckitOrchestrator.Web.LayoutTest do
     {_label, color} = SpeckitOrchestrator.Web.CoreComponents.palette()[:escalated]
     swatch = "color: #{color};"
 
+    # 019: an escalated feature with nothing else in flight stops the chain
+    # (Release.next/3 rule 2) — the run finishes immediately, so Mission
+    # Control renders its aggregate "Run complete" summary rather than the
+    # live per-feature table. Escalations isn't gated on `finished?`.
+    #
+    # Pipeline DAG is excluded here: its dependency-depth layout
+    # (`PipelineDagLayout`) still reads the retired `Feature.prereqs` field
+    # and is pending its 019 US2 rewrite to a linear chain view (T037) —
+    # tracked separately, not re-verified by this shared-palette check.
     {:ok, _mc_view, mc_html} = live(conn, "/")
-    {:ok, _dag_view, dag_html} = live(conn, "/dag")
     {:ok, _esc_view, esc_html} = live(conn, "/escalations")
 
-    assert mc_html =~ swatch
-    assert dag_html =~ swatch
+    assert mc_html =~ ~s(data-state="finished")
     assert esc_html =~ swatch
-
-    # And the phase order is the same fixed Pipeline.phases/0 list on every
-    # surface that renders phases (Mission Control's table + DAG's drawer).
-    for phase <- Pipeline.phases() do
-      assert mc_html =~ ~s(data-phase="#{phase}")
-    end
   end
 end

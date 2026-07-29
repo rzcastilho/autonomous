@@ -8,8 +8,13 @@ defmodule SpeckitOrchestrator.Recovery.RebuildTest do
 
   @repo_id "o:rebuild-test"
 
-  defp feat(id, prereqs \\ []),
-    do: %Feature{id: id, slug: "core-ledger", path: "#{id}.md", prereqs: prereqs}
+  defp feat(id, number \\ nil),
+    do: %Feature{
+      id: id,
+      number: number || String.to_integer(id),
+      slug: "core-ledger",
+      path: "#{id}.md"
+    }
 
   # No evidence of any kind, for any feature — a hermetic default matching
   # `Evidence.default_git/1`'s "no branch" shape without touching git.
@@ -23,7 +28,14 @@ defmodule SpeckitOrchestrator.Recovery.RebuildTest do
         features:
           Enum.map(
             features,
-            &%{feature_id: &1.id, slug: &1.slug, path: &1.path, prereqs: &1.prereqs}
+            &%{
+              feature_id: &1.id,
+              slug: &1.slug,
+              path: &1.path,
+              number: &1.number,
+              group: &1.group,
+              created_at: &1.created_at
+            }
           ),
         settings: %{},
         scope: :ad_hoc,
@@ -94,7 +106,7 @@ defmodule SpeckitOrchestrator.Recovery.RebuildTest do
       _ -> no_evidence(nil)
     end
 
-    backlog = [feat("001"), feat("002", ["001"]), feat("003", ["002"])]
+    backlog = [feat("001"), feat("002"), feat("003")]
 
     assert {:ok, proposal} = Rebuild.propose(record(run_key), backlog, git: git)
 
@@ -161,18 +173,12 @@ defmodule SpeckitOrchestrator.Recovery.RebuildTest do
     assert row_002.corrected? == false
   end
 
-  test "propose/3: a prereq missing from the union refuses without collecting evidence" do
-    # Backlog names 001 with a prereq the record never mentions and the
-    # backlog never defines — evidence must never be collected once this is
-    # found (asserted via a :git seam that raises if invoked).
-    exploding_git = fn _ -> raise "evidence must not be collected for a refused proposal" end
-
-    run_key = open_record([feat("001", ["999"])])
-    backlog = [feat("001", ["999"])]
-
-    assert {:error, {:inconsistent, discrepancies}} =
-             Rebuild.propose(record(run_key), backlog, git: exploding_git)
-
-    assert discrepancies == [%{kind: :prereq_missing, id: "001", detail: "999"}]
-  end
+  # 019 retired `Feature.prereqs` entirely, and `Rebuild.propose/3` no longer
+  # has any prereq-consistency check to trigger (there is no `:prereq_missing`
+  # discrepancy kind, no `{:error, {:inconsistent, _}}` return left in
+  # `propose/3` at all) — every union member is now reconciled independently
+  # from evidence, never refused up front for a dangling dependency. The old
+  # "a prereq missing from the union refuses without collecting evidence"
+  # test verified exactly that removed check, so it has no new-model
+  # equivalent to rewrite into.
 end

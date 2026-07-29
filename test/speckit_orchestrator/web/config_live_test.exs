@@ -14,8 +14,6 @@ defmodule SpeckitOrchestrator.Web.ConfigLiveTest do
   setup do
     prior = %{
       models: Config.models(),
-      max_concurrency: Application.get_env(:speckit_orchestrator, :max_concurrency),
-      pr_workflow: Application.get_env(:speckit_orchestrator, :pr_workflow),
       pr_base: Application.get_env(:speckit_orchestrator, :pr_base),
       pr_remote: Application.get_env(:speckit_orchestrator, :pr_remote),
       budget_usd: Ledger.snapshot().budget
@@ -23,8 +21,6 @@ defmodule SpeckitOrchestrator.Web.ConfigLiveTest do
 
     on_exit(fn ->
       Application.put_env(:speckit_orchestrator, :models, prior.models)
-      restore(:max_concurrency, prior.max_concurrency)
-      restore(:pr_workflow, prior.pr_workflow)
       restore(:pr_base, prior.pr_base)
       restore(:pr_remote, prior.pr_remote)
       Ledger.set_budget(prior.budget_usd)
@@ -46,7 +42,6 @@ defmodule SpeckitOrchestrator.Web.ConfigLiveTest do
       "model_implement" => Config.model_for(:implement),
       "model_converge" => Config.model_for(:converge),
       "budget_usd" => to_string(Ledger.snapshot().budget),
-      "max_concurrency" => to_string(Config.max_concurrency()),
       "pr_base" => Config.pr_base(),
       "pr_remote" => Config.pr_remote()
     }
@@ -54,26 +49,34 @@ defmodule SpeckitOrchestrator.Web.ConfigLiveTest do
     Map.merge(base, overrides)
   end
 
-  test "renders current model routing/budget/concurrency/PR settings", %{conn: conn} do
+  test "renders current model routing/budget/PR settings", %{conn: conn} do
     {:ok, _view, html} = live(conn, "/config")
 
     assert html =~ ~s(data-form="config")
     assert html =~ "opus"
     assert html =~ "sonnet"
-    assert html =~ to_string(Config.max_concurrency())
     assert html =~ Config.pr_base()
     assert html =~ Config.pr_remote()
+  end
+
+  # 019: no concurrency slider or PR-workflow toggle renders anymore — every
+  # run is already the one stacked sequential shape.
+  test "renders no concurrency slider or PR-workflow toggle", %{conn: conn} do
+    {:ok, _view, html} = live(conn, "/config")
+
+    refute html =~ ~s(name="max_concurrency")
+    refute html =~ ~s(name="pr_workflow")
+    refute html =~ "config-concurrency"
   end
 
   test "submits edits and reflects them post-apply with a toast", %{conn: conn} do
     {:ok, view, _html} = live(conn, "/config")
 
-    params = submit_params(%{"budget_usd" => "42.5", "max_concurrency" => "7"})
+    params = submit_params(%{"budget_usd" => "42.5"})
     html = render_submit(view, "apply", params)
 
     assert html =~ "Configuration applied"
     assert Ledger.snapshot().budget == 42.5
-    assert Application.get_env(:speckit_orchestrator, :max_concurrency) == 7
     assert html =~ ~s(value="42.5")
   end
 
@@ -88,23 +91,15 @@ defmodule SpeckitOrchestrator.Web.ConfigLiveTest do
     assert Ledger.snapshot().budget == before
   end
 
-  test "enabling stacked PR workflow forces displayed effective concurrency to 1 and shows PR base/remote",
-       %{conn: conn} do
+  test "submits PR base/remote edits and reflects them post-apply", %{conn: conn} do
     {:ok, view, _html} = live(conn, "/config")
 
-    params =
-      submit_params(%{
-        "pr_workflow" => "true",
-        "pr_base" => "release",
-        "pr_remote" => "upstream",
-        "max_concurrency" => "6"
-      })
-
+    params = submit_params(%{"pr_base" => "release", "pr_remote" => "upstream"})
     html = render_submit(view, "apply", params)
 
-    assert html =~ ~s(data-effective-concurrency="1")
     assert html =~ "release"
     assert html =~ "upstream"
-    assert Config.pr_workflow?() == true
+    assert Config.pr_base() == "release"
+    assert Config.pr_remote() == "upstream"
   end
 end

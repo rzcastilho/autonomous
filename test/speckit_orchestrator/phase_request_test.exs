@@ -5,7 +5,12 @@ defmodule SpeckitOrchestrator.PhaseRequestTest do
   alias SpeckitOrchestrator.TaskPlan.{Task, TaskPhase}
 
   defp feature do
-    %Feature{id: "001", slug: "core-ledger", path: "/abs/docs/breakdown/001-core-ledger.md"}
+    %Feature{
+      id: "001",
+      number: 1,
+      slug: "core-ledger",
+      path: "/abs/docs/breakdown/001-core-ledger.md"
+    }
   end
 
   test "specify: slash command + breakdown ref, sonnet model, non-interactive Bash" do

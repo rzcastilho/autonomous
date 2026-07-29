@@ -45,12 +45,16 @@ defmodule SpeckitOrchestrator.Web.RunsLiveTest do
 
   defp open(repo_id, feature_ids, opts \\ []) do
     features =
-      Enum.map(feature_ids, &%{feature_id: &1, slug: "f-#{&1}", path: "specs/#{&1}", prereqs: []})
+      feature_ids
+      |> Enum.with_index(1)
+      |> Enum.map(fn {id, n} ->
+        %{feature_id: id, slug: "f-#{id}", path: "specs/#{id}", number: n, group: :backlog, created_at: nil}
+      end)
 
     {:ok, run_id} =
       Writer.open_run(repo_id, %{
         features: features,
-        settings: %{max_concurrency: 2},
+        settings: %{budget_usd: 100.0},
         scope: :ad_hoc,
         layout: %{}
       })
@@ -133,6 +137,29 @@ defmodule SpeckitOrchestrator.Web.RunsLiveTest do
 
     {:ok, _view, html} = live(conn, "/runs")
     assert html =~ ~s(data-banner="capacity-refusing")
+  end
+
+  test "a parked run renders :parked distinctly, naming the stopper and reason", %{
+    conn: conn,
+    repo_id: repo_id
+  } do
+    run_id = open(repo_id, ["001"])
+
+    :ok =
+      Writer.park_run({repo_id, run_id}, %{
+        stopped_by: "001",
+        status: :halted,
+        reason: :critical_finding
+      })
+
+    {:ok, _view, html} = live(conn, "/runs")
+
+    row = Regex.run(~r/<tr[^>]*data-run-row="#{run_id}".*?<\/tr>/s, html) |> hd()
+    assert row =~ ~s(data-marker="state")
+    assert row =~ "parked"
+    assert row =~ ~s(data-marker="stopped-by")
+    assert row =~ "001"
+    assert row =~ ":critical_finding"
   end
 
   defp restore(key, nil), do: Application.delete_env(:speckit_orchestrator, key)

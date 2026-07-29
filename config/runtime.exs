@@ -18,17 +18,6 @@ import Config
 # of the compile-time default.
 # ---------------------------------------------------------------------------
 if config_env() != :test do
-  # "1" / "true" / "yes" / "on" (case-insensitive) → true; anything else →
-  # default. Trimmed, so an exported value carrying stray whitespace (common
-  # with `export FOO="true "` or a value pasted from a .env file) still reads
-  # as true instead of silently falling back to the default.
-  truthy = fn name, default ->
-    case System.get_env(name) do
-      nil -> default
-      v -> v |> String.trim() |> String.downcase() |> Kernel.in(~w(1 true yes on))
-    end
-  end
-
   # Target Spec Kit repo the orchestrator drives.
   case config_env() do
     :prod ->
@@ -42,22 +31,32 @@ if config_env() != :test do
       end
   end
 
+  # 019: every run is a stacked sequential run — SPECKIT_PR_WORKFLOW and
+  # SPECKIT_MAX_CONCURRENCY named a run-shape decision that no longer exists.
+  # Retired settings are refused, not silently ignored — set at all (any
+  # value, including "false"/"0") aborts boot naming the retired setting
+  # (contracts/run-start.md § Environment and stored configuration).
+  if System.get_env("SPECKIT_PR_WORKFLOW") do
+    raise """
+    SPECKIT_PR_WORKFLOW is retired (019: every run is a stacked sequential \
+    run — there is no other shape to toggle). Remove it from the environment.
+    """
+  end
+
+  if System.get_env("SPECKIT_MAX_CONCURRENCY") do
+    raise """
+    SPECKIT_MAX_CONCURRENCY is retired (019: one feature runs at a time, \
+    structurally — there is no concurrency setting). Remove it from the \
+    environment.
+    """
+  end
+
   config :speckit_orchestrator,
-    # Stacked sequential PR workflow (docs/runbook.md → "Stacked sequential PR
-    # workflow"). SPECKIT_PR_WORKFLOW=true forces cap 1, preflights the remote,
-    # and opens a stacked PR per feature on :done.
-    pr_workflow: truthy.("SPECKIT_PR_WORKFLOW", false),
     # Root base branch for the first feature's PR (later features stack on the
     # prior branch).
     pr_base: System.get_env("SPECKIT_PR_BASE") || "main",
     # Remote to push feature branches to and to preflight.
     pr_remote: System.get_env("SPECKIT_PR_REMOTE") || "origin"
-
-  # Optional numeric overrides — only applied when the env var is set, so the
-  # compile-time defaults (config/config.exs) stand otherwise.
-  if v = System.get_env("SPECKIT_MAX_CONCURRENCY") do
-    config :speckit_orchestrator, max_concurrency: String.to_integer(v)
-  end
 
   if v = System.get_env("SPECKIT_BUDGET_USD") do
     config :speckit_orchestrator, budget_usd: elem(Float.parse(v), 0)

@@ -46,7 +46,9 @@ defmodule SpeckitOrchestrator.ExportRunTest do
 
     {:ok, run_id} =
       Store.open_run(repo_id, %{
-        features: [%{feature_id: "001", slug: "f", path: "specs/001", prereqs: []}],
+        features: [
+          %{feature_id: "001", slug: "f", path: "specs/001", number: 1, group: :backlog, created_at: nil}
+        ],
         settings: %{max_concurrency: 2},
         scope: :ad_hoc,
         layout: %{}

@@ -7,7 +7,16 @@ defmodule SpeckitOrchestrator.RunDetailTest do
 
   defp open(feature_ids, opts \\ []) do
     features =
-      Enum.map(feature_ids, &%{feature_id: &1, slug: "f-#{&1}", path: "specs/#{&1}", prereqs: []})
+      Enum.map(feature_ids, fn id ->
+        %{
+          feature_id: id,
+          slug: "f-#{id}",
+          path: "specs/#{id}",
+          number: String.to_integer(id),
+          group: :backlog,
+          created_at: nil
+        }
+      end)
 
     {:ok, run_id} =
       Writer.open_run(repo_id(), %{

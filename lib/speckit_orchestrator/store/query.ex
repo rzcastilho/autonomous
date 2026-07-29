@@ -100,6 +100,30 @@ defmodule SpeckitOrchestrator.Store.Query do
     end
   end
 
+  @doc """
+  The `:parked` run for `repo_id`, if any — mirrors `in_flight_run/1`. A
+  parked run blocks new work for its repository until the operator resolves
+  it (FR-020a, FR-020b, SC-009).
+  """
+  @spec parked_run(binary()) :: {:ok, map()} | :none | {:error, term()}
+  def parked_run(repo_id) do
+    Mnesia.transaction(fn ->
+      :speckit_run
+      |> Mnesia.index_read(repo_id, :repo_id)
+      |> Enum.find_value(fn tuple ->
+        case Records.decode(:speckit_run, tuple) do
+          {:ok, %Records.Run{state: :parked} = run} -> run_summary(run)
+          _ -> nil
+        end
+      end)
+    end)
+    |> case do
+      {:ok, nil} -> :none
+      {:ok, summary} -> {:ok, summary}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   # A run's removal deletes control rows across nine tables besides the
   # transcript rows already summed by `bytes`; this is a fixed per-row
   # estimate for those (contracts/capacity-and-prune.md § Prune rule 5) —
@@ -189,6 +213,8 @@ defmodule SpeckitOrchestrator.Store.Query do
       spend_usd: run.spend_usd,
       record_complete?: run.record_complete?,
       halt_reason: run.halt_reason,
+      stopped_by: run.stopped_by,
+      stopped_reason: run.stopped_reason,
       superseded_by: run.superseded_by,
       scope: run.scope,
       layout: run.layout,
@@ -235,7 +261,9 @@ defmodule SpeckitOrchestrator.Store.Query do
       feature_id: f.feature_id,
       slug: f.slug,
       path: f.path,
-      prereqs: f.prereqs,
+      number: f.number,
+      group: f.group,
+      created_at: f.created_at,
       status: f.status,
       terminal_reason: f.terminal_reason,
       branch: f.branch,

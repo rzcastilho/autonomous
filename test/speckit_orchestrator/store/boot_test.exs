@@ -33,7 +33,7 @@ defmodule SpeckitOrchestrator.Store.BootTest do
     assert output =~ "BOOT_OK"
     assert output =~ "TABLES_OK true"
     assert output =~ "PROBE_OK true"
-    assert output =~ "VERSION [{:speckit_meta, :schema_version, 1}]"
+    assert output =~ "VERSION [{:speckit_meta, :schema_version, 2}]"
   end
 
   @tag :boot_subprocess
@@ -91,17 +91,17 @@ defmodule SpeckitOrchestrator.Store.BootTest do
       """)
 
     assert output =~ "BOOT_OK"
-    assert output =~ "SECOND_BOOT_ERROR {:schema_version_ahead, 2, 1}"
+    assert output =~ "SECOND_BOOT_ERROR {:schema_version_ahead, 3, 2}"
   end
 
   @tag :boot_subprocess
-  test "a schema_version older than current applies pending migrations and advances the recorded version" do
-    dir = tmp_dir("version_behind")
+  test "a recorded v1 schema aborts startup naming the incompatibility, per the 019 clean break (FR-022, FR-023)" do
+    dir = tmp_dir("v1_refused")
 
     output =
       boot_script(dir, """
       SpeckitOrchestrator.Store.Mnesia.transaction(fn ->
-        SpeckitOrchestrator.Store.Mnesia.write({:speckit_meta, :schema_version, 0})
+        SpeckitOrchestrator.Store.Mnesia.write({:speckit_meta, :schema_version, 1})
       end)
 
       case SpeckitOrchestrator.Store.Boot.start!(#{inspect(dir)}) do
@@ -116,7 +116,9 @@ defmodule SpeckitOrchestrator.Store.BootTest do
       """)
 
     assert output =~ "BOOT_OK"
-    assert output =~ "SECOND_BOOT_OK"
+    assert output =~ "SECOND_BOOT_ERROR {:incompatible_record, 1}"
+    # The recorded version is left exactly as found — a refused migration
+    # never partially advances it.
     assert output =~ "VERSION_AFTER [{:speckit_meta, :schema_version, 1}]"
   end
 

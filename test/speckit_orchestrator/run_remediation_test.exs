@@ -33,7 +33,7 @@ defmodule SpeckitOrchestrator.Actions.RunRemediationTest do
 
   defp context(state_overrides \\ %{}) do
     base = %{
-      feature: %Feature{id: "001", slug: "s", path: "p.md"},
+      feature: %Feature{id: "001", number: 1, slug: "s", path: "p.md"},
       worktree: nil,
       layout: nil,
       phase: :analyze,

@@ -5,7 +5,16 @@ defmodule SpeckitOrchestrator.Store.QueryTest do
 
   defp open(repo, feature_ids) do
     features =
-      Enum.map(feature_ids, &%{feature_id: &1, slug: "f-#{&1}", path: "specs/#{&1}", prereqs: []})
+      Enum.map(feature_ids, fn id ->
+        %{
+          feature_id: id,
+          slug: "f-#{id}",
+          path: "specs/#{id}",
+          number: String.to_integer(id),
+          group: :backlog,
+          created_at: nil
+        }
+      end)
 
     {:ok, run_id} =
       Writer.open_run(repo, %{
@@ -222,6 +231,37 @@ defmodule SpeckitOrchestrator.Store.QueryTest do
 
     test ":none for a repo with no runs" do
       assert Query.in_flight_run("o:query-never-seen") == :none
+    end
+  end
+
+  describe "parked_run/1" do
+    test "returns the sole parked run for a repo, mirroring in_flight_run/1" do
+      {repo, run_id} = open("o:query-parked", ["001"])
+
+      :ok =
+        Writer.park_run({repo, run_id}, %{stopped_by: "001", status: :halted, reason: "r"})
+
+      assert {:ok, %{run_id: ^run_id, state: :parked, stopped_by: "001", stopped_reason: "r"}} =
+               Query.parked_run(repo)
+    end
+
+    test ":none while the run is :in_flight" do
+      {repo, _run_id} = open("o:query-parked-inflight", ["001"])
+      assert Query.parked_run(repo) == :none
+    end
+
+    test ":none once the parked run is ended" do
+      {repo, run_id} = open("o:query-parked-ended", ["001"])
+      run_key = {repo, run_id}
+
+      :ok = Writer.park_run(run_key, %{stopped_by: "001", status: :halted, reason: "r"})
+      :ok = Writer.end_run(run_key)
+
+      assert Query.parked_run(repo) == :none
+    end
+
+    test ":none for a repo with no runs" do
+      assert Query.parked_run("o:query-parked-never-seen") == :none
     end
   end
 

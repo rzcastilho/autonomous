@@ -44,6 +44,8 @@ defmodule SpeckitOrchestrator.Store.Records do
       :spend_usd,
       :record_complete?,
       :halt_reason,
+      :stopped_by,
+      :stopped_reason,
       :scope,
       :layout,
       :superseded_by,
@@ -54,8 +56,15 @@ defmodule SpeckitOrchestrator.Store.Records do
             key: {binary(), binary()},
             repo_id: binary(),
             run_id: binary(),
-            state: :in_flight | :completed | :superseded,
-            outcome: :all_done | :escalated | :halted | :failed | :mixed | nil,
+            state: :in_flight | :parked | :completed | :superseded,
+            outcome:
+              :all_done
+              | :escalated
+              | :halted
+              | :failed
+              | :mixed
+              | :ended_by_operator
+              | nil,
             outcome_index: atom(),
             started_at: DateTime.t(),
             ended_at: DateTime.t() | nil,
@@ -63,6 +72,8 @@ defmodule SpeckitOrchestrator.Store.Records do
             spend_usd: float(),
             record_complete?: boolean(),
             halt_reason: term() | nil,
+            stopped_by: binary() | nil,
+            stopped_reason: term() | nil,
             scope: {:breakdown, binary()} | :ad_hoc,
             layout: map(),
             superseded_by: binary() | nil,
@@ -103,7 +114,9 @@ defmodule SpeckitOrchestrator.Store.Records do
       :feature_id,
       :slug,
       :path,
-      :prereqs,
+      :number,
+      :group,
+      :created_at,
       :status,
       :terminal_reason,
       :worktree_path,
@@ -119,7 +132,9 @@ defmodule SpeckitOrchestrator.Store.Records do
             feature_id: binary(),
             slug: binary(),
             path: binary(),
-            prereqs: [binary()],
+            number: pos_integer(),
+            group: :backlog | :ad_hoc,
+            created_at: DateTime.t() | nil,
             status:
               :pending
               | :running
@@ -127,7 +142,7 @@ defmodule SpeckitOrchestrator.Store.Records do
               | :escalated
               | :halted
               | :failed
-              | :blocked
+              | :never_started
               | :ended_by_supersession,
             terminal_reason: term() | nil,
             worktree_path: binary() | nil,
