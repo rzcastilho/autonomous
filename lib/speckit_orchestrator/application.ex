@@ -25,6 +25,12 @@ defmodule SpeckitOrchestrator.Application do
         SpeckitOrchestrator.ConsoleProjection,
         # Supervises the per-feature FeatureRunner tasks.
         {Task.Supervisor, name: SpeckitOrchestrator.RunnerSup},
+        # Owns the per-run Coordinator so its lifetime is the run's, not the
+        # caller's. `run/1` used to `start_link` it to whoever asked — fine
+        # from `iex` (the shell lives as long as the operator), fatal from the
+        # console, where the asking process is a transient Task that exits the
+        # moment the call returns and takes the linked Coordinator with it.
+        {DynamicSupervisor, name: SpeckitOrchestrator.CoordinatorSup, strategy: :one_for_one},
         # Operator console. `mix phx.server` is the only path that opens the
         # TCP listener; a plain `mix test`/`iex -S mix` boot the endpoint's
         # config process without binding a port (see config/config.exs).
