@@ -227,12 +227,16 @@ defmodule SpeckitOrchestrator.Web.EscalationsLiveTest do
   test "escalated feature shows clarify questions/options and the recorded run context", %{
     conn: conn
   } do
+    # `specs/<id>-<slug>` — the directory PhaseRequest pins
+    # SPECIFY_FEATURE_DIRECTORY to, and the only one SpecDir will accept as this
+    # feature's. A name unrelated to the feature's id was only ever found because
+    # the old scan globbed `specs/**/spec.md` across every feature in the tree.
     spec_dir =
       [
         Application.fetch_env!(:speckit_orchestrator, :worktree_root),
         "e4-slug-e4",
         "specs",
-        "004-slug-e4"
+        "e4-slug-e4"
       ]
       |> Path.join()
 

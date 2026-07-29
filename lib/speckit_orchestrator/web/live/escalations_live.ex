@@ -30,6 +30,7 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
     Feature,
     Ledger,
     Pipeline,
+    SpecDir,
     TaskPhaseRef,
     TaskPlan,
     Worktree
@@ -208,14 +209,19 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
   # `:halted`/`:failed` features have no `## NEEDS HUMAN` block to surface.
   defp clarify_block(_identity, status) when status != :escalated, do: nil
 
+  # This feature's own spec.md, resolved through `SpecDir` rather than globbed:
+  # a stacked worktree carries every earlier feature's `specs/` directory, so the
+  # glob surfaced whichever escalation sorted first — reliably an *older*
+  # feature's question, presented to the operator as this one's.
   defp clarify_block(identity, :escalated) do
     identity
     |> Worktree.locate()
     |> Map.fetch!(:path)
-    |> Path.join("specs/**/spec.md")
-    |> Path.wildcard()
-    |> Enum.find_value(&extract_needs_human/1)
+    |> SpecDir.file(identity, "spec.md")
+    |> extract_needs_human()
   end
+
+  defp extract_needs_human(nil), do: nil
 
   defp extract_needs_human(file) do
     with {:ok, content} <- File.read(file),

@@ -11,6 +11,11 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhase do
   to state. It does **not** decide the transition — the `FeatureRunner` owns
   `Pipeline.next/3`.
 
+  Every gate that reads a file resolves **this feature's** spec directory
+  through `SpecDir` first. A stacked worktree carries every earlier feature's
+  `specs/` directory, so a `specs/**/…` glob answers a question about some other
+  feature — see `SpecDir`'s docs for what that cost.
+
   Gate extraction:
   * `:clarify` → `needs_human?` when the transcript carries the literal
     `## NEEDS HUMAN` marker.
@@ -33,7 +38,7 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhase do
       first_chunk: [type: :boolean, required: false, default: false]
     ]
 
-  alias SpeckitOrchestrator.{AnalyzeResult, Cost, Ledger, PhaseRequest, PhaseResult}
+  alias SpeckitOrchestrator.{AnalyzeResult, Cost, Ledger, PhaseRequest, PhaseResult, SpecDir}
 
   # The escalation signal is the literal `## NEEDS HUMAN` heading emitted by the
   # clarify reviewer. Match it only as a real Markdown heading (line start, whole
@@ -152,7 +157,7 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhase do
   # Artifact gate: a successful transcript proves nothing — check the tree.
   defp classify(phase, %PhaseResult{status: :ok}, state, _scope)
        when phase in [:plan, :tasks, :implement] do
-    case missing_artifact(state.worktree, phase) do
+    case missing_artifact(state.worktree, phase, feature: state.feature) do
       nil -> {:ok, %{}}
       artifact -> {:ok, %{missing_artifact: artifact}}
     end
@@ -166,11 +171,15 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhase do
 
   # ---- artifact gate ------------------------------------------------------
 
-  # Globbed rather than pinned to `specs/<id>-<slug>/`: the failure this catches
-  # is "the file exists nowhere", and globbing avoids a false failure if the
-  # target's Spec Kit names the directory differently. Mirrors the clarify
-  # gate's `specs/**/spec.md` scan.
-  @phase_artifacts %{plan: "specs/**/plan.md", tasks: "specs/**/tasks.md"}
+  # Resolved through `SpecDir`, not globbed. `specs/**/plan.md` asks "does a
+  # plan.md exist anywhere in this tree", and in a stacked worktree — which
+  # carries every earlier feature's `specs/` directory — the answer is yes before
+  # this feature's plan phase has written a thing. The gate exists to prove
+  # *this* feature produced the file, so a prior feature's copy satisfying it is
+  # a false green: plan reports :ok, and the failure only surfaces later as
+  # something less obvious. `SpecDir` still tolerates a differently-named spec
+  # dir, which is what the glob was really buying.
+  @phase_artifacts %{plan: "plan.md", tasks: "tasks.md"}
 
   # Paths that exist even when nothing was implemented — spec/plan/task docs, the
   # single-spec seed, and the orchestrator's own logs.
@@ -196,8 +205,6 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhase do
     do: missing_artifact(worktree, :implement, opts)
 
   # No worktree (dry runs / unit tests) → nothing to check.
-  defp missing_artifact(worktree, phase, opts \\ [])
-
   defp missing_artifact(%{path: path}, phase, opts) when is_binary(path) do
     case phase do
       :implement ->
@@ -206,16 +213,20 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhase do
           else: "implementation changes"
 
       _ ->
-        glob_artifact(path, @phase_artifacts[phase])
+        scoped_artifact(path, @phase_artifacts[phase], Keyword.get(opts, :feature))
     end
   end
 
   defp missing_artifact(_worktree, _phase, _opts), do: nil
 
-  defp glob_artifact(worktree_path, pattern) do
-    case worktree_path |> Path.join(pattern) |> Path.wildcard() do
-      [] -> pattern
-      _ -> nil
+  # An unresolvable spec dir reports the artifact missing — the opposite
+  # direction from the clarify scan, and deliberately so: this gate exists to
+  # fail loud when a phase produced nothing, and "I could not find where this
+  # feature's files live" is not evidence that it produced them.
+  defp scoped_artifact(worktree_path, leaf, feature) do
+    case SpecDir.file(worktree_path, feature, leaf) do
+      nil -> leaf
+      _found -> nil
     end
   end
 
@@ -260,19 +271,30 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhase do
   defp implementation_path?(path),
     do: not Enum.any?(@non_implementation_prefixes, &String.starts_with?(path, &1))
 
-  # True when any `spec.md` under the feature's worktree still carries an
-  # unresolved `## NEEDS HUMAN` heading (line-anchored, same as the response
-  # check). No worktree (dry runs / tests) → false.
-  defp spec_has_needs_human?(%{path: path}, _feature) when is_binary(path) do
-    path
-    |> Path.join("specs/**/spec.md")
-    |> Path.wildcard()
-    |> Enum.any?(fn file ->
-      case File.read(file) do
-        {:ok, content} -> Regex.match?(@needs_human_marker, content)
-        _ -> false
-      end
-    end)
+  # True when **this feature's** `spec.md` still carries an unresolved
+  # `## NEEDS HUMAN` heading (line-anchored, same as the response check).
+  #
+  # Scoped, not globbed: a stacked worktree carries every earlier feature's
+  # `specs/` directory, so scanning `specs/**/spec.md` escalated a clean feature
+  # because some *previous* feature's spec still held a marker — and once one
+  # feature legitimately escalates, its marker stays in the tree and every
+  # descendant inherits the escalation.
+  #
+  # An unresolvable spec dir reads as "no marker": this file scan is the
+  # secondary net behind the clarify response check, and escalating on a file we
+  # cannot even identify as this feature's would block good runs. No worktree
+  # (dry runs / tests) → false, unchanged.
+  defp spec_has_needs_human?(%{path: path}, feature) when is_binary(path) do
+    case SpecDir.file(path, feature, "spec.md") do
+      nil ->
+        false
+
+      file ->
+        case File.read(file) do
+          {:ok, content} -> Regex.match?(@needs_human_marker, content)
+          _ -> false
+        end
+    end
   end
 
   defp spec_has_needs_human?(_worktree, _feature), do: false

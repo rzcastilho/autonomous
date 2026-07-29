@@ -397,7 +397,9 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
     result = FeatureRunner.run(feature(), worktree: wt, notify: self())
 
     assert result.status == :failed
-    assert result.reason == {:missing_artifact, :plan, "specs/**/plan.md"}
+    # The gate names the file it looked for inside this feature's spec dir,
+    # not a cross-feature glob pattern (see SpecDir).
+    assert result.reason == {:missing_artifact, :plan, "plan.md"}
     # kept for post-mortem, never removed
     assert File.dir?(wt.path)
   end
@@ -409,7 +411,7 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
     result = FeatureRunner.run(feature(), worktree: wt, notify: self())
 
     assert result.status == :failed
-    assert result.reason == {:missing_artifact, :tasks, "specs/**/tasks.md"}
+    assert result.reason == {:missing_artifact, :tasks, "tasks.md"}
   end
 
   test "implement that writes only spec files (no code) fails the feature" do
