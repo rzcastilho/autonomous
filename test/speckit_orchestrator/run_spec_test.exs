@@ -193,7 +193,7 @@ defmodule SpeckitOrchestrator.RunSpecTest do
   # ---- seed-writing runner, real worktree + fake CLI (US1, US2 containment/transcripts) ----
 
   describe "seed-writing runner (real worktree)" do
-    test "happy path: seeds, commits onto the branch, removes the worktree, writes durable transcripts" do
+    test "happy path: seeds, commits onto the branch, removes the worktree, records durable transcripts in the store" do
       repo = base_repo()
       root = tmp_root()
       point_config_at(repo, root)
@@ -221,11 +221,15 @@ defmodule SpeckitOrchestrator.RunSpecTest do
       assert show =~ "## Prerequisites"
       assert show =~ "None"
 
-      # durable transcripts survive teardown, keyed by feature id, under the
-      # run's Layout-resolved (segment/ad-hoc-scoped) transcript root.
-      transcript_dir = Path.join([root, "transcripts", segment, "ad-hoc", "001"])
-      assert File.dir?(transcript_dir)
-      assert File.exists?(Path.join(transcript_dir, "01-specify.md"))
+      # durable transcripts survive teardown, retrievable from the store by
+      # feature + phase attempt — never from the (removed) worktree (018).
+      {:ok, [%{run_id: run_id} | _]} = SpeckitOrchestrator.run_history(repo: repo, limit: 1)
+      {:ok, detail} = SpeckitOrchestrator.run_detail(run_id, repo: repo)
+      [feature_detail] = detail.features
+      specify_attempt = Enum.find(feature_detail.phase_attempts, &(&1.phase == :specify))
+      assert specify_attempt
+      assert {:ok, %{body: body}} = SpeckitOrchestrator.transcript(specify_attempt.transcript_ref)
+      assert is_binary(body)
     end
 
     test "seed-write failure fails the feature and keeps the worktree (never runs the pipeline)" do

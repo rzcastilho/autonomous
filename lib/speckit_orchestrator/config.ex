@@ -51,18 +51,6 @@ defmodule SpeckitOrchestrator.Config do
   def worktree_root, do: get(:worktree_root, "../.speckit-worktrees")
 
   @doc """
-  **Legacy (pre-012).** Root for durable per-phase transcripts, resolved
-  relative to `repo/0`. Defaults to `<repo>/.speckit-transcripts` — the
-  in-repo-per-target default `Layout.transcript_root` (machine-global,
-  keyed by repository identity + run scope, FR-004) superseded. No new write
-  path resolves through this function; `Transcripts`/`Checkpoint`/`Describe`'s
-  `layout: nil` (test/legacy) fallback is its only remaining caller. Gitignore
-  `.speckit-transcripts/` in the target repo if still relied on.
-  """
-  @spec transcript_root() :: String.t()
-  def transcript_root, do: Path.expand(get(:transcript_root, ".speckit-transcripts"), repo())
-
-  @doc """
   Machine-global base for worktrees + durable transcripts, keyed by repository
   identity (`RepoIdentity.segment/1`). Default `~/.autonomous`, expanded at read
   time; overridable via `Application.put_env/3` (tests point it at a tmp dir).
@@ -217,6 +205,28 @@ defmodule SpeckitOrchestrator.Config do
   def cost_estimate(phase) when is_atom(phase) do
     get(:cost_estimates, @default_cost_estimates) |> Map.get(phase, 0.0)
   end
+
+  @doc """
+  Directory the Mnesia store lives under (018). Default
+  `<autonomous_root/0>/mnesia`, expanded at read time; never inside a target
+  repository tree (FR-005).
+  """
+  @spec store_dir() :: String.t()
+  def store_dir, do: get(:store_dir, Path.join(autonomous_root(), "mnesia")) |> Path.expand()
+
+  @doc """
+  Store capacity ceiling in bytes (018, FR-031b), kept safely under the DETS
+  per-table ceiling `disc_only_copies` inherits. Default 1.5 GB.
+  """
+  @spec store_capacity_bytes() :: pos_integer()
+  def store_capacity_bytes, do: get(:store_capacity_bytes, 1_500_000_000)
+
+  @doc """
+  Headroom (018, FR-031b) reserved below `store_capacity_bytes/0` — a run is
+  refused once `used + headroom > capacity`. Default 150 MB (10%).
+  """
+  @spec store_headroom_bytes() :: pos_integer()
+  def store_headroom_bytes, do: get(:store_headroom_bytes, 150_000_000)
 
   @spec get(atom(), term()) :: term()
   defp get(key, default), do: Application.get_env(@app, key, default)

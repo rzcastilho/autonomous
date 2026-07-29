@@ -109,16 +109,11 @@ defmodule SpeckitOrchestrator.PhaseStepTest do
     on_exit(fn -> :telemetry.detach(handler) end)
   end
 
-  defp tmp_dir,
-    do: Path.join(System.tmp_dir!(), "phase_step_#{System.unique_integer([:positive])}")
-
-  test "default opts: span meta, log label, and transcript filename match the original run_phase_with_retry shape" do
+  test "default opts: span meta matches the original run_phase_with_retry shape" do
     pid = start_agent!()
     attach_phase_telemetry()
-    tmp = tmp_dir()
 
-    agent =
-      PhaseStep.run(pid, feature(), :specify, step: 1, timeout: 5_000, worktree: tmp, layout: nil)
+    agent = PhaseStep.run(pid, feature(), :specify, step: 1, timeout: 5_000)
 
     assert agent.state.last_outcome == :ok
 
@@ -136,26 +131,6 @@ defmodule SpeckitOrchestrator.PhaseStepTest do
                        outcome: :ok,
                        cost: 0.10
                      }}
-
-    assert File.exists?(Path.join([tmp, ".speckit_logs", "01-specify.md"]))
-  end
-
-  test "a custom :label changes only the transcript filename, not the span's phase key" do
-    pid = start_agent!()
-    attach_phase_telemetry()
-    tmp = tmp_dir()
-
-    PhaseStep.run(pid, feature(), :specify,
-      step: 1,
-      timeout: 5_000,
-      worktree: tmp,
-      layout: nil,
-      label: "specify-a1"
-    )
-
-    assert_received {:tele, [:speckit, :phase, :stop], %{phase: :specify}}
-    assert File.exists?(Path.join([tmp, ".speckit_logs", "01-specify-a1.md"]))
-    refute File.exists?(Path.join([tmp, ".speckit_logs", "01-specify.md"]))
   end
 
   test ":span_meta keys merge into the telemetry span meta without displacing the base keys" do

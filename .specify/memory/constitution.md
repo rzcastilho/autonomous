@@ -1,21 +1,81 @@
 <!--
 Sync Impact Report
-Version change: 1.1.0 → 1.2.0
-Bump rationale: MINOR — Principle V materially expanded to permit a bounded,
-  pre-gate auto-remediation loop with a halt-on-exhaustion guarantee; no
-  principle removed or made backward-incompatible.
+Version change: 1.3.0 → 2.0.0
+Bump rationale: MAJOR — Principle V's analyze-gate rule is redefined in a
+  backward-incompatible way. The unconditional guarantee "the analyze gate MUST
+  escalate to `:escalated` on a High finding" no longer holds: the gate is now
+  governed by the run's severity threshold, so a run configured with threshold
+  Critical advances past a High finding instead of diverting it to a human.
+  Under the default threshold (High) behaviour is byte-identical to 1.3.0, but
+  the *guarantee* is weakened — an operator can now configure away a
+  human-facing terminal state that was previously unconditional. That is a
+  relaxation of a governance bound, not an expansion of one, so it is MAJOR
+  rather than MINOR (contrast 1.2.0, which only *added* a bounded pre-gate loop
+  underneath an unchanged gate).
 Modified principles:
-  - V. Human-in-the-Loop Escalation (bounded pre-gate loop + guarantees)
+  - V. Human-in-the-Loop Escalation (analyze gate is now threshold-governed;
+    Critical still unconditionally halts)
 Added principles: none
 Added sections: none
 Removed sections: none
 Templates requiring updates:
-  ✅ .specify/templates/plan-template.md — Constitution Check is
-     principle-agnostic; no change needed
+  ✅ .specify/templates/plan-template.md — Constitution Check is principle-agnostic
   ✅ .specify/templates/spec-template.md — no principle-specific references
   ✅ .specify/templates/tasks-template.md — no principle-specific references
   ✅ .specify/templates/checklist-template.md — generic; no change
+  ✅ specs/017-analyze-auto-remediation/spec.md — US3 acceptance scenario 2 and
+     FR-006 updated to the threshold-governed gate
 Follow-up TODOs: none
+
+Prior report (1.3.0):
+  Version change: 1.2.0 → 1.3.0
+  Bump rationale: MINOR — the Technology Stack section is materially expanded with a
+    new normative "Persistence (run state)" subsection adopting Mnesia, and its
+    previous "there is no database" clause is replaced. No principle was removed,
+    redefined, or made backward-incompatible; Principles I–VI are unchanged in text
+    and in force. Treated as MINOR rather than MAJOR by the same reasoning that made
+    1.1.0 (which introduced the Technology Stack section) a MINOR bump: the section is
+    normative stack guidance, not a governance principle.
+  Modified principles: none (I–VI unchanged)
+  Added principles: none
+  Added sections:
+    - Technology Stack → Persistence (run state)
+  Modified sections:
+    - Technology Stack → Backend: "there is no database — run/checkpoint state is
+      file-backed" replaced with a pointer to the Persistence subsection
+    - Technology Stack → Frontend: console authority clause now names persisted run
+      state rather than file-backed run state
+  Removed sections: none
+  Templates requiring updates:
+    ✅ .specify/templates/plan-template.md — Constitution Check is principle-agnostic
+       ("[Gates determined based on constitution file]"); no change needed
+    ✅ .specify/templates/spec-template.md — no stack-specific references; no change
+    ✅ .specify/templates/tasks-template.md — no stack-specific references; no change
+    ✅ .specify/templates/checklist-template.md — generic; no change
+    ✅ CLAUDE.md — contains no no-database claim; no change
+    ⚠ Historical artifacts NOT rewritten (deliberate): specs/008, 014, 015, 016, 017
+       plan.md/data-model.md state "no database — durable state is file-backed". Those
+       are accurate records of what those features shipped against and are left as-is;
+       specs/018-unified-run-persistence supersedes them going forward.
+  Follow-up TODOs: none
+
+Prior report (1.2.0):
+  Version change: 1.1.0 → 1.2.0
+  Bump rationale: MINOR — Principle V materially expanded to permit a bounded,
+    pre-gate auto-remediation loop with a halt-on-exhaustion guarantee; no
+    principle removed or made backward-incompatible.
+  Modified principles:
+    - V. Human-in-the-Loop Escalation (bounded pre-gate loop + guarantees)
+  Added principles: none
+  Added sections: none
+  Removed sections: none
+  Templates requiring updates:
+    ✅ .specify/templates/plan-template.md — Constitution Check is
+       principle-agnostic; no change needed
+    ✅ .specify/templates/spec-template.md — no principle-specific references
+    ✅ .specify/templates/tasks-template.md — no principle-specific references
+    ✅ .specify/templates/checklist-template.md — generic; no change
+  Follow-up TODOs: none
 
 Prior report (1.1.0):
   Version change: 1.0.0 → 1.1.0
@@ -105,11 +165,22 @@ within budget plus one outstanding reservation.
 
 The pipeline MUST NOT fabricate resolution of ambiguity or of a quality
 failure. The clarify gate MUST escalate a feature to `:escalated` on an
-unresolved `## NEEDS HUMAN` marker in `spec.md`. The analyze gate MUST halt to
-`:halted` on a constitution Critical finding and escalate to `:escalated` on a
-High one. A **bounded, pre-gate auto-remediation loop** MAY attempt to fix
-findings at or above a configured severity threshold before the gate is
-evaluated, subject to all of:
+unresolved `## NEEDS HUMAN` marker in `spec.md`.
+
+The analyze gate MUST halt to `:halted` on a constitution Critical finding.
+Critical outranks every threshold, so this halt is unconditional and MUST NOT
+be configurable away. The gate MUST escalate to `:escalated` on a High finding
+**when the run's configured severity threshold is High or lower** — the same
+single threshold that decides when auto-remediation runs. A run configured
+with threshold Critical therefore advances past a High finding rather than
+diverting it to a human; that is an explicit, recorded operator choice, and
+the default threshold (High) preserves the escalation. Lowering the threshold
+below High MUST NOT create a terminal state for a severity that has none
+(Low and Medium never divert).
+
+A **bounded, pre-gate auto-remediation loop** MAY attempt to fix findings at
+or above that same severity threshold before the gate is evaluated, subject to
+all of:
 
 - it runs **strictly before** the gate decides, never after — a gate
   diversion is still never retried;
@@ -133,6 +204,15 @@ ship wrong or non-compliant work at machine speed. A bounded, fully-recorded,
 switchable pre-gate remediation loop does not relax that bound — it only
 delays a still-mandatory human handoff by a capped number of self-fix
 attempts, and restores today's exact behaviour when disabled.
+
+Making the gate threshold-governed *does* relax it, deliberately and only for
+High: one knob now answers one question — "how severe must a finding be before
+a human is involved?" — instead of splitting that answer between a remediation
+threshold and a separate hardcoded gate. The bound that remains absolute is
+Critical: a constitution Critical finding always halts, at every threshold, so
+no configuration can ship a constitution violation unattended. Raising the
+threshold to Critical is a recorded, per-run decision to accept High findings
+automatically; operators who want the old guarantee keep the default.
 
 ### VI. Idiomatic Elixir/OTP & Functional Design
 
@@ -191,8 +271,54 @@ Discipline). Erlang/OTP is system-provided and MUST NOT be mise-managed.
   pinned to GitHub SHAs with `override: true` on the harness — they are NOT on
   Hex; re-check Hex monthly and bump SHAs deliberately (never float to HEAD).
 - New backend work MUST prefer OTP primitives already in the tree over new
-  external dependencies; there is no database — run/checkpoint state is
-  file-backed (run manifest + per-phase checkpoints).
+  external dependencies. Durable run state lives in **Mnesia** — see Persistence
+  below. There is no external database service and no ORM (no Ecto).
+
+**Persistence (run state).** All durable run state — runs, features, phase
+attempts, checkpoints, escalations, run settings, cost entries, and transcripts —
+is held in **Mnesia**, which ships with Erlang/OTP.
+
+- Mnesia MUST NOT be supplemented by an external database service, a Hex
+  persistence dependency, or an ORM. It is chosen because it is already in the
+  runtime: no new operational surface, no separate process to install or babysit.
+- Deployment is **single-node and machine-local**. Distributed Mnesia,
+  replication, and multi-node clustering are out of scope; run state does not
+  cross machines.
+- The Mnesia directory MUST live under the orchestrator's own machine-global
+  root, never inside a target repository's working tree, so recorded state is
+  never committed to, or destroyed by, target-repo operations.
+- The Erlang **node name** and the Mnesia directory MUST be configured
+  explicitly and be stable across restarts — the schema is keyed to both.
+  Startup that finds a schema belonging to a different node MUST fail loud
+  (Principle II); it MUST NOT silently create an empty schema and present a
+  repository as having no history.
+- Every state mutation MUST run inside a Mnesia **transaction** — that is what
+  makes an update all-or-nothing under interruption and makes parallel feature
+  writers safe without new locking (Principle IV's accounting depends on it).
+  `:mnesia.dirty_*` MUST NOT be used for writes, nor for any read whose result
+  feeds a resume, a gate, or a cost decision; it MAY be used for
+  non-authoritative observability reads.
+- Per-table storage type MUST be a deliberate, recorded choice. Small, hot
+  run-control tables use `disc_copies`. Bulk content — phase transcripts above
+  all — MUST use `disc_only_copies` so stored volume does not grow the BEAM
+  heap, and MUST NOT be loaded by a history or summary listing. The DETS
+  per-table size ceiling that `disc_only_copies` inherits MUST be handled
+  explicitly (fragmentation or operator pruning) and MUST NEVER be handled by
+  silently dropping or truncating recorded state.
+- Schema evolution MUST be explicit and versioned: a recorded schema version
+  plus `:mnesia.transform_table` migrations applied at startup. An unrecognized
+  or newer-than-known schema version MUST fail loud, never be auto-coerced.
+- Mnesia MUST be started and its schema verified **before** any state consumer
+  starts; failure at that point MUST abort startup rather than let a run begin
+  spending money it cannot record.
+- A run's record MUST be exportable in a format readable without Mnesia.
+  Mnesia's own backup facility is an operations tool, not the export contract.
+- The pure core MUST NOT depend on Mnesia. Persistence sits behind an explicit
+  boundary exactly as the harness does (Principle I), so decision tables and
+  pure logic stay unit-testable with no schema and no running node.
+- The default test suite MUST NOT depend on a developer's machine-global Mnesia
+  directory: tests create and tear down their own schema in a temporary
+  directory (Quality & Test Discipline — the default suite stays hermetic).
 
 **Frontend (control-plane console, feature 008).**
 
@@ -206,8 +332,8 @@ Discipline). Erlang/OTP is system-provided and MUST NOT be mise-managed.
   proposal to introduce a JS build step or a CSS framework MUST clear the
   Governance bar and justify the added toolchain surface.
 - The console is an observability/operator surface over run state — it MUST NOT
-  become a second source of truth. It reads run manifests/checkpoints; the
-  file-backed run state remains authoritative.
+  become a second source of truth. It reads the persisted run state; that
+  persisted state remains authoritative.
 
 ## Quality & Test Discipline
 
@@ -249,4 +375,4 @@ deviation already is. Reviews and PRs MUST verify compliance with these
 principles; the constitution and the implementation plan together are the
 runtime guidance for autonomous and human contributors alike.
 
-**Version**: 1.2.0 | **Ratified**: 2026-07-11 | **Last Amended**: 2026-07-27
+**Version**: 2.0.0 | **Ratified**: 2026-07-11 | **Last Amended**: 2026-07-28

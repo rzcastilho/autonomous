@@ -1,125 +1,162 @@
 defmodule SpeckitOrchestrator.Web.TranscriptsLive do
   @moduledoc """
-  US5 — Transcripts (`/transcripts`): a feature+phase picker that reads the
-  durable transcript written by `SpeckitOrchestrator.Transcripts` at
-  `<autonomous_root>/transcripts/<segment>/<scope>/<feature_id>/NN-<phase>.md`
-  (`<scope>` a breakdown slug or the literal `ad-hoc`, 012), rendering its
-  body + source path, or an explicit "not yet written" state for a phase the
-  feature hasn't reached (`specs/008-control-plane/tasks.md` T061-T062).
+  US5 — Transcripts (`/transcripts`): a run/feature/attempt picker that reads
+  the durable transcript from the store via `SpeckitOrchestrator.run_detail/1`
+  (the picker) and `transcript/1` (the body), rendered verbatim — or an
+  explicit "not found" state for an attempt whose transcript is absent (018,
+  contracts/console-runs.md).
 
-  Filesystem-only — no facade/Coordinator/Ledger reads, no write path (the
-  write-only `Transcripts` module is untouched). Fully independent of every
-  other view; the feature drawer (`FeatureDrawerComponent`) links here with
-  `?feature=<scope>/<id>&phase=<phase>` to preselect (FR-012).
+  Scoped to one run — the current in-flight run (`current_run_id/1`), or the
+  repository's most recent run when nothing is in flight — same framing
+  `MissionControlLive`/`PipelineDagLive` already use for their cold-boot
+  overlay. `?run_id=`/`?feature=`/`?phase=`/`?attempt=` query params (the
+  feature drawer's and Escalations' links) preselect a feature and, via
+  `?phase=` (latest matching attempt) or `?attempt=` (an explicit index into
+  that feature's `phase_attempts`), an attempt.
   """
 
   use SpeckitOrchestrator.Web, :live_view
 
-  alias SpeckitOrchestrator.{Config, Pipeline, RepoIdentity}
+  alias SpeckitOrchestrator.Pipeline
 
   @impl true
   def mount(params, _session, socket) do
-    root = transcripts_root(Config.repo())
-    entries = list_entries(root)
-    selected_key = params["feature"] || List.first(entries)
-    selected_phase = safe_phase(params["phase"]) || List.first(Pipeline.phases())
+    run_id = params["run_id"] || SpeckitOrchestrator.current_run_id() || latest_run_id()
+    features = run_features(run_id)
+
+    selected_feature_id = params["feature"] || feature_id(List.first(features))
+    selected_feature = find_feature(features, selected_feature_id)
+    selected_index = resolve_attempt_index(selected_feature, params)
 
     {:ok,
      socket
      |> assign(
        page_title: "Transcripts",
        current_path: "/transcripts",
-       root: root,
-       entries: entries,
-       selected_key: selected_key,
-       selected_phase: selected_phase
+       run_id: run_id,
+       features: features,
+       selected_feature_id: selected_feature_id,
+       selected_index: selected_index
      )
-     |> assign(doc: transcript_doc(root, selected_key, selected_phase))}
+     |> assign(doc: transcript_doc(selected_feature, selected_index))}
   end
 
   @impl true
-  def handle_event("select", %{"feature" => key, "phase" => phase}, socket) do
-    key = blank_to_nil(key)
-    phase = safe_phase(phase)
+  def handle_event("select_feature", %{"id" => id}, socket) do
+    feature = find_feature(socket.assigns.features, id)
+    index = default_index(feature)
 
     {:noreply,
      socket
-     |> assign(selected_key: key, selected_phase: phase)
-     |> assign(doc: transcript_doc(socket.assigns.root, key, phase))}
+     |> assign(selected_feature_id: id, selected_index: index)
+     |> assign(doc: transcript_doc(feature, index))}
   end
 
-  # ---- filesystem helpers (T061, updated 012 for the segment/scope grammar) --
+  def handle_event("select_attempt", %{"index" => index_str}, socket) do
+    feature = find_feature(socket.assigns.features, socket.assigns.selected_feature_id)
 
-  # Best-effort — a repo with no origin (or not yet a git repo) simply has no
-  # transcripts to browse (no segment to key the machine-global root by).
-  defp transcripts_root(repo) do
-    case RepoIdentity.resolve(repo) do
-      {:ok, segment} -> Path.join([Config.autonomous_root(), "transcripts", segment])
-      {:error, _reason} -> nil
+    index =
+      case Integer.parse(index_str) do
+        {n, _rest} -> n
+        :error -> nil
+      end
+
+    {:noreply,
+     socket
+     |> assign(selected_index: index)
+     |> assign(doc: transcript_doc(feature, index))}
+  end
+
+  # ---- store lookups ----------------------------------------------------
+
+  defp run_features(nil), do: []
+
+  defp run_features(run_id) do
+    case SpeckitOrchestrator.run_detail(run_id) do
+      {:ok, %{features: features}} -> features
+      _ -> []
     end
   end
 
-  defp list_entries(nil), do: []
-
-  defp list_entries(root) do
-    case File.ls(root) do
-      {:ok, scopes} ->
-        scopes
-        |> Enum.filter(&File.dir?(Path.join(root, &1)))
-        |> Enum.flat_map(&feature_keys(root, &1))
-        |> Enum.sort()
-
-      {:error, _reason} ->
-        []
+  defp latest_run_id do
+    case SpeckitOrchestrator.run_history(limit: 1) do
+      {:ok, [%{run_id: id} | _]} -> id
+      _ -> nil
     end
   end
 
-  defp feature_keys(root, scope) do
-    scope_dir = Path.join(root, scope)
+  defp find_feature(_features, nil), do: nil
+  defp find_feature(features, id), do: Enum.find(features, &(&1.feature_id == id))
 
-    case File.ls(scope_dir) do
-      {:ok, ids} ->
-        ids |> Enum.filter(&File.dir?(Path.join(scope_dir, &1))) |> Enum.map(&"#{scope}/#{&1}")
+  defp feature_id(nil), do: nil
+  defp feature_id(%{feature_id: id}), do: id
 
-      {:error, _reason} ->
-        []
-    end
-  end
+  defp transcript_doc(nil, _index), do: nil
+  defp transcript_doc(_feature, nil), do: nil
 
-  defp transcript_doc(_root, nil, _phase), do: nil
-  defp transcript_doc(_root, _key, nil), do: nil
-
-  defp transcript_doc(root, key, phase) do
-    case find_transcript_path(root, key, phase) do
+  defp transcript_doc(feature, index) do
+    case Enum.at(feature.phase_attempts, index) do
       nil ->
-        %{feature_id: key, phase: phase, path: nil, body: nil, exists?: false}
+        nil
 
-      path ->
-        case File.read(path) do
-          {:ok, body} -> %{feature_id: key, phase: phase, path: path, body: body, exists?: true}
-          {:error, _} -> %{feature_id: key, phase: phase, path: path, body: nil, exists?: false}
+      attempt ->
+        case SpeckitOrchestrator.transcript(attempt.transcript_ref) do
+          {:ok, %{body: body}} -> %{attempt: attempt, body: body, exists?: true}
+          _ -> %{attempt: attempt, body: nil, exists?: false}
         end
     end
   end
 
-  defp find_transcript_path(root, key, phase) do
-    root
-    |> Path.join(key)
-    |> Path.join("*-#{phase}.md")
-    |> Path.wildcard()
-    |> List.first()
+  # ---- attempt resolution (deep links: feature drawer, Escalations) -------
+
+  defp resolve_attempt_index(nil, _params), do: nil
+
+  defp resolve_attempt_index(feature, params) do
+    case blank_to_nil(params["attempt"]) do
+      nil -> phase_or_default_index(feature, blank_to_nil(params["phase"]))
+      index_str -> explicit_index(feature, index_str)
+    end
   end
 
-  defp safe_phase(nil), do: nil
+  defp explicit_index(feature, index_str) do
+    case Integer.parse(index_str) do
+      {n, _rest} when n >= 0 and n < length(feature.phase_attempts) -> n
+      _ -> phase_or_default_index(feature, nil)
+    end
+  end
+
+  defp phase_or_default_index(feature, nil), do: default_index(feature)
+
+  defp phase_or_default_index(feature, phase_str) do
+    case safe_phase(phase_str) do
+      {:ok, phase} ->
+        feature.phase_attempts
+        |> Enum.with_index()
+        |> Enum.filter(fn {a, _i} -> a.phase == phase end)
+        |> List.last()
+        |> case do
+          {_a, i} -> i
+          nil -> default_index(feature)
+        end
+
+      :error ->
+        default_index(feature)
+    end
+  end
+
+  defp default_index(nil), do: nil
+  defp default_index(%{phase_attempts: []}), do: nil
+  defp default_index(%{phase_attempts: attempts}), do: length(attempts) - 1
 
   defp safe_phase(phase) when is_binary(phase) do
     atom = String.to_existing_atom(phase)
-    if Pipeline.phase?(atom), do: atom, else: nil
+    if Pipeline.phase?(atom), do: {:ok, atom}, else: :error
   rescue
-    ArgumentError -> nil
+    ArgumentError -> :error
   end
 
-  defp blank_to_nil(s), do: if(String.trim(s || "") == "", do: nil, else: s)
+  defp blank_to_nil(nil), do: nil
+  defp blank_to_nil(s), do: if(String.trim(s) == "", do: nil, else: s)
 
   # ---- render ---------------------------------------------------------------
 
@@ -127,60 +164,72 @@ defmodule SpeckitOrchestrator.Web.TranscriptsLive do
   def render(assigns) do
     ~H"""
     <div class="view-transcripts" data-view="transcripts">
-      <div :if={@entries == []} class="empty-state" data-state="no-transcripts">
+      <div :if={@features == []} class="empty-state" data-state="no-transcripts">
         <p>No transcripts available yet.</p>
       </div>
 
-      <%= if @entries != [] do %>
+      <%= if @features != [] do %>
         <div class="transcripts-sidebar" data-form="picker">
-          <div class="transcripts-sidebar-label">&lt;segment&gt;/&lt;scope&gt;/&lt;feature_id&gt;</div>
+          <div class="transcripts-sidebar-label">run {@run_id} &middot; feature</div>
           <button
-            :for={key <- @entries}
+            :for={f <- @features}
             type="button"
-            phx-click="select"
-            phx-value-feature={key}
-            phx-value-phase={@selected_phase}
-            data-feature-select={key}
+            phx-click="select_feature"
+            phx-value-id={f.feature_id}
+            data-feature-select={f.feature_id}
             class={[
               "transcript-feature-row",
-              key == @selected_key && "transcript-feature-row-active"
+              f.feature_id == @selected_feature_id && "transcript-feature-row-active"
             ]}
           >
             <span class="transcript-feature-dot"></span>
-            <span class="transcript-feature-id">{key}</span>
+            <span class="transcript-feature-id">{f.feature_id} &middot; {f.slug}</span>
           </button>
         </div>
 
         <div class="transcripts-main">
           <div class="transcript-tabs">
             <button
-              :for={p <- Pipeline.phases()}
+              :for={
+                {attempt, index} <-
+                  Enum.with_index(feature_attempts(@features, @selected_feature_id))
+              }
               type="button"
-              phx-click="select"
-              phx-value-feature={@selected_key}
-              phx-value-phase={p}
-              data-phase-select={p}
-              class={["transcript-tab", p == @selected_phase && "transcript-tab-active"]}
+              phx-click="select_attempt"
+              phx-value-index={index}
+              data-attempt-select={index}
+              class={["transcript-tab", index == @selected_index && "transcript-tab-active"]}
             >
-              {p}
+              {attempt.phase}#{attempt.ordinal} &middot; {attempt.outcome}
             </button>
           </div>
 
           <div class="transcripts-body">
             <div :if={@doc && @doc.exists?} class="transcript-doc" data-state="found">
-              <p class="transcript-path" data-transcript-path>{@doc.path}</p>
+              <p class="transcript-path" data-transcript-path>
+                {@selected_feature_id} &middot; {@doc.attempt.phase}#{@doc.attempt.ordinal}
+              </p>
               <pre class="transcript-body">{@doc.body}</pre>
             </div>
 
             <div :if={@doc && not @doc.exists?} class="empty-state" data-state="not-yet-written">
-              <p>
-                Phase "{@doc.phase}" has not been reached yet for {@doc.feature_id} — no transcript written.
-              </p>
+              <p>No transcript recorded for this attempt.</p>
+            </div>
+
+            <div :if={is_nil(@doc)} class="empty-state" data-state="not-yet-written">
+              <p>No attempts recorded yet for {@selected_feature_id}.</p>
             </div>
           </div>
         </div>
       <% end %>
     </div>
     """
+  end
+
+  defp feature_attempts(features, feature_id) do
+    case find_feature(features, feature_id) do
+      nil -> []
+      f -> f.phase_attempts
+    end
   end
 end

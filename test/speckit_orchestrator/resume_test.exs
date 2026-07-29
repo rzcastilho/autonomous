@@ -2,15 +2,23 @@ defmodule SpeckitOrchestrator.ResumeTest do
   # async: false — real-worktree tests point :repo/:worktree_root at throwaway
   # dirs and swap the :jido_claude sdk_module (mirrors run_spec_test.exs /
   # feature_runner_test.exs); every test uses a unique feature id so runs never
-  # collide on the shared (fixed, per-suite) :transcript_root checkpoint path.
-  use ExUnit.Case, async: false
+  # collide, plus the shared store (StoreCase clears every table + the
+  # Store.Health breaker before each test — see test/support/store_case.ex).
+  #
+  # 018: `resume/2` no longer has a "no store run recorded" fallback (the
+  # pre-016 D8 single-feature path, and the file-based `Checkpoint`/
+  # `RunManifest` it read). `read_current_run/0` now requires a genuine store
+  # run for the configured repo before anything else is resolved — so every
+  # fixture here opens one via `Store.Writer.open_run/2` first (`open_run/3,4`
+  # below), then seeds a checkpoint into it via `record_phase_attempt/2`
+  # (`write_checkpoint/4,5`), mirroring resume_scope_test.exs/resume_run_test.exs.
+  use SpeckitOrchestrator.StoreCase, async: false
 
   alias SpeckitOrchestrator.{
-    Checkpoint,
-    Config,
     Coordinator,
     Feature,
     FeatureRunner,
+    Layout,
     RepoIdentity,
     RunContext,
     Worktree
@@ -162,7 +170,10 @@ defmodule SpeckitOrchestrator.ResumeTest do
 
   # 016: a :manifest fake for a test Coordinator that must not durably record
   # its features (avoids bleeding a stray feature into a later whole-run
-  # scope restore).
+  # scope restore). Coordinator still dual-writes to the file-based
+  # `RunManifest` alongside the store (018) — irrelevant to these tests, which
+  # read the store exclusively, but kept to avoid a stray real file write from
+  # the blocking Coordinator fixture below.
   defmodule NoopManifest do
     def write(_record), do: :ok
   end
@@ -171,16 +182,9 @@ defmodule SpeckitOrchestrator.ResumeTest do
     prev_sdk = Application.get_env(:jido_claude, :sdk_module)
     Application.put_env(:jido_claude, :sdk_module, FakeSDK)
 
-    # 016: resume/2 now reads the run manifest (whole-run scope restore).
-    # This file never writes one deliberately and none of its tests override
-    # :repo/:autonomous_root, so without isolation every test here would share
-    # the one default (repo ".", global tmp autonomous_root) segment with
-    # every other async:false test file that also leaves it at its default
-    # (e.g. pr_workflow_test.exs) — a stray manifest from either side could
-    # bleed into a resume/2 call here. A unique :autonomous_root per test
-    # guarantees RunManifest.read/0 sees nothing here, keeping every test on
-    # the D8 no-manifest path (byte-identical pre-016 single-feature
-    # behaviour) regardless of run order or what other files do.
+    # An isolated :autonomous_root per test — `Layout.build/3` (every fixture
+    # below builds a real `%Layout{}`) resolves it, and the Coordinator's own
+    # RunManifest dual-write lands under it too. Never `~/.autonomous`.
     prev_autonomous = Application.get_env(:speckit_orchestrator, :autonomous_root)
     root = Path.join(System.tmp_dir!(), "resume_manifest_#{System.unique_integer([:positive])}")
     Application.put_env(:speckit_orchestrator, :autonomous_root, root)
@@ -203,23 +207,6 @@ defmodule SpeckitOrchestrator.ResumeTest do
   defp unique_id, do: "r#{System.unique_integer([:positive, :monotonic])}"
 
   defp feature(id), do: %Feature{id: id, slug: "resume-facade", path: "#{id}-resume-facade.md"}
-
-  # `identity` is an optional keyword list (`slug:`, `path:`) merged into the
-  # write map — omitted, this produces an old-shape checkpoint carrying no
-  # identity (FR-001..004 fixtures reuse this for both shapes).
-  defp write_checkpoint(id, last_phase, status \\ :halted, identity \\ []) do
-    base = %{
-      feature_id: id,
-      last_phase: last_phase,
-      status: status,
-      reason: "test fixture",
-      session_id: "s1"
-    }
-
-    :ok = Checkpoint.write(Enum.into(identity, base))
-
-    on_exit(fn -> File.rm_rf(Path.join(Config.transcript_root(), id)) end)
-  end
 
   defp capturing_runner(test_pid) do
     fn feat, notify ->
@@ -284,11 +271,148 @@ defmodule SpeckitOrchestrator.ResumeTest do
     end)
   end
 
+  # ---- store fixtures (018) --------------------------------------------------
+
+  defp layout_for(repo, scope \\ :ad_hoc) do
+    {:ok, segment} = RepoIdentity.resolve(repo)
+    {:ok, layout} = Layout.build(repo, segment, scope)
+    layout
+  end
+
+  # A real `%Layout{}` whose `worktree_root` is pinned to `root` — the same
+  # `root` a fixture's own direct `Worktree.create(feature, repo:, worktree_root:)`
+  # call used, so `resume/2`'s own dispatch (`Worktree.locate/2` via
+  # `worktree_create_opts/1`) resolves the SAME worktree path the fixture
+  # already created (`Layout.build/3` alone would derive a different
+  # `worktree_root` under `Config.autonomous_root/0`).
+  defp real_layout(repo, root), do: %{layout_for(repo) | worktree_root: root}
+
+  # A throwaway repo with just an `origin` remote (no worktree is ever
+  # created against it — every test using this only injects a fake
+  # :runner/:executor). 018 removed resume/2's no-store-run fallback, so
+  # `Recovery.reconcile_run/2`'s evidence collection (real git calls against
+  # `Config.repo/0`) now always runs, even for these otherwise-hermetic
+  # tests — this points it at a disposable directory instead of the actual
+  # project checkout.
+  defp hermetic_repo do
+    repo = Path.join(System.tmp_dir!(), "resume_hermetic_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(repo)
+    git!(repo, ["init", "-q", "-b", "main"])
+    git!(repo, ["remote", "add", "origin", "git@example.com:test/#{Path.basename(repo)}.git"])
+    on_exit(fn -> File.rm_rf(repo) end)
+    point_config_at(repo, Path.join(repo, "_wt"))
+    {repo, layout_for(repo)}
+  end
+
+  defp open_run(
+         repo,
+         layout,
+         features,
+         context \\ %RunContext{pr_workflow: false, max_concurrency: 2, budget_usd: 100.0}
+       ) do
+    repo_id = RepoIdentity.partition(repo)
+
+    {:ok, run_id} =
+      Writer.open_run(repo_id, %{
+        features:
+          Enum.map(
+            features,
+            &%{feature_id: &1.id, slug: &1.slug, path: &1.path, prereqs: &1.prereqs}
+          ),
+        settings: RunContext.to_map(context),
+        scope: :ad_hoc,
+        layout: layout
+      })
+
+    {repo_id, run_id}
+  end
+
+  defp minimal_attempt(feature_id, phase) do
+    now = DateTime.utc_now()
+
+    %{
+      feature_id: feature_id,
+      phase: phase,
+      ordinal: 1,
+      step: 1,
+      label: Atom.to_string(phase),
+      started_at: now,
+      ended_at: now,
+      duration_ms: 0,
+      outcome: :error,
+      model: "sonnet",
+      cost_usd: 0.0,
+      cost_kind: :estimate,
+      session_id: "s1",
+      error: nil
+    }
+  end
+
+  # A diverted checkpoint (re-runs `phase` itself on resume — the store
+  # equivalent of the pre-018 file checkpoint's `last_phase`/`status`).
+  # `extra` merges additional checkpoint fields (`implement_chunk`,
+  # `analyze_remediation`, a custom `reason`) — the store's own knobs the
+  # pre-018 checkpoint carried as top-level keys.
+  defp write_checkpoint(run_key, id, phase, status, extra \\ %{}) do
+    checkpoint =
+      Map.merge(
+        %{
+          phase: phase,
+          last_completed_phase: phase,
+          status: status,
+          reason: "test fixture",
+          session_id: "s1"
+        },
+        extra
+      )
+
+    :ok =
+      Writer.record_phase_attempt(run_key, %{
+        attempt: minimal_attempt(id, phase),
+        checkpoint: checkpoint
+      })
+
+    if status in [:escalated, :halted, :failed] do
+      :ok = Writer.record_feature_terminal(run_key, id, status, checkpoint.reason, [])
+    end
+
+    :ok
+  end
+
+  # 018: durable transcripts live in the store, not `.speckit_logs/` — these
+  # read back what `resume/2`'s spawned FeatureRunner recorded, mirroring
+  # `write_checkpoint/5`'s own store-backed fixtures.
+  defp phase_attempts(run_key, feature_id) do
+    {:ok, detail} = Store.run(run_key)
+    detail.features |> Enum.find(&(&1.feature_id == feature_id)) |> Map.fetch!(:phase_attempts)
+  end
+
+  defp remediation_attempts(run_key, feature_id) do
+    {:ok, detail} = Store.run(run_key)
+
+    detail.features
+    |> Enum.find(&(&1.feature_id == feature_id))
+    |> Map.fetch!(:remediation_attempts)
+  end
+
+  defp phase_recorded?(run_key, feature_id, phase),
+    do: Enum.any?(phase_attempts(run_key, feature_id), &(&1.phase == phase))
+
+  defp transcript_body!(run_key, feature_id, phase) do
+    attempt = Enum.find(phase_attempts(run_key, feature_id), &(&1.phase == phase))
+    assert attempt, "no #{phase} phase attempt recorded for #{feature_id}"
+    {:ok, %{body: body}} = SpeckitOrchestrator.transcript(attempt.attempt_id)
+    body
+  end
+
   # ---- distinct failures, no run started (hermetic) ------------------------
 
   describe "resume/2 — distinct failures, no run started" do
     test "no checkpoint" do
       id = unique_id()
+      {repo, layout} = hermetic_repo()
+      open_run(repo, layout, [feature(id)])
+
       me = self()
 
       assert {:error, :no_checkpoint} =
@@ -301,6 +425,15 @@ defmodule SpeckitOrchestrator.ResumeTest do
     end
 
     test "no checkpoint on disk still returns {:error, :no_checkpoint}, unchanged" do
+      # 018: `resume/2` always requires a store-backed run before anything
+      # else — the pre-016 D8 "no manifest anywhere" fallback is gone (a
+      # genuinely absent run now returns `{:error, :no_manifest}`, exercised
+      # in the "016 whole-run scope restore" describe block below). What this
+      # test actually pins is that an id absent from an otherwise-real run
+      # still surfaces `:no_checkpoint`, not `:unknown_feature` or a crash.
+      {repo, layout} = hermetic_repo()
+      open_run(repo, layout, [feature("other-#{unique_id()}")])
+
       me = self()
 
       assert {:error, :no_checkpoint} =
@@ -312,58 +445,42 @@ defmodule SpeckitOrchestrator.ResumeTest do
       refute_received {:runner_called, _}
     end
 
-    test "corrupt checkpoint" do
-      id = unique_id()
-      dir = Path.join(Config.transcript_root(), id)
-      File.mkdir_p!(dir)
-      File.write!(Path.join(dir, "checkpoint.json"), "not valid json{")
-      on_exit(fn -> File.rm_rf(dir) end)
-      me = self()
-
-      assert {:error, :corrupt_checkpoint} =
-               SpeckitOrchestrator.resume(id,
-                 features: [feature(id)],
-                 runner: capturing_runner(me)
-               )
-
-      refute_received {:runner_called, _}
-    end
+    # 018: `{:error, :corrupt_checkpoint}` is dead in the current
+    # implementation — it survives only in `resume/2`'s `@spec` for API
+    # compatibility, never actually returned (`grep` confirms no call site
+    # produces it). A damaged `speckit_checkpoint` row can no longer be
+    # produced by a legitimate write either: Mnesia enforces record arity at
+    # write time, unlike the old raw-JSON file this test used to corrupt on
+    # disk. That decode branch is covered directly at the unit level in
+    # test/speckit_orchestrator/store/records_test.exs — nothing end-to-end
+    # can reach it anymore (mirrors resume_run_test.exs's T023 comment for
+    # the analogous "corrupt manifest" case).
   end
 
   # ---- 016 T005: SC-005 no-regression + D8 no-manifest/corrupt fallback ----
 
   describe "resume/2 — 016 whole-run scope restore, no-regression" do
-    test "a corrupt run manifest on disk falls back to today's single-feature path, unchanged" do
-      id = unique_id()
-      write_checkpoint(id, :analyze, :halted, slug: "widget", path: "#{id}-widget.md")
-
-      path = manifest_path()
-      File.mkdir_p!(Path.dirname(path))
-      File.write!(path, "not valid json{")
-      on_exit(fn -> File.rm(path) end)
-
-      me = self()
-
-      assert {:ok, pid} =
-               SpeckitOrchestrator.resume(id, features: [], runner: capturing_runner(me))
-
-      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
-
-      assert_receive {:runner_called, feat}
-      assert feat.id == id
-      assert feat.slug == "widget"
-    end
+    # 018 removed the D8 "no readable manifest -> today's single-feature
+    # path" fallback entirely (`resume_scope/2` and its file-based
+    # `RunManifest.read/0` branch no longer exist — `read_current_run/0`
+    # always requires a genuine store run). A store run record damaged
+    # enough to trigger `{:error, :corrupt_manifest}` can't be produced by a
+    # legitimate write for the same reason `:corrupt_checkpoint` can't (see
+    # above) — this test's premise (a hand-corrupted `run.json` silently
+    # falling back to single-feature mode) has no store-model equivalent.
 
     # 016 T006/FR-010a: same live-run refusal resume_run/1 already has
     # (guard_active_run/1, reused unchanged) — a resume/2 that would start a
-    # second whole-run Coordinator against the same repo's manifest slot is
-    # refused instead of racing it.
+    # second whole-run Coordinator against the same repo's in-flight store
+    # run is refused instead of racing it.
     test "a live unfinished Coordinator refuses resume/2 without :force, and :force proceeds" do
       id = unique_id()
-      write_checkpoint(id, :analyze, :halted, slug: "widget", path: "#{id}-widget.md")
+      {repo, layout} = hermetic_repo()
+      run_key = open_run(repo, layout, [feature(id)])
+      write_checkpoint(run_key, id, :analyze, :halted)
 
       # :manifest fake — a real (unfaked) blocking Coordinator would durably
-      # record "999" via its own per-phase write, which the force:true
+      # record "999" via its own file-based dual-write, which the force:true
       # resume below would then legitimately restore alongside the target
       # (016's whole-run scope restore, exercised on purpose in
       # resume_scope_test.exs) — irrelevant noise for this test, which is
@@ -397,24 +514,17 @@ defmodule SpeckitOrchestrator.ResumeTest do
     end
   end
 
-  # Mirrors RunManifest's own segment resolution — this file's tests use the
-  # default repo (".") and this setup's isolated :autonomous_root.
-  defp manifest_path do
-    case RepoIdentity.resolve(Config.repo()) do
-      {:ok, segment} ->
-        Path.join([Config.autonomous_root(), "transcripts", segment, "run.json"])
-
-      {:error, _} ->
-        Path.join([Config.autonomous_root(), "transcripts", "run.json"])
-    end
-  end
-
   # ---- identity recovery from checkpoint alone (US1, FR-001..004) ---------
 
   describe "resume/2 — identity recovery from checkpoint alone" do
     test "reconstructs the feature from checkpoint identity when :features is empty and no explicit feature is supplied" do
       id = unique_id()
-      write_checkpoint(id, :analyze, :halted, slug: "widget", path: "#{id}-widget.md")
+      {repo, layout} = hermetic_repo()
+
+      run_key =
+        open_run(repo, layout, [%Feature{id: id, slug: "widget", path: "#{id}-widget.md"}])
+
+      write_checkpoint(run_key, id, :analyze, :halted)
       me = self()
 
       assert {:ok, pid} =
@@ -428,9 +538,33 @@ defmodule SpeckitOrchestrator.ResumeTest do
       assert feat.path == "#{id}-widget.md"
     end
 
-    test "explicit/backlog feature wins over checkpoint identity when both exist for the same id" do
+    # Pre-018, "explicit/backlog feature wins over checkpoint identity" only
+    # ever demonstrated that via the D8 no-manifest fallback (removed in 018
+    # — see the "016 whole-run scope restore" describe block above): with no
+    # store run at all, resume/2 built a single-feature ad-hoc scope straight
+    # from the explicit `feature`, never consulting any recorded identity.
+    # Once every resume always continues a real store run,
+    # `find_feature_record/2` requires the id to already be part of that
+    # run's recorded feature set — so `merge_resume_target/2`'s "already
+    # present" branch always fires (`Enum.any?(scope.features, &(&1.id ==
+    # feature.id))` is always true for an id that passed `find_feature_record`)
+    # and the STORE's own record, not `resolve_identity/3`'s explicit-wins
+    # result, is what actually dispatches. This matches resume_scope_test.exs's
+    # "an explicit single-feature :features opt (the console's shape) does
+    # not narrow the restored scope" — the same precedence, exercised here via
+    # `resolve_identity/3`'s alternate input path. `resolve_identity/3`'s only
+    # remaining observable effect for an already-recorded feature is validity:
+    # it still succeeds (no `{:unknown_feature, id}`) even when the explicit
+    # feature disagrees with the store, but the worktree/slug actually used is
+    # the store's.
+    test "an explicit feature for the same id resolves identity but does not override the store's own record, once the feature is already part of the run" do
       id = unique_id()
-      write_checkpoint(id, :analyze, :halted, slug: "wrong-slug", path: "wrong.md")
+      {repo, layout} = hermetic_repo()
+
+      run_key =
+        open_run(repo, layout, [%Feature{id: id, slug: "wrong-slug", path: "wrong.md"}])
+
+      write_checkpoint(run_key, id, :analyze, :halted)
       me = self()
 
       assert {:ok, pid} =
@@ -442,14 +576,22 @@ defmodule SpeckitOrchestrator.ResumeTest do
       on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
 
       assert_receive {:runner_called, feat}
-      assert feat.slug == "resume-facade"
-      assert feat.path != "wrong.md"
+      assert feat.id == id
+      assert feat.slug == "wrong-slug"
+      assert feat.path == "wrong.md"
     end
 
     test "neither explicit/backlog feature nor checkpoint identity resolves — {:error, {:unknown_feature, id}}, no run started" do
+      # 018: identity now comes from the feature's own store row
+      # (`FeatureRun.slug`/`.path`, written at `open_run/2` time) instead of
+      # an optional checkpoint field — the store-model analogue of the old
+      # "old-shape checkpoint carrying no identity" fixture is a feature row
+      # whose slug/path were never resolved (Mnesia doesn't validate field
+      # types at write time, so this is still legitimately reachable).
       id = unique_id()
-      # old-shape checkpoint: no slug/path carried
-      write_checkpoint(id, :analyze)
+      {repo, layout} = hermetic_repo()
+      run_key = open_run(repo, layout, [%Feature{id: id, slug: nil, path: nil}])
+      write_checkpoint(run_key, id, :analyze, :halted)
       me = self()
 
       assert {:error, {:unknown_feature, ^id}} =
@@ -460,20 +602,21 @@ defmodule SpeckitOrchestrator.ResumeTest do
 
     test "tolerates a missing/unloadable backlog when checkpoint identity is present" do
       id = unique_id()
-      write_checkpoint(id, :analyze, :halted, slug: "widget", path: "#{id}-widget.md")
 
       # A real repo (so 012's identity preflight resolves) with no breakdown
       # dir at all — best_effort_backlog/0 must still tolerate the unloadable
       # backlog.
       repo = base_repo()
-      prev_repo = Application.get_env(:speckit_orchestrator, :repo)
       Application.put_env(:speckit_orchestrator, :repo, repo)
 
-      on_exit(fn ->
-        if prev_repo,
-          do: Application.put_env(:speckit_orchestrator, :repo, prev_repo),
-          else: Application.delete_env(:speckit_orchestrator, :repo)
-      end)
+      on_exit(fn -> Application.delete_env(:speckit_orchestrator, :repo) end)
+
+      run_key =
+        open_run(repo, layout_for(repo), [
+          %Feature{id: id, slug: "widget", path: "#{id}-widget.md"}
+        ])
+
+      write_checkpoint(run_key, id, :analyze, :halted)
 
       me = self()
 
@@ -498,7 +641,8 @@ defmodule SpeckitOrchestrator.ResumeTest do
       point_config_at(repo, root)
 
       {:ok, wt} = Worktree.create(feature(id), repo: repo, worktree_root: root)
-      write_checkpoint(id, :analyze)
+      run_key = open_run(repo, real_layout(repo, root), [feature(id)])
+      write_checkpoint(run_key, id, :analyze, :halted)
 
       me = self()
       assert {:ok, pid} = SpeckitOrchestrator.resume(id, features: [feature(id)], owner: me)
@@ -507,11 +651,11 @@ defmodule SpeckitOrchestrator.ResumeTest do
       assert_receive {:run_complete, report}, 30_000
       assert report.halted == [id]
 
-      refute File.exists?(Path.join(wt.path, ".speckit_logs/01-specify.md"))
-      refute File.exists?(Path.join(wt.path, ".speckit_logs/02-clarify.md"))
-      refute File.exists?(Path.join(wt.path, ".speckit_logs/03-plan.md"))
-      refute File.exists?(Path.join(wt.path, ".speckit_logs/04-tasks.md"))
-      assert File.exists?(Path.join(wt.path, ".speckit_logs/05-analyze.md"))
+      refute phase_recorded?(run_key, id, :specify)
+      refute phase_recorded?(run_key, id, :clarify)
+      refute phase_recorded?(run_key, id, :plan)
+      refute phase_recorded?(run_key, id, :tasks)
+      assert phase_recorded?(run_key, id, :analyze)
     end
   end
 
@@ -525,7 +669,8 @@ defmodule SpeckitOrchestrator.ResumeTest do
       point_config_at(repo, root)
 
       {:ok, wt} = Worktree.create(feature(id), repo: repo, worktree_root: root)
-      write_checkpoint(id, :analyze)
+      run_key = open_run(repo, real_layout(repo, root), [feature(id)])
+      write_checkpoint(run_key, id, :analyze, :halted)
 
       me = self()
 
@@ -541,7 +686,7 @@ defmodule SpeckitOrchestrator.ResumeTest do
       assert_receive {:run_complete, report}, 30_000
       assert report.halted == [id]
 
-      analyze_log = File.read!(Path.join(wt.path, ".speckit_logs/05-analyze.md"))
+      analyze_log = transcript_body!(run_key, id, :analyze)
       assert analyze_log =~ "guidance-present"
     end
 
@@ -552,11 +697,8 @@ defmodule SpeckitOrchestrator.ResumeTest do
       point_config_at(repo, root)
 
       {:ok, wt} = Worktree.create(feature(id), repo: repo, worktree_root: root)
-
-      write_checkpoint(id, :analyze, :halted,
-        slug: "resume-facade",
-        path: "#{id}-resume-facade.md"
-      )
+      run_key = open_run(repo, real_layout(repo, root), [feature(id)])
+      write_checkpoint(run_key, id, :analyze, :halted)
 
       me = self()
 
@@ -568,7 +710,7 @@ defmodule SpeckitOrchestrator.ResumeTest do
       assert_receive {:run_complete, report}, 30_000
       assert report.halted == [id]
 
-      analyze_log = File.read!(Path.join(wt.path, ".speckit_logs/05-analyze.md"))
+      analyze_log = transcript_body!(run_key, id, :analyze)
       assert analyze_log =~ "guidance-present"
     end
 
@@ -579,7 +721,8 @@ defmodule SpeckitOrchestrator.ResumeTest do
       point_config_at(repo, root)
 
       {:ok, wt} = Worktree.create(feature(id), repo: repo, worktree_root: root)
-      write_checkpoint(id, :analyze)
+      run_key = open_run(repo, real_layout(repo, root), [feature(id)])
+      write_checkpoint(run_key, id, :analyze, :halted)
 
       me = self()
       assert {:ok, pid} = SpeckitOrchestrator.resume(id, features: [feature(id)], owner: me)
@@ -588,7 +731,7 @@ defmodule SpeckitOrchestrator.ResumeTest do
       assert_receive {:run_complete, report}, 30_000
       assert report.halted == [id]
 
-      analyze_log = File.read!(Path.join(wt.path, ".speckit_logs/05-analyze.md"))
+      analyze_log = transcript_body!(run_key, id, :analyze)
       assert analyze_log =~ "guidance-absent"
     end
   end
@@ -603,7 +746,8 @@ defmodule SpeckitOrchestrator.ResumeTest do
       point_config_at(repo, root)
 
       {:ok, wt} = Worktree.create(feature(id), repo: repo, worktree_root: root)
-      write_checkpoint(id, :analyze)
+      run_key = open_run(repo, real_layout(repo, root), [feature(id)])
+      write_checkpoint(run_key, id, :analyze, :halted)
 
       me = self()
 
@@ -619,11 +763,11 @@ defmodule SpeckitOrchestrator.ResumeTest do
       assert_receive {:run_complete, report}, 30_000
       assert report.halted == [id]
 
-      remediation_log = File.read!(Path.join(wt.path, ".speckit_logs/00-remediation.md"))
+      remediation_log = transcript_body!(run_key, id, :remediation)
       assert remediation_log =~ "Fix the money-type Critical the analyze gate flagged."
 
       # the target phase still ran, after remediation
-      assert File.exists?(Path.join(wt.path, ".speckit_logs/05-analyze.md"))
+      assert phase_recorded?(run_key, id, :analyze)
     end
 
     test ":remediation_model override applies only to the remediation request — the target phase's own model routing is unchanged" do
@@ -633,7 +777,8 @@ defmodule SpeckitOrchestrator.ResumeTest do
       point_config_at(repo, root)
 
       {:ok, wt} = Worktree.create(feature(id), repo: repo, worktree_root: root)
-      write_checkpoint(id, :analyze)
+      run_key = open_run(repo, real_layout(repo, root), [feature(id)])
+      write_checkpoint(run_key, id, :analyze, :halted)
 
       me = self()
 
@@ -650,11 +795,11 @@ defmodule SpeckitOrchestrator.ResumeTest do
       assert_receive {:run_complete, report}, 30_000
       assert report.halted == [id]
 
-      remediation_log = File.read!(Path.join(wt.path, ".speckit_logs/00-remediation.md"))
+      remediation_log = transcript_body!(run_key, id, :remediation)
       assert remediation_log =~ "model=sonnet"
 
       # analyze's own model routing (Config.model_for(:analyze) == "opus") is untouched
-      analyze_log = File.read!(Path.join(wt.path, ".speckit_logs/05-analyze.md"))
+      analyze_log = transcript_body!(run_key, id, :analyze)
       assert analyze_log =~ "model=opus"
     end
 
@@ -665,7 +810,8 @@ defmodule SpeckitOrchestrator.ResumeTest do
       point_config_at(repo, root)
 
       {:ok, wt} = Worktree.create(feature(id), repo: repo, worktree_root: root)
-      write_checkpoint(id, :analyze)
+      run_key = open_run(repo, real_layout(repo, root), [feature(id)])
+      write_checkpoint(run_key, id, :analyze, :halted)
 
       me = self()
       assert {:ok, pid} = SpeckitOrchestrator.resume(id, features: [feature(id)], owner: me)
@@ -674,7 +820,7 @@ defmodule SpeckitOrchestrator.ResumeTest do
       assert_receive {:run_complete, report}, 30_000
       assert report.halted == [id]
 
-      refute File.exists?(Path.join(wt.path, ".speckit_logs/00-remediation.md"))
+      refute phase_recorded?(run_key, id, :remediation)
     end
 
     test "FR-010: :prompt and :remediation_prompt are independent — both apply, neither suppresses the other" do
@@ -684,7 +830,8 @@ defmodule SpeckitOrchestrator.ResumeTest do
       point_config_at(repo, root)
 
       {:ok, wt} = Worktree.create(feature(id), repo: repo, worktree_root: root)
-      write_checkpoint(id, :analyze)
+      run_key = open_run(repo, real_layout(repo, root), [feature(id)])
+      write_checkpoint(run_key, id, :analyze, :halted)
 
       me = self()
 
@@ -701,17 +848,19 @@ defmodule SpeckitOrchestrator.ResumeTest do
       assert_receive {:run_complete, report}, 30_000
       assert report.halted == [id]
 
-      remediation_log = File.read!(Path.join(wt.path, ".speckit_logs/00-remediation.md"))
+      remediation_log = transcript_body!(run_key, id, :remediation)
       assert remediation_log =~ "Fix the money-type Critical the analyze gate flagged."
 
       # the target phase's own :prompt (feature-004 note) still carries through
-      analyze_log = File.read!(Path.join(wt.path, ".speckit_logs/05-analyze.md"))
+      analyze_log = transcript_body!(run_key, id, :analyze)
       assert analyze_log =~ "guidance-present"
     end
 
     test "an unknown :remediation_model alias returns {:error, {:unknown_model, _}}, no run started" do
       id = unique_id()
-      write_checkpoint(id, :analyze)
+      {repo, layout} = hermetic_repo()
+      run_key = open_run(repo, layout, [feature(id)])
+      write_checkpoint(run_key, id, :analyze, :halted)
       me = self()
 
       assert {:error, {:unknown_model, "not-a-model"}} =
@@ -742,7 +891,8 @@ defmodule SpeckitOrchestrator.ResumeTest do
       point_config_at(repo, root)
 
       {:ok, wt} = Worktree.create(feature(id), repo: repo, worktree_root: root)
-      write_checkpoint(id, :converge)
+      run_key = open_run(repo, real_layout(repo, root), [feature(id)])
+      write_checkpoint(run_key, id, :converge, :halted)
 
       me = self()
 
@@ -754,15 +904,20 @@ defmodule SpeckitOrchestrator.ResumeTest do
       assert_receive {:run_complete, report}, 30_000
       assert report.halted == [id]
 
-      refute File.exists?(Path.join(wt.path, ".speckit_logs/01-specify.md"))
-      refute File.exists?(Path.join(wt.path, ".speckit_logs/04-tasks.md"))
-      assert File.exists?(Path.join(wt.path, ".speckit_logs/05-analyze.md"))
-      refute File.exists?(Path.join(wt.path, ".speckit_logs/07-converge.md"))
+      refute phase_recorded?(run_key, id, :specify)
+      refute phase_recorded?(run_key, id, :tasks)
+      assert phase_recorded?(run_key, id, :analyze)
+      # :converge itself is never reached this run (the seeded checkpoint
+      # fixture's own :converge phase attempt predates this resume call —
+      # `report.halted == [id]` above is what proves the pipeline stopped at
+      # :analyze rather than skipping straight to :converge).
     end
 
     test "invalid :from is rejected with {:error, {:unknown_phase, phase}} and starts no run" do
       id = unique_id()
-      write_checkpoint(id, :analyze)
+      {repo, layout} = hermetic_repo()
+      run_key = open_run(repo, layout, [feature(id)])
+      write_checkpoint(run_key, id, :analyze, :halted)
       me = self()
 
       assert {:error, {:unknown_phase, :nope}} =
@@ -795,7 +950,8 @@ defmodule SpeckitOrchestrator.ResumeTest do
       assert :ok = Worktree.remove(wt)
       refute File.dir?(wt.path)
 
-      write_checkpoint(id, :analyze)
+      run_key = open_run(repo, real_layout(repo, root), [feature(id)])
+      write_checkpoint(run_key, id, :analyze, :halted)
 
       me = self()
       assert {:ok, pid} = SpeckitOrchestrator.resume(id, features: [feature(id)], owner: me)
@@ -805,8 +961,8 @@ defmodule SpeckitOrchestrator.ResumeTest do
       assert report.halted == [id]
 
       assert File.read!(Path.join(wt.path, "fixed.txt")) == "operator fix"
-      refute File.exists?(Path.join(wt.path, ".speckit_logs/01-specify.md"))
-      assert File.exists?(Path.join(wt.path, ".speckit_logs/05-analyze.md"))
+      refute phase_recorded?(run_key, id, :specify)
+      assert phase_recorded?(run_key, id, :analyze)
     end
 
     @tag :integration
@@ -816,7 +972,8 @@ defmodule SpeckitOrchestrator.ResumeTest do
       root = tmp_root()
       point_config_at(repo, root)
 
-      write_checkpoint(id, :analyze)
+      run_key = open_run(repo, real_layout(repo, root), [feature(id)])
+      write_checkpoint(run_key, id, :analyze, :halted)
 
       me = self()
       assert {:ok, pid} = SpeckitOrchestrator.resume(id, features: [feature(id)], owner: me)
@@ -854,12 +1011,17 @@ defmodule SpeckitOrchestrator.ResumeTest do
     test "routes a checkpoint recording pr_workflow: true through the PR-workflow path even when live Config.pr_workflow?/0 is false" do
       Application.put_env(:speckit_orchestrator, :pr_workflow, false)
       id = unique_id()
+      {repo, layout} = hermetic_repo()
 
-      write_checkpoint(id, :analyze, :halted,
-        slug: "widget",
-        path: "#{id}-widget.md",
-        run_context: %RunContext{pr_workflow: true}
-      )
+      run_key =
+        open_run(
+          repo,
+          layout,
+          [%Feature{id: id, slug: "widget", path: "#{id}-widget.md"}],
+          %RunContext{pr_workflow: true, max_concurrency: 2, budget_usd: 100.0}
+        )
+
+      write_checkpoint(run_key, id, :analyze, :halted)
 
       me = self()
 
@@ -880,18 +1042,22 @@ defmodule SpeckitOrchestrator.ResumeTest do
 
       {:ok, wt} = Worktree.create(feature(id), repo: repo, worktree_root: root)
 
-      write_checkpoint(id, :analyze, :halted,
-        slug: "resume-facade",
-        path: "#{id}-resume-facade.md",
-        run_context: %RunContext{
-          pr_workflow: false,
-          max_concurrency: 7,
-          budget_usd: 42.0,
-          plan_stack: ["research", "plan"],
-          pr_base: "develop",
-          pr_remote: "upstream"
-        }
-      )
+      run_key =
+        open_run(
+          repo,
+          real_layout(repo, root),
+          [feature(id)],
+          %RunContext{
+            pr_workflow: false,
+            max_concurrency: 7,
+            budget_usd: 42.0,
+            plan_stack: ["research", "plan"],
+            pr_base: "develop",
+            pr_remote: "upstream"
+          }
+        )
+
+      write_checkpoint(run_key, id, :analyze, :halted)
 
       me = self()
       assert {:ok, pid} = SpeckitOrchestrator.resume(id, features: [feature(id)], owner: me)
@@ -899,17 +1065,28 @@ defmodule SpeckitOrchestrator.ResumeTest do
 
       assert_receive {:run_complete, report}, 30_000
       assert report.halted == [id]
-      refute File.exists?(Path.join(wt.path, ".speckit_logs/01-specify.md"))
+      refute phase_recorded?(run_key, id, :specify)
 
-      # The resumed run diverted again — its freshly-written checkpoint proves
-      # the reapplied (non-PR) settings were the ones actually threaded through
-      # to FeatureRunner.run/2 as :run_context, not the compile-time defaults.
-      assert {:ok, record} = Checkpoint.read(id)
-      assert record["context"]["max_concurrency"] == 7
-      assert record["context"]["budget_usd"] == 42.0
-      assert record["context"]["plan_stack"] == ["research", "plan"]
-      assert record["context"]["pr_base"] == "develop"
-      assert record["context"]["pr_remote"] == "upstream"
+      # 018: the store no longer round-trips the full run context into every
+      # checkpoint write (`FeatureRunner.checkpoint_for/3` only carries
+      # phase/status/session/analyze_remediation) — context lives once, at
+      # the run level (`speckit_run_settings`), recorded at `open_run` and
+      # reapplied via `RunContext.merge/2` on every resume (unit-tested
+      # directly in run_context_test.exs). What is left to prove end-to-end
+      # here is that `resume/2` continued THIS SAME run — so these are the
+      # settings `restore_run_scope/2` actually read back and threaded into
+      # `FeatureRunner.run/2` as `:run_context` — not a fresh run seeded
+      # from live Config defaults. (The run itself has since drained — a
+      # single-feature run closes once its one feature reaches ANY terminal
+      # state, halted included — so `Store.current_run_key/1` is no longer
+      # `run_key` at this point; `Store.run/1` on the specific `run_key` we
+      # opened is the right check.)
+      assert {:ok, detail} = Store.run(run_key)
+      assert detail.settings["max_concurrency"] == 7
+      assert detail.settings["budget_usd"] == 42.0
+      assert detail.settings["plan_stack"] == ["research", "plan"]
+      assert detail.settings["pr_base"] == "develop"
+      assert detail.settings["pr_remote"] == "upstream"
     end
 
     test "an explicit pr_workflow: false resume opt wins over a checkpoint recording pr_workflow: true — resumes via the non-PR path" do
@@ -926,11 +1103,15 @@ defmodule SpeckitOrchestrator.ResumeTest do
 
       {:ok, wt} = Worktree.create(feature(id), repo: repo, worktree_root: root)
 
-      write_checkpoint(id, :analyze, :halted,
-        slug: "resume-facade",
-        path: "#{id}-resume-facade.md",
-        run_context: %RunContext{pr_workflow: true}
-      )
+      run_key =
+        open_run(
+          repo,
+          real_layout(repo, root),
+          [feature(id)],
+          %RunContext{pr_workflow: true, max_concurrency: 2, budget_usd: 100.0}
+        )
+
+      write_checkpoint(run_key, id, :analyze, :halted)
 
       me = self()
 
@@ -945,12 +1126,22 @@ defmodule SpeckitOrchestrator.ResumeTest do
 
       assert_receive {:run_complete, report}, 30_000
       assert report.halted == [id]
-      assert File.exists?(Path.join(wt.path, ".speckit_logs/05-analyze.md"))
+      assert phase_recorded?(run_key, id, :analyze)
     end
 
     test "a checkpoint with no context key falls back to live Config for all six settings, succeeds without crashing, and logs the fallen-back settings" do
       id = unique_id()
-      write_checkpoint(id, :analyze, :halted, slug: "widget", path: "#{id}-widget.md")
+      {repo, layout} = hermetic_repo()
+
+      run_key =
+        open_run(
+          repo,
+          layout,
+          [%Feature{id: id, slug: "widget", path: "#{id}-widget.md"}],
+          %RunContext{}
+        )
+
+      write_checkpoint(run_key, id, :analyze, :halted)
       me = self()
 
       log =
@@ -972,12 +1163,17 @@ defmodule SpeckitOrchestrator.ResumeTest do
 
     test "a checkpoint recording only pr_workflow: true (partial context) reapplies that value and falls back + logs for the other five" do
       id = unique_id()
+      {repo, layout} = hermetic_repo()
 
-      write_checkpoint(id, :analyze, :halted,
-        slug: "widget",
-        path: "#{id}-widget.md",
-        run_context: %RunContext{pr_workflow: true}
-      )
+      run_key =
+        open_run(
+          repo,
+          layout,
+          [%Feature{id: id, slug: "widget", path: "#{id}-widget.md"}],
+          %RunContext{pr_workflow: true}
+        )
+
+      write_checkpoint(run_key, id, :analyze, :halted)
 
       me = self()
 
@@ -1004,6 +1200,9 @@ defmodule SpeckitOrchestrator.ResumeTest do
   describe "checkpoint write with slug/path/run_context present" do
     @tag :integration
     test "an unwritable transcript_root still reaches the run's terminal result" do
+      # No store fixture here — `FeatureRunner.run/2` is called directly with
+      # no `:run_key`, so every store write inside it is a silent no-op
+      # (`record_feature_terminal(nil, ...)`); unaffected by 018.
       id = unique_id()
       repo = base_repo()
       root = tmp_root()
@@ -1069,20 +1268,8 @@ defmodule SpeckitOrchestrator.ResumeTest do
       repo
     end
 
-    defp write_chunk_checkpoint(id, chunk) do
-      :ok =
-        Checkpoint.write(%{
-          feature_id: id,
-          last_phase: :implement,
-          status: :failed,
-          reason: "test fixture",
-          session_id: "s1",
-          slug: "resume-facade",
-          path: "#{id}-resume-facade.md",
-          implement_chunk: chunk
-        })
-
-      on_exit(fn -> File.rm_rf(Path.join(Config.transcript_root(), id)) end)
+    defp write_chunk_checkpoint(run_key, id, chunk) do
+      write_checkpoint(run_key, id, :implement, :failed, %{implement_chunk: chunk})
     end
 
     defp attach_chunk_resolved(id, me) do
@@ -1116,13 +1303,14 @@ defmodule SpeckitOrchestrator.ResumeTest do
       Application.put_env(:speckit_orchestrator, :chunk_fake_illegal_phases, ["1", "2"])
 
       {:ok, _wt} = Worktree.create(feature(id), repo: repo, worktree_root: root)
+      run_key = open_run(repo, real_layout(repo, root), [feature(id)])
 
       # sessions_used near the 5-task-phase ceiling (2*5+4 = 14): if `resume/2`
       # did not reset it to 0, dispatching task-phases 3-5 (3 more sessions)
       # would hit the ceiling after task-phase 3 and fail before ever reaching
       # 4 — landing on :done instead proves both that the reset happened and
       # that 1-2 were never redispatched (ChunkFakeSDK fails loudly on either).
-      write_chunk_checkpoint(id, %{
+      write_chunk_checkpoint(run_key, id, %{
         ordinal: 3,
         number: "3",
         title: "Widgets",
@@ -1156,13 +1344,14 @@ defmodule SpeckitOrchestrator.ResumeTest do
       point_config_at(repo, root)
 
       {:ok, _wt} = Worktree.create(feature(id), repo: repo, worktree_root: root)
+      run_key = open_run(repo, real_layout(repo, root), [feature(id)])
 
       # The checkpoint records task-phase 4, but the operator overrides back
       # to task-phase 2. If the override were ignored, task-phases 2-3 would
       # never be dispatched (only the sweep would see them, and the sweep's
       # prompt shape doesn't match ChunkFakeSDK's per-task-phase check-off) —
       # the run would fail on unchecked tasks instead of completing.
-      write_chunk_checkpoint(id, %{
+      write_chunk_checkpoint(run_key, id, %{
         ordinal: 4,
         number: "4",
         title: "Gadgets",
@@ -1207,8 +1396,9 @@ defmodule SpeckitOrchestrator.ResumeTest do
       point_config_at(repo, root)
 
       {:ok, _wt} = Worktree.create(feature(id), repo: repo, worktree_root: root)
+      run_key = open_run(repo, real_layout(repo, root), [feature(id)])
 
-      write_chunk_checkpoint(id, %{
+      write_chunk_checkpoint(run_key, id, %{
         ordinal: 3,
         number: "3",
         title: "Widgets",
@@ -1252,8 +1442,9 @@ defmodule SpeckitOrchestrator.ResumeTest do
       point_config_at(repo, root)
 
       {:ok, _wt} = Worktree.create(feature(id), repo: repo, worktree_root: root)
+      run_key = open_run(repo, real_layout(repo, root), [feature(id)])
 
-      write_chunk_checkpoint(id, %{
+      write_chunk_checkpoint(run_key, id, %{
         ordinal: 3,
         number: "3",
         title: "Widgets",
@@ -1284,26 +1475,15 @@ defmodule SpeckitOrchestrator.ResumeTest do
       point_config_at(repo, root)
 
       {:ok, wt} = Worktree.create(feature(id), repo: repo, worktree_root: root)
+      run_key = open_run(repo, real_layout(repo, root), [feature(id)])
 
       # The prior run spent its whole budget and escalated on a persisting
       # finding. Nothing may read this back as spend (FR-015) — it exists so an
       # operator can see what was already tried (SC-005).
-      :ok =
-        Checkpoint.write(%{
-          feature_id: id,
-          last_phase: :analyze,
-          status: :halted,
-          reason: {:critical_finding, :auto_remediation_exhausted},
-          session_id: "s1",
-          analyze_remediation: %{
-            attempts_used: 2,
-            limit: 2,
-            threshold: "high",
-            enabled: true
-          }
-        })
-
-      on_exit(fn -> File.rm_rf(Path.join(Config.transcript_root(), id)) end)
+      write_checkpoint(run_key, id, :analyze, :halted, %{
+        reason: {:critical_finding, :auto_remediation_exhausted},
+        analyze_remediation: %{attempts_used: 2, limit: 2, threshold: "high", enabled: true}
+      })
 
       me = self()
       assert {:ok, pid} = SpeckitOrchestrator.resume(id, features: [feature(id)], owner: me)
@@ -1313,14 +1493,12 @@ defmodule SpeckitOrchestrator.ResumeTest do
       assert report.halted == [id]
 
       # A full, fresh budget of two attempts ran — not zero, and not one.
-      assert File.exists?(Path.join(wt.path, ".speckit_logs/05-remediation-a1.md"))
-      assert File.exists?(Path.join(wt.path, ".speckit_logs/05-remediation-a2.md"))
-      refute File.exists?(Path.join(wt.path, ".speckit_logs/05-remediation-a3.md"))
+      assert Enum.map(remediation_attempts(run_key, id), & &1.ordinal) == [1, 2]
 
       # …and the new run's own provenance replaces the old, still at the limit.
-      assert {:ok, record} = Checkpoint.read(id)
-      assert record["analyze_remediation"]["attempts_used"] == 2
-      assert record["analyze_remediation"]["limit"] == 2
+      assert {:ok, checkpoint} = Store.checkpoint(run_key, id)
+      assert checkpoint.analyze_remediation.attempts_used == 2
+      assert checkpoint.analyze_remediation.limit == 2
     end
   end
 end

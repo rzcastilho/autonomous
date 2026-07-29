@@ -159,10 +159,18 @@ defmodule SpeckitOrchestrator.Web.FeatureDrawerComponent do
   defp done?(nil), do: false
   defp done?(feature), do: feature[:status] == :done
 
+  # Run-scoped attempt reference (018, contracts/console-runs.md Navigation):
+  # `TranscriptsLive` resolves the latest attempt for this feature/phase
+  # within the current run rather than reading a `?feature=<scope>/<id>` file
+  # path directly.
   defp transcript_href(feature_id, feature) do
-    case feature && feature[:current_phase] do
-      nil -> "/transcripts?feature=#{feature_id}"
-      phase -> "/transcripts?feature=#{feature_id}&phase=#{phase}"
+    run_id = SpeckitOrchestrator.current_run_id()
+
+    case {run_id, feature && feature[:current_phase]} do
+      {nil, nil} -> "/transcripts?feature=#{feature_id}"
+      {nil, phase} -> "/transcripts?feature=#{feature_id}&phase=#{phase}"
+      {run_id, nil} -> "/transcripts?run_id=#{run_id}&feature=#{feature_id}"
+      {run_id, phase} -> "/transcripts?run_id=#{run_id}&feature=#{feature_id}&phase=#{phase}"
     end
   end
 end

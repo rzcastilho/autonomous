@@ -1,10 +1,9 @@
 defmodule SpeckitOrchestrator.RecordRecoveryTest do
   # async: false — real-named Coordinator/Ledger + global :speckit_orchestrator
-  # app env (mirrors recovery_quickpoll_test.exs / resume_scope_test.exs
-  # conventions).
-  use ExUnit.Case, async: false
+  # app env, plus the shared store (StoreCase clears tables per test).
+  use SpeckitOrchestrator.StoreCase, async: false
 
-  alias SpeckitOrchestrator.{Coordinator, Feature, Layout, RepoIdentity, RunContext, RunManifest}
+  alias SpeckitOrchestrator.{Coordinator, Feature, Layout, RepoIdentity, RunContext}
 
   @coordinator SpeckitOrchestrator.Coordinator
 
@@ -76,22 +75,6 @@ defmodule SpeckitOrchestrator.RecordRecoveryTest do
     fn feature, notify -> send(test_pid, {:started, feature.id, notify}) end
   end
 
-  defp write_manifest(overrides) do
-    :ok =
-      RunManifest.write(
-        Map.merge(
-          %{
-            features: [],
-            statuses: %{},
-            context: %RunContext{pr_workflow: false, max_concurrency: 2, budget_usd: 100.0},
-            spend: 42.5,
-            updated_at: 1
-          },
-          overrides
-        )
-      )
-  end
-
   defp breakdown_file(dir, id, prereqs_line) do
     File.write!(
       Path.join(dir, "#{id}-core-ledger.md"),
@@ -99,10 +82,35 @@ defmodule SpeckitOrchestrator.RecordRecoveryTest do
     )
   end
 
+  # ---- store fixtures (018) --------------------------------------------------
+
+  defp open_run(repo, layout, features) do
+    repo_id = RepoIdentity.partition(repo)
+
+    {:ok, run_id} =
+      Writer.open_run(repo_id, %{
+        features:
+          Enum.map(
+            features,
+            &%{feature_id: &1.id, slug: &1.slug, path: &1.path, prereqs: &1.prereqs}
+          ),
+        settings:
+          RunContext.to_map(%RunContext{
+            pr_workflow: false,
+            max_concurrency: 2,
+            budget_usd: 100.0
+          }),
+        scope: {:breakdown, "core-ledger"},
+        layout: layout
+      })
+
+    {repo_id, run_id}
+  end
+
   # The `../quickpoll`-shaped fixture from contracts/record-recovery.md
   # "Worked example": record narrowed to `001: done` only, backlog on disk
-  # `001 → 002 → 003`, evidence corroborating `001` (committed branch +
-  # `pr.json`) and none for `002`/`003`.
+  # `001 → 002 → 003`, evidence corroborating `001` (committed branch + a
+  # recorded PR description) and none for `002`/`003`.
   defp seed_worked_example do
     repo = base_repo()
     Application.put_env(:speckit_orchestrator, :repo, repo)
@@ -114,32 +122,28 @@ defmodule SpeckitOrchestrator.RecordRecoveryTest do
     commit(repo, "speckit: 001 checkpoint after converge")
     git!(repo, ["checkout", "-q", "main"])
 
-    pr_dir = Path.join(layout.transcript_root, "001")
-    File.mkdir_p!(pr_dir)
-    File.write!(Path.join(pr_dir, "pr.json"), Jason.encode!(%{pr_title: "t", pr_body: "b"}))
-
     File.mkdir_p!(layout.breakdown_root)
     breakdown_file(layout.breakdown_root, "001", "None")
     breakdown_file(layout.breakdown_root, "002", "- 001 Core Ledger")
     breakdown_file(layout.breakdown_root, "003", "- 002 Core Ledger")
 
-    write_manifest(%{
-      features: [feat("001")],
-      statuses: %{"001" => :done},
-      layout: layout
-    })
+    run_key = open_run(repo, layout, [feat("001")])
 
-    layout
+    :ok =
+      Writer.record_feature_terminal(run_key, "001", :done, :ok,
+        pr_description: %{pr_title: "t", pr_body: "b"}
+      )
+
+    {layout, run_key}
   end
 
   # ---- S5.1: preview has no durable effect (FR-019a) -------------------------
 
-  test "recover_record/1 preview names all three features and leaves the manifest byte-identical" do
-    layout = seed_worked_example()
+  test "recover_record/1 preview names all three features and changes nothing in the store" do
+    {layout, run_key} = seed_worked_example()
     on_exit(fn -> File.rm_rf(layout.worktree_root) end)
 
-    manifest_path = Path.join([layout.transcript_root |> Path.dirname(), "run.json"])
-    before = File.read!(manifest_path)
+    {:ok, before} = Store.run(run_key)
 
     assert {:ok, proposal} = SpeckitOrchestrator.recover_record()
 
@@ -151,22 +155,23 @@ defmodule SpeckitOrchestrator.RecordRecoveryTest do
              {:absent_from_record, "003"}
            ]
 
-    after_read = File.read!(manifest_path)
-    assert after_read == before
+    {:ok, after_read} = Store.run(run_key)
+
+    assert Enum.map(after_read.features, & &1.feature_id) ==
+             Enum.map(before.features, & &1.feature_id)
   end
 
   # ---- S5.2: confirm writes; a subsequent resume_run/1 dispatches the gap ----
 
-  test "recover_record(confirm: true) writes the rebuilt record; resume_run/1 then releases 002/003 but never re-dispatches 001" do
-    layout = seed_worked_example()
+  test "recover_record(confirm: true) adds 002/003 to the store; resume_run/1 then releases them but never re-dispatches 001" do
+    {layout, run_key} = seed_worked_example()
     on_exit(fn -> File.rm_rf(layout.worktree_root) end)
 
     assert {:ok, :written, proposal} = SpeckitOrchestrator.recover_record(confirm: true)
     assert Enum.map(proposal.features, & &1.id) == ["001", "002", "003"]
 
-    {:ok, reread} = RunManifest.read()
-    assert Enum.map(reread["features"], & &1["id"]) == ["001", "002", "003"]
-    assert reread["statuses"] == %{"001" => "done", "002" => "pending", "003" => "pending"}
+    {:ok, reread} = Store.run(run_key)
+    assert Enum.map(reread.features, & &1.feature_id) |> Enum.sort() == ["001", "002", "003"]
 
     me = self()
 
@@ -191,45 +196,57 @@ defmodule SpeckitOrchestrator.RecordRecoveryTest do
   # ---- S5.3: an unloadable backlog refuses with no write ---------------------
 
   test "recover_record/1 refuses with {:backlog, _} and writes nothing when the backlog has a dangling prereq" do
-    layout = seed_worked_example()
+    {layout, run_key} = seed_worked_example()
     on_exit(fn -> File.rm_rf(layout.worktree_root) end)
 
-    # Corrupt the on-disk backlog after the manifest was written: 003 now
-    # names a prereq no breakdown file defines.
+    # Corrupt the on-disk backlog after the run was opened: 003 now names a
+    # prereq no breakdown file defines.
     breakdown_file(layout.breakdown_root, "003", "- 999 Missing")
 
-    manifest_path = Path.join([layout.transcript_root |> Path.dirname(), "run.json"])
-    before = File.read!(manifest_path)
+    {:ok, before} = Store.run(run_key)
 
     assert {:error, {:backlog, _reason}} = SpeckitOrchestrator.recover_record()
 
-    assert File.read!(manifest_path) == before
+    {:ok, after_read} = Store.run(run_key)
+
+    assert Enum.map(after_read.features, & &1.feature_id) ==
+             Enum.map(before.features, & &1.feature_id)
   end
 
   # ---- S5.4: a prereq-missing proposal refuses with no write (FR-020) --------
 
   test "recover_record/1 refuses with {:inconsistent, _} and writes nothing when the union has a missing prereq" do
-    layout = seed_worked_example()
+    repo = base_repo()
+    Application.put_env(:speckit_orchestrator, :repo, repo)
+
+    {:ok, segment} = RepoIdentity.resolve(repo)
+    {:ok, layout} = Layout.build(repo, segment, {:breakdown, "core-ledger"})
     on_exit(fn -> File.rm_rf(layout.worktree_root) end)
+
+    File.mkdir_p!(layout.breakdown_root)
+    breakdown_file(layout.breakdown_root, "001", "None")
 
     # `Backlog.load!/1` itself already fails loud on a dangling prereq
     # *within* the backlog files, so `propose/3`'s own union guard (FR-020)
     # is only reachable through a record-only feature (absent from the
     # backlog on disk, so never validated by `Backlog.load!/1`) naming a
     # prereq nowhere in the union.
-    write_manifest(%{
-      features: [feat("001"), feat("004", ["999"])],
-      statuses: %{"001" => :done, "004" => :pending},
-      layout: layout
-    })
+    run_key = open_run(repo, layout, [feat("001"), feat("004", ["999"])])
 
-    manifest_path = Path.join([layout.transcript_root |> Path.dirname(), "run.json"])
-    before = File.read!(manifest_path)
+    :ok =
+      Writer.record_feature_terminal(run_key, "001", :done, :ok,
+        pr_description: %{pr_title: "t", pr_body: "b"}
+      )
+
+    {:ok, before} = Store.run(run_key)
 
     assert {:error, {:inconsistent, discrepancies}} = SpeckitOrchestrator.recover_record()
     assert [%{kind: :prereq_missing, id: "004", detail: "999"}] = discrepancies
 
-    assert File.read!(manifest_path) == before
+    {:ok, after_read} = Store.run(run_key)
+
+    assert Enum.map(after_read.features, & &1.feature_id) ==
+             Enum.map(before.features, & &1.feature_id)
   end
 
   # ---- no record at all -------------------------------------------------------

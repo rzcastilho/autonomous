@@ -1,8 +1,12 @@
 defmodule SpeckitOrchestrator.Recovery.EvidenceTest do
-  # async: false — mutates the global :transcript_root/:repo app env.
-  use ExUnit.Case, async: false
+  # async: false — mutates the global :repo app env, plus the shared store
+  # (StoreCase clears tables per test) for the final-marker transcript
+  # signal.
+  use SpeckitOrchestrator.StoreCase, async: false
 
   alias SpeckitOrchestrator.{Feature, Recovery.Evidence, Recovery.Reconcile}
+
+  @repo_id "o:evidence-test"
 
   defp git!(repo, args),
     do: {_, 0} = System.cmd("git", ["-C", repo | args], stderr_to_stdout: true)
@@ -30,45 +34,105 @@ defmodule SpeckitOrchestrator.Recovery.EvidenceTest do
 
   defp fake_git(result), do: fn _feature -> result end
 
-  defp write_durable(root, id, filename, content) do
-    dir = Path.join(root, id)
-    File.mkdir_p!(dir)
-    File.write!(Path.join(dir, filename), content)
-  end
-
-  defp pr_json, do: Jason.encode!(%{pr_title: "t", pr_body: "b"})
-  defp checkpoint_json, do: Jason.encode!(%{"last_phase" => "plan", "status" => "in_progress"})
   defp converge_ready, do: "Tests green, committed.\n\n## CONVERGE: READY\n"
 
   setup do
-    root = Path.join(System.tmp_dir!(), "ev_#{System.unique_integer([:positive])}")
-    prev_transcript = Application.get_env(:speckit_orchestrator, :transcript_root)
     prev_repo = Application.get_env(:speckit_orchestrator, :repo)
-    Application.put_env(:speckit_orchestrator, :transcript_root, root)
 
     on_exit(fn ->
-      File.rm_rf(root)
-
-      if prev_transcript,
-        do: Application.put_env(:speckit_orchestrator, :transcript_root, prev_transcript),
-        else: Application.delete_env(:speckit_orchestrator, :transcript_root)
-
       if prev_repo,
         do: Application.put_env(:speckit_orchestrator, :repo, prev_repo),
         else: Application.delete_env(:speckit_orchestrator, :repo)
     end)
 
-    %{root: root}
+    :ok
+  end
+
+  # ---- store fixtures (018) --------------------------------------------------
+
+  defp open_run(feature_id \\ "001") do
+    {:ok, run_id} =
+      Writer.open_run(@repo_id, %{
+        features: [
+          %{feature_id: feature_id, slug: "core-ledger", path: "#{feature_id}.md", prereqs: []}
+        ],
+        settings: %{},
+        scope: :ad_hoc,
+        layout: %{}
+      })
+
+    {@repo_id, run_id}
+  end
+
+  defp checkpoint_record(phase \\ :plan) do
+    %{
+      phase: phase,
+      last_completed_phase: phase,
+      status: :in_progress,
+      reason: nil,
+      session_id: nil,
+      implement_chunk: nil,
+      analyze_remediation: nil,
+      updated_at: DateTime.utc_now()
+    }
+  end
+
+  defp pr_description, do: %{pr_title: "t", pr_body: "b"}
+
+  defp minimal_attempt(feature_id, phase) do
+    now = DateTime.utc_now()
+
+    %{
+      feature_id: feature_id,
+      phase: phase,
+      ordinal: 1,
+      step: 1,
+      label: Atom.to_string(phase),
+      started_at: now,
+      ended_at: now,
+      duration_ms: 0,
+      outcome: :ok,
+      model: "sonnet",
+      cost_usd: 0.0,
+      cost_kind: :estimate,
+      session_id: nil,
+      error: nil
+    }
+  end
+
+  # Writes a real `:converge` phase attempt + transcript through the store
+  # and returns the `phase_attempts` entry `Evidence.collect/3`'s
+  # `final_marker?/1` reads (`Store.transcript/1` is a real store call, not
+  # mockable — the fixture must be real).
+  defp converge_phase_attempt(run_key, feature_id, body) do
+    :ok =
+      Writer.record_phase_attempt(run_key, %{
+        attempt: minimal_attempt(feature_id, :converge),
+        transcript: body
+      })
+
+    {repo_id, run_id} = run_key
+
+    %{
+      phase: :converge,
+      ordinal: 1,
+      attempt_id: Ids.attempt_id(repo_id, run_id, feature_id, :converge, 1)
+    }
   end
 
   describe "collect/3 — all sources present" do
-    test "populates every field from its durable source", %{root: root} do
-      write_durable(root, "001", "pr.json", pr_json())
-      write_durable(root, "001", "checkpoint.json", checkpoint_json())
-      write_durable(root, "001", "07-converge.md", converge_ready())
+    test "populates every field from its durable source" do
+      run_key = open_run()
+      attempt = converge_phase_attempt(run_key, "001", converge_ready())
+
+      feature_record = %{
+        checkpoint: checkpoint_record(),
+        pr_description: pr_description(),
+        phase_attempts: [attempt]
+      }
 
       evidence =
-        Evidence.collect(feature(), nil,
+        Evidence.collect(feature(), feature_record,
           git: fake_git(%{branch_committed?: true, last_boundary_phase: :converge})
         )
 
@@ -81,35 +145,33 @@ defmodule SpeckitOrchestrator.Recovery.EvidenceTest do
                final_marker?: true
              } = evidence
 
-      assert evidence.checkpoint["last_phase"] == "plan"
+      assert evidence.checkpoint.phase == :plan
     end
   end
 
   describe "collect/3 — each source absent individually" do
-    test "absent pr.json degrades pr_record? to false, others unaffected, never raises", %{
-      root: root
-    } do
-      write_durable(root, "001", "checkpoint.json", checkpoint_json())
-      write_durable(root, "001", "07-converge.md", converge_ready())
+    test "absent pr_description degrades pr_record? to false, others unaffected, never raises" do
+      run_key = open_run()
+      attempt = converge_phase_attempt(run_key, "001", converge_ready())
+      feature_record = %{checkpoint: checkpoint_record(), phase_attempts: [attempt]}
 
       evidence =
-        Evidence.collect(feature(), nil,
+        Evidence.collect(feature(), feature_record,
           git: fake_git(%{branch_committed?: true, last_boundary_phase: :converge})
         )
 
       assert evidence.pr_record? == false
-      assert evidence.checkpoint["last_phase"] == "plan"
+      assert evidence.checkpoint.phase == :plan
       assert evidence.final_marker? == true
     end
 
-    test "absent checkpoint.json degrades checkpoint to nil, others unaffected, never raises", %{
-      root: root
-    } do
-      write_durable(root, "001", "pr.json", pr_json())
-      write_durable(root, "001", "07-converge.md", converge_ready())
+    test "absent checkpoint degrades checkpoint to nil, others unaffected, never raises" do
+      run_key = open_run()
+      attempt = converge_phase_attempt(run_key, "001", converge_ready())
+      feature_record = %{pr_description: pr_description(), phase_attempts: [attempt]}
 
       evidence =
-        Evidence.collect(feature(), nil,
+        Evidence.collect(feature(), feature_record,
           git: fake_git(%{branch_committed?: true, last_boundary_phase: :converge})
         )
 
@@ -118,22 +180,24 @@ defmodule SpeckitOrchestrator.Recovery.EvidenceTest do
       assert evidence.final_marker? == true
     end
 
-    test "absent 07-converge.md degrades final_marker? to false, others unaffected, never raises",
-         %{root: root} do
-      write_durable(root, "001", "pr.json", pr_json())
-      write_durable(root, "001", "checkpoint.json", checkpoint_json())
+    test "absent converge phase attempt degrades final_marker? to false, others unaffected, never raises" do
+      feature_record = %{
+        checkpoint: checkpoint_record(),
+        pr_description: pr_description(),
+        phase_attempts: []
+      }
 
       evidence =
-        Evidence.collect(feature(), nil,
+        Evidence.collect(feature(), feature_record,
           git: fake_git(%{branch_committed?: true, last_boundary_phase: :converge})
         )
 
       assert evidence.final_marker? == false
       assert evidence.pr_record? == true
-      assert evidence.checkpoint["last_phase"] == "plan"
+      assert evidence.checkpoint.phase == :plan
     end
 
-    test "no durable sources at all degrades every field to unknown, never raises", %{root: _root} do
+    test "no durable sources at all (nil feature_record) degrades every field to unknown, never raises" do
       evidence =
         Evidence.collect(feature(), nil,
           git: fake_git(%{branch_committed?: false, last_boundary_phase: nil})
@@ -148,35 +212,46 @@ defmodule SpeckitOrchestrator.Recovery.EvidenceTest do
     end
   end
 
-  describe "collect/3 — corrupt pr.json" do
-    test "truncated pr.json degrades pr_record? to false and falls back to git/transcript evidence",
-         %{root: root} do
-      write_durable(root, "001", "pr.json", "{\"pr_title\": \"t\", \"pr_bo")
-      write_durable(root, "001", "07-converge.md", converge_ready())
+  describe "collect/3 — damaged transcript" do
+    # 018: a corrupt on-disk file has no store equivalent (Mnesia terms don't
+    # parse-fail the way JSON does) — the analogous degradation is a
+    # `phase_attempts` entry whose transcript the store can't retrieve
+    # (absent/damaged), which `final_marker?/1` must treat as `false` rather
+    # than raise, same fail-safe shape as the pre-018 corrupt-file case.
+    test "a converge attempt with no matching transcript row degrades final_marker? to false and falls back to git evidence" do
+      feature_record = %{
+        pr_description: nil,
+        phase_attempts: [
+          %{
+            phase: :converge,
+            ordinal: 1,
+            attempt_id: {"o:missing", "r000001", "001", :converge, 1}
+          }
+        ]
+      }
 
       evidence =
-        Evidence.collect(feature(), nil,
+        Evidence.collect(feature(), feature_record,
           git: fake_git(%{branch_committed?: true, last_boundary_phase: :converge})
         )
 
       assert evidence.pr_record? == false
-      assert evidence.final_marker? == true
+      assert evidence.final_marker? == false
       assert evidence.branch_committed? == true
     end
 
-    # T025 (quickstart.md Scenario 5, SC-006): the collector's fallback must
-    # keep the downstream decision table honest — a corrupt pr.json on an
+    # T025 (quickstart.md Scenario 5, SC-006): a missing/damaged signal on an
     # otherwise-finished feature never crashes `Reconcile.status/3`, and
     # reaches a correct :done (non-PR done-signal still present) or a
     # {:conflict, _} (no other corroboration for the run's shape) — never a
     # silent wrong answer.
-    test "truncated pr.json still lets Reconcile.status/3 reach :done (ad_hoc) or a conflict (breakdown), never raises",
-         %{root: root} do
-      write_durable(root, "001", "pr.json", "{\"pr_title\": \"t\", \"pr_bo")
-      write_durable(root, "001", "07-converge.md", converge_ready())
+    test "a missing pr_description still lets Reconcile.status/3 reach :done (ad_hoc) or a conflict (breakdown), never raises" do
+      run_key = open_run()
+      attempt = converge_phase_attempt(run_key, "001", converge_ready())
+      feature_record = %{pr_description: nil, phase_attempts: [attempt]}
 
       evidence =
-        Evidence.collect(feature(), nil,
+        Evidence.collect(feature(), feature_record,
           git: fake_git(%{branch_committed?: true, last_boundary_phase: :converge})
         )
 
@@ -188,12 +263,12 @@ defmodule SpeckitOrchestrator.Recovery.EvidenceTest do
   end
 
   describe "collect/3 — :remote seam" do
-    test "untouched when pr_record? is true", %{root: root} do
-      write_durable(root, "001", "pr.json", pr_json())
+    test "untouched when pr_record? is true" do
       test_pid = self()
+      feature_record = %{pr_description: pr_description()}
 
       evidence =
-        Evidence.collect(feature(), nil,
+        Evidence.collect(feature(), feature_record,
           git: fake_git(%{branch_committed?: true, last_boundary_phase: nil}),
           remote: fn id ->
             send(test_pid, {:remote_called, id})
@@ -206,7 +281,7 @@ defmodule SpeckitOrchestrator.Recovery.EvidenceTest do
       refute_received {:remote_called, _}
     end
 
-    test "invoked when pr_record? is false, returns its result", %{root: _root} do
+    test "invoked when pr_record? is false, returns its result" do
       evidence =
         Evidence.collect(feature(), nil,
           git: fake_git(%{branch_committed?: false, last_boundary_phase: nil}),
@@ -216,8 +291,7 @@ defmodule SpeckitOrchestrator.Recovery.EvidenceTest do
       assert evidence.pr_remote? == false
     end
 
-    test "invoked when pr_record? is false, a raise maps to :unknown (offline-first, never fails collection)",
-         %{root: _root} do
+    test "invoked when pr_record? is false, a raise maps to :unknown (offline-first, never fails collection)" do
       evidence =
         Evidence.collect(feature(), nil,
           git: fake_git(%{branch_committed?: false, last_boundary_phase: nil}),
@@ -227,9 +301,7 @@ defmodule SpeckitOrchestrator.Recovery.EvidenceTest do
       assert evidence.pr_remote? == :unknown
     end
 
-    test "invoked when pr_record? is false, an unrecognized return value maps to :unknown", %{
-      root: _root
-    } do
+    test "invoked when pr_record? is false, an unrecognized return value maps to :unknown" do
       evidence =
         Evidence.collect(feature(), nil,
           git: fake_git(%{branch_committed?: false, last_boundary_phase: nil}),
@@ -239,9 +311,7 @@ defmodule SpeckitOrchestrator.Recovery.EvidenceTest do
       assert evidence.pr_remote? == :unknown
     end
 
-    test "invoked when pr_record? is false, a throw maps to :unknown (never fails collection)", %{
-      root: _root
-    } do
+    test "invoked when pr_record? is false, a throw maps to :unknown (never fails collection)" do
       evidence =
         Evidence.collect(feature(), nil,
           git: fake_git(%{branch_committed?: false, last_boundary_phase: nil}),
@@ -252,8 +322,8 @@ defmodule SpeckitOrchestrator.Recovery.EvidenceTest do
     end
   end
 
-  describe "collect/2 — default opts" do
-    test "the default-arg 2-arity call uses the default :git/:remote seams without raising" do
+  describe "collect/3 — default opts" do
+    test "the default-arg call uses the default :git/:remote seams without raising" do
       repo = base_repo()
       Application.put_env(:speckit_orchestrator, :repo, repo)
 

@@ -1,19 +1,9 @@
 defmodule SpeckitOrchestrator.ResumeRunTest do
   # async: false — real-named Coordinator/Ledger + global :transcript_root app
-  # env (mirrors coordinator_test.exs / resume_test.exs conventions).
-  use ExUnit.Case, async: false
+  # env, plus the shared store (StoreCase clears tables per test).
+  use SpeckitOrchestrator.StoreCase, async: false
 
-  alias SpeckitOrchestrator.{
-    Checkpoint,
-    Config,
-    Coordinator,
-    Feature,
-    Layout,
-    Ledger,
-    RepoIdentity,
-    RunContext,
-    RunManifest
-  }
+  alias SpeckitOrchestrator.{Coordinator, Feature, Layout, Ledger, RepoIdentity, RunContext}
 
   @coordinator SpeckitOrchestrator.Coordinator
 
@@ -22,9 +12,6 @@ defmodule SpeckitOrchestrator.ResumeRunTest do
     prev = Application.get_env(:speckit_orchestrator, :transcript_root)
     Application.put_env(:speckit_orchestrator, :transcript_root, root)
 
-    # RunManifest now lives under Config.autonomous_root/0 (012, resolves I2),
-    # not :transcript_root — isolate it too so this file's manifest state
-    # never leaks across tests (globally shared :autonomous_root otherwise).
     prev_autonomous = Application.get_env(:speckit_orchestrator, :autonomous_root)
     Application.put_env(:speckit_orchestrator, :autonomous_root, root)
 
@@ -57,36 +44,6 @@ defmodule SpeckitOrchestrator.ResumeRunTest do
     fn feature, notify -> send(test_pid, {:started, feature.id, notify}) end
   end
 
-  defp write_manifest(overrides) do
-    :ok =
-      RunManifest.write(
-        Map.merge(
-          %{
-            features: [],
-            statuses: %{},
-            context: %RunContext{pr_workflow: false, max_concurrency: 2, budget_usd: 100.0},
-            spend: 1.0,
-            updated_at: 1
-          },
-          overrides
-        )
-      )
-  end
-
-  # ---- 014-recovery-reconciliation: durable evidence for a recorded `:done`
-  # feature -------------------------------------------------------------------
-  #
-  # resume_run/1 now reconciles against repository ground truth
-  # (`Recovery.reconcile_run/2`) before dispatching, so a feature recorded
-  # `:done` in these fixtures needs a real committed branch + converge marker
-  # to corroborate — a bare `:done` status with zero durable evidence
-  # reconciles to `{:conflict, :done_without_artifacts}` (US3), same as a real
-  # crash-recovery run would. `resume_run/1`'s own preflight also requires a
-  # real `origin` remote, so the fixture resolves a real repo-identity segment
-  # and `%Layout{}` (mirrors `recovery_test.exs`'s `base_repo`/seed helpers) —
-  # the converge marker is written under that layout's `transcript_root` and
-  # the same `%Layout{}` is threaded into `write_manifest/1` so the persisted
-  # manifest's segment/scope matches exactly what was written to disk.
   defp git!(repo, args),
     do: {_, 0} = System.cmd("git", ["-C", repo | args], stderr_to_stdout: true)
 
@@ -101,9 +58,50 @@ defmodule SpeckitOrchestrator.ResumeRunTest do
     end)
   end
 
-  # Builds a real git repo + `%Layout{}`, commits a boundary + converge
-  # marker for `id` proving it finished, and points `Config.repo/0` at it.
-  # Returns the `%Layout{}` for `write_manifest/1`'s `:layout` override.
+  # ---- store fixtures (018) --------------------------------------------------
+
+  defp open_run(repo, layout, features, context) do
+    repo_id = RepoIdentity.partition(repo)
+
+    {:ok, run_id} =
+      Writer.open_run(repo_id, %{
+        features:
+          Enum.map(
+            features,
+            &%{feature_id: &1.id, slug: &1.slug, path: &1.path, prereqs: &1.prereqs}
+          ),
+        settings: RunContext.to_map(context),
+        scope: :ad_hoc,
+        layout: layout
+      })
+
+    {repo_id, run_id}
+  end
+
+  defp minimal_attempt(feature_id, phase) do
+    now = DateTime.utc_now()
+
+    %{
+      feature_id: feature_id,
+      phase: phase,
+      ordinal: 1,
+      step: 1,
+      label: Atom.to_string(phase),
+      started_at: now,
+      ended_at: now,
+      duration_ms: 0,
+      outcome: :ok,
+      model: "sonnet",
+      cost_usd: 0.0,
+      cost_kind: :estimate,
+      session_id: nil,
+      error: nil
+    }
+  end
+
+  # Builds a real git repo (no `%Layout{}` durable evidence needed anymore —
+  # the store carries it), commits a boundary proving `id` finished, and
+  # points `Config.repo/0` at it. Returns the `%Layout{}` for `open_run/4`.
   defp done_layout(id) do
     repo = Path.join(System.tmp_dir!(), "rr_repo_#{System.unique_integer([:positive])}")
     File.mkdir_p!(repo)
@@ -125,12 +123,19 @@ defmodule SpeckitOrchestrator.ResumeRunTest do
 
     {:ok, segment} = RepoIdentity.resolve(repo)
     {:ok, layout} = Layout.build(repo, segment, :ad_hoc)
-
-    dir = Path.join(layout.transcript_root, id)
-    File.mkdir_p!(dir)
-    File.write!(Path.join(dir, "07-converge.md"), "Tests green.\n\n## CONVERGE: READY\n")
-
     layout
+  end
+
+  # A non-PR (:ad_hoc) done-signal for an already-open run — a converge
+  # phase attempt whose transcript carries the ready marker, still recorded
+  # `:pending` (`store_recorded_status/1` derives `:running` from the
+  # attempt's presence alone).
+  defp seed_converge_marker(run_key, feature_id) do
+    :ok =
+      Writer.record_phase_attempt(run_key, %{
+        attempt: minimal_attempt(feature_id, :converge),
+        transcript: "Tests green.\n\n## CONVERGE: READY\n"
+      })
   end
 
   # ---- mixed-state resume (T022) --------------------------------------------
@@ -139,12 +144,13 @@ defmodule SpeckitOrchestrator.ResumeRunTest do
     layout = done_layout("001")
     on_exit(fn -> File.rm_rf(layout.worktree_root) end)
 
-    write_manifest(%{
-      features: [feat("001"), feat("002", ["001"]), feat("003", ["002"]), feat("004", ["001"])],
-      statuses: %{"001" => :done, "002" => :running, "003" => :pending, "004" => :pending},
-      context: %RunContext{pr_workflow: false, max_concurrency: 2, budget_usd: 100.0},
-      layout: layout
-    })
+    features = [feat("001"), feat("002", ["001"]), feat("003", ["002"]), feat("004", ["001"])]
+    context = %RunContext{pr_workflow: false, max_concurrency: 2, budget_usd: 100.0}
+
+    run_key =
+      open_run(Application.get_env(:speckit_orchestrator, :repo), layout, features, context)
+
+    seed_converge_marker(run_key, "001")
 
     me = self()
     assert {:ok, pid} = SpeckitOrchestrator.resume_run(runner: capturing_runner(me), owner: me)
@@ -166,43 +172,31 @@ defmodule SpeckitOrchestrator.ResumeRunTest do
     assert Enum.sort(report.done) == ["001", "002", "003", "004"]
   end
 
-  # ---- fail-loud: missing/corrupt manifest (T023) ---------------------------
+  # ---- fail-loud: missing/damaged run record (T023) --------------------------
 
-  test "resume_run/1 with no manifest on disk returns {:error, :no_manifest} and starts no Coordinator" do
+  test "resume_run/1 with no run recorded returns {:error, :no_manifest} and starts no Coordinator" do
     assert {:error, :no_manifest} = SpeckitOrchestrator.resume_run()
     assert Process.whereis(@coordinator) == nil
   end
 
-  test "resume_run/1 with a corrupt manifest returns {:error, :corrupt_manifest} and starts no Coordinator",
-       %{
-         root: root
-       } do
-    # Written to the current repo's segment-scoped slot — the path resume_run/1
-    # actually reads (RunManifest partitions by repo identity).
-    path = manifest_path(root)
-    File.mkdir_p!(Path.dirname(path))
-    File.write!(path, "not valid json{")
-
-    assert {:error, :corrupt_manifest} = SpeckitOrchestrator.resume_run()
-    assert Process.whereis(@coordinator) == nil
-  end
-
-  # Mirrors RunManifest's own segment resolution (Config.repo() → origin
-  # segment, nil → the legacy flat bucket) so this file writes/reads the same
-  # slot the module does, regardless of the ambient origin.
-  defp manifest_path(root) do
-    case RepoIdentity.resolve(Config.repo()) do
-      {:ok, segment} -> Path.join([root, "transcripts", segment, "run.json"])
-      {:error, _} -> Path.join([root, "transcripts", "run.json"])
-    end
-  end
+  # 018: a damaged row (`Records.decode/2`'s shape-mismatch branch) can no
+  # longer be produced by a legitimate write — Mnesia enforces record arity
+  # against the table's declared attributes at write time, unlike a plain
+  # JSON file. That decode branch is covered directly at the unit level in
+  # `test/speckit_orchestrator/store/records_test.exs`; nothing end-to-end
+  # can reach it anymore.
 
   # ---- active-run guard (T024) -----------------------------------------------
 
   test "a live unfinished Coordinator already running refuses resume_run/1 without :force, and :force proceeds" do
-    write_manifest(%{
-      features: [feat("001")],
-      statuses: %{"001" => :pending}
+    layout = done_layout("999-guard")
+    on_exit(fn -> File.rm_rf(layout.worktree_root) end)
+    repo = Application.get_env(:speckit_orchestrator, :repo)
+
+    open_run(repo, layout, [feat("001")], %RunContext{
+      pr_workflow: false,
+      max_concurrency: 1,
+      budget_usd: 100.0
     })
 
     # Simulate an active, unfinished run: a runner that never notifies.
@@ -230,7 +224,7 @@ defmodule SpeckitOrchestrator.ResumeRunTest do
 
   # ---- recorded context reapply, not live Config (T025) ----------------------
 
-  test "the resumed run re-executes under the manifest's recorded max_concurrency, not live Config" do
+  test "the resumed run re-executes under the run's recorded max_concurrency, not live Config" do
     prev_cap = Application.get_env(:speckit_orchestrator, :max_concurrency)
     Application.put_env(:speckit_orchestrator, :max_concurrency, 5)
 
@@ -240,18 +234,20 @@ defmodule SpeckitOrchestrator.ResumeRunTest do
         else: Application.delete_env(:speckit_orchestrator, :max_concurrency)
     end)
 
-    write_manifest(%{
-      features: [feat("001"), feat("002"), feat("003")],
-      statuses: %{"001" => :pending, "002" => :pending, "003" => :pending},
-      context: %RunContext{
-        pr_workflow: false,
-        max_concurrency: 1,
-        budget_usd: 100.0,
-        plan_stack: ["research", "plan"],
-        pr_base: "develop",
-        pr_remote: "upstream"
-      }
-    })
+    layout = done_layout("999-cap")
+    on_exit(fn -> File.rm_rf(layout.worktree_root) end)
+    repo = Application.get_env(:speckit_orchestrator, :repo)
+
+    context = %RunContext{
+      pr_workflow: false,
+      max_concurrency: 1,
+      budget_usd: 100.0,
+      plan_stack: ["research", "plan"],
+      pr_base: "develop",
+      pr_remote: "upstream"
+    }
+
+    open_run(repo, layout, [feat("001"), feat("002"), feat("003")], context)
 
     me = self()
     assert {:ok, pid} = SpeckitOrchestrator.resume_run(runner: capturing_runner(me), owner: me)
@@ -277,38 +273,46 @@ defmodule SpeckitOrchestrator.ResumeRunTest do
   test "resumable_run/0 reports the reconciled summary and starts no Coordinator process" do
     layout = done_layout("001")
     on_exit(fn -> File.rm_rf(layout.worktree_root) end)
+    repo = Application.get_env(:speckit_orchestrator, :repo)
 
-    write_manifest(%{
-      features: [feat("001"), feat("002", ["001"])],
-      statuses: %{"001" => :done, "002" => :running},
-      layout: layout
-    })
+    run_key =
+      open_run(repo, layout, [feat("001"), feat("002", ["001"])], %RunContext{
+        pr_workflow: false,
+        max_concurrency: 2,
+        budget_usd: 100.0
+      })
 
-    # 014-recovery-reconciliation: resumable_run/0 now returns
-    # Recovery.reconcile_run/2's reconciled picture (atom statuses), not the
-    # raw manifest dump. `001` corroborates via the fixture's committed branch
-    # + converge marker (US3 clause 3 — a recorded `:done` with zero durable
-    # evidence would otherwise reconcile to a conflict). `002` has no
-    # durable evidence at all (no git branch/checkpoint), so it reconciles to
-    # :pending — same "never actually progressed" conclusion the pre-014
-    # crash-recovery mapping reached, now derived from repository evidence
-    # instead of assumed from the status string alone.
+    seed_converge_marker(run_key, "001")
+
+    # `002` has no durable evidence at all (no git branch/checkpoint), so it
+    # reconciles to :pending — same "never actually progressed" conclusion
+    # the pre-014 crash-recovery mapping reached, now derived from
+    # repository evidence instead of assumed from a status string alone.
     assert {:ok, summary} = SpeckitOrchestrator.resumable_run()
     assert summary.statuses == %{"001" => :done, "002" => :pending}
     assert Process.whereis(@coordinator) == nil
   end
 
   test "resumable_run/0 returns :none when every feature is terminal/diverted" do
-    write_manifest(%{
-      features: [feat("001"), feat("002")],
-      statuses: %{"001" => :done, "002" => :escalated}
-    })
+    layout = done_layout("001")
+    on_exit(fn -> File.rm_rf(layout.worktree_root) end)
+    repo = Application.get_env(:speckit_orchestrator, :repo)
+
+    run_key =
+      open_run(repo, layout, [feat("001"), feat("002")], %RunContext{
+        pr_workflow: false,
+        max_concurrency: 2,
+        budget_usd: 100.0
+      })
+
+    :ok = Writer.record_feature_terminal(run_key, "001", :done, :test_fixture, [])
+    :ok = Writer.record_feature_terminal(run_key, "002", :escalated, :test_fixture, [])
 
     assert :none = SpeckitOrchestrator.resumable_run()
     assert Process.whereis(@coordinator) == nil
   end
 
-  test "resumable_run/0 returns {:error, :no_manifest} when the slot is absent" do
+  test "resumable_run/0 returns {:error, :no_manifest} when nothing is recorded" do
     assert {:error, :no_manifest} = SpeckitOrchestrator.resumable_run()
   end
 
@@ -320,12 +324,22 @@ defmodule SpeckitOrchestrator.ResumeRunTest do
 
     :ok = Ledger.set_budget(Ledger, 5.0)
 
-    write_manifest(%{
-      features: [feat("001")],
-      statuses: %{"001" => :pending},
-      spend: 5.0,
-      context: %RunContext{pr_workflow: false, max_concurrency: 1, budget_usd: 5.0}
-    })
+    layout = done_layout("999-breaker")
+    on_exit(fn -> File.rm_rf(layout.worktree_root) end)
+    repo = Application.get_env(:speckit_orchestrator, :repo)
+
+    run_key =
+      open_run(repo, layout, [feat("001")], %RunContext{
+        pr_workflow: false,
+        max_concurrency: 1,
+        budget_usd: 5.0
+      })
+
+    :ok =
+      Writer.record_phase_attempt(run_key, %{
+        attempt: minimal_attempt("001", :specify),
+        cost: %{amount_usd: 5.0, kind: :estimate}
+      })
 
     me = self()
     assert {:ok, pid} = SpeckitOrchestrator.resume_run(runner: capturing_runner(me), owner: me)
@@ -342,20 +356,34 @@ defmodule SpeckitOrchestrator.ResumeRunTest do
     assert Ledger.reserve(Ledger, 1) == {:error, :budget_exceeded}
   end
 
-  test "resume_run/1 restores committed spend from the manifest's recorded figure, not zero" do
+  test "resume_run/1 restores committed spend from the run's cost-entry roll-up, not zero" do
     prev_budget = Ledger.snapshot(Ledger).budget
     on_exit(fn -> Ledger.set_budget(Ledger, prev_budget) end)
 
-    baseline = Ledger.spent(Ledger)
-    target = baseline + 7.0
+    # T040: `restore_ledger/1` restores an ABSOLUTE figure — the run's own
+    # cost-entry roll-up, not a delta onto whatever this (shared, per-test-file)
+    # `Ledger` process already committed from an earlier test — so the
+    # target is the roll-up itself, and `Ledger.restore/2`'s own
+    # `max(committed, recorded)` monotonicity is what "not zero" asserts.
+    target = 7.0
     :ok = Ledger.set_budget(Ledger, target + 100.0)
 
-    write_manifest(%{
-      features: [feat("001")],
-      statuses: %{"001" => :pending},
-      spend: target,
-      context: %RunContext{pr_workflow: false, max_concurrency: 1, budget_usd: target + 100.0}
-    })
+    layout = done_layout("001-spend")
+    on_exit(fn -> File.rm_rf(layout.worktree_root) end)
+    repo = Application.get_env(:speckit_orchestrator, :repo)
+
+    run_key =
+      open_run(repo, layout, [feat("001")], %RunContext{
+        pr_workflow: false,
+        max_concurrency: 1,
+        budget_usd: target + 100.0
+      })
+
+    :ok =
+      Writer.record_phase_attempt(run_key, %{
+        attempt: minimal_attempt("001", :specify),
+        cost: %{amount_usd: 7.0, kind: :estimate}
+      })
 
     me = self()
     assert {:ok, pid} = SpeckitOrchestrator.resume_run(runner: capturing_runner(me), owner: me)
@@ -369,61 +397,34 @@ defmodule SpeckitOrchestrator.ResumeRunTest do
     assert report.done == ["001"]
   end
 
-  # ---- checkpointed feature with a missing branch/worktree (T027, integration) --
+  # ---- a never-started feature with no target scaffold (T027, integration) --
 
   @tag :integration
-  test "a checkpointed feature whose branch/worktree is missing fails loud without crashing the rest of the run",
-       %{root: root} do
+  test "a never-started feature whose target repo lacks the .specify/.claude scaffold fails loud without crashing the rest of the run" do
     id = "rr#{System.unique_integer([:positive, :monotonic])}"
 
-    :ok =
-      Checkpoint.write(%{
-        feature_id: id,
-        last_phase: :plan,
-        status: :in_progress,
-        reason: nil,
-        session_id: "s1"
-      })
-
-    on_exit(fn -> File.rm_rf(Path.join(Config.transcript_root(), id)) end)
-
-    # The repo must keep a *resolvable identity* — `RunManifest.read/0` locates
-    # the slot by resolving `Config.repo()`'s origin-derived segment, and there
-    # is deliberately no flat-path fallback on a segment-scoped read (012), so a
-    # repo whose identity cannot be resolved reads the identity-less bucket and
-    # can never see a segment-scoped write. What this test breaks is the thing
-    # it is actually about: the *feature's* branch/worktree. The repo below is a
-    # real git repo with an origin (so the segment resolves and matches the
-    # write) but is bare of the committed `.specify/`/`.claude/` scaffold
-    # `Worktree.create` asserts, so the feature fails loud while the run itself
-    # drains normally.
-    repo = Path.join(root, "gone-repo")
+    # The repo must keep a *resolvable identity* — `read_current_run/0`
+    # locates the store's slot by `RepoIdentity.partition/1`. What this test
+    # breaks is the thing it is actually about: the target repo is bare of
+    # the committed `.specify/`/`.claude/` scaffold `Worktree.create`
+    # asserts, so the feature fails loud (no checkpoint, no branch — a
+    # never-released feature reconciles to plain `:pending` and dispatches
+    # through `run_fresh/6`) while the run itself drains normally.
+    repo = Path.join(System.tmp_dir!(), "rr_gone_#{System.unique_integer([:positive])}")
     File.mkdir_p!(repo)
     git!(repo, ["init", "-q", "-b", "main"])
     git!(repo, ["remote", "add", "origin", "https://example.com/acme/gone-#{id}.git"])
-    {:ok, segment} = RepoIdentity.resolve(repo)
+    on_exit(fn -> File.rm_rf(repo) end)
+    put_repo(repo)
 
-    # Built through the real API, so `worktree_root`'s basename *is* the segment
-    # — which is what `RunManifest.write/1` records the slot under. A hand-rolled
-    # `%Layout{}` whose basename is not a segment silently writes to a slot no
-    # read can ever resolve.
+    {:ok, segment} = RepoIdentity.resolve(repo)
     {:ok, layout} = Layout.build(repo, segment, {:breakdown, "pkg"})
 
-    write_manifest(%{
-      features: [feat(id)],
-      statuses: %{id => :running},
-      context: %RunContext{pr_workflow: false, max_concurrency: 1, budget_usd: 100.0},
-      layout: layout
+    open_run(repo, layout, [feat(id)], %RunContext{
+      pr_workflow: false,
+      max_concurrency: 1,
+      budget_usd: 100.0
     })
-
-    prev_repo = Application.get_env(:speckit_orchestrator, :repo)
-    Application.put_env(:speckit_orchestrator, :repo, repo)
-
-    on_exit(fn ->
-      if prev_repo,
-        do: Application.put_env(:speckit_orchestrator, :repo, prev_repo),
-        else: Application.delete_env(:speckit_orchestrator, :repo)
-    end)
 
     me = self()
     assert {:ok, pid} = SpeckitOrchestrator.resume_run(owner: me)

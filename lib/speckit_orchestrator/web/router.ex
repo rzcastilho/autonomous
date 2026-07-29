@@ -1,9 +1,9 @@
 defmodule SpeckitOrchestrator.Web.Router do
   @moduledoc """
-  The six console routes (`contracts/routes.md`) behind a fixed left nav, no
-  auth pipeline (FR-035). Each `live` route below is an empty-shell LiveView
-  in this phase — real content lands feature-by-feature in later phases (see
-  `specs/008-control-plane/tasks.md` Phase 3-8).
+  The console routes (`contracts/routes.md`) behind a fixed left nav, no
+  auth pipeline (FR-035). `/runs` and `/runs/:run_id` (018,
+  contracts/console-runs.md) are the run-history and run-detail views added
+  on top of the original six.
   """
 
   use SpeckitOrchestrator.Web, :router
@@ -24,6 +24,8 @@ defmodule SpeckitOrchestrator.Web.Router do
     live("/dag", PipelineDagLive)
     live("/trigger", TriggerLive)
     live("/escalations", EscalationsLive)
+    live("/runs", RunsLive)
+    live("/runs/:run_id", RunDetailLive)
     live("/transcripts", TranscriptsLive)
     live("/config", ConfigLive)
   end

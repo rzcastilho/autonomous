@@ -1,14 +1,21 @@
 defmodule SpeckitOrchestrator.Recovery.Evidence do
   @moduledoc """
   Per-feature durable ground truth collector for recovery reconciliation
-  (edge I/O — the only place recovery touches git/file/CLI). Every source is
+  (edge I/O — the only place recovery touches git/store/CLI). Every source is
   read independently and defensively: a single absent/corrupt source degrades
   to its unknown value, never a raise (FR-011). Offline-first: no source read
   blocks on the network except the fallback remote query, which tolerates
   unreachability (FR-018). See `specs/014-recovery-reconciliation/contracts/evidence.md`.
+
+  018: the checkpoint, PR-record, and converge-marker signals are sourced
+  from the store's per-feature record (`Store.Query.run/1`'s `.features`
+  entries) instead of `Checkpoint.read/2`/`Describe.read_pr/2`/a file grep —
+  passed in by the caller (`Recovery.plan_run/2`,
+  `Recovery.Rebuild.propose/3`) as `feature_record`, `nil` for a feature the
+  store never named. Git-sourced signals are unchanged.
   """
 
-  alias SpeckitOrchestrator.{Checkpoint, Config, Describe, Feature, Layout, Pipeline, Worktree}
+  alias SpeckitOrchestrator.{Feature, Pipeline, Store, Worktree}
 
   @enforce_keys [:feature_id]
   defstruct feature_id: nil,
@@ -36,6 +43,10 @@ defmodule SpeckitOrchestrator.Recovery.Evidence do
   @doc """
   Gather the durable `%Evidence{}` for `feature` per contracts/evidence.md.
 
+  `feature_record` is this feature's entry from `Store.Query.run/1`'s
+  `.features` list (`nil` when the store never named this feature — a fresh
+  feature added by a rebuild union, D1).
+
   `opts`:
     * `:git` — git-read seam (branch existence + boundary-commit log). Default:
       real `Worktree`/`git`; tests inject a fake log.
@@ -43,15 +54,15 @@ defmodule SpeckitOrchestrator.Recovery.Evidence do
       `:unknown`, never touches the network); attempted only when the local PR
       record is absent/corrupt.
   """
-  @spec collect(Feature.t(), Layout.t() | nil, keyword()) :: t()
-  def collect(%Feature{} = feature, layout, opts \\ []) do
+  @spec collect(Feature.t(), map() | nil, keyword()) :: t()
+  def collect(%Feature{} = feature, feature_record, opts \\ []) do
     git = Keyword.get(opts, :git, &default_git/1)
     remote = Keyword.get(opts, :remote, &default_remote/1)
 
     %{branch_committed?: branch_committed?, last_boundary_phase: last_boundary_phase} =
       git.(feature)
 
-    pr_record? = match?({:ok, _}, Describe.read_pr(feature.id, layout))
+    pr_record? = pr_recorded?(feature_record)
 
     %__MODULE__{
       feature_id: feature.id,
@@ -59,8 +70,8 @@ defmodule SpeckitOrchestrator.Recovery.Evidence do
       last_boundary_phase: last_boundary_phase,
       pr_record?: pr_record?,
       pr_remote?: if(pr_record?, do: :unknown, else: safe_remote(remote, feature.id)),
-      checkpoint: read_checkpoint(feature.id, layout),
-      final_marker?: final_marker?(feature.id, layout)
+      checkpoint: store_checkpoint(feature_record),
+      final_marker?: final_marker?(feature_record)
     }
   end
 
@@ -147,28 +158,34 @@ defmodule SpeckitOrchestrator.Recovery.Evidence do
     _, _ -> :unknown
   end
 
-  # ---- checkpoint -----------------------------------------------------------
+  # ---- store-sourced signals (018) -------------------------------------------
 
-  defp read_checkpoint(feature_id, layout) do
-    case Checkpoint.read(feature_id, layout) do
-      {:ok, record} -> record
-      _ -> nil
-    end
-  end
+  defp pr_recorded?(%{pr_description: %{} = _pr}), do: true
+  defp pr_recorded?(_feature_record), do: false
 
-  # ---- final marker (non-PR done-signal) -------------------------------------
+  defp store_checkpoint(%{checkpoint: %{} = checkpoint}), do: checkpoint
+  defp store_checkpoint(_feature_record), do: nil
 
   @converge_ready_marker ~r/^\#\#[ \t]+CONVERGE:[ \t]+READY[ \t]*$/m
 
-  defp final_marker?(feature_id, layout) do
-    path = Path.join([durable_root(layout), feature_id, "07-converge.md"])
-
-    case File.read(path) do
-      {:ok, contents} -> Regex.match?(@converge_ready_marker, contents)
-      {:error, _} -> false
+  # The converge attempt's transcript — highest ordinal `phase: :converge`
+  # `phase_attempt`, same regex the pre-018 `07-converge.md` file grep used.
+  defp final_marker?(%{phase_attempts: attempts}) when is_list(attempts) do
+    attempts
+    |> Enum.filter(&(&1.phase == :converge))
+    |> Enum.max_by(& &1.ordinal, fn -> nil end)
+    |> case do
+      nil -> false
+      %{attempt_id: attempt_id} -> converge_marker?(attempt_id)
     end
   end
 
-  defp durable_root(nil), do: Config.transcript_root()
-  defp durable_root(%Layout{transcript_root: root}), do: root
+  defp final_marker?(_feature_record), do: false
+
+  defp converge_marker?(attempt_id) do
+    case Store.transcript(attempt_id) do
+      {:ok, %{body: body}} -> Regex.match?(@converge_ready_marker, body)
+      _ -> false
+    end
+  end
 end

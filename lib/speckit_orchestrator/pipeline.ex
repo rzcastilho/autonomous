@@ -11,9 +11,14 @@ defmodule SpeckitOrchestrator.Pipeline do
 
   * **clarify gate** — the Opus reviewer wrote `## NEEDS HUMAN` into the spec.
     `signals.needs_human? == true` at the `:clarify` phase → `:escalated`.
-  * **analyze gate** — the deterministic analyze pass found a Critical finding.
-    `signals.critical? == true` at the `:analyze` phase → `:halted`; a High
-    finding (`signals.high? == true`) → `:escalated`.
+  * **analyze gate** — the deterministic analyze pass found a finding at or
+    above the run's severity threshold (`signals.gate_threshold`, default
+    `:high`). A Critical finding (`signals.critical? == true`) → `:halted`;
+    a High one (`signals.high? == true`) → `:escalated`. The threshold is an
+    inclusive floor over `Severity`'s ordering, so raising it to `:critical`
+    lets a High finding advance instead of diverting, and lowering it below
+    `:high` creates no new terminal state (Low and Medium have none). Critical
+    outranks every threshold and therefore always halts.
   * **artifact gate** — a phase returned a successful transcript but wrote none
     of the files it exists to produce. `signals.missing_artifact` at `:plan`,
     `:tasks`, or `:implement` → `:failed`.
@@ -32,6 +37,8 @@ defmodule SpeckitOrchestrator.Pipeline do
   passed in; this module stays pure and side-effect free.
   """
 
+  alias SpeckitOrchestrator.Severity
+
   @ordered [:specify, :clarify, :plan, :tasks, :analyze, :implement, :converge]
 
   @typedoc "A pipeline phase. `:done` is the terminal marker, not in the run order."
@@ -45,6 +52,7 @@ defmodule SpeckitOrchestrator.Pipeline do
           optional(:needs_human?) => boolean(),
           optional(:critical?) => boolean(),
           optional(:high?) => boolean(),
+          optional(:gate_threshold) => Severity.severity(),
           optional(:not_ready?) => boolean(),
           optional(:missing_artifact) => String.t()
         }
@@ -111,11 +119,30 @@ defmodule SpeckitOrchestrator.Pipeline do
   end
 
   def next(:clarify, :ok, %{needs_human?: true}), do: {:escalated, :needs_human}
+
+  # Critical outranks every threshold, so this needs no threshold check.
   def next(:analyze, :ok, %{critical?: true}), do: {:halted, :critical_finding}
-  def next(:analyze, :ok, %{high?: true}), do: {:escalated, :high_findings}
+
+  def next(:analyze, :ok, %{high?: true} = signals) do
+    if Severity.at_or_above?(:high, gate_threshold(signals)) do
+      {:escalated, :high_findings}
+    else
+      advance_transition(:analyze)
+    end
+  end
+
   def next(:converge, :ok, %{not_ready?: true}), do: {:failed, :converge_not_ready}
 
   def next(phase, :ok, _signals) when phase in @ordered do
+    advance_transition(phase)
+  end
+
+  # The run's severity threshold, as an inclusive floor. Absent means `:high`,
+  # the default — which reproduces the pre-threshold gate exactly.
+  defp gate_threshold(signals), do: Map.get(signals, :gate_threshold) || :high
+
+  @spec advance_transition(phase()) :: transition()
+  defp advance_transition(phase) do
     case advance(phase) do
       :done -> {:done, :done}
       next_phase -> {:cont, next_phase}

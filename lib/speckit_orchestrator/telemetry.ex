@@ -38,13 +38,32 @@ defmodule SpeckitOrchestrator.Telemetry do
     `attempt` / `limit` **only while the loop is enabled**; with the loop off
     the metadata map is byte-identical to pre-017 (FR-010, SC-007a).
 
-  Events (emitted by `RunManifest.write/1` — run-level, no `feature_id`;
-  `specs/016-resume-backlog-scope/contracts/manifest-guard.md`):
+  Events (run-level, no `feature_id`; `specs/016-resume-backlog-scope/contracts/manifest-guard.md`):
 
     * `[:speckit, :run, :scope_narrowing_refused]` — measurements
       `%{dropped_count}`, metadata `%{segment, recorded, attempted, dropped}`.
       Fires when a write would drop a currently-recorded feature id; the
-      write is refused and the existing record is left untouched.
+      write is refused and the existing record is left untouched. Pre-018 —
+      the store's write path structurally cannot narrow a run's feature set
+      (018), so this event no longer fires; the handler remains harmless.
+
+  Events (emitted by `Store.Writer` — 018, persistence-failure.md): a write
+  failure is recorded in `Store.Health` and, so it is observable outside the
+  breaker flag too, emitted here:
+
+    * `[:speckit, :store, :write_failed]` — measurements `%{}`, metadata
+      `%{reason}`. Fires on any aborted `Store.Writer` transaction, driving
+      `FeatureRunner`'s drain check and `Coordinator`'s release check.
+
+  Events (emitted by `SpeckitOrchestrator` — 018 Phase 6,
+  contracts/capacity-and-prune.md):
+
+    * `[:speckit, :store, :capacity_refused]` — measurements
+      `%{shortfall_bytes, reclaimable_bytes}`, metadata `%{repo}`. Fires when
+      `run/1`'s capacity preflight refuses (FR-031b).
+    * `[:speckit, :store, :pruned]` — measurements `%{bytes_reclaimed}`,
+      metadata `%{repo_id, removed}`. Fires after `prune/1` executes
+      (FR-031a) — the only mechanism that removes recorded state.
 
   Call `attach_default_logger/0` from `iex` to log every event.
   """
@@ -66,7 +85,10 @@ defmodule SpeckitOrchestrator.Telemetry do
     [:speckit, :remediation, :start],
     [:speckit, :remediation, :stop],
     [:speckit, :remediation, :exception],
-    [:speckit, :run, :scope_narrowing_refused]
+    [:speckit, :run, :scope_narrowing_refused],
+    [:speckit, :store, :write_failed],
+    [:speckit, :store, :capacity_refused],
+    [:speckit, :store, :pruned]
   ]
 
   @doc "The `:telemetry.span/3` prefix for phase events."
@@ -118,6 +140,24 @@ defmodule SpeckitOrchestrator.Telemetry do
     Logger.warning(
       "run scope narrowing refused: dropped=#{inspect(meta.dropped)} " <>
         "recorded=#{inspect(meta.recorded)} segment=#{inspect(meta.segment)}"
+    )
+  end
+
+  def handle_event([:speckit, :store, :write_failed], _meas, meta, _cfg) do
+    Logger.error("store write failed: reason=#{inspect(meta.reason)}")
+  end
+
+  def handle_event([:speckit, :store, :capacity_refused], meas, meta, _cfg) do
+    Logger.warning(
+      "store capacity refused run: repo=#{inspect(meta.repo)} " <>
+        "shortfall_bytes=#{meas.shortfall_bytes} reclaimable_bytes=#{meas.reclaimable_bytes}"
+    )
+  end
+
+  def handle_event([:speckit, :store, :pruned], meas, meta, _cfg) do
+    Logger.info(
+      "store pruned: repo_id=#{meta.repo_id} removed=#{inspect(meta.removed)} " <>
+        "bytes_reclaimed=#{meas.bytes_reclaimed}"
     )
   end
 

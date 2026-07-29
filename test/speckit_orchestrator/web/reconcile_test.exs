@@ -8,13 +8,15 @@ defmodule SpeckitOrchestrator.Web.ReconcileTest do
   """
   # Starts the real named Coordinator and mutates the app-supervised default
   # Ledger's budget / global repo+breakdown_dir app env — must not run
-  # concurrently with another test claiming those globals.
-  use ExUnit.Case, async: false
+  # concurrently with another test claiming those globals. StoreCase (018)
+  # clears every store table before each test, so an earlier test's in-flight
+  # run never leaks into this test's "no active run" assertions.
+  use SpeckitOrchestrator.StoreCase, async: false
 
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
 
-  alias SpeckitOrchestrator.{Coordinator, ConsoleProjection, Feature, Ledger, RunManifest}
+  alias SpeckitOrchestrator.{Coordinator, ConsoleProjection, Feature, Ledger}
 
   @endpoint SpeckitOrchestrator.Web.Endpoint
 
@@ -37,13 +39,6 @@ defmodule SpeckitOrchestrator.Web.ReconcileTest do
       Ledger.set_budget(prior.budget_usd)
       if pid = Process.whereis(Coordinator), do: GenServer.stop(pid)
     end)
-
-    # :transcript_root is pinned to one shared tmp path for the whole test env
-    # (config/config.exs) — a previous test's real Coordinator (default
-    # :manifest seam) may have left a run manifest there, which the
-    # crash-recovery overlay (specs/009-crash-recovery) would otherwise read
-    # into this test's "no active run" assertions.
-    RunManifest.clear()
 
     {:ok, conn: Phoenix.ConnTest.build_conn()}
   end

@@ -65,6 +65,34 @@ defmodule SpeckitOrchestrator.RepoIdentity do
     end
   end
 
+  @doc """
+  Store `repo_id` (018, research R10): `"o:" <> segment/1` when `origin`
+  resolves, else `"l:" <> "<basename>-local-<sha6(expanded abs path)>"`. The
+  prefix makes the two derivations non-colliding by construction (FR-004) —
+  two checkouts of different repositories that share a directory name get
+  different `repo_id`s. `resolve/1` and the existing no-origin preflight are
+  unchanged; this is an additive derivation for the store, not a replacement.
+  """
+  @spec partition(String.t()) :: String.t()
+  def partition(repo) when is_binary(repo) do
+    case resolve(repo) do
+      {:ok, segment} -> "o:" <> segment
+      {:error, :no_origin} -> "l:" <> local_segment(repo)
+    end
+  end
+
+  defp local_segment(repo) do
+    expanded = Path.expand(repo)
+    basename = Path.basename(expanded)
+
+    shorthash =
+      :crypto.hash(:sha256, expanded)
+      |> Base.encode16(case: :lower)
+      |> binary_part(0, 6)
+
+    "#{basename}-local-#{shorthash}"
+  end
+
   # ---- normalization helpers ----------------------------------------------
 
   defp strip_scheme(url), do: Regex.replace(~r{^[a-zA-Z]+://}, url, "")

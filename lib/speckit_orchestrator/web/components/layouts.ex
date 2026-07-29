@@ -23,11 +23,12 @@ defmodule SpeckitOrchestrator.Web.Layouts do
     {"/dag", "Pipeline DAG"},
     {"/trigger", "Trigger Run"},
     {"/escalations", "Escalations"},
+    {"/runs", "Runs"},
     {"/transcripts", "Transcripts"},
     {"/config", "Configuration"}
   ]
 
-  @doc "The six fixed left-nav items as `{path, label}` (FR-001)."
+  @doc "The fixed left-nav items as `{path, label}` (FR-001; 018 adds `/runs`)."
   @spec nav_items() :: [{String.t(), String.t()}]
   def nav_items, do: @nav_items
 
@@ -36,6 +37,7 @@ defmodule SpeckitOrchestrator.Web.Layouts do
     "Pipeline DAG" => "⊟",
     "Trigger Run" => "▷",
     "Escalations" => "⚠",
+    "Runs" => "▤",
     "Transcripts" => "≡",
     "Configuration" => "⚙"
   }

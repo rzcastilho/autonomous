@@ -46,27 +46,8 @@ defmodule SpeckitOrchestrator.DescribeTest do
     end
   end
 
-  describe "write_pr/2 + read_pr/1" do
-    setup do
-      root = Path.join(System.tmp_dir!(), "desc_#{System.unique_integer([:positive])}")
-      prev = Application.get_env(:speckit_orchestrator, :transcript_root)
-      Application.put_env(:speckit_orchestrator, :transcript_root, root)
-
-      on_exit(fn ->
-        File.rm_rf(root)
-        if prev, do: Application.put_env(:speckit_orchestrator, :transcript_root, prev)
-      end)
-
-      :ok
-    end
-
-    test "round-trips the PR title/body under the transcript dir" do
-      assert :ok = Describe.write_pr("001", %{pr_title: "T", pr_body: "B"})
-      assert {:ok, %{pr_title: "T", pr_body: "B"}} = Describe.read_pr("001")
-    end
-
-    test "read_pr is :error when absent" do
-      assert :error = Describe.read_pr("999")
-    end
-  end
+  # `write_pr/2`/`read_pr/1` deleted (018, FR-037 clean break) — the PR
+  # title/body they round-tripped through a file now lives in
+  # `feature_run.pr_description`, written by `Store.Writer.record_feature_terminal/5`
+  # and covered by `test/speckit_orchestrator/store/writer_test.exs`.
 end

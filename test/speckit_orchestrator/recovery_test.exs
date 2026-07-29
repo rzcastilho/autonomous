@@ -1,18 +1,16 @@
 defmodule SpeckitOrchestrator.RecoveryTest do
   # async: false — real worktree/git fixtures + global :transcript_root/
-  # :autonomous_root/:repo/:jido_claude sdk_module app env (mirrors
-  # resume_test.exs / recovery_quickpoll_test.exs conventions).
-  use ExUnit.Case, async: false
+  # :autonomous_root/:repo/:jido_claude sdk_module app env, plus the shared
+  # store (StoreCase clears tables per test).
+  use SpeckitOrchestrator.StoreCase, async: false
 
   alias SpeckitOrchestrator.{
-    Checkpoint,
     Feature,
     Layout,
     Recovery,
     Recovery.Evidence,
     RepoIdentity,
-    RunContext,
-    RunManifest
+    RunContext
   }
 
   @coordinator SpeckitOrchestrator.Coordinator
@@ -128,25 +126,90 @@ defmodule SpeckitOrchestrator.RecoveryTest do
   defp feat(id, prereqs \\ []),
     do: %Feature{id: id, slug: "core-ledger", path: "#{id}.md", prereqs: prereqs}
 
-  defp write_manifest(overrides) do
+  # ---- store seeding (018) ---------------------------------------------------
+
+  defp scope_of(%Layout{breakdown_root: nil}), do: :ad_hoc
+  defp scope_of(%Layout{in_repo_rel: rel}), do: {:breakdown, Path.basename(rel)}
+
+  defp open_run(repo, layout, features) do
+    repo_id = RepoIdentity.partition(repo)
+
+    {:ok, run_id} =
+      Writer.open_run(repo_id, %{
+        features:
+          Enum.map(
+            features,
+            &%{feature_id: &1.id, slug: &1.slug, path: &1.path, prereqs: &1.prereqs}
+          ),
+        settings:
+          RunContext.to_map(%RunContext{
+            pr_workflow: false,
+            max_concurrency: 1,
+            budget_usd: 100.0
+          }),
+        scope: scope_of(layout),
+        layout: layout
+      })
+
+    {repo_id, run_id}
+  end
+
+  defp minimal_attempt(feature_id, phase, ordinal) do
+    now = DateTime.utc_now()
+
+    %{
+      feature_id: feature_id,
+      phase: phase,
+      ordinal: ordinal,
+      step: 1,
+      label: Atom.to_string(phase),
+      started_at: now,
+      ended_at: now,
+      duration_ms: 0,
+      outcome: :ok,
+      model: "sonnet",
+      cost_usd: 0.0,
+      cost_kind: :estimate,
+      session_id: "s1",
+      error: nil
+    }
+  end
+
+  # Interrupted mid-run: a checkpoint (+ the phase attempt that produced it)
+  # recording "next phase after plan is tasks" — `store_recorded_status/1`
+  # derives `:running` from the checkpoint's presence alone.
+  defp seed_running(run_key, feature_id, resume_phase, last_completed) do
     :ok =
-      RunManifest.write(
-        Map.merge(
-          %{
-            features: [],
-            statuses: %{},
-            context: %RunContext{pr_workflow: false, max_concurrency: 1, budget_usd: 100.0},
-            spend: 5.0,
-            updated_at: 1
-          },
-          overrides
-        )
-      )
+      Writer.record_phase_attempt(run_key, %{
+        attempt: minimal_attempt(feature_id, last_completed, 1),
+        checkpoint: %{
+          phase: resume_phase,
+          last_completed_phase: last_completed,
+          status: :in_progress,
+          reason: nil,
+          session_id: "s1"
+        }
+      })
+  end
+
+  # A non-PR done-signal: a `:converge` phase attempt whose transcript
+  # carries the ready marker — no checkpoint, so `store_recorded_status/1`
+  # still derives `:running` from the phase attempt alone.
+  defp seed_converge_marker(run_key, feature_id) do
+    :ok =
+      Writer.record_phase_attempt(run_key, %{
+        attempt: minimal_attempt(feature_id, :converge, 1),
+        transcript: "Tests green, committed.\n\n## CONVERGE: READY\n"
+      })
+  end
+
+  defp seed_terminal(run_key, feature_id, status, opts \\ []) do
+    :ok = Writer.record_feature_terminal(run_key, feature_id, status, :test_fixture, opts)
   end
 
   # quickstart.md Scenario 2: a feature reached an intermediate phase —
-  # boundary commits through `plan` only, no `pr.json`, checkpoint
-  # `last_phase: plan / in_progress`.
+  # boundary commits through `plan` only, no PR record, checkpoint recording
+  # "resume at tasks".
   defp seed_mid_run_state do
     repo = base_repo()
     Application.put_env(:speckit_orchestrator, :repo, repo)
@@ -160,57 +223,32 @@ defmodule SpeckitOrchestrator.RecoveryTest do
     commit(repo, "speckit: 001 checkpoint after plan")
     git!(repo, ["checkout", "-q", "main"])
 
-    :ok =
-      Checkpoint.write(%{
-        feature_id: "001",
-        last_phase: :plan,
-        status: :in_progress,
-        reason: "test fixture",
-        session_id: "s1",
-        slug: "core-ledger",
-        path: "001.md",
-        layout: layout
-      })
+    run_key = open_run(repo, layout, [feat("001")])
+    seed_running(run_key, "001", :tasks, :plan)
 
-    write_manifest(%{
-      features: [feat("001")],
-      statuses: %{"001" => :running},
-      layout: layout
-    })
-
-    layout
+    {layout, run_key}
   end
 
   test "reconcile_run/2 resumes a mid-run feature at the phase after its latest boundary" do
-    layout = seed_mid_run_state()
+    {layout, run_key} = seed_mid_run_state()
+    on_exit(fn -> File.rm_rf(layout.worktree_root) end)
 
-    {:ok, record} = RunManifest.read()
+    {:ok, detail} = Store.run(run_key)
 
     assert {:ok, %{statuses: statuses, resume_phases: resume_phases}} =
-             Recovery.reconcile_run(record)
+             Recovery.reconcile_run(detail)
 
     assert statuses["001"] == :running
     assert resume_phases["001"] == :tasks
-
-    {:ok, reread} = RunManifest.read()
-    assert reread["statuses"]["001"] == "running"
-
-    on_exit(fn -> File.rm_rf(layout.worktree_root) end)
   end
 
   # ---- US3 (T018): whole-run status coverage ---------------------------------
   #
-  # One manifest exercising every status class (running/pending/escalated/
+  # One run exercising every status class (running/pending/escalated/
   # halted/failed/done) against matching or conflicting evidence, plus a
   # feature dependent on the conflict feature (must stay blocked) and a
   # feature dependent on the reconciled `:done` feature (must release,
   # proving one conflict never freezes the rest of the DAG — FR-014).
-  defp write_pr(layout, id) do
-    dir = Path.join(layout.transcript_root, id)
-    File.mkdir_p!(dir)
-    File.write!(Path.join(dir, "pr.json"), Jason.encode!(%{pr_title: "t", pr_body: "b"}))
-  end
-
   defp seed_whole_run_state do
     repo = base_repo()
     Application.put_env(:speckit_orchestrator, :repo, repo)
@@ -218,46 +256,46 @@ defmodule SpeckitOrchestrator.RecoveryTest do
     {:ok, segment} = RepoIdentity.resolve(repo)
     {:ok, layout} = Layout.build(repo, segment, {:breakdown, "core-ledger"})
 
-    # 001: running, PR-workflow done-signal (branch + pr.json) -> reconciles :done
+    # 001: real evidence (branch + PR record) but recorded terminal already
+    # — the store commits pr_description in the same transaction as :done
+    # (unlike the pre-018 file model, this cannot legitimately disagree), so
+    # this exercises Reconcile clause 3 (done requires corroboration) rather
+    # than clause 4's upgrade — same evidence, same reconciled outcome.
     git!(repo, ["checkout", "-q", "-b", "feature/001-core-ledger"])
     commit(repo, "speckit: 001 checkpoint after converge")
     git!(repo, ["checkout", "-q", "main"])
-    write_pr(layout, "001")
 
-    # 006: recorded done, but NO branch / NO pr.json -> {:conflict, :done_without_artifacts}
+    features = [
+      feat("001"),
+      feat("002", ["001"]),
+      feat("003"),
+      feat("004"),
+      feat("005"),
+      feat("006"),
+      feat("007", ["006"])
+    ]
 
-    write_manifest(%{
-      features: [
-        feat("001"),
-        feat("002", ["001"]),
-        feat("003"),
-        feat("004"),
-        feat("005"),
-        feat("006"),
-        feat("007", ["006"])
-      ],
-      statuses: %{
-        "001" => :running,
-        "002" => :pending,
-        "003" => :escalated,
-        "004" => :halted,
-        "005" => :failed,
-        "006" => :done,
-        "007" => :pending
-      },
-      layout: layout
-    })
+    run_key = open_run(repo, layout, features)
 
-    layout
+    seed_terminal(run_key, "001", :done, pr_description: %{pr_title: "t", pr_body: "b"})
+    # 002: pending, never released.
+    seed_terminal(run_key, "003", :escalated)
+    seed_terminal(run_key, "004", :halted)
+    seed_terminal(run_key, "005", :failed)
+    # 006: recorded done, but NO branch / NO PR record -> {:conflict, :done_without_artifacts}
+    seed_terminal(run_key, "006", :done)
+    # 007: pending.
+
+    {layout, run_key}
   end
 
   test "reconcile_run/2 reconciles every status class in one whole-run pass" do
-    layout = seed_whole_run_state()
+    {layout, run_key} = seed_whole_run_state()
     on_exit(fn -> File.rm_rf(layout.worktree_root) end)
 
-    {:ok, record} = RunManifest.read()
+    {:ok, detail} = Store.run(run_key)
 
-    assert {:ok, %{statuses: statuses, report: report}} = Recovery.reconcile_run(record)
+    assert {:ok, %{statuses: statuses, report: report}} = Recovery.reconcile_run(detail)
 
     assert statuses["001"] == :done
     assert statuses["002"] == :pending
@@ -276,20 +314,23 @@ defmodule SpeckitOrchestrator.RecoveryTest do
     # A dependent of the conflict feature stays blocked — one conflict never
     # freezes the rest of the run.
     refute "007" in report.next_runnable
-
-    {:ok, reread} = RunManifest.read()
-    assert reread["statuses"]["001"] == "done"
-    assert reread["statuses"]["002"] == "pending"
-    assert reread["statuses"]["003"] == "escalated"
-    assert reread["statuses"]["004"] == "halted"
-    assert reread["statuses"]["005"] == "failed"
-    assert reread["statuses"]["006"] == "blocked"
-    assert reread["statuses"]["007"] == "pending"
   end
 
   test "resume_run/1 dispatches continuation at :tasks — specify/clarify/plan never regenerate" do
-    layout = seed_mid_run_state()
+    {layout, run_key} = seed_mid_run_state()
     me = self()
+
+    # `seed_mid_run_state/0` itself plants a :plan phase attempt (the
+    # fixture's own "plan just finished" checkpoint marker) — captured here so
+    # the post-run assertion can prove that row was never touched, rather than
+    # merely asserting :plan is present (which the seed guarantees regardless).
+    seeded_plan_attempt =
+      Store.run(run_key)
+      |> elem(1)
+      |> Map.fetch!(:features)
+      |> hd()
+      |> Map.fetch!(:phase_attempts)
+      |> Enum.find(&(&1.phase == :plan))
 
     assert {:ok, pid} = SpeckitOrchestrator.resume_run(owner: me)
     on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
@@ -297,27 +338,20 @@ defmodule SpeckitOrchestrator.RecoveryTest do
     assert_receive {:run_complete, report}, 10_000
     assert report.failed == ["001"]
 
-    log_dir = Path.join(layout.worktree_root, "001-core-ledger/.speckit_logs")
-    refute File.exists?(Path.join(log_dir, "01-specify.md"))
-    refute File.exists?(Path.join(log_dir, "02-clarify.md"))
-    refute File.exists?(Path.join(log_dir, "03-plan.md"))
-    assert File.exists?(Path.join(log_dir, "04-tasks.md"))
+    {:ok, detail} = Store.run(run_key)
+    phases = detail.features |> hd() |> Map.fetch!(:phase_attempts)
+    refute Enum.any?(phases, &(&1.phase == :specify))
+    refute Enum.any?(phases, &(&1.phase == :clarify))
+    assert Enum.any?(phases, &(&1.phase == :tasks))
+    assert Enum.find(phases, &(&1.phase == :plan)) == seeded_plan_attempt
 
     on_exit(fn -> File.rm_rf(layout.worktree_root) end)
   end
 
   # ---- US4 (T022/T023): both run shapes reconcile correctly -----------------
 
-  defp converge_ready, do: "Tests green, committed.\n\n## CONVERGE: READY\n"
-
-  defp write_final_marker(layout, id) do
-    dir = Path.join(layout.transcript_root, id)
-    File.mkdir_p!(dir)
-    File.write!(Path.join(dir, "07-converge.md"), converge_ready())
-  end
-
   # T022: ad-hoc run whose single feature finished before a crash — non-PR
-  # done-signal (converge marker + committed branch, no pr.json).
+  # done-signal (converge marker + committed branch, no PR record).
   defp seed_ad_hoc_done_state do
     repo = base_repo()
     Application.put_env(:speckit_orchestrator, :repo, repo)
@@ -329,25 +363,20 @@ defmodule SpeckitOrchestrator.RecoveryTest do
     commit(repo, "speckit: 001 checkpoint after converge")
     git!(repo, ["checkout", "-q", "main"])
 
-    write_final_marker(layout, "001")
+    run_key = open_run(repo, layout, [feat("001")])
+    seed_converge_marker(run_key, "001")
 
-    write_manifest(%{
-      features: [feat("001")],
-      statuses: %{"001" => :running},
-      layout: layout
-    })
-
-    layout
+    {layout, run_key}
   end
 
   test "reconcile_run/2 (T022): ad-hoc run derives :ad_hoc shape and reconciles the finished feature to :done" do
-    layout = seed_ad_hoc_done_state()
+    {layout, run_key} = seed_ad_hoc_done_state()
     on_exit(fn -> File.rm_rf(layout.worktree_root) end)
 
-    {:ok, record} = RunManifest.read()
+    {:ok, detail} = Store.run(run_key)
 
     assert {:ok, %{statuses: statuses, report: report, resume_phases: resume_phases}} =
-             Recovery.reconcile_run(record)
+             Recovery.reconcile_run(detail)
 
     assert report.run_shape == :ad_hoc
     assert statuses["001"] == :done
@@ -369,24 +398,19 @@ defmodule SpeckitOrchestrator.RecoveryTest do
     commit(repo, "speckit: 001 checkpoint after converge")
     git!(repo, ["checkout", "-q", "main"])
 
-    write_pr(layout, "001")
+    run_key = open_run(repo, layout, [feat("001"), feat("002", ["001"])])
+    seed_terminal(run_key, "001", :done, pr_description: %{pr_title: "t", pr_body: "b"})
 
-    write_manifest(%{
-      features: [feat("001"), feat("002", ["001"])],
-      statuses: %{"001" => :running, "002" => :pending},
-      layout: layout
-    })
-
-    layout
+    {layout, run_key}
   end
 
   test "reconcile_run/2 (T023): breakdown-wave run derives {:breakdown, slug} shape and releases the dependent" do
-    layout = seed_breakdown_wave_state()
+    {layout, run_key} = seed_breakdown_wave_state()
     on_exit(fn -> File.rm_rf(layout.worktree_root) end)
 
-    {:ok, record} = RunManifest.read()
+    {:ok, detail} = Store.run(run_key)
 
-    assert {:ok, %{statuses: statuses, report: report}} = Recovery.reconcile_run(record)
+    assert {:ok, %{statuses: statuses, report: report}} = Recovery.reconcile_run(detail)
 
     assert report.run_shape == {:breakdown, "core-ledger"}
     assert statuses["001"] == :done
@@ -406,15 +430,14 @@ defmodule SpeckitOrchestrator.RecoveryTest do
   # `Recovery.reconcile_run/2` rather than unit-testing `Evidence.collect/3`
   # in isolation (already covered by evidence_test.exs).
   test "reconcile_run/2 (T026): an unreachable remote seam never blocks reconciliation — every feature resolves from local evidence alone" do
-    layout = seed_breakdown_wave_state()
+    {layout, run_key} = seed_breakdown_wave_state()
     on_exit(fn -> File.rm_rf(layout.worktree_root) end)
 
-    {:ok, record} = RunManifest.read()
-
+    {:ok, detail} = Store.run(run_key)
     unreachable_remote = fn _feature_id -> raise "simulated network timeout" end
 
     assert {:ok, %{statuses: statuses, report: report}} =
-             Recovery.reconcile_run(record, remote: unreachable_remote)
+             Recovery.reconcile_run(detail, remote: unreachable_remote)
 
     # Same reconciled outcome as the reachable-network case (T023) — the
     # remote probe is never authoritative, only opportunistic.
@@ -423,82 +446,84 @@ defmodule SpeckitOrchestrator.RecoveryTest do
     assert statuses["002"] == :pending
     assert "002" in report.next_runnable
 
-    # "002" has no local pr.json, so the collector attempts the remote probe
-    # for it and must degrade the raise to :unknown rather than propagating.
+    feature_records = Map.new(detail.features, &{&1.feature_id, &1})
+
+    # "002" has no local PR record, so the collector attempts the remote
+    # probe for it and must degrade the raise to :unknown rather than
+    # propagating.
     evidence_002 =
-      Evidence.collect(feat("002"), layout, remote: unreachable_remote)
+      Evidence.collect(feat("002"), feature_records["002"], remote: unreachable_remote)
 
     assert evidence_002.pr_record? == false
     assert evidence_002.pr_remote? == :unknown
 
-    # "001" has a local pr.json, so the remote seam is never consulted for it.
-    evidence_001 = Evidence.collect(feat("001"), layout, remote: unreachable_remote)
+    # "001" has a recorded PR description, so the remote seam is never
+    # consulted for it.
+    evidence_001 =
+      Evidence.collect(feat("001"), feature_records["001"], remote: unreachable_remote)
+
     assert evidence_001.pr_record? == true
     assert evidence_001.pr_remote? == :unknown
   end
 
-  # ---- Phase 7 (T027): manifest missing/corrupt fail-loud -----------------
+  # ---- Phase 7 (T027): record missing/corrupt fail-loud -----------------
   #
-  # Per contracts/recovery-report.md "Errors": a missing/corrupt manifest
-  # propagates as `{:error, :no_manifest | :corrupt}` — recovery never
-  # fabricates a run (Principle II). `reconcile_run/2` itself only ever sees
-  # an already-read record, so its own contract surface is the "corrupt"
-  # half (a record missing `"features"`/`"statuses"`); "no_manifest" is
-  # `RunManifest.read/0`'s concern, upstream of any `reconcile_run/2` call —
-  # asserted here directly so the boundary is explicit rather than assumed.
-  test "reconcile_run/2 (T027): a malformed record (missing features/statuses) returns {:error, :corrupt}, never fabricates a run" do
+  # Per contracts/recovery-report.md "Errors": a missing/damaged run record
+  # propagates rather than fabricating a run (Principle II). `reconcile_run/2`
+  # itself only ever sees an already-read record, so its own contract surface
+  # is the "corrupt" half (a record not shaped like a store run detail);
+  # "no run" is `Store.current_run_key/1`'s concern, upstream of any
+  # `reconcile_run/2` call — asserted here directly so the boundary is
+  # explicit rather than assumed (018).
+  test "reconcile_run/2 (T027): a malformed record (not shaped like a store run detail) returns {:error, :corrupt}, never fabricates a run" do
     assert {:error, :corrupt} = Recovery.reconcile_run(%{"not" => "a manifest"})
     assert {:error, :corrupt} = Recovery.reconcile_run(%{})
   end
 
-  test "reconcile_run/2 (T027): an absent manifest is caught by RunManifest.read/0 before reconcile_run/2 is ever called" do
-    assert {:error, :no_manifest} = RunManifest.read()
+  test "reconcile_run/2 (T027): an absent run is caught before reconcile_run/2 is ever called" do
+    assert {:error, :no_manifest} = SpeckitOrchestrator.resumable("o:no-such-repo-recovery-test")
   end
 
   # ---- T032 (016 US3, research.md D4): plan_run/2 vs reconcile_run/2 split --
 
-  defmodule CountingManifest do
-    def write(_record) do
-      Process.put(:t032_manifest_writes, Process.get(:t032_manifest_writes, 0) + 1)
+  defmodule CountingWriter do
+    def record_feature_terminal(_run_key, _feature_id, _status, _reason, _opts) do
+      Process.put(:t032_writes, Process.get(:t032_writes, 0) + 1)
       :ok
     end
   end
 
   test "plan_run/2 returns the same {:ok, %{statuses, resume_phases, report}} shape but performs no write" do
-    layout = seed_mid_run_state()
+    {layout, run_key} = seed_mid_run_state()
     on_exit(fn -> File.rm_rf(layout.worktree_root) end)
 
-    {:ok, record} = RunManifest.read()
-    Process.put(:t032_manifest_writes, 0)
+    {:ok, detail} = Store.run(run_key)
+    Process.put(:t032_writes, 0)
 
     assert {:ok, %{statuses: statuses, resume_phases: resume_phases, report: report}} =
-             Recovery.plan_run(record, manifest: CountingManifest)
+             Recovery.plan_run(detail, writer: CountingWriter)
 
     assert statuses["001"] == :running
     assert resume_phases["001"] == :tasks
     assert %Recovery.Report{} = report
 
-    assert Process.get(:t032_manifest_writes) == 0
-
-    # No durable effect: a fresh read is still the pre-plan_run record.
-    {:ok, reread} = RunManifest.read()
-    assert reread["statuses"]["001"] == "running"
+    assert Process.get(:t032_writes) == 0
   end
 
-  test "reconcile_run/2 still performs exactly one write — regression for resume_run/1 and resumable_run/0" do
-    layout = seed_mid_run_state()
+  test "reconcile_run/2 performs a correction write only when reconciliation actually upgrades a feature to :done" do
+    {layout, run_key} = seed_ad_hoc_done_state()
     on_exit(fn -> File.rm_rf(layout.worktree_root) end)
 
-    {:ok, record} = RunManifest.read()
-    Process.put(:t032_manifest_writes, 0)
+    {:ok, detail} = Store.run(run_key)
+    Process.put(:t032_writes, 0)
 
     assert {:ok, %{statuses: statuses, resume_phases: resume_phases, report: report}} =
-             Recovery.reconcile_run(record, manifest: CountingManifest)
+             Recovery.reconcile_run(detail, writer: CountingWriter)
 
-    assert statuses["001"] == :running
-    assert resume_phases["001"] == :tasks
+    assert statuses["001"] == :done
+    assert resume_phases == %{}
     assert %Recovery.Report{} = report
 
-    assert Process.get(:t032_manifest_writes) == 1
+    assert Process.get(:t032_writes) == 1
   end
 end

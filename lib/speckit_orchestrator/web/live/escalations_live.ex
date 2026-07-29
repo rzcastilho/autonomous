@@ -9,12 +9,11 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
 
   Reads the same `ConsoleReadModel.merge/3` view as Mission Control (one
   status→color palette, one phase order — FR-034) and filters it to diverted
-  features; `Checkpoint.read/2` (keyed by the run's `%Layout{}`, rebuilt from
-  the run manifest) supplies the pointer and, for `:escalated`
-  features, the feature's worktree is globbed for its `spec.md`'s
-  `## NEEDS HUMAN` block (FR-021). A missing/corrupt checkpoint steers the
-  view to full-restart only — `resume/2` is never offered without one
-  (FR-023).
+  features; `SpeckitOrchestrator.run_detail/1`'s per-feature `checkpoint`
+  (018) supplies the pointer and, for `:escalated` features, the feature's
+  worktree is globbed for its `spec.md`'s `## NEEDS HUMAN` block (FR-021). No
+  checkpoint steers the view to full-restart only — `resume/2` is never
+  offered without one (FR-023).
 
   Test seam: `Application.get_env(:speckit_orchestrator, :console_test_runner)`,
   mirroring `TriggerLive`, is injected as the `:runner` opt on both recovery
@@ -24,7 +23,6 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
   use SpeckitOrchestrator.Web, :live_view
 
   alias SpeckitOrchestrator.{
-    Checkpoint,
     Config,
     ConsoleProjection,
     ConsoleReadModel,
@@ -32,7 +30,6 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
     Feature,
     Ledger,
     Pipeline,
-    RunManifest,
     TaskPhaseRef,
     TaskPlan,
     Worktree
@@ -73,18 +70,19 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
     view =
       ConsoleReadModel.merge(coordinator_status(), ledger_snapshot(), ConsoleProjection.read())
 
-    assign(socket, escalations: build_escalations(view, run_layout()))
+    run_id = SpeckitOrchestrator.current_run_id()
+
+    assign(socket,
+      run_id: run_id,
+      escalations: build_escalations(view, current_run_detail(run_id))
+    )
   end
 
-  # The run's `%Layout{}` (scope-keyed transcript root) is where checkpoints
-  # actually live post-012; without it `Checkpoint.read/2` falls back to the
-  # legacy flat root and never finds a partitioned run's checkpoint — which
-  # would strand every diverted feature on full-restart-only. Mirrors
-  # `PipelineDagLive`'s manifest → layout rebuild. `nil` when no manifest is
-  # readable (pre-012 flat callers still resolve via the read's own fallback).
-  defp run_layout do
-    case RunManifest.read() do
-      {:ok, record} -> RunManifest.rebuild_layout(record, Config.repo())
+  defp current_run_detail(nil), do: nil
+
+  defp current_run_detail(run_id) do
+    case SpeckitOrchestrator.run_detail(run_id) do
+      {:ok, detail} -> detail
       _ -> nil
     end
   end
@@ -99,22 +97,32 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
 
   # ---- EscalationView assembly (data-model.md) -----------------------------
 
-  defp build_escalations(view, layout) do
+  defp build_escalations(view, run_detail) do
+    run_context = run_detail && run_detail.settings
+
     view.per_feature
     |> Enum.filter(fn {_id, f} -> f.status in @diverted_statuses end)
     |> Enum.sort_by(fn {id, _f} -> id end)
-    |> Enum.map(fn {id, feature} -> escalation_view(id, feature, layout) end)
+    |> Enum.map(fn {id, feature} ->
+      escalation_view(id, feature, feature_detail(run_detail, id), run_context)
+    end)
   end
 
-  defp escalation_view(id, feature, layout) do
-    checkpoint = read_checkpoint(id, layout)
-    identity = identity(id, feature, checkpoint)
+  defp feature_detail(nil, _id), do: nil
+
+  defp feature_detail(%{features: features}, id),
+    do: Enum.find(features, &(&1.feature_id == id))
+
+  defp escalation_view(id, feature, feature_detail, run_context) do
+    checkpoint = feature_detail && feature_detail.checkpoint
+    identity = identity(id, feature, feature_detail)
     default_phase = default_phase(checkpoint)
 
     %{
       id: id,
       feature: feature,
       checkpoint: checkpoint,
+      run_context: run_context,
       divert_reason: divert_reason(checkpoint),
       clarify: clarify_block(identity, feature.status),
       identity: identity,
@@ -147,55 +155,39 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
     end
   end
 
-  defp ref_from_checkpoint({:ok, %{"implement_chunk" => %{} = chunk}}) do
+  defp ref_from_checkpoint(%{implement_chunk: %{} = chunk}) do
     %TaskPhaseRef{
-      ordinal: Map.get(chunk, "ordinal"),
-      number: Map.get(chunk, "number"),
-      title: Map.get(chunk, "title")
+      ordinal: Map.get(chunk, :ordinal),
+      number: Map.get(chunk, :number),
+      title: Map.get(chunk, :title)
     }
   end
 
   defp ref_from_checkpoint(_checkpoint), do: nil
 
-  # Checkpoint identity wins when present (it recorded the exact slug/path the
-  # feature ran under); otherwise Coordinator's own Feature struct still knows
-  # the slug (it is tracking this feature this run) — `path` degrades to `""`,
-  # harmless: nothing downstream reads it except a future checkpoint write.
-  defp identity(id, feature, {:ok, record}) do
+  # The store's `feature_run` record wins when present (018) — it carries the
+  # exact slug/path the feature ran under; otherwise Coordinator's own
+  # `Feature` struct still knows the slug (it is tracking this feature this
+  # run) — `path` degrades to `""`, harmless: nothing downstream reads it
+  # except a future checkpoint write.
+  defp identity(id, _feature, %{slug: slug} = feature_detail) when is_binary(slug) do
     %Feature{
       id: id,
-      slug: record["slug"] || feature.slug,
-      path: record["path"] || "",
-      prereqs: feature[:prereqs] || []
+      slug: slug,
+      path: feature_detail.path || "",
+      prereqs: feature_detail.prereqs || []
     }
   end
 
-  defp identity(id, feature, _error) do
+  defp identity(id, feature, _feature_detail) do
     %Feature{id: id, slug: feature.slug, path: "", prereqs: feature[:prereqs] || []}
   end
 
-  # Same legacy-path fallback the `resume/2` facade uses (`find_checkpoint/2`,
-  # FR-013): a checkpoint written under the pre-012 flat root is still found
-  # when the run's partitioned `%Layout{}` read misses. Keeps the UI's
-  # resume-availability decision identical to what `resume/2` will actually do.
-  defp read_checkpoint(id, layout) do
-    case Checkpoint.read(id, layout) do
-      {:error, :no_checkpoint} when not is_nil(layout) -> Checkpoint.read(id, nil)
-      other -> other
-    end
-  end
+  defp divert_reason(%{reason: reason}), do: reason
+  defp divert_reason(_checkpoint), do: nil
 
-  defp divert_reason({:ok, record}), do: record["reason"]
-  defp divert_reason(_error), do: nil
-
-  defp default_phase({:ok, %{"last_phase" => phase}}) do
-    case safe_phase(phase) do
-      {:ok, p} -> p
-      :error -> List.first(Pipeline.phases())
-    end
-  end
-
-  defp default_phase(_error), do: List.first(Pipeline.phases())
+  defp default_phase(%{phase: phase}) when not is_nil(phase), do: phase
+  defp default_phase(_checkpoint), do: List.first(Pipeline.phases())
 
   defp safe_phase(phase) when is_binary(phase) do
     atom = String.to_existing_atom(phase)
@@ -374,25 +366,24 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
           </span>
           <.status_pill status={e.feature.status} />
           <span :if={e.divert_reason} class="escalation-reason" data-divert-reason>
-            reason: {e.divert_reason}
+            reason: {inspect(e.divert_reason)}
           </span>
         </div>
 
         <div class="escalation-card-body">
-          <div :if={match?({:ok, _}, e.checkpoint)} class="checkpoint-box" data-checkpoint="ok">
-            <% {:ok, record} = e.checkpoint %>
+          <div :if={e.checkpoint} class="checkpoint-box" data-checkpoint="ok">
             <div class="checkpoint-box-label">
               <span class="checkpoint-dot"></span> CHECKPOINT
             </div>
             <dl class="checkpoint-fields">
               <dt>last_phase</dt>
-              <dd>{record["last_phase"]}</dd>
+              <dd>{e.checkpoint.phase}</dd>
               <dt>status</dt>
-              <dd>{record["status"]}</dd>
+              <dd>{e.checkpoint.status}</dd>
               <dt>session_id</dt>
-              <dd>{record["session_id"] || "—"}</dd>
+              <dd>{e.checkpoint.session_id || "—"}</dd>
               <dt>reason</dt>
-              <dd>{record["reason"]}</dd>
+              <dd>{inspect(e.checkpoint.reason)}</dd>
             </dl>
 
             <div class="run-context-label" data-resume-scope-note>
@@ -401,30 +392,26 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
               as prerequisites complete (016).
             </div>
 
-            <div :if={record["context"]} class="run-context-label">
+            <div :if={e.run_context} class="run-context-label">
               RUN_CONTEXT · resume re-executes under recorded run shape
             </div>
-            <div :if={record["context"]} class="run-context" data-run-context>
-              <span :for={{k, v} <- record["context"]} class="run-context-chip">
+            <div :if={e.run_context} class="run-context" data-run-context>
+              <span :for={{k, v} <- e.run_context} class="run-context-chip">
                 {k}=<span>{inspect(v)}</span>
               </span>
             </div>
 
             <div
-              :if={auto_remediation_summary(record)}
+              :if={auto_remediation_summary(e.checkpoint)}
               class="run-context-label"
               data-auto-remediation
             >
-              {auto_remediation_summary(record)}
+              {auto_remediation_summary(e.checkpoint)}
             </div>
           </div>
 
-          <p
-            :if={match?({:error, _}, e.checkpoint)}
-            class="checkpoint-box checkpoint-error"
-            data-checkpoint={elem(e.checkpoint, 1)}
-          >
-            No usable checkpoint ({elem(e.checkpoint, 1)}) — full restart only.
+          <p :if={is_nil(e.checkpoint)} class="checkpoint-box checkpoint-error" data-checkpoint="absent">
+            No usable checkpoint — full restart only.
           </p>
 
           <div :if={e.clarify} class="clarify-block" data-clarify>
@@ -432,7 +419,7 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
           </div>
 
           <form
-            :if={match?({:ok, _}, e.checkpoint)}
+            :if={e.checkpoint}
             id={"resume-form-#{e.id}"}
             phx-submit="resume"
             data-form="resume"
@@ -495,13 +482,13 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
               >
                 &#8635; Full restart
               </button>
-              <a href={transcript_href(e)} class="btn-secondary" data-action={"transcript-#{e.id}"}>
+              <a href={transcript_href(@run_id, e)} class="btn-secondary" data-action={"transcript-#{e.id}"}>
                 &#8801; Read {phase_label(e)}.md
               </a>
             </div>
           </form>
 
-          <div :if={not match?({:ok, _}, e.checkpoint)} class="escalation-actions">
+          <div :if={is_nil(e.checkpoint)} class="escalation-actions">
             <button
               type="button"
               phx-click="full_restart"
@@ -511,7 +498,7 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
             >
               &#8635; Full restart
             </button>
-            <a href={transcript_href(e)} class="btn-secondary" data-action={"transcript-#{e.id}"}>
+            <a href={transcript_href(@run_id, e)} class="btn-secondary" data-action={"transcript-#{e.id}"}>
               &#8801; Read {phase_label(e)}.md
             </a>
           </div>
@@ -536,17 +523,17 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
   # themselves are reachable through the existing transcripts link below.
   # Absent for every pre-017 checkpoint and for any feature whose loop made no
   # attempt.
-  defp auto_remediation_summary(%{"analyze_remediation" => %{} = r}) do
-    with used when is_integer(used) <- Map.get(r, "attempts_used"),
-         limit when is_integer(limit) <- Map.get(r, "limit") do
+  defp auto_remediation_summary(%{analyze_remediation: %{} = r}) do
+    with used when is_integer(used) <- Map.get(r, :attempts_used),
+         limit when is_integer(limit) <- Map.get(r, :limit) do
       "auto-remediation: #{used}/#{limit} attempts #{verb(used, limit)}" <>
-        " (threshold #{Map.get(r, "threshold") || "?"})"
+        " (threshold #{Map.get(r, :threshold) || "?"})"
     else
       _ -> nil
     end
   end
 
-  defp auto_remediation_summary(_record), do: nil
+  defp auto_remediation_summary(_checkpoint), do: nil
 
   defp verb(used, limit) when used >= limit, do: "exhausted"
   defp verb(_used, _limit), do: "spent"
@@ -558,16 +545,13 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
 
   defp status_color(status), do: palette() |> Map.get(status, {"", "#64748b"}) |> elem(1)
 
-  defp phase_label(e), do: e |> phase_for() |> to_string()
+  defp phase_label(e), do: to_string(e.default_phase)
 
-  defp transcript_href(e), do: "/transcripts?feature=#{e.id}&phase=#{phase_for(e)}"
+  # Run-scoped attempt reference (018, contracts/console-runs.md Navigation) —
+  # `TranscriptsLive` resolves the latest attempt for this feature/phase
+  # within the run rather than reading a file path directly.
+  defp transcript_href(nil, e), do: "/transcripts?feature=#{e.id}&phase=#{e.default_phase}"
 
-  defp phase_for(%{checkpoint: {:ok, %{"last_phase" => phase}}} = e) do
-    case safe_phase(phase) do
-      {:ok, p} -> p
-      :error -> e.default_phase
-    end
-  end
-
-  defp phase_for(e), do: e.default_phase
+  defp transcript_href(run_id, e),
+    do: "/transcripts?run_id=#{run_id}&feature=#{e.id}&phase=#{e.default_phase}"
 end

@@ -25,15 +25,18 @@ defmodule SpeckitOrchestrator.AnalyzeRunner do
 
   alias SpeckitOrchestrator.{
     AnalyzeResult,
+    Config,
+    Cost,
     Ledger,
     PhaseResult,
     PhaseStep,
     Prompts,
     Remediation,
     Severity,
-    Telemetry,
-    Transcripts
+    Telemetry
   }
+
+  alias SpeckitOrchestrator.Store.Writer
 
   alias SpeckitOrchestrator.Remediation.Settings
 
@@ -45,7 +48,8 @@ defmodule SpeckitOrchestrator.AnalyzeRunner do
           required(:timeout) => timeout(),
           required(:step) => pos_integer(),
           required(:ledger) => pid() | atom() | nil,
-          required(:settings) => Settings.t()
+          required(:settings) => Settings.t(),
+          optional(:run_key) => {binary(), binary()} | nil
         }
 
   @doc """
@@ -66,12 +70,7 @@ defmodule SpeckitOrchestrator.AnalyzeRunner do
   # label, no extra span meta, no `Remediation.next/2` call, no extra
   # transcript, no cost beyond that one run.
   def run(%{settings: %Settings{enabled?: false}} = ctx) do
-    PhaseStep.run(ctx.pid, ctx.feature, :analyze,
-      step: ctx.step,
-      timeout: ctx.timeout,
-      worktree: ctx.worktree,
-      layout: ctx.layout
-    )
+    PhaseStep.run(ctx.pid, ctx.feature, :analyze, step: ctx.step, timeout: ctx.timeout)
   end
 
   def run(%{settings: %Settings{} = settings} = ctx) do
@@ -79,6 +78,7 @@ defmodule SpeckitOrchestrator.AnalyzeRunner do
       settings: settings,
       attempts_used: 0,
       analyze_runs: 0,
+      analyze_started_at: nil,
       last_result: nil,
       last_outcome: nil
     }
@@ -108,7 +108,13 @@ defmodule SpeckitOrchestrator.AnalyzeRunner do
         halt(ctx, state1, agent)
 
       {:remediate, findings, state1} ->
-        write_attempt_record(ctx, state1, agent)
+        # This analyze run is not the final one — the loop is about to run a
+        # corrective step and re-analyze — so record it here, at its own
+        # ordinal. The final run is recorded by `FeatureRunner` at the phase
+        # boundary, together with the checkpoint it leaves (FR-012a,
+        # Constitution Principle V: every analyze re-run individually
+        # recorded).
+        record_analyze_run(ctx, state1, agent)
         remediate_then_reanalyze(ctx, state1, findings)
     end
   end
@@ -141,24 +147,65 @@ defmodule SpeckitOrchestrator.AnalyzeRunner do
 
   # ---- one analyze run --------------------------------------------------------
 
-  # Always written under the plain `analyze` label, so `NN-analyze.md` is the
-  # final run's transcript at every point in the loop and `Recovery.Evidence` /
-  # `TranscriptsLive` keep working untouched. The per-attempt `-a<k>` copies are
-  # written separately (research R9, contracts/analyze_loop.md §4).
+  # Every analyze run is durably recorded as its own attempt-numbered
+  # `:analyze` phase attempt, and no run overwrites an earlier one (FR-012a,
+  # Constitution Principle V). Runs that the loop supersedes are recorded here
+  # in `loop/3`'s `{:remediate, ...}` branch; the **final** run is recorded by
+  # `FeatureRunner` at the phase boundary — at ordinal `analyze_runs`, carried
+  # up through the agent state — so it lands in the same transaction as the
+  # checkpoint that boundary leaves (FR-006). Each remediation attempt's own
+  # findings/outcome/cost stay individually durable via
+  # `record_remediation_attempt/8` below.
   defp analyze(ctx, state) do
     k = state.analyze_runs + 1
+    started_at = DateTime.utc_now()
 
     agent =
       PhaseStep.run(ctx.pid, ctx.feature, :analyze,
         step: ctx.step,
         timeout: ctx.timeout,
-        worktree: ctx.worktree,
-        layout: ctx.layout,
         span_meta: %{attempt: k, limit: state.settings.attempt_limit}
       )
 
-    {agent, %{state | analyze_runs: k}}
+    {agent, %{state | analyze_runs: k, analyze_started_at: started_at}}
   end
+
+  # One superseded analyze run, at its own ordinal. No checkpoint: an
+  # intermediate run is not a phase boundary, so the only durable resume
+  # pointer stays the one the final run writes.
+  defp record_analyze_run(%{run_key: run_key} = ctx, state, agent) when not is_nil(run_key) do
+    result = agent.state.last_result
+    ended_at = DateTime.utc_now()
+    {cost_amount, cost_kind} = Cost.for_phase(:analyze, result || %PhaseResult{})
+
+    attempt = %{
+      feature_id: ctx.feature.id,
+      phase: :analyze,
+      ordinal: state.analyze_runs,
+      step: ctx.step,
+      label: "analyze-a#{state.analyze_runs}",
+      started_at: state.analyze_started_at,
+      ended_at: ended_at,
+      duration_ms: DateTime.diff(ended_at, state.analyze_started_at, :millisecond),
+      outcome: agent.state.last_outcome,
+      model: Config.model_for(:analyze),
+      cost_usd: cost_amount,
+      cost_kind: cost_kind,
+      session_id: agent.state.session_id,
+      error: result && result.error
+    }
+
+    _ =
+      Writer.record_phase_attempt(run_key, %{
+        attempt: attempt,
+        cost: %{amount_usd: cost_amount, kind: cost_kind},
+        transcript: result && result.final_text
+      })
+
+    :ok
+  end
+
+  defp record_analyze_run(_ctx, _state, _agent), do: :ok
 
   # `RunFeaturePhase` extracts only the gate booleans; the loop needs the
   # findings themselves, so the transcript is re-parsed here (pure, cheap). A
@@ -189,6 +236,7 @@ defmodule SpeckitOrchestrator.AnalyzeRunner do
 
     prompt = Prompts.load("analyze_remediation") <> "\n\n---\n" <> instruction
     meta = remediation_meta(ctx, state, findings)
+    started_at = DateTime.utc_now()
 
     Telemetry.remediation_span()
     |> :telemetry.span(meta, fn ->
@@ -202,15 +250,16 @@ defmodule SpeckitOrchestrator.AnalyzeRunner do
       {:ok, agent} = AgentServer.call(ctx.pid, signal, ctx.timeout)
       entry = List.first(agent.state.history) || %{}
       outcome = Map.get(entry, :outcome, agent.state.last_outcome)
+      cost = Map.get(entry, :cost, 0.0)
 
-      write_remediation_record(ctx, attempt, instruction, agent.state.last_result)
+      record_remediation_attempt(ctx, state, findings, attempt, outcome, started_at, agent)
 
       Logger.info(
         "feature #{ctx.feature.id} auto-remediation attempt #{attempt}/#{limit} -> " <>
           inspect(outcome)
       )
 
-      {{agent, outcome}, Map.merge(meta, %{outcome: outcome, cost: Map.get(entry, :cost, 0.0)})}
+      {{agent, outcome}, Map.merge(meta, %{outcome: outcome, cost: cost})}
     end)
   end
 
@@ -228,59 +277,94 @@ defmodule SpeckitOrchestrator.AnalyzeRunner do
   end
 
   # ---- records (FR-012, FR-012a, contracts/analyze_loop.md §4) ----------------
+  #
+  # One `Store.Writer.record_remediation_attempt/2` transaction per attempt
+  # (018): the corrective step's own `phase_attempt` (`phase: :remediation`),
+  # the `remediation_attempt` row (findings/outcome/cost/limit/threshold
+  # verbatim), and its transcript — a no-op when this run isn't store-backed.
+  defp record_remediation_attempt(ctx, state, findings, attempt, outcome, started_at, agent) do
+    case Map.get(ctx, :run_key) do
+      nil ->
+        :ok
 
-  defp write_attempt_record(ctx, state, agent) do
-    write_analyze_copy(ctx, state.analyze_runs, agent.state.last_result)
+      run_key ->
+        do_record_remediation_attempt(
+          run_key,
+          ctx,
+          state,
+          findings,
+          attempt,
+          outcome,
+          started_at,
+          agent
+        )
+    end
   end
 
-  defp write_analyze_copy(ctx, k, %PhaseResult{} = result) do
-    Transcripts.write_labelled(
-      ctx.worktree,
-      ctx.layout,
-      ctx.step,
-      "analyze-a#{k}",
-      :analyze,
-      result
-    )
-  end
+  defp do_record_remediation_attempt(
+         run_key,
+         ctx,
+         state,
+         findings,
+         attempt,
+         outcome,
+         started_at,
+         agent
+       ) do
+    result = agent.state.last_result
+    ended_at = DateTime.utc_now()
+    {cost_amount, cost_kind} = Cost.for_phase(:auto_remediation, result || %PhaseResult{})
 
-  defp write_analyze_copy(_ctx, _k, _result), do: :ok
+    max_severity = findings |> Enum.map(&Severity.parse_finding/1) |> Severity.max()
 
-  # The triggering findings, the instruction issued, the outcome and the cost
-  # are all recoverable from this one file (FR-012).
-  defp write_remediation_record(ctx, attempt, instruction, %PhaseResult{} = result) do
-    body = %{
-      result
-      | final_text:
-          "### instruction\n\n" <>
-            instruction <> "\n\n### step output\n\n" <> (result.final_text || "")
+    phase_attempt = %{
+      step: ctx.step,
+      label: "remediation-a#{attempt}",
+      started_at: started_at,
+      ended_at: ended_at,
+      duration_ms: DateTime.diff(ended_at, started_at, :millisecond),
+      outcome: outcome,
+      model: state.settings.model,
+      cost_usd: cost_amount,
+      cost_kind: cost_kind,
+      session_id: agent.state.session_id,
+      error: result && result.error
     }
 
-    Transcripts.write_labelled(
-      ctx.worktree,
-      ctx.layout,
-      ctx.step,
-      "remediation-a#{attempt}",
-      :auto_remediation,
-      body
-    )
-  end
+    remediation = %{
+      feature_id: ctx.feature.id,
+      ordinal: attempt,
+      findings: findings,
+      max_severity: max_severity,
+      outcome: outcome,
+      cost_usd: cost_amount,
+      attempt_limit: state.settings.attempt_limit,
+      threshold: state.settings.threshold,
+      model: state.settings.model
+    }
 
-  defp write_remediation_record(_ctx, _attempt, _instruction, _result), do: :ok
+    _ =
+      Writer.record_remediation_attempt(run_key, %{
+        remediation: remediation,
+        phase_attempt: phase_attempt,
+        cost: %{amount_usd: cost_amount, kind: cost_kind},
+        transcript: result && result.final_text
+      })
+
+    :ok
+  end
 
   # ---- terminal handling -------------------------------------------------------
 
   # Converged / below threshold / exhausted: the final analyze run governs, and
   # `Pipeline.next/3` evaluates it exactly as it would an un-looped run. Only the
   # *reason* is later decorated, by `Remediation.terminal_reason/2`.
-  defp finish(ctx, state, agent, exhausted) do
-    if state.attempts_used > 0,
-      do: write_analyze_copy(ctx, state.analyze_runs, agent.state.last_result)
-
+  defp finish(_ctx, state, agent, exhausted) do
     patch(agent,
       last_signals: exhaustion_signals(agent.state.last_signals || %{}, state, exhausted),
       terminal_reason: nil,
-      analyze_remediation: provenance(state)
+      analyze_remediation: provenance(state),
+      analyze_runs: state.analyze_runs
     )
   end
 
@@ -298,6 +382,15 @@ defmodule SpeckitOrchestrator.AnalyzeRunner do
   # (`Pipeline` stays untouched) — `terminal_reason` is the existing seam
   # `FeatureRunner` reads to short-circuit straight to the specific reason,
   # shared with `ChunkRunner`.
+  #
+  # Both paths are reachable only from `remediate_then_reanalyze/3`, i.e. only
+  # after the `{:remediate, …}` branch already recorded the analyze run that
+  # triggered the corrective step — and the agent they return is the
+  # **remediation** agent, not that analyze run. So both flag
+  # `analyze_attempt_recorded?`, telling `FeatureRunner` to write the
+  # checkpoint alone rather than record this agent as the `:analyze` attempt.
+  # Without it the remediation step's outcome, cost and transcript overwrite
+  # the analyze run at the same `attempt_id`, and analyze's own record is lost.
   defp halt(ctx, state, agent) do
     Logger.info("feature #{ctx.feature.id} analyze auto-remediation halted — breaker tripped")
 
@@ -305,7 +398,9 @@ defmodule SpeckitOrchestrator.AnalyzeRunner do
       last_outcome: :error,
       last_signals: %{},
       terminal_reason: {:halted, :breaker},
-      analyze_remediation: provenance(state)
+      analyze_remediation: provenance(state),
+      analyze_runs: state.analyze_runs,
+      analyze_attempt_recorded?: true
     )
   end
 
@@ -319,7 +414,9 @@ defmodule SpeckitOrchestrator.AnalyzeRunner do
       last_outcome: :error,
       last_signals: %{},
       terminal_reason: {:failed, :remediation_failed},
-      analyze_remediation: provenance(state)
+      analyze_remediation: provenance(state),
+      analyze_runs: state.analyze_runs,
+      analyze_attempt_recorded?: true
     )
   end
 

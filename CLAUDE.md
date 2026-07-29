@@ -86,10 +86,16 @@ dependency, fully unit-testable:
   `ANTHROPIC_DEFAULT_*_MODEL` env. `model_for/1` raises on an unrouted phase.
 - `Pipeline` — the pure phase transition table. `next/3` is the whole decision
   surface: advance, or divert via the **clarify gate** (`## NEEDS HUMAN` →
-  `:escalated`) or **analyze gate** (Critical finding → `:halted`, High →
-  `:escalated`). Gate signals are extracted upstream and passed in, keeping
-  this module side-effect free. `Pipeline` itself is unmodified by the loop
-  below — it still sees exactly one `:analyze` outcome per feature run.
+  `:escalated`) or **analyze gate** (Critical finding → `:halted`
+  unconditionally; High → `:escalated` **only when the run's severity
+  threshold is High or lower**). The gate is threshold-governed as of
+  constitution 2.0.0: one knob (`auto_remediation_threshold`, signalled as
+  `gate_threshold`, default `:high`) decides both when auto-remediation runs
+  and when the gate diverts, so a run pinned to `:critical` advances past a
+  High finding instead of escalating. Critical outranks every threshold and
+  can never be configured away. Gate signals are extracted upstream and passed
+  in, keeping this module side-effect free. `Pipeline` still sees exactly one
+  `:analyze` outcome per feature run.
 - `Severity` / `Remediation` (feature 017) — a bounded, switchable
   **auto-remediation loop** sits strictly *below* the analyze gate, inside the
   `:analyze` step: when analyze reports findings at or above a configured

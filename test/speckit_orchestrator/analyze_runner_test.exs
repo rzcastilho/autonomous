@@ -1,6 +1,7 @@
 defmodule SpeckitOrchestrator.AnalyzeRunnerTest do
-  # async: false — swaps the global :jido_claude sdk_module + scenario env.
-  use ExUnit.Case, async: false
+  # async: false — swaps the global :jido_claude sdk_module + scenario env;
+  # StoreCase (018) clears every store table before each test.
+  use SpeckitOrchestrator.StoreCase, async: false
 
   alias Jido.{AgentServer, Signal}
   alias SpeckitOrchestrator.{AnalyzeRunner, Feature, FeatureAgent, Ledger}
@@ -184,11 +185,35 @@ defmodule SpeckitOrchestrator.AnalyzeRunnerTest do
       timeout: 5_000,
       step: 5,
       ledger: Keyword.get(opts, :ledger),
-      settings: Keyword.get(opts, :settings) || settings()
+      settings: Keyword.get(opts, :settings) || settings(),
+      run_key: Keyword.get(opts, :run_key)
     })
   end
 
-  defp logs(dir), do: dir |> Path.join(".speckit_logs") |> File.ls!() |> Enum.sort()
+  # A store run scoped to this feature (018) — every remediation attempt
+  # AnalyzeRunner records (`Store.Writer.record_remediation_attempt/2`) lands
+  # here when `run/1` is given the returned `run_key`.
+  defp open_store_run do
+    repo_id = "o:analyze-runner-test"
+
+    {:ok, run_id} =
+      Writer.open_run(repo_id, %{
+        features: [
+          %{feature_id: feature().id, slug: feature().slug, path: feature().path, prereqs: []}
+        ],
+        settings: %{},
+        scope: :ad_hoc,
+        layout: %{}
+      })
+
+    {repo_id, run_id}
+  end
+
+  defp store_feature(run_key) do
+    {:ok, detail} = Store.run(run_key)
+    [feature_detail] = detail.features
+    feature_detail
+  end
 
   # ---- US1: self-heal without waking a human --------------------------------
 
@@ -214,47 +239,54 @@ defmodule SpeckitOrchestrator.AnalyzeRunnerTest do
     assert length(calls(agent, :remediation)) == 1
   end
 
-  test "records every attempt without consuming a pipeline step number" do
+  test "records every attempt via the store, without consuming a pipeline step number" do
     script("high-then-clean")
     pid = start_agent!()
-    dir = tmp_dir()
+    run_key = open_store_run()
 
-    run(pid: pid, worktree: dir)
+    run(pid: pid, run_key: run_key)
 
-    assert logs(dir) == [
-             "05-analyze-a1.md",
-             "05-analyze-a2.md",
-             "05-analyze.md",
-             "05-remediation-a1.md"
+    feature_detail = store_feature(run_key)
+    assert Enum.map(feature_detail.remediation_attempts, & &1.ordinal) == [1]
+
+    # Every superseded analyze run is individually recorded at its own ordinal
+    # (FR-012a, Constitution Principle V) — never collapsed onto one key. The
+    # *final* analyze run is recorded by `FeatureRunner` at the phase
+    # boundary, so driving `AnalyzeRunner` directly (as here) leaves exactly
+    # the superseded run #1 plus the corrective step, in execution order.
+    assert Enum.map(feature_detail.phase_attempts, &{&1.phase, &1.ordinal}) == [
+             {:analyze, 1},
+             {:auto_remediation, 1}
            ]
+
+    # Neither consumes a pipeline step number — both sit under analyze's.
+    assert Enum.map(feature_detail.phase_attempts, & &1.step) == [5, 5]
   end
 
-  test "the roll-up 05-analyze.md carries the FINAL analyze run (FR-005)" do
+  test "the roll-up carries the FINAL analyze run's result, not an earlier pass (FR-005)" do
     script("high-then-clean")
     pid = start_agent!()
-    dir = tmp_dir()
 
-    run(pid: pid, worktree: dir)
+    result = run(pid: pid)
 
-    rollup = dir |> Path.join(".speckit_logs/05-analyze.md") |> File.read!()
-    assert rollup =~ ~s("summary":"Clean — no findings.")
-    refute rollup =~ "tasks.md has no task for FR-004"
+    assert result.state.last_result.final_text =~ ~s("summary":"Clean — no findings.")
+    refute result.state.last_result.final_text =~ "tasks.md has no task for FR-004"
   end
 
-  test "the remediation record carries the instruction and the triggering findings verbatim" do
+  test "the remediation attempt records the triggering findings verbatim, not below-threshold ones" do
     script("high-then-clean")
     pid = start_agent!()
-    dir = tmp_dir()
+    run_key = open_store_run()
 
-    run(pid: pid, worktree: dir)
+    run(pid: pid, run_key: run_key)
 
-    record = dir |> Path.join(".speckit_logs/05-remediation-a1.md") |> File.read!()
+    [attempt] = store_feature(run_key).remediation_attempts
+    findings = Enum.map(attempt.findings, &inspect/1)
 
-    assert record =~ "Attempt 1 of 2. Severity threshold: high."
-    assert record =~ "tasks.md has no task for FR-004"
-    # below-threshold findings are not part of what triggered the attempt
-    refute record =~ "plan.md wording nit"
-    assert record =~ "### step output"
+    assert Enum.any?(findings, &(&1 =~ "tasks.md has no task for FR-004"))
+    refute Enum.any?(findings, &(&1 =~ "plan.md wording nit"))
+    assert attempt.threshold == :high
+    assert attempt.attempt_limit == 2
   end
 
   test "the corrective instruction is scoped to at-or-above-threshold findings", %{agent: agent} do
@@ -273,15 +305,15 @@ defmodule SpeckitOrchestrator.AnalyzeRunnerTest do
   } do
     script("high-then-clean")
     pid = start_agent!()
-    dir = tmp_dir()
+    run_key = open_store_run()
 
-    result = run(pid: pid, worktree: dir, settings: settings(enabled?: false))
+    result = run(pid: pid, run_key: run_key, settings: settings(enabled?: false))
 
     assert result.state.last_signals == %{critical?: false, high?: true}
     assert result.state.analyze_remediation == nil
     assert length(calls(agent, :analyze)) == 1
     assert calls(agent, :remediation) == []
-    assert logs(dir) == ["05-analyze.md"]
+    assert store_feature(run_key).remediation_attempts == []
   end
 
   test "below-threshold findings make no harness call beyond the first analyze run", %{
@@ -289,15 +321,15 @@ defmodule SpeckitOrchestrator.AnalyzeRunnerTest do
   } do
     script("medium-only")
     pid = start_agent!()
-    dir = tmp_dir()
+    run_key = open_store_run()
 
-    result = run(pid: pid, worktree: dir)
+    result = run(pid: pid, run_key: run_key)
 
     assert result.state.last_outcome == :ok
     assert result.state.analyze_remediation == nil
     assert length(calls(agent, :analyze)) == 1
     assert calls(agent, :remediation) == []
-    assert logs(dir) == ["05-analyze.md"]
+    assert store_feature(run_key).remediation_attempts == []
   end
 
   test "an unrecognized severity matches no threshold, so no attempt runs (research R3)", %{
@@ -329,14 +361,14 @@ defmodule SpeckitOrchestrator.AnalyzeRunnerTest do
   test "spends exactly `attempt_limit` attempts, never one more (SC-003)", %{agent: agent} do
     script("persistent-high")
     pid = start_agent!()
-    dir = tmp_dir()
+    run_key = open_store_run()
 
-    result = run(pid: pid, worktree: dir, settings: settings(attempt_limit: 2))
+    result = run(pid: pid, run_key: run_key, settings: settings(attempt_limit: 2))
 
     assert length(calls(agent, :remediation)) == 2
     assert length(calls(agent, :analyze)) == 3
 
-    assert Enum.count(logs(dir), &String.starts_with?(&1, "05-remediation-a")) == 2
+    assert Enum.map(store_feature(run_key).remediation_attempts, & &1.ordinal) == [1, 2]
 
     assert result.state.last_signals[:remediation] == %{attempts: 2, limit: 2, exhausted?: true}
 
@@ -376,9 +408,9 @@ defmodule SpeckitOrchestrator.AnalyzeRunnerTest do
     script("persistent-high")
     remediation_fails!()
     pid = start_agent!()
-    dir = tmp_dir()
+    run_key = open_store_run()
 
-    result = run(pid: pid, worktree: dir, settings: settings(attempt_limit: 4))
+    result = run(pid: pid, run_key: run_key, settings: settings(attempt_limit: 4))
 
     assert result.state.terminal_reason == {:failed, :remediation_failed}
     assert result.state.last_outcome == :error
@@ -387,9 +419,23 @@ defmodule SpeckitOrchestrator.AnalyzeRunnerTest do
     # one attempt burned, three left unspent
     assert length(calls(agent, :remediation)) == 1
     assert length(calls(agent, :analyze)) == 1
-    assert Enum.count(logs(dir), &String.starts_with?(&1, "05-remediation-a")) == 1
+    assert Enum.map(store_feature(run_key).remediation_attempts, & &1.ordinal) == [1]
 
     assert result.state.analyze_remediation.attempts_used == 1
+
+    # The analyze run that triggered the corrective step keeps its OWN record:
+    # it succeeded, and its cost/transcript are analyze's, not the failed
+    # remediation's. The agent handed back here is the remediation agent, so
+    # it flags that the analyze attempt is already committed and `FeatureRunner`
+    # must not re-record it over the top.
+    assert result.state.analyze_attempt_recorded? == true
+
+    attempts = store_feature(run_key).phase_attempts
+    analyze = Enum.find(attempts, &(&1.phase == :analyze and &1.ordinal == 1))
+    remediation = Enum.find(attempts, &(&1.phase == :auto_remediation and &1.ordinal == 1))
+
+    assert analyze.outcome == :ok
+    assert remediation.outcome == :error
   end
 
   test "a breaker trip between steps halts after the in-flight step finishes", %{agent: agent} do

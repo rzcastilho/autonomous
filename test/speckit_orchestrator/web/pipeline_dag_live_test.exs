@@ -1,21 +1,15 @@
 defmodule SpeckitOrchestrator.Web.PipelineDagLiveTest do
   # Overrides global Config app env (repo/breakdown_dir) and may start the
   # real named Coordinator — must not run concurrently with another test
-  # claiming that name or mutating Config.
-  use ExUnit.Case, async: false
+  # claiming that name or mutating Config. StoreCase (018) clears every store
+  # table before each test, so an earlier test's in-flight run never leaks
+  # into this test's "no live Coordinator" assertions.
+  use SpeckitOrchestrator.StoreCase, async: false
 
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
 
-  alias SpeckitOrchestrator.{
-    Checkpoint,
-    Coordinator,
-    Feature,
-    Layout,
-    RepoIdentity,
-    RunContext,
-    RunManifest
-  }
+  alias SpeckitOrchestrator.{Coordinator, Feature, Layout, RepoIdentity, RunContext}
 
   @endpoint SpeckitOrchestrator.Web.Endpoint
 
@@ -25,8 +19,7 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLiveTest do
   setup do
     prior = %{
       repo: Application.get_env(:speckit_orchestrator, :repo),
-      breakdown_dir: Application.get_env(:speckit_orchestrator, :breakdown_dir),
-      transcript_root: Application.get_env(:speckit_orchestrator, :transcript_root)
+      breakdown_dir: Application.get_env(:speckit_orchestrator, :breakdown_dir)
     }
 
     on_exit(fn ->
@@ -38,17 +31,7 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLiveTest do
       if pid = Process.whereis(Coordinator), do: GenServer.stop(pid)
     end)
 
-    # :transcript_root defaults to one shared tmp path for the whole test env
-    # (config/config.exs) — clear any manifest a previous test's real
-    # Coordinator (default :manifest seam) left there, so tests asserting on
-    # last-known-status overlay (specs/009-crash-recovery) see a clean slot.
-    RunManifest.clear()
-
     {:ok, conn: Phoenix.ConnTest.build_conn()}
-  end
-
-  defp point_transcripts_at(dir) do
-    Application.put_env(:speckit_orchestrator, :transcript_root, dir)
   end
 
   defp point_backlog_at(dir) do
@@ -390,21 +373,53 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLiveTest do
     refute html =~ ~s(data-state="dag")
   end
 
-  test "after a restart with no live Coordinator, nodes reflect the last known status from the run manifest instead of defaulting to pending",
+  defp open_store_run(repo, features, scope \\ {:breakdown, "core"}) do
+    repo_id = RepoIdentity.partition(repo)
+    layout = layout_for(repo)
+
+    {:ok, run_id} =
+      Writer.open_run(repo_id, %{
+        features:
+          Enum.map(
+            features,
+            &%{feature_id: &1.id, slug: &1.slug, path: &1.path, prereqs: &1.prereqs}
+          ),
+        settings: RunContext.to_map(%RunContext{}),
+        scope: scope,
+        layout: layout
+      })
+
+    {repo_id, run_id}
+  end
+
+  defp minimal_attempt(feature_id, phase) do
+    now = DateTime.utc_now()
+
+    %{
+      feature_id: feature_id,
+      phase: phase,
+      ordinal: 1,
+      step: 1,
+      label: Atom.to_string(phase),
+      started_at: now,
+      ended_at: now,
+      duration_ms: 0,
+      outcome: :error,
+      model: "sonnet",
+      cost_usd: 0.0,
+      cost_kind: :estimate,
+      session_id: "s1",
+      error: nil
+    }
+  end
+
+  test "after a restart with no live Coordinator, nodes reflect the last known status from the store's in-flight run instead of defaulting to pending",
        %{conn: conn} do
     repo = real_repo_with_backlog()
     point_backlog_at(repo)
-    point_transcripts_at(Path.join(System.tmp_dir!(), "dag_manifest_#{System.unique_integer()}"))
 
-    :ok =
-      RunManifest.write(%{
-        features: [feat("001"), feat("002", ["001"])],
-        statuses: %{"001" => :halted, "002" => :pending},
-        context: %{},
-        spend: 3.5,
-        updated_at: 1,
-        layout: layout_for(repo)
-      })
+    run_key = open_store_run(repo, [feat("001"), feat("002", ["001"])])
+    :ok = Writer.record_feature_terminal(run_key, "001", :halted, "test fixture", [])
 
     refute Process.whereis(Coordinator)
 
@@ -417,7 +432,7 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLiveTest do
     node_002 = html |> extract_node("002")
     assert node_002 =~ ~s(data-status="pending")
 
-    # A feature absent from the manifest (never released) still falls back
+    # A feature absent from the run record (never released) still falls back
     # to pending, not some other stale value.
     node_003 = html |> extract_node("003")
     assert node_003 =~ ~s(data-status="pending")
@@ -426,31 +441,23 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLiveTest do
   test "after a restart, a halted node's phase strip shows completed phases up to last_phase and the diverting phase highlighted",
        %{conn: conn} do
     repo = real_repo_with_backlog()
-    layout = layout_for(repo)
     point_backlog_at(repo)
-    point_transcripts_at(Path.join(System.tmp_dir!(), "dag_manifest_#{System.unique_integer()}"))
+
+    run_key = open_store_run(repo, [feat("001")])
 
     :ok =
-      RunManifest.write(%{
-        features: [feat("001")],
-        statuses: %{"001" => :halted},
-        context: %{},
-        spend: 1.0,
-        updated_at: 1,
-        layout: layout
+      Writer.record_phase_attempt(run_key, %{
+        attempt: minimal_attempt("001", :analyze),
+        checkpoint: %{
+          phase: :analyze,
+          last_completed_phase: :analyze,
+          status: :halted,
+          reason: :critical_finding,
+          session_id: "s1"
+        }
       })
 
-    :ok =
-      Checkpoint.write(%{
-        feature_id: "001",
-        last_phase: :analyze,
-        status: :halted,
-        reason: :critical_finding,
-        session_id: "s1",
-        slug: "slug-001",
-        path: "001.md",
-        layout: layout
-      })
+    :ok = Writer.record_feature_terminal(run_key, "001", :halted, :critical_finding, [])
 
     refute Process.whereis(Coordinator)
 

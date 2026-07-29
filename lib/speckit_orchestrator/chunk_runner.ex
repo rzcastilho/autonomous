@@ -21,15 +21,14 @@ defmodule SpeckitOrchestrator.ChunkRunner do
   alias SpeckitOrchestrator.Actions.RunFeaturePhase
 
   alias SpeckitOrchestrator.{
-    Checkpoint,
     Chunking,
     Config,
     Ledger,
     PhaseResult,
+    Store,
     TaskPhaseRef,
     TaskPlan,
     Telemetry,
-    Transcripts,
     Worktree
   }
 
@@ -64,7 +63,7 @@ defmodule SpeckitOrchestrator.ChunkRunner do
   @spec run(opts()) :: struct()
   def run(%{pid: pid, worktree: worktree, feature: feature, layout: layout} = ctx) do
     plan = TaskPlan.load(worktree_path(worktree))
-    record = checkpoint_record(feature, layout)
+    record = checkpoint_record(Map.get(ctx, :run_key), feature, layout)
 
     {ref, override?} = start_ref(ctx, record)
     sessions_used = start_sessions_used(ctx, record)
@@ -85,10 +84,14 @@ defmodule SpeckitOrchestrator.ChunkRunner do
 
   # ---- resume resolution (checkpoint-implement-chunk.md §3) ------------------
 
-  defp checkpoint_record(feature, layout) do
-    case Checkpoint.read(feature.id, layout) do
+  # `nil` for a caller with no store-backed run (a unit test calling this
+  # module directly) — resolves as "no checkpoint", same as a genuine miss.
+  defp checkpoint_record(nil, _feature, _layout), do: nil
+
+  defp checkpoint_record(run_key, feature, _layout) do
+    case Store.checkpoint(run_key, feature.id) do
       {:ok, record} -> record
-      _ -> %{}
+      _ -> nil
     end
   end
 
@@ -100,11 +103,11 @@ defmodule SpeckitOrchestrator.ChunkRunner do
     end
   end
 
-  defp ref_from_record(%{"implement_chunk" => %{} = chunk}) do
+  defp ref_from_record(%{implement_chunk: %{} = chunk}) do
     %TaskPhaseRef{
-      ordinal: Map.get(chunk, "ordinal"),
-      number: Map.get(chunk, "number"),
-      title: Map.get(chunk, "title")
+      ordinal: Map.get(chunk, :ordinal),
+      number: Map.get(chunk, :number),
+      title: Map.get(chunk, :title)
     }
   end
 
@@ -115,7 +118,7 @@ defmodule SpeckitOrchestrator.ChunkRunner do
       0
     else
       case record do
-        %{"implement_chunk" => %{"sessions_used" => n}} when is_integer(n) -> n
+        %{implement_chunk: %{sessions_used: n}} when is_integer(n) -> n
         _ -> 0
       end
     end
@@ -197,7 +200,6 @@ defmodule SpeckitOrchestrator.ChunkRunner do
       after_count = TaskPlan.completed_tasks(after_plan)
       progress? = after_count > before_count
 
-      write_chunk_transcript(ctx, state1, scope, result)
       maybe_commit_boundary(ctx, scope, outcome, after_plan)
 
       signals = %{
@@ -276,19 +278,6 @@ defmodule SpeckitOrchestrator.ChunkRunner do
 
   defp maybe_commit_boundary(_ctx, _scope, _outcome, _after_plan), do: :ok
 
-  # ---- transcripts (FR-026) ---------------------------------------------------
-
-  defp write_chunk_transcript(ctx, state1, scope, result) do
-    label = chunk_label(scope, state1.attempt)
-    Transcripts.write_labelled(ctx.worktree, ctx.layout, ctx.step, label, :implement, result)
-  end
-
-  defp chunk_label({:task_phase, tp}, attempt), do: "implement-p#{pad2(tp.ordinal)}-a#{attempt}"
-  defp chunk_label({:sweep, _tasks}, attempt), do: "implement-sweep-a#{attempt}"
-  defp chunk_label(:whole_list, attempt), do: "implement-wl-a#{attempt}"
-
-  defp pad2(n), do: n |> Integer.to_string() |> String.pad_leading(2, "0")
-
   # ---- terminal handling -------------------------------------------------------
 
   # The artifact gate (research R10) is evaluated exactly once here, on the
@@ -299,9 +288,14 @@ defmodule SpeckitOrchestrator.ChunkRunner do
       RunFeaturePhase.missing_implement_artifact(ctx.worktree, since: ctx[:start_ref])
 
     signals = if artifact, do: %{missing_artifact: artifact}, else: %{}
+    result = rollup(:ok, signals, nil)
 
-    write_rollup(ctx, :ok, signals, nil)
-    patch(agent, last_outcome: :ok, last_signals: signals, terminal_reason: nil)
+    patch(agent,
+      last_outcome: :ok,
+      last_signals: signals,
+      last_result: result,
+      terminal_reason: nil
+    )
   end
 
   # A halt/failure below has no `Pipeline.next/3` vocabulary of its own
@@ -309,33 +303,35 @@ defmodule SpeckitOrchestrator.ChunkRunner do
   # existing `FeatureAgent` field the runner reads to short-circuit straight
   # to the specific SC-002 reason (or the breaker halt) instead of the
   # generic `{:implement, :error}` `Pipeline.next/3` would otherwise produce.
-  defp halt(ctx, agent) do
-    write_rollup(ctx, :halted, %{}, :breaker)
-    patch(agent, last_outcome: :error, terminal_reason: {:halted, :breaker})
+  defp halt(_ctx, agent) do
+    result = rollup(:halted, %{}, :breaker)
+
+    patch(agent,
+      last_outcome: :error,
+      last_result: result,
+      terminal_reason: {:halted, :breaker}
+    )
   end
 
-  defp fail(ctx, agent, reason) do
-    write_rollup(ctx, :error, %{}, reason)
-    patch(agent, last_outcome: :error, terminal_reason: {:failed, reason})
+  defp fail(_ctx, agent, reason) do
+    result = rollup(:error, %{}, reason)
+
+    patch(agent,
+      last_outcome: :error,
+      last_result: result,
+      terminal_reason: {:failed, reason}
+    )
   end
 
   defp patch(agent, kvs), do: %{agent | state: Map.merge(agent.state, Map.new(kvs))}
 
-  defp write_rollup(ctx, status, signals, reason) do
-    result = %PhaseResult{
-      status: status,
-      final_text: rollup_text(status, signals, reason),
-      error: reason
-    }
-
-    Transcripts.write_labelled(
-      ctx.worktree,
-      ctx.layout,
-      ctx.step,
-      "implement",
-      :implement,
-      result
-    )
+  # The roll-up becomes this feature run's durable `:implement` phase attempt
+  # (018) — the caller (`FeatureRunner`) persists `agent.state.last_result`
+  # via `Store.Writer.record_phase_attempt/2`. Each intermediate chunk's own
+  # result is not separately persisted (018 — only the roll-up matters to the
+  # pipeline; per-chunk transcripts were a pre-018 worktree-only convenience).
+  defp rollup(status, signals, reason) do
+    %PhaseResult{status: status, final_text: rollup_text(status, signals, reason), error: reason}
   end
 
   defp rollup_text(:ok, %{missing_artifact: artifact}, _reason),
