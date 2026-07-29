@@ -362,6 +362,14 @@ defmodule SpeckitOrchestrator.Store.WriterTest do
       assert read_feature(feature_key).pr_description == pr
     end
 
+    test "pr_url is left alone — the PR is opened after the feature is already :done" do
+      {repo, run_id} = open()
+      run_key = {repo, run_id}
+
+      assert :ok = Writer.record_feature_terminal(run_key, "001", :done, nil)
+      assert read_feature({repo, run_id, "001"}).pr_url == nil
+    end
+
     test "a non-:done terminal leaves the checkpoint in place" do
       {repo, run_id} = open()
       run_key = {repo, run_id}
@@ -406,6 +414,42 @@ defmodule SpeckitOrchestrator.Store.WriterTest do
       # not reset by StoreCase's per-test setup after THIS test — a poisoned
       # flag left here would fail every later run/1 call anywhere in the
       # suite (mirrors persistence_failure_test.exs's own safeguard).
+      Health.clear()
+    end
+  end
+
+  describe "record_pr_url/3" do
+    test "records the URL against an already-terminal feature without touching its status" do
+      {repo, run_id} = open()
+      run_key = {repo, run_id}
+      url = "https://github.com/acme/ledgerlite/pull/12"
+
+      assert :ok = Writer.record_feature_terminal(run_key, "001", :done, nil)
+      assert :ok = Writer.record_pr_url(run_key, "001", url)
+
+      feature = read_feature({repo, run_id, "001"})
+      assert feature.pr_url == url
+      assert feature.status == :done
+    end
+
+    test "a later publish for the same feature overwrites the recorded URL" do
+      {repo, run_id} = open()
+      run_key = {repo, run_id}
+
+      assert :ok = Writer.record_pr_url(run_key, "001", "https://example.test/pull/1")
+      assert :ok = Writer.record_pr_url(run_key, "001", "https://example.test/pull/2")
+
+      assert read_feature({repo, run_id, "001"}).pr_url == "https://example.test/pull/2"
+    end
+
+    test "an unknown feature aborts the transaction" do
+      {repo, run_id} = open()
+      refute Health.failed?()
+
+      assert {:error, {:absent, _}} =
+               Writer.record_pr_url({repo, run_id}, "nope", "https://example.test/pull/1")
+
+      assert Health.failed?()
       Health.clear()
     end
   end

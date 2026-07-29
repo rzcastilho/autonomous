@@ -337,6 +337,36 @@ defmodule SpeckitOrchestrator.Store.Writer do
   end
 
   @doc """
+  Record the URL `gh pr create` returned for a published feature, one
+  transaction. Separate from `record_feature_terminal/5` because publishing
+  happens *after* the feature is already `:done` — the branch has to be pushed
+  before there is anything to open a PR against. Best-effort by construction:
+  a publish failure never fails the run, so a `:done` feature legitimately has
+  a `nil` `pr_url` and callers must render that state rather than assume one.
+  """
+  @spec record_pr_url(run_key(), binary(), binary()) :: :ok | {:error, term()}
+  def record_pr_url({repo_id, run_id}, feature_id, url) when is_binary(url) do
+    run_transaction(fn ->
+      feature_key = Ids.feature_key(repo_id, run_id, feature_id)
+
+      case Mnesia.read(:speckit_feature_run, feature_key, :write) do
+        [tuple] ->
+          case Records.decode(:speckit_feature_run, tuple) do
+            {:ok, feature} ->
+              Mnesia.write(Records.encode(%{feature | pr_url: url}))
+              :ok
+
+            {:error, damaged} ->
+              Mnesia.abort(damaged)
+          end
+
+        [] ->
+          Mnesia.abort({:absent, feature_key})
+      end
+    end)
+  end
+
+  @doc """
   Record an escalation or halt (FR-025), one transaction. `escalation` is
   `%{feature_id:, kind:, phase:, reason:, evidence:, severity: (optional)}`.
   """

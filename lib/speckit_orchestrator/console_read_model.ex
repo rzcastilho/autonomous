@@ -55,7 +55,8 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
           phases: %{atom() => phase_cell()},
           spend: number(),
           chunk: chunk_cell() | nil,
-          remediation: remediation_cell() | nil
+          remediation: remediation_cell() | nil,
+          pr_url: String.t() | nil
         }
 
   @type t :: %{features: %{String.t() => feature_slice()}, feed: [event_entry()]}
@@ -71,8 +72,9 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
   Recognized events (see the projection contract's telemetry table):
   `[:speckit, :phase, :start/:stop/:exception]`, `[:speckit, :feature,
   :terminal]`, `[:speckit, :chunk, :start/:stop/:exception/:resolved]`,
-  `[:speckit, :remediation, :start/:stop/:exception]`, and
-  `[:speckit, :run, :scope_narrowing_refused]`. Any other event passes through
+  `[:speckit, :remediation, :start/:stop/:exception]`,
+  `[:speckit, :run, :scope_narrowing_refused]`, and
+  `[:speckit, :publish, :opened/:failed]`. Any other event passes through
   unchanged.
   """
   @spec apply_event(t(), [atom()], map(), map()) :: t()
@@ -306,10 +308,23 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
     )
   end
 
-  # ---- publish failure (019, FR-018) -----------------------------------------
+  # ---- publish (019, FR-018) -------------------------------------------------
   # A completed feature's PR publish can fail without failing the run — the
   # local branch still becomes the next base regardless — but the failure
-  # must never be merely swallowed: it shows up here on the live feed.
+  # must never be merely swallowed: it shows up here on the live feed. The
+  # success carries the URL so the drawer can link straight to the PR while
+  # the run is still live, without a store read.
+
+  def apply_event(
+        model,
+        [:speckit, :publish, :opened],
+        _measurements,
+        %{feature_id: id, url: url}
+      ) do
+    model
+    |> put_feature(id, %{feature_slice(model, id) | pr_url: url})
+    |> push_feed(entry(id, nil, :info, "PR opened: #{url}"))
+  end
 
   def apply_event(
         model,
@@ -387,7 +402,8 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
           phases: checkpoint_phases(f.checkpoint, f.status),
           spend: 0.0,
           chunk: checkpoint_chunk(f.checkpoint),
-          remediation: nil
+          remediation: nil,
+          pr_url: Map.get(f, :pr_url)
         })
       end)
 
@@ -469,7 +485,8 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
           phases: %{},
           spend: 0.0,
           chunk: nil,
-          remediation: nil
+          remediation: nil,
+          pr_url: nil
         })
 
       {id, Map.merge(status_slice, projected)}
@@ -486,7 +503,8 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
         spend: 0.0,
         chunk: nil,
         chunk_cost_seen: 0.0,
-        remediation: nil
+        remediation: nil,
+        pr_url: nil
       })
 
   defp put_feature(model, id, feature),

@@ -16,6 +16,7 @@ defmodule SpeckitOrchestrator.Store do
   @callback record_remediation_attempt(run_key(), map()) :: :ok | {:error, term()}
   @callback record_feature_terminal(run_key(), binary(), atom(), term(), keyword()) ::
               :ok | {:error, term()}
+  @callback record_pr_url(run_key(), binary(), binary()) :: :ok | {:error, term()}
   @callback record_escalation(run_key(), map()) :: :ok | {:error, term()}
   @callback resolve_escalation(tuple(), map()) :: :ok | {:error, term()}
   @callback record_settings_amendment(run_key(), map(), term()) :: :ok | {:error, term()}
@@ -53,6 +54,10 @@ defmodule SpeckitOrchestrator.Store do
           :ok | {:error, term()}
   def record_feature_terminal(run_key, feature_id, status, reason, opts \\ []),
     do: Writer.record_feature_terminal(run_key, feature_id, status, reason, opts)
+
+  @doc "See `Store.Writer.record_pr_url/3`."
+  @spec record_pr_url(run_key(), binary(), binary()) :: :ok | {:error, term()}
+  def record_pr_url(run_key, feature_id, url), do: Writer.record_pr_url(run_key, feature_id, url)
 
   @doc "See `Store.Writer.record_escalation/2`."
   @spec record_escalation(run_key(), map()) :: :ok | {:error, term()}

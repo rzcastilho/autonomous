@@ -652,7 +652,7 @@ stopping feature and reason with both actions as buttons; Run History (`/runs`)
 and Run Detail (`/runs/:id`) render `:parked` distinctly from `:in_flight`/
 `:completed` and list never-started features as such.
 
-### Store reset procedure (schema v2)
+### Store reset procedure (schema v1 -> v2)
 
 019 bumps the store schema `1 -> 2` as a **clean break** — a v1 directory
 aborts startup naming the incompatibility rather than being migrated (there is
@@ -671,6 +671,37 @@ rm -rf ~/.autonomous/mnesia
 
 See `specs/019-stacked-sequential-only/contracts/store-schema-v2.md` § 6 for
 the full contract.
+
+### Recording a PR the run didn't record
+
+A `:done` feature whose drawer shows **"No PR recorded"** either had its
+publish fail, or was built before `pr_url` was persisted at all. The publish
+step is the only thing that writes that field automatically, so once the run
+has moved on, an operator has to supply it:
+
+```elixir
+SpeckitOrchestrator.record_pr("001", "https://github.com/you/repo/pull/6")
+SpeckitOrchestrator.record_pr("001", url, run_id: "r000001")   # an older run
+```
+
+The default targets the repository's **current in-flight** run; a completed or
+parked run returns `{:error, :no_run}` and needs the explicit `run_id:`. The
+call emits the same `[:speckit, :publish, :opened]` event the live path does,
+so an open console updates the drawer immediately — no reload.
+
+A publish that fails for a branch the orchestrator itself pushed no longer
+needs this: `Worktree.push/2` prunes deleted remote branches and replaces its
+own stale branch with `--force-with-lease`. It still refuses — loudly, as
+`{:remote_branch_moved, branch, sha}` — when the remote branch moved outside
+this repo, since that is someone else's commit.
+
+### Schema v3 — no reset needed
+
+v3 appends `feature_run.pr_url` so a `:done` feature's drawer can link to the
+PR that was opened for its branch. A **v2 directory migrates in place at
+boot** — nothing to export, nothing to remove. Rows written before the upgrade
+keep `pr_url: nil` and their drawer shows "No PR recorded" rather than a link;
+features published after it link straight to the PR.
 
 ---
 

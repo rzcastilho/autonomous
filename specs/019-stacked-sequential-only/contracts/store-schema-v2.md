@@ -26,10 +26,10 @@ lives in, but its function **refuses** instead of transforming:
 
 | Recorded version | Result |
 |---|---|
-| absent (fresh directory) | schema created at v2, run number one starts (SC-006) |
-| `2` | normal start |
+| absent (fresh directory) | schema created at the current version, run number one starts (SC-006) |
+| `2` | pending migrations apply (see §7), then normal start |
 | `1` | **startup aborts**, naming the incompatibility (FR-023) |
-| `> 2` | startup aborts (unchanged — newer-than-known already fails loud) |
+| newer than known | startup aborts (unchanged — newer-than-known already fails loud) |
 
 The abort message names the retired schema and the remedy — remove
 `Config.store_dir/0` — documented in `docs/runbook.md`. The system never deletes
@@ -151,3 +151,50 @@ Step 1 is the operator's responsibility and must happen before the upgrade —
 after it, the v1 store is unreadable by design (FR-023). SC-006's "the reset
 persistence starts empty — the first run after the change is run number one" is
 the observable outcome of step 3.
+
+---
+
+## 7. Addendum — v3: `speckit_feature_run.pr_url`
+
+FR-018 requires a publish outcome to be surfaced, not swallowed. The failure
+path emitted `[:speckit, :publish, :failed]` and reached the console feed, but
+the success path only wrote a log line: the URL `gh pr create` returned was
+dropped, so the console's "View PR" affordance in the feature drawer had no
+destination and rendered as a non-interactive `<div>`.
+
+| Attribute | v2 | v3 |
+|---|---|---|
+| `pr_url` | — | `binary() \| nil` — the URL `gh pr create` returned |
+
+`pr_url` is appended **last** in the table's attribute list, so the migration is
+a plain tuple append and no existing field moves position:
+
+```elixir
+{3, "append feature_run.pr_url", &add_pr_url/0}
+```
+
+Unlike v2, this one really transforms — a v2 record is readable, and every
+existing row gets `nil` (its PR, if any, was opened before the URL was recorded).
+
+### Writer operation
+
+```elixir
+@spec record_pr_url(run_key, feature_id :: binary(), url :: binary()) ::
+        :ok | {:error, term()}
+```
+
+Separate from `record_feature_terminal/5` because publishing happens *after* the
+feature is already `:done` — the branch has to be pushed before there is
+anything to open a PR against.
+
+### Telemetry
+
+`[:speckit, :publish, :opened]` with `%{feature_id:, url:}` joins the existing
+`:failed` event, so a live run's drawer can link to the PR without a store read.
+
+### The `nil` case is real
+
+Publishing is best-effort and never fails the run (§ `publish_and_advance`), so
+a `:done` feature legitimately has no `pr_url`. The drawer renders a link only
+when there is a destination and a plain label otherwise — it never renders an
+affordance that does nothing.

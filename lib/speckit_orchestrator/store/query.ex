@@ -269,6 +269,7 @@ defmodule SpeckitOrchestrator.Store.Query do
       branch: f.branch,
       worktree_path: f.worktree_path,
       pr_description: f.pr_description,
+      pr_url: f.pr_url,
       started_at: f.started_at,
       ended_at: f.ended_at,
       phase_attempts:

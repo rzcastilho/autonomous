@@ -1290,6 +1290,49 @@ defmodule SpeckitOrchestrator do
   def transcript(attempt_ref), do: Store.transcript(attempt_ref)
 
   @doc """
+  Record the PR opened for a feature, after the fact.
+
+  The run's own publish step records this automatically. This is the operator
+  amend for when it could not: the publish failed and the PR was opened by
+  hand afterwards, or the feature was built before `pr_url` was persisted at
+  all. Without it the feature drawer shows "No PR recorded" forever, because
+  nothing else ever writes that field.
+
+  Defaults to the repository's current run; pass `:run_id` for an older one.
+  Broadcasts the same `[:speckit, :publish, :opened]` event the live path
+  emits, so an open console picks the link up immediately.
+
+      SpeckitOrchestrator.record_pr("001", "https://github.com/acme/x/pull/6")
+      SpeckitOrchestrator.record_pr("001", url, run_id: "r000001")
+  """
+  @spec record_pr(binary(), binary(), keyword()) :: :ok | {:error, term()}
+  def record_pr(feature_id, url, opts \\ []) when is_binary(feature_id) and is_binary(url) do
+    repo_id = RepoIdentity.partition(Keyword.get(opts, :repo, Config.repo()))
+
+    run_key =
+      case Keyword.get(opts, :run_id) do
+        nil -> Store.current_run_key(repo_id)
+        run_id -> {repo_id, run_id}
+      end
+
+    case run_key do
+      nil ->
+        {:error, :no_run}
+
+      run_key ->
+        with :ok <- Store.record_pr_url(run_key, feature_id, url) do
+          :telemetry.execute(
+            [:speckit, :publish, :opened],
+            %{},
+            %{feature_id: feature_id, url: url}
+          )
+
+          :ok
+        end
+    end
+  end
+
+  @doc """
   Record a resolution against an escalation (018, FR-026). Never deletes the
   entry — the history shows both that it was raised and that it was
   resolved. Options: `:note`, `:by`.
@@ -1932,14 +1975,25 @@ defmodule SpeckitOrchestrator do
 
   # Best-effort: publish the feature, then advance the stack to its branch —
   # only for a backlog feature (FR-028: an ad-hoc feature never advances the
-  # chain). A publish failure is logged AND emitted as a telemetry event
-  # (never merely swallowed, FR-018) — but never fails the run: the local
-  # branch still exists, so the next feature stacks on it regardless,
-  # whether or not its PR was ever opened.
+  # chain). Both outcomes are logged AND emitted as a telemetry event (a
+  # failure is never merely swallowed, FR-018) — but neither fails the run:
+  # the local branch still exists, so the next feature stacks on it
+  # regardless, whether or not its PR was ever opened.
+  #
+  # The opened URL is also persisted, so the console can link to the PR from a
+  # `:done` feature's drawer on any later boot rather than only in the log
+  # line of the session that opened it.
   defp publish_and_advance(feature, base, tracker, publisher) do
     case publisher.(feature, base) do
       {:ok, url} ->
         Logger.info("feature #{feature.id} PR opened: #{url}")
+        record_pr_url(feature.id, url)
+
+        :telemetry.execute(
+          [:speckit, :publish, :opened],
+          %{},
+          %{feature_id: feature.id, url: url}
+        )
 
       {:error, reason} ->
         Logger.warning("feature #{feature.id} publish failed: #{inspect(reason)}")
@@ -1953,6 +2007,21 @@ defmodule SpeckitOrchestrator do
 
     if feature.group == :backlog do
       StackTracker.set_top(tracker, Worktree.locate(feature).branch)
+    end
+  end
+
+  # Best-effort like the publish itself: a run that isn't store-backed has no
+  # row to write to, and a write failure must not turn a successfully opened
+  # PR into a failed run.
+  defp record_pr_url(feature_id, url) do
+    case current_run_key() do
+      nil ->
+        :ok
+
+      run_key ->
+        with {:error, reason} <- Store.record_pr_url(run_key, feature_id, url) do
+          Logger.warning("feature #{feature_id} PR url not recorded: #{inspect(reason)}")
+        end
     end
   end
 

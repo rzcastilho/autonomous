@@ -12,7 +12,8 @@ defmodule SpeckitOrchestrator.Web.FeatureDrawerComponent do
   Escalations (where the actual resume/full-restart forms live — T046-T050)
   and a link to the feature's current-phase transcript (FR-012, US3
   Acceptance Scenario 5, T052) — quick entry points rather than duplicating
-  those forms in every LiveView that opens this drawer.
+  those forms in every LiveView that opens this drawer. For a `:done` feature
+  it surfaces the PR opened for its branch, when one was — see `pr_url/1`.
   """
 
   use Phoenix.Component
@@ -119,8 +120,23 @@ defmodule SpeckitOrchestrator.Web.FeatureDrawerComponent do
           </a>
         </div>
 
-        <div :if={done?(@feature)} class="drawer-pr" data-action="drawer-view-pr">
-          &#8991; View PR · branch pushed
+        <a
+          :if={pr_url(@feature)}
+          href={pr_url(@feature)}
+          target="_blank"
+          rel="noopener noreferrer"
+          class="drawer-pr"
+          data-action="drawer-view-pr"
+        >
+          &#8991; View PR · {pr_label(pr_url(@feature))}
+        </a>
+
+        <div
+          :if={done?(@feature) && is_nil(pr_url(@feature))}
+          class="drawer-pr drawer-pr-absent"
+          data-action="drawer-no-pr"
+        >
+          &#8991; No PR recorded · branch pushed
         </div>
       </div>
     </aside>
@@ -158,6 +174,24 @@ defmodule SpeckitOrchestrator.Web.FeatureDrawerComponent do
 
   defp done?(nil), do: false
   defp done?(feature), do: feature[:status] == :done
+
+  # The URL `gh pr create` returned, recorded on publish (019, FR-018). A
+  # `:done` feature can legitimately have none — publishing is best-effort and
+  # never fails the run, and a feature completed before the URL was persisted
+  # has nothing to link to either — so this is a link only when there is a real
+  # destination, and a plain label otherwise. It was previously always a
+  # non-interactive `<div>`, which read as a button that did nothing.
+  defp pr_url(nil), do: nil
+  defp pr_url(feature), do: feature[:pr_url]
+
+  # `gh pr create` returns `…/pull/<n>`; show the number rather than the whole
+  # URL, falling back to the URL itself for anything that doesn't end in one.
+  defp pr_label(url) do
+    case Regex.run(~r{/pull/(\d+)/?$}, url) do
+      [_, number] -> "##{number}"
+      nil -> url
+    end
+  end
 
   # Run-scoped attempt reference (018, contracts/console-runs.md Navigation):
   # `TranscriptsLive` resolves the latest attempt for this feature/phase

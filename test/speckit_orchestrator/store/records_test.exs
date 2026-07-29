@@ -73,6 +73,7 @@ defmodule SpeckitOrchestrator.Store.RecordsTest do
       worktree_path: nil,
       branch: nil,
       pr_description: nil,
+      pr_url: "https://github.com/acme/ledgerlite/pull/7",
       started_at: nil,
       ended_at: nil
     },

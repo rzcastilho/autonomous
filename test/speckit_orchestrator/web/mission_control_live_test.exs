@@ -242,6 +242,62 @@ defmodule SpeckitOrchestrator.Web.MissionControlLiveTest do
     assert drawer =~ "feature=mc7&amp;phase=analyze"
   end
 
+  test "a done feature's drawer links to the PR recorded when it was published",
+       %{conn: conn} do
+    refute Process.whereis(Coordinator)
+
+    run_key = open_store_run([feat("mc8")])
+    url = "https://github.com/acme/ledgerlite/pull/8"
+
+    :ok = Writer.record_feature_terminal(run_key, "mc8", :done, nil, [])
+    :ok = Writer.record_pr_url(run_key, "mc8", url)
+
+    {:ok, view, _html} = live(conn, "/")
+
+    html = render_click(view, "select_feature", %{"id" => "mc8"})
+    [drawer] = Regex.run(~r/<aside class="feature-drawer".*?<\/aside>/s, html)
+
+    assert drawer =~ ~s(data-action="drawer-view-pr")
+    assert drawer =~ ~s(href="#{url}")
+    refute drawer =~ ~s(data-action="drawer-no-pr")
+  end
+
+  test "a PR opened mid-run reaches an already-mounted console without waiting for a reconcile tick",
+       %{conn: conn} do
+    pid = start_coordinator([feat("mc10")])
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    {:ok, view, _html} = live(conn, "/")
+
+    url = "https://github.com/acme/ledgerlite/pull/10"
+
+    :telemetry.execute([:speckit, :publish, :opened], %{}, %{feature_id: "mc10", url: url})
+    # The projection folds and broadcasts off its own mailbox — this round-trip
+    # guarantees it has done so before we render.
+    :sys.get_state(ConsoleProjection)
+
+    html = render_click(view, "select_feature", %{"id" => "mc10"})
+    [drawer] = Regex.run(~r/<aside class="feature-drawer".*?<\/aside>/s, html)
+
+    assert drawer =~ ~s(href="#{url}")
+  end
+
+  test "a done feature whose publish never produced a URL gets a label, not a dead button",
+       %{conn: conn} do
+    refute Process.whereis(Coordinator)
+
+    run_key = open_store_run([feat("mc9")])
+    :ok = Writer.record_feature_terminal(run_key, "mc9", :done, nil, [])
+
+    {:ok, view, _html} = live(conn, "/")
+
+    html = render_click(view, "select_feature", %{"id" => "mc9"})
+    [drawer] = Regex.run(~r/<aside class="feature-drawer".*?<\/aside>/s, html)
+
+    assert drawer =~ ~s(data-action="drawer-no-pr")
+    refute drawer =~ ~s(data-action="drawer-view-pr")
+  end
+
   # ---- 016 T039: resume lists the whole restored run (FR-022) ---------------
 
   defp minimal_attempt(feature_id, phase) do

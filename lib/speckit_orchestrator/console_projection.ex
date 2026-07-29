@@ -130,6 +130,21 @@ defmodule SpeckitOrchestrator.ConsoleProjection do
   defp broadcast_diff(state, [:speckit, :run, :scope_narrowing_refused], model, _metadata),
     do: broadcast_feed(state, model)
 
+  # The PR url lands on the feature slice, so the open drawer has to be told —
+  # the feed entry alone would leave "View PR" unlinked until the next
+  # reconcile tick.
+  defp broadcast_diff(state, [:speckit, :publish, :opened], model, %{feature_id: id}) do
+    broadcast(
+      state,
+      {:console, :feature_updated, %{id: id, feature: Map.get(model.features, id)}}
+    )
+
+    broadcast_feed(state, model)
+  end
+
+  defp broadcast_diff(state, [:speckit, :publish, :failed], model, _metadata),
+    do: broadcast_feed(state, model)
+
   defp broadcast_diff(_state, _event, _model, _metadata), do: :ok
 
   defp broadcast_feed(state, %{feed: [latest | _]}),

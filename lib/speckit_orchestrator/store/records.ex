@@ -122,6 +122,7 @@ defmodule SpeckitOrchestrator.Store.Records do
       :worktree_path,
       :branch,
       :pr_description,
+      :pr_url,
       :started_at,
       :ended_at
     ]
@@ -148,6 +149,7 @@ defmodule SpeckitOrchestrator.Store.Records do
             worktree_path: binary() | nil,
             branch: binary() | nil,
             pr_description: map() | nil,
+            pr_url: binary() | nil,
             started_at: DateTime.t() | nil,
             ended_at: DateTime.t() | nil
           }

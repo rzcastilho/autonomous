@@ -214,4 +214,54 @@ defmodule SpeckitOrchestrator.RunDetailTest do
   test "absent run returns {:error, :absent}" do
     assert {:error, :absent} = SpeckitOrchestrator.run_detail("r999999")
   end
+
+  describe "record_pr/3 — operator amend for a PR the run didn't record" do
+    test "writes the url onto the current run's feature and emits the publish event" do
+      run_id = open(["001"])
+      url = "https://github.com/acme/ledgerlite/pull/6"
+
+      handler = {__MODULE__, :record_pr_probe}
+      test_pid = self()
+
+      :telemetry.attach(
+        handler,
+        [:speckit, :publish, :opened],
+        fn _event, _meas, meta, _cfg -> send(test_pid, {:published, meta}) end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach(handler) end)
+
+      assert :ok = SpeckitOrchestrator.record_pr("001", url)
+      assert_received {:published, %{feature_id: "001", url: ^url}}
+
+      {:ok, detail} = SpeckitOrchestrator.run_detail(run_id)
+      [feature] = detail.features
+      assert feature.pr_url == url
+    end
+
+    test "targets an older run by :run_id, which is the only way to reach a closed one" do
+      closed = open(["001"], close: :all_done)
+      url = "https://github.com/acme/ledgerlite/pull/7"
+
+      # A closed run is not the repository's current run, so the default lookup
+      # finds nothing to amend.
+      assert {:error, :no_run} = SpeckitOrchestrator.record_pr("001", url)
+
+      assert :ok = SpeckitOrchestrator.record_pr("001", url, run_id: closed)
+
+      {:ok, detail} = SpeckitOrchestrator.run_detail(closed)
+      [feature] = detail.features
+      assert feature.pr_url == url
+    end
+
+    test "an unknown feature reports the absence rather than silently doing nothing" do
+      open(["001"])
+
+      assert {:error, {:absent, _}} =
+               SpeckitOrchestrator.record_pr("999", "https://example.test/pull/1")
+
+      SpeckitOrchestrator.Store.Health.clear()
+    end
+  end
 end

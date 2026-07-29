@@ -8,23 +8,40 @@ defmodule SpeckitOrchestrator.Store.Migrations do
   its migration **refuses** rather than transforms — a v1 directory aborts
   startup naming the incompatibility (FR-022, FR-023) instead of being
   silently migrated or destroyed.
+
+  Version 3 appends `feature_run.pr_url` — the URL `gh pr create` returned for
+  a `:done` feature, which used to be logged and then dropped, leaving the
+  console's "View PR" affordance with nothing to link to. A v2 record is
+  readable as-is, so this one really does transform: every existing row gets
+  `nil` (its PR, if any, was opened before the URL was ever recorded).
   """
 
-  alias SpeckitOrchestrator.Store.Mnesia
+  alias SpeckitOrchestrator.Store.{Mnesia, Schema}
 
   @type migration :: {pos_integer(), String.t(), (-> :ok | {:error, term()})}
 
   @doc "The schema version this build of the orchestrator understands."
   @spec current_version() :: pos_integer()
-  def current_version, do: 2
+  def current_version, do: 3
 
   @doc "Every migration, ascending by version."
   @spec all() :: [migration()]
   def all do
     [
       {2, "019 clean break — pre-019 records are not readable",
-       fn -> {:error, {:incompatible_record, 1}} end}
+       fn -> {:error, {:incompatible_record, 1}} end},
+      {3, "append feature_run.pr_url", &add_pr_url/0}
     ]
+  end
+
+  # `:pr_url` is the last attribute in the table's schema, so the transform is
+  # a plain append — no field of an existing row moves position.
+  defp add_pr_url do
+    transform_table(
+      :speckit_feature_run,
+      &Tuple.insert_at(&1, tuple_size(&1), nil),
+      Schema.table(:speckit_feature_run).attributes
+    )
   end
 
   @doc """

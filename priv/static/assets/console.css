@@ -1456,6 +1456,7 @@ a.btn-primary {
 }
 
 .drawer-pr {
+  display: block;
   background: #0f2a1c;
   border: 1px solid #1c5c3a;
   border-radius: 9px;
@@ -1464,6 +1465,19 @@ a.btn-primary {
   font-size: 12px;
   font-family: var(--font-sans);
   text-align: center;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+a.drawer-pr:hover {
+  border-color: #6ee7b7;
+}
+
+/* :done but no PR URL was recorded — a label, not an affordance. */
+.drawer-pr-absent {
+  background: transparent;
+  border-color: var(--border-strong);
+  color: var(--muted);
 }
 
 @media (max-width: 1120px) {
