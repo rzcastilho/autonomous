@@ -47,13 +47,13 @@ defmodule SpeckitOrchestrator.Web.ConfigLive do
   @impl true
   def handle_event("apply", params, socket) do
     case LiveConfig.apply(build_change(params)) do
-      {:ok, _change} ->
+      {:ok, change} ->
         broadcast_reconcile()
 
         {:noreply,
          socket
          |> assign(errors: %{})
-         |> put_flash(:info, "Configuration applied")
+         |> put_flash(:info, "Configuration applied: #{applied_summary(change)}")
          |> refresh()}
 
       {:error, errors} ->
@@ -74,6 +74,13 @@ defmodule SpeckitOrchestrator.Web.ConfigLive do
     Map.new(Pipeline.phases(), fn phase ->
       {phase, params["model_#{phase}"] || Config.model_for(phase)}
     end)
+  end
+
+  # Echoes the actual call and its arguments (FR-011) rather than a generic
+  # "applied" message — an operator confirming a change wants to see the
+  # values that took effect, not a rubber stamp.
+  defp applied_summary(change) do
+    "budget_usd=#{change.budget_usd} pr_base=#{change.pr_base} pr_remote=#{change.pr_remote}"
   end
 
   defp parse_number(nil), do: 0.0
@@ -110,7 +117,7 @@ defmodule SpeckitOrchestrator.Web.ConfigLive do
         <fieldset class="config-models form-panel">
           <legend>Per-phase model routing</legend>
           <div :for={{phase, idx} <- Enum.with_index(Pipeline.phases(), 1)} class="model-row">
-            <span class="model-row-index">{idx}</span>
+            <span class="model-row-index">{pad_ordinal(idx)}</span>
             <span class="model-row-phase">{phase}</span>
             <div class="model-row-options">
               <label class={[
@@ -139,7 +146,9 @@ defmodule SpeckitOrchestrator.Web.ConfigLive do
               </label>
             </div>
           </div>
-          <p :if={@errors[:models]} class="field-error" data-error="models">{@errors[:models]}</p>
+          <.form_refusal :if={@errors[:models]} label="Models refused" data-error="models">
+            {@errors[:models]}
+          </.form_refusal>
         </fieldset>
 
         <div class="config-grid">
@@ -159,9 +168,9 @@ defmodule SpeckitOrchestrator.Web.ConfigLive do
               class="range-input"
               oninput="document.getElementById('budget-range-value').textContent = '$' + this.value"
             />
-            <p :if={@errors[:budget_usd]} class="field-error" data-error="budget_usd">
+            <.form_refusal :if={@errors[:budget_usd]} label="Budget refused" data-error="budget_usd">
               {@errors[:budget_usd]}
-            </p>
+            </.form_refusal>
           </fieldset>
         </div>
 

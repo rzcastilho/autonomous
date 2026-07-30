@@ -16,13 +16,13 @@ defmodule SpeckitOrchestrator.Web.PhaseStripTest do
   alias SpeckitOrchestrator.Web.CoreComponents
 
   @golden_strip "<div class=\"phase-strip\">\n  " <>
-                  "<span class=\"phase-cell phase-cell-pending\" data-phase=\"specify\" title=\"specify\">\n    specify\n  </span>" <>
-                  "<span class=\"phase-cell phase-cell-pending\" data-phase=\"clarify\" title=\"clarify\">\n    clarify\n  </span>" <>
-                  "<span class=\"phase-cell phase-cell-pending\" data-phase=\"plan\" title=\"plan\">\n    plan\n  </span>" <>
-                  "<span class=\"phase-cell phase-cell-pending\" data-phase=\"tasks\" title=\"tasks\">\n    tasks\n  </span>" <>
-                  "<span class=\"phase-cell phase-cell-pending\" data-phase=\"analyze\" title=\"analyze\">\n    analyze\n  </span>" <>
-                  "<span class=\"phase-cell phase-cell-pending\" data-phase=\"implement\" title=\"implement\">\n    implement\n  </span>" <>
-                  "<span class=\"phase-cell phase-cell-pending\" data-phase=\"converge\" title=\"converge\">\n    converge\n  </span>\n</div>"
+                  "<span class=\"phase-cell phase-cell-pending\" data-phase=\"specify\" title=\"specify — pending\">\n    specify\n  </span>" <>
+                  "<span class=\"phase-cell phase-cell-pending\" data-phase=\"clarify\" title=\"clarify — pending\">\n    clarify\n  </span>" <>
+                  "<span class=\"phase-cell phase-cell-pending\" data-phase=\"plan\" title=\"plan — pending\">\n    plan\n  </span>" <>
+                  "<span class=\"phase-cell phase-cell-pending\" data-phase=\"tasks\" title=\"tasks — pending\">\n    tasks\n  </span>" <>
+                  "<span class=\"phase-cell phase-cell-pending\" data-phase=\"analyze\" title=\"analyze — pending\">\n    analyze\n  </span>" <>
+                  "<span class=\"phase-cell phase-cell-pending\" data-phase=\"implement\" title=\"implement — pending\">\n    implement\n  </span>" <>
+                  "<span class=\"phase-cell phase-cell-pending\" data-phase=\"converge\" title=\"converge — pending\">\n    converge\n  </span>\n</div>"
 
   defp strip(assigns), do: render_component(&CoreComponents.phase_strip/1, assigns)
 
@@ -66,7 +66,7 @@ defmodule SpeckitOrchestrator.Web.PhaseStripTest do
     html = strip(%{phases: %{}, status: :running, chunk: chunk})
 
     assert html =~
-             ~s(<span class="phase-cell phase-cell-pending" data-phase="implement" title="implement">) <>
+             ~s(<span class="phase-cell phase-cell-pending" data-phase="implement" title="implement — pending">) <>
                ~s(\n    implement<span class="phase-sublabel"> 3/5 · User Story 1</span>\n  </span>)
 
     for phase <- [:specify, :clarify, :plan, :tasks, :analyze, :converge] do
@@ -120,7 +120,7 @@ defmodule SpeckitOrchestrator.Web.PhaseStripTest do
     html = strip(%{phases: %{}, status: :running, remediation: remediation})
 
     assert html =~
-             ~s(<span class="phase-cell phase-cell-pending" data-phase="analyze" title="analyze">) <>
+             ~s(<span class="phase-cell phase-cell-pending" data-phase="analyze" title="analyze — pending">) <>
                ~s(\n    analyze<span class="phase-sublabel"> attempt 1/2</span>\n  </span>)
 
     for phase <- [:specify, :clarify, :plan, :tasks, :implement, :converge] do

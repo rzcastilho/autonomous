@@ -108,7 +108,10 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
             {:ok, _pid} ->
               {:noreply,
                socket
-               |> put_flash(:info, "Backlog run started")
+               |> put_flash(
+                 :info,
+                 "Backlog run started: SpeckitOrchestrator.run/1 #{inspect(opts)}"
+               )
                |> push_navigate(to: "/")}
 
             {:error, reason} ->
@@ -135,7 +138,10 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
             {:ok, _pid} ->
               {:noreply,
                socket
-               |> put_flash(:info, "Feature started")
+               |> put_flash(
+                 :info,
+                 "Feature started: SpeckitOrchestrator.run_spec/2 #{feature_ref(socket)}"
+               )
                |> push_navigate(to: "/")}
 
             {:error, :empty_description} ->
@@ -152,6 +158,16 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
   end
 
   defp blank?(description), do: String.trim(description || "") == ""
+
+  # Echoes the actual assigned id/slug (FR-011) rather than a generic
+  # "started" message, matching whatever `update_description`'s live preview
+  # already computed.
+  defp feature_ref(socket) do
+    case socket.assigns[:preview] do
+      {id, slug} -> "#{id}-#{slug}"
+      _ -> ""
+    end
+  end
 
   # `run/1`/`run_spec/2` start the per-run Coordinator via `GenServer.start_link`,
   # which links it to whichever process calls it. Calling them directly from
@@ -308,7 +324,9 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
         </button>
       </div>
 
-      <p :if={@start_error} class="field-error" data-error="start">{@start_error}</p>
+      <.form_refusal :if={@start_error} label="Start refused" data-error="start">
+        {@start_error}
+      </.form_refusal>
 
       <div :if={@mode == :backlog} class="trigger-backlog form-panel" data-mode-panel="backlog">
         <p :if={@packages == []} class="backlog-empty" data-hint="no-packages">
@@ -348,9 +366,9 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
           <dd>${format_money(Config.budget_usd())}</dd>
         </dl>
 
-        <p :if={not @backlog_preview.dag_valid?} class="field-error" data-error="dag">
+        <.form_refusal :if={not @backlog_preview.dag_valid?} label="Backlog invalid" data-error="dag">
           {@backlog_preview.reason}
-        </p>
+        </.form_refusal>
       </div>
 
       <div
@@ -372,7 +390,9 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
             >{@description}</textarea>
           </label>
 
-          <p :if={@field_error} class="field-error" data-error="description">{@field_error}</p>
+          <.form_refusal :if={@field_error} label="Description required" data-error="description">
+            {@field_error}
+          </.form_refusal>
 
           <div :if={@preview} class="single-spec-preview" data-preview="id-slug">
             <span>ID: {elem(@preview, 0)}</span>
@@ -435,9 +455,13 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
         </form>
       </div>
 
-      <p :if={@remediation_error} class="field-error" data-error={elem(@remediation_error, 0)}>
+      <.form_refusal
+        :if={@remediation_error}
+        label={"Refused: " <> elem(@remediation_error, 0)}
+        data-error={elem(@remediation_error, 0)}
+      >
         {elem(@remediation_error, 1)}
-      </p>
+      </.form_refusal>
 
       <button
         :if={@mode == :backlog}
@@ -447,7 +471,7 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
         data-action="start-backlog"
         disabled={not @backlog_preview.dag_valid?}
       >
-        &#9656; &nbsp;Start run
+        Start run
       </button>
 
       <button
@@ -457,7 +481,7 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
         class="btn-primary"
         data-action="start-single-spec"
       >
-        &#9656; &nbsp;Start run
+        Start run
       </button>
     </div>
     """

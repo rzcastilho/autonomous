@@ -200,14 +200,19 @@ defmodule SpeckitOrchestrator.Web.TranscriptsLive do
               data-attempt-select={index}
               class={["transcript-tab", index == @selected_index && "transcript-tab-active"]}
             >
-              {attempt.phase}#{attempt.ordinal} &middot; {attempt.outcome}
+              {attempt.phase}#{pad_ordinal(attempt.ordinal)} &middot; {attempt.outcome}
             </button>
           </div>
 
           <div class="transcripts-body">
             <div :if={@doc && @doc.exists?} class="transcript-doc" data-state="found">
               <p class="transcript-path" data-transcript-path>
-                {@selected_feature_id} &middot; {@doc.attempt.phase}#{@doc.attempt.ordinal}
+                {@selected_feature_id} &middot; {@doc.attempt.phase}#{pad_ordinal(@doc.attempt.ordinal)}
+                <span
+                  class="transcript-live"
+                  data-live={to_string(is_nil(@doc.attempt.ended_at))}
+                  title={if is_nil(@doc.attempt.ended_at), do: "live — no finish record yet", else: "finished"}
+                ></span>
               </p>
               <pre class="transcript-body">{@doc.body}</pre>
             </div>

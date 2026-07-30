@@ -125,12 +125,13 @@ defmodule SpeckitOrchestrator.Web.LayoutTest do
     refute html =~ "run-meta"
   end
 
-  test "lifecycle colors and phase order come from the shared palette / Pipeline.phases/0" do
-    palette = SpeckitOrchestrator.Web.CoreComponents.palette()
-
+  test "lifecycle labels and phase order come from the shared status transport / Pipeline.phases/0" do
     for status <- Feature.terminal_statuses() ++ [:pending, :blocked, :running] do
-      assert Map.has_key?(palette, status), "missing palette entry for #{status}"
+      assert is_binary(SpeckitOrchestrator.Web.CoreComponents.label(status)),
+             "missing label for #{status}"
     end
+
+    assert SpeckitOrchestrator.Web.CoreComponents.status_class(:never_started) == "blocked"
 
     assigns = %{phases: %{}, status: :pending}
 
@@ -145,7 +146,7 @@ defmodule SpeckitOrchestrator.Web.LayoutTest do
     end
   end
 
-  test "the same status renders with the identical shared-palette color across Mission Control, Pipeline DAG, and Escalations",
+  test "the same status renders with the identical data-status transport across Mission Control and Escalations",
        %{conn: conn} do
     prior = %{
       repo: Application.get_env(:speckit_orchestrator, :repo),
@@ -180,8 +181,7 @@ defmodule SpeckitOrchestrator.Web.LayoutTest do
     Coordinator.notify(pid, "001", :escalated, :needs_human)
     assert %{status: :escalated} = Coordinator.status(pid).per_feature["001"]
 
-    {_label, color} = SpeckitOrchestrator.Web.CoreComponents.palette()[:escalated]
-    swatch = "color: #{color};"
+    swatch = ~s(data-status="escalated")
 
     # 019: an escalated feature with nothing else in flight stops the chain
     # (Release.next/3 rule 2) — the run finishes immediately, so Mission

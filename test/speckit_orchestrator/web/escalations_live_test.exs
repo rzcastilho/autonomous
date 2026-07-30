@@ -500,9 +500,10 @@ defmodule SpeckitOrchestrator.Web.EscalationsLiveTest do
     {:ok, _view, html} = live(conn, "/escalations")
 
     assert html =~ ~s(data-field="task-phase")
-    assert html =~ "1/3 · 1: Setup ✓"
-    assert html =~ "2/3 · 2: Core"
-    assert html =~ "3/3 · 3: Polish"
+    # Ordinals render zero-padded (docs/design-constitution.md ordinal rule).
+    assert html =~ "01/03 · 1: Setup ✓"
+    assert html =~ "02/03 · 2: Core"
+    assert html =~ "03/03 · 3: Polish"
     assert html =~ ~r/<option value="2"[^>]*selected/
     refute html =~ "data-weak-match"
   end

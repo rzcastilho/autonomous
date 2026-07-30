@@ -132,7 +132,7 @@ defmodule SpeckitOrchestrator.Web.RunDetailLive do
 
         <div class="run-detail-actions">
           <button type="button" phx-click="export" class="btn-secondary" data-action="export">
-            &#8615; Export run
+            Export run
           </button>
         </div>
 
@@ -161,7 +161,7 @@ defmodule SpeckitOrchestrator.Web.RunDetailLive do
               <tbody>
                 <%= for a <- f.phase_attempts do %>
                   <tr data-attempt={attempt_ref(a)}>
-                    <td>{a.phase} #{a.ordinal}</td>
+                    <td>{a.phase} #{pad_ordinal(a.ordinal)}</td>
                     <td>{a.outcome}</td>
                     <td>{a.model}</td>
                     <td>${format_money(a.cost_usd)}</td>
@@ -175,7 +175,7 @@ defmodule SpeckitOrchestrator.Web.RunDetailLive do
                         class="btn-secondary"
                         data-action={"transcript-#{attempt_ref(a)}"}
                       >
-                        &#8801; Transcript
+                        Transcript
                       </button>
                     </td>
                   </tr>
@@ -219,7 +219,7 @@ defmodule SpeckitOrchestrator.Web.RunDetailLive do
               <div class="run-context-label">REMEDIATION ATTEMPTS</div>
               <div :for={r <- f.remediation_attempts} class="run-context" data-remediation={r.ordinal}>
                 <span class="run-context-chip">
-                  #{r.ordinal} severity=<span>{r.max_severity}</span>
+                  #{pad_ordinal(r.ordinal)} severity=<span>{r.max_severity}</span>
                   outcome=<span>{r.outcome}</span>
                   limit=<span>{r.attempt_limit}</span>
                   threshold=<span>{r.threshold}</span>
@@ -300,7 +300,7 @@ defmodule SpeckitOrchestrator.Web.RunDetailLive do
         <div class="run-context-label">AMENDMENTS</div>
         <div :for={a <- @amendments} class="run-context" data-amendment={a.ordinal}>
           <span class="run-context-chip">
-            #{a.ordinal} {format_datetime(a.effective_at)} after=<span>{inspect(a.effective_after)}</span>
+            #{pad_ordinal(a.ordinal)} {format_datetime(a.effective_at)} after=<span>{inspect(a.effective_after)}</span>
             changes=<span>{inspect(a.changes)}</span>
           </span>
         </div>

@@ -155,6 +155,23 @@ future code:
 in `mix.exs` with `override: true` on the harness. Re-check Hex monthly; bump
 SHAs deliberately.
 
+**Console (Phase 8, feature 020 reconciliation).** A Phoenix LiveView operator
+console (`lib/speckit_orchestrator/web/`) — Mission Control, Pipeline Chain,
+Escalations, Runs/Run Detail, Transcripts, Trigger, Configuration — served
+alongside the control plane, hand-authored CSS with no Node/npm/bundler
+(constitution Technology Stack → Frontend). Every color, radius, font-size,
+and spacing literal lives once, in `priv/static/assets/console.css`'s single
+`:root` token block, governed by `docs/design-constitution.md` (constitution
+2.2.0 Principle VII / Operator Surface Design); status color travels from
+Elixir as a `data-status` name only, never a value (`CoreComponents.status_class/1`).
+`test/support/design_contract.ex` is a pure mechanical guard in the default
+test suite (`design_contract_test.exs`) that fails loud, naming file and line,
+if a color/radius/font-size/spacing literal, a duplicated status value, an
+unlisted keyframe, or a prohibited inline style returns —
+`specs/020-reconcile-console-design/compliance-inventory.md` records the
+judgment calls (mono-vs-sans role, recovery-path ranking, empty-state wording,
+…) the guard cannot decide.
+
 **Observability (Phase 6).** `FeatureRunner` wraps each phase in
 `:telemetry.span([:speckit, :phase], …)` (start/stop/exception) and emits
 `[:speckit, :feature, :terminal]`; `Telemetry.attach_default_logger/0` logs them.
