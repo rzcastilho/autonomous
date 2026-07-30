@@ -294,6 +294,51 @@ defmodule SpeckitOrchestrator.Store.Writer do
   end
 
   @doc """
+  Record that a feature has started executing ("feature start" boundary, one
+  transaction): `status: :running`, `started_at` stamped on its first start
+  only (a resume continues the same feature, it does not restart its clock),
+  and the previous attempt's `terminal_reason`/`ended_at` cleared — a resumed
+  feature is running again, not still escalated.
+
+  Written by `FeatureRunner` the moment it takes a feature, so the record
+  alone distinguishes a feature that is executing from one that never
+  released. Without it every store-backed reader (`run_detail/1`, the
+  console's run view, `Recovery.store_recorded_status/1`) had to either infer
+  the transition from checkpoint/attempt rows or keep showing the stale
+  pre-start status until the next terminal write landed.
+  """
+  @spec record_feature_started(run_key(), binary()) :: :ok | {:error, term()}
+  def record_feature_started({repo_id, run_id}, feature_id) do
+    run_transaction(fn ->
+      feature_key = Ids.feature_key(repo_id, run_id, feature_id)
+
+      case Mnesia.read(:speckit_feature_run, feature_key, :write) do
+        [tuple] ->
+          case Records.decode(:speckit_feature_run, tuple) do
+            {:ok, feature} ->
+              Mnesia.write(
+                Records.encode(%{
+                  feature
+                  | status: :running,
+                    terminal_reason: nil,
+                    started_at: feature.started_at || DateTime.utc_now(),
+                    ended_at: nil
+                })
+              )
+
+              :ok
+
+            {:error, damaged} ->
+              Mnesia.abort(damaged)
+          end
+
+        [] ->
+          Mnesia.abort({:absent, feature_key})
+      end
+    end)
+  end
+
+  @doc """
   Record a feature's terminal status (R7 "feature terminal" boundary, one
   transaction): the `feature_run` status/reason/`ended_at`, and — only on
   `:done` — deletes the feature's `checkpoint` (a `:done` feature is never

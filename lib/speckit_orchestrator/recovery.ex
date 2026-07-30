@@ -152,13 +152,14 @@ defmodule SpeckitOrchestrator.Recovery do
     {[row | rows], statuses, resume_phases, conflicts}
   end
 
-  # A store `feature_run` never records `:running` explicitly (no writer
-  # transitions it there) — a feature that has executed at least one phase
-  # (a checkpoint or a recorded phase attempt exists) but has no terminal
-  # status is exactly the pre-018 `"running"` case: interrupted mid-run, not
-  # never-released. `Reconcile.status/3`'s clause 5 (mid-run resume) depends
-  # on this distinction, so it is derived here rather than trusting the
-  # store's coarser `:pending` at face value.
+  # `Store.Writer.record_feature_started/2` records `:running` explicitly, so
+  # a row written by a current run needs no inference — the passthrough clause
+  # below carries it into `Reconcile.status/3`'s clause 5 (mid-run resume)
+  # verbatim. The `:pending` clause stays for rows a *pre-start-write* run
+  # left behind: a feature that has executed at least one phase (a checkpoint
+  # or a recorded phase attempt exists) but has no terminal status is the same
+  # interrupted-mid-run case, not never-released, and is derived here rather
+  # than trusting that record's coarser `:pending` at face value.
   @doc false
   @spec store_recorded_status(map()) :: Feature.status()
   def store_recorded_status(%{status: :pending} = f) do
