@@ -70,15 +70,20 @@ defmodule SpeckitOrchestrator.Web.FeatureDrawerComponent do
 
       <div class="drawer-timeline-section">
         <div class="drawer-section-label">PHASE PIPELINE</div>
+        <.phase_strip
+          :if={@feature}
+          phases={@feature[:phases] || %{}}
+          status={@feature[:status] || :pending}
+        />
         <ol class="drawer-phase-timeline">
           <li
-            :for={phase <- Pipeline.phases()}
+            :for={{phase, ordinal} <- Enum.with_index(Pipeline.phases(), 1)}
             class="timeline-cell"
             data-phase={phase}
-            data-phase-state={phase_cell_state(phase_cell(@feature, phase), @feature && @feature[:status])}
+            data-phase-state={phase_state(@feature, phase)}
           >
             <div class="timeline-marker">
-              <span class="timeline-dot">{timeline_glyph(phase_cell(@feature, phase))}</span>
+              <span class="timeline-dot">{timeline_glyph(phase_state(@feature, phase), ordinal)}</span>
               <span class="timeline-line"></span>
             </div>
             <div class="timeline-body">
@@ -100,7 +105,7 @@ defmodule SpeckitOrchestrator.Web.FeatureDrawerComponent do
           class="btn-secondary drawer-action"
           data-action="drawer-transcript"
         >
-          &#8801; Open transcripts
+          Open transcripts
         </a>
 
         <div :if={diverted?(@feature)} class="drawer-diverted-actions">
@@ -109,35 +114,37 @@ defmodule SpeckitOrchestrator.Web.FeatureDrawerComponent do
             class="btn-primary drawer-action"
             data-action="drawer-resume"
           >
-            &#9654; Resume from checkpoint
+            resume/2 from checkpoint
           </a>
           <a
             href={"/escalations#escalation-#{@feature_id}"}
             class="btn-secondary drawer-action"
             data-action="drawer-open-escalation"
           >
-            &#9888; Open escalation · answer &amp; override
+            Open escalation · answer &amp; override
           </a>
         </div>
 
-        <a
-          :if={pr_url(@feature)}
-          href={pr_url(@feature)}
-          target="_blank"
-          rel="noopener noreferrer"
-          class="drawer-pr"
-          data-action="drawer-view-pr"
-        >
-          &#8991; View PR · {pr_label(pr_url(@feature))}
-        </a>
+        <.record_block :if={pr_url(@feature)} label="Pull request">
+          <a
+            href={pr_url(@feature)}
+            target="_blank"
+            rel="noopener noreferrer"
+            class="record-block-link"
+            data-action="drawer-view-pr"
+          >
+            {pr_label(pr_url(@feature))}
+          </a>
+        </.record_block>
 
-        <div
+        <.record_block
           :if={done?(@feature) && is_nil(pr_url(@feature))}
-          class="drawer-pr drawer-pr-absent"
-          data-action="drawer-no-pr"
+          label="Pull request"
         >
-          &#8991; No PR recorded · branch pushed
-        </div>
+          <span class="record-block-value" data-action="drawer-no-pr">
+            No PR recorded · branch pushed
+          </span>
+        </.record_block>
       </div>
     </aside>
     """
@@ -158,9 +165,18 @@ defmodule SpeckitOrchestrator.Web.FeatureDrawerComponent do
   defp phase_cell_state(%{state: :active}, _status), do: "active"
   defp phase_cell_state(_cell, _status), do: "pending"
 
-  defp timeline_glyph(%{state: :completed}), do: "✓"
-  defp timeline_glyph(%{state: :active}), do: "●"
-  defp timeline_glyph(_cell), do: "○"
+  defp phase_state(feature, phase), do: phase_cell_state(phase_cell(feature, phase), feature && feature[:status])
+
+  # §V: "✓ done, ● active, ! escalated, ✕ failed, ordinal pending" — `halted`
+  # is not named in the doc's timeline enumeration; it shares `!` with
+  # `escalated` as the nearer family (stopped pending an operator, not a
+  # hard execution failure like `failed`).
+  defp timeline_glyph("completed", _ordinal), do: "✓"
+  defp timeline_glyph("active", _ordinal), do: "●"
+  defp timeline_glyph("escalated", _ordinal), do: "!"
+  defp timeline_glyph("halted", _ordinal), do: "!"
+  defp timeline_glyph("failed", _ordinal), do: "✕"
+  defp timeline_glyph(_pending, ordinal), do: pad_ordinal(ordinal)
 
   defp timeline_meta(nil), do: ""
 

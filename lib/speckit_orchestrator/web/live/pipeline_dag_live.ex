@@ -202,7 +202,9 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
 
     ~H"""
     <div class="view-pipeline-dag" data-view="pipeline-dag">
-      <p :if={@backlog_error} class="field-error" data-state="backlog-invalid">{@backlog_error}</p>
+      <.form_refusal :if={@backlog_error} label="Backlog invalid" data-state="backlog-invalid">
+        {@backlog_error}
+      </.form_refusal>
 
       <div
         :if={!@backlog_error && @backlog_links == [] && @ad_hoc_links == []}
@@ -252,6 +254,7 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
             data-node-origin="backlog"
             data-chain-position={link.position}
             data-chain-base={link.base}
+            data-status={status_class(node_status(@view, link.feature.id))}
             phx-click="select_feature"
             phx-value-id={link.feature.id}
           >
@@ -261,7 +264,7 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
                 data-release-order={link.position}
                 title="release order — this run runs one feature at a time"
               >
-                {link.position}
+                {pad_ordinal(link.position)}
               </span>
               <span class="dag-node-id">{link.feature.id}</span>
               <.status_pill status={node_status(@view, link.feature.id)} />
@@ -280,11 +283,11 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
 
         <div class="dag-legend">
           <div
-            :for={{status, {label, color}} <- palette()}
+            :for={status <- statuses()}
             class="dag-legend-item"
             data-legend-status={status}
           >
-            <span class="legend-swatch" style={"background-color: #{color};"}></span> {label}
+            <span class="legend-swatch" data-status={status}></span> {label(String.to_existing_atom(status))}
           </div>
           <div
             :if={@ad_hoc_links != []}
@@ -303,6 +306,7 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
             class="dag-node"
             data-dag-node={link.feature.id}
             data-node-origin="ad-hoc"
+            data-status={status_class(node_status(@view, link.feature.id))}
             phx-click="select_feature"
             phx-value-id={link.feature.id}
           >

@@ -359,7 +359,6 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
       </div>
 
       <div :if={@escalations == []} class="empty-state escalation-empty" data-state="all-clear">
-        <div class="empty-state-icon">&check;</div>
         <p class="empty-state-title">No open escalations</p>
         <p>The clarify and analyze gates are clear. All in-flight features are draining normally.</p>
       </div>
@@ -369,10 +368,15 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
         id={"escalation-#{e.id}"}
         class="escalation-card"
         data-escalation={e.id}
-        style={"border-color: #{status_color(e.feature.status)}40;"}
+        data-status={status_class(e.feature.status)}
       >
-        <div class="escalation-card-head" style={"background: #{status_color(e.feature.status)}0d;"}>
-          <span class="escalation-dot" style={"background-color: #{status_color(e.feature.status)};"}></span>
+        <div
+          class="escalation-card-head"
+          data-status={status_class(e.feature.status)}
+          phx-click="select_feature"
+          phx-value-id={e.id}
+        >
+          <span class="escalation-dot" data-status={status_class(e.feature.status)}></span>
           <span class="escalation-title">
             {e.id} <span :if={e.feature.slug}>· {e.feature.slug}</span>
           </span>
@@ -439,11 +443,11 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
           >
             <input type="hidden" name="feature_id" value={e.id} />
             <label class="field-label">
-              Guidance
+              :prompt (optional operator guidance; blank defaults to none)
               <textarea name="prompt" phx-debounce="200" class="resume-textarea"></textarea>
             </label>
             <label class="field-label">
-              Start phase
+              :from (start phase; defaults to the checkpointed phase)
               <select name="from" class="resume-select">
                 <option :for={p <- Pipeline.phases()} value={p} selected={p == e.default_phase}>
                   {p}
@@ -482,9 +486,36 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
               </select>
             </label>
             <div class="escalation-actions">
-              <button type="submit" class="btn-primary" data-action={"resume-#{e.id}"}>
-                &#9654; Resume
-              </button>
+              <div class="escalation-action">
+                <button type="submit" class="btn-primary" data-action={"resume-#{e.id}"}>
+                  resume/2
+                </button>
+                <span class="action-hint">
+                  continues at {e.default_phase} — keeps completed work
+                </span>
+              </div>
+              <div class="escalation-action">
+                <button
+                  type="button"
+                  phx-click="full_restart"
+                  phx-value-id={e.id}
+                  class="btn-secondary"
+                  data-action={"full-restart-#{e.id}"}
+                >
+                  resolve/1
+                </button>
+                <span class="action-hint">
+                  restarts from specify — discards the checkpoint, frees the worktree
+                </span>
+              </div>
+              <a href={transcript_href(@run_id, e)} class="btn-secondary" data-action={"transcript-#{e.id}"}>
+                Read {phase_label(e)}.md
+              </a>
+            </div>
+          </form>
+
+          <div :if={is_nil(e.checkpoint)} class="escalation-actions">
+            <div class="escalation-action">
               <button
                 type="button"
                 phx-click="full_restart"
@@ -492,26 +523,14 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
                 class="btn-secondary"
                 data-action={"full-restart-#{e.id}"}
               >
-                &#8635; Full restart
+                resolve/1
               </button>
-              <a href={transcript_href(@run_id, e)} class="btn-secondary" data-action={"transcript-#{e.id}"}>
-                &#8801; Read {phase_label(e)}.md
-              </a>
+              <span class="action-hint">
+                restarts from specify — discards the checkpoint, frees the worktree
+              </span>
             </div>
-          </form>
-
-          <div :if={is_nil(e.checkpoint)} class="escalation-actions">
-            <button
-              type="button"
-              phx-click="full_restart"
-              phx-value-id={e.id}
-              class="btn-secondary"
-              data-action={"full-restart-#{e.id}"}
-            >
-              &#8635; Full restart
-            </button>
             <a href={transcript_href(@run_id, e)} class="btn-secondary" data-action={"transcript-#{e.id}"}>
-              &#8801; Read {phase_label(e)}.md
+              Read {phase_label(e)}.md
             </a>
           </div>
         </div>
@@ -552,10 +571,8 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
 
   defp task_phase_label(%TaskPhase{} = tp, total) do
     mark = if TaskPhase.complete?(tp), do: " ✓", else: ""
-    "#{tp.ordinal}/#{total} · #{tp.number}: #{tp.title}#{mark}"
+    "#{pad_ordinal(tp.ordinal)}/#{pad_ordinal(total)} · #{tp.number}: #{tp.title}#{mark}"
   end
-
-  defp status_color(status), do: palette() |> Map.get(status, {"", "#64748b"}) |> elem(1)
 
   defp phase_label(e), do: to_string(e.default_phase)
 

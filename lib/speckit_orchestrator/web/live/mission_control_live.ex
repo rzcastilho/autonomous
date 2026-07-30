@@ -167,18 +167,20 @@ defmodule SpeckitOrchestrator.Web.MissionControlLive do
 
     ~H"""
     <div class="view-mission-control" data-view="mission-control">
-      <div :if={@run_state.state == :parked} class="field-error" data-state="parked">
-        <p>
-          Run parked at <strong>{@run_state.stopped_by}</strong>
-          — {inspect(@run_state.stopped_reason)}
+      <div :if={@run_state.state == :parked} class="parked-banner" data-state="parked">
+        <p class="parked-banner-message">
+          Run parked at <strong class="parked-banner-mono">{@run_state.stopped_by}</strong>
+          — <span class="parked-banner-mono">{inspect(@run_state.stopped_reason)}</span>
         </p>
-        <p>
+        <p class="parked-banner-actions">
           <button type="button" phx-click="continue_run" class="btn-primary" data-action="continue-run">
-            Continue
+            continue_run/1
           </button>
+          <span class="parked-banner-hint">resumes the parked run from where it stopped</span>
           <button type="button" phx-click="end_run" class="btn-secondary" data-action="end-run">
-            End
+            end_run/1
           </button>
+          <span class="parked-banner-hint">closes the run out as ended by the operator</span>
         </p>
       </div>
 

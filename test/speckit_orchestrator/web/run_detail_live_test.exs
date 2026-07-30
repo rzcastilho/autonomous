@@ -50,7 +50,14 @@ defmodule SpeckitOrchestrator.Web.RunDetailLiveTest do
       feature_ids
       |> Enum.with_index(1)
       |> Enum.map(fn {id, n} ->
-        %{feature_id: id, slug: "f-#{id}", path: "specs/#{id}", number: n, group: :backlog, created_at: nil}
+        %{
+          feature_id: id,
+          slug: "f-#{id}",
+          path: "specs/#{id}",
+          number: n,
+          group: :backlog,
+          created_at: nil
+        }
       end)
 
     {:ok, run_id} =
@@ -175,6 +182,8 @@ defmodule SpeckitOrchestrator.Web.RunDetailLiveTest do
     assert html =~ ":critical_finding"
 
     assert html =~ ~s(data-feature="002")
-    assert html =~ ~s(data-status="never_started")
+    # :never_started folds to the "blocked" contract status — its shared
+    # meaning, per docs/design-constitution.md §II — so no eighth color exists.
+    assert html =~ ~s(data-status="blocked")
   end
 end

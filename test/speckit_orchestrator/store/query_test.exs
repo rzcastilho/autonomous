@@ -95,6 +95,87 @@ defmodule SpeckitOrchestrator.Store.QueryTest do
     # malformed row can't be injected through a live write — decode's
     # damaged-row reporting (FR-008, SC-011) is covered exhaustively at the
     # unit level in `store/records_test.exs`.
+
+    # `spend_usd` is only written at `close_run/3` (writer.ex default 0.0) —
+    # an open (in-flight or parked) run's summary must fall back to the
+    # cost-entry roll-up instead of showing $0.00 while phases already cost
+    # real money, matching the same source `recovery.ex`'s `spend_of/1` uses.
+    test "an open run's spend_usd rolls up its recorded cost entries, not the 0.0 default" do
+      repo = "o:query-open-spend"
+      {repo, run_id} = open(repo, ["001"])
+      run_key = {repo, run_id}
+
+      Writer.record_phase_attempt(run_key, %{
+        attempt: %{
+          feature_id: "001",
+          phase: :specify,
+          ordinal: 1,
+          step: 1,
+          label: "specify",
+          started_at: DateTime.utc_now(),
+          ended_at: DateTime.utc_now(),
+          duration_ms: 1,
+          outcome: :ok,
+          model: "sonnet",
+          cost_usd: 1.5,
+          cost_kind: :actual
+        },
+        cost: %{amount_usd: 1.5, kind: :actual}
+      })
+
+      Writer.record_phase_attempt(run_key, %{
+        attempt: %{
+          feature_id: "001",
+          phase: :clarify,
+          ordinal: 1,
+          step: 2,
+          label: "clarify",
+          started_at: DateTime.utc_now(),
+          ended_at: DateTime.utc_now(),
+          duration_ms: 1,
+          outcome: :ok,
+          model: "opus",
+          cost_usd: 2.25,
+          cost_kind: :actual
+        },
+        cost: %{amount_usd: 2.25, kind: :actual}
+      })
+
+      {:ok, [summary]} = Query.runs(repo)
+      assert_in_delta summary.spend_usd, 3.75, 0.0001
+
+      {:ok, %{run: run}} = Query.run(run_key)
+      assert_in_delta run.spend_usd, 3.75, 0.0001
+    end
+
+    test "a closed run's recorded spend_usd is authoritative, not re-derived from cost entries" do
+      repo = "o:query-closed-spend"
+      {repo, run_id} = open(repo, ["001"])
+      run_key = {repo, run_id}
+
+      Writer.record_phase_attempt(run_key, %{
+        attempt: %{
+          feature_id: "001",
+          phase: :specify,
+          ordinal: 1,
+          step: 1,
+          label: "specify",
+          started_at: DateTime.utc_now(),
+          ended_at: DateTime.utc_now(),
+          duration_ms: 1,
+          outcome: :ok,
+          model: "sonnet",
+          cost_usd: 1.5,
+          cost_kind: :actual
+        },
+        cost: %{amount_usd: 1.5, kind: :actual}
+      })
+
+      Writer.close_run(run_key, :all_done, spend_usd: 9.99)
+
+      {:ok, [summary]} = Query.runs(repo)
+      assert_in_delta summary.spend_usd, 9.99, 0.0001
+    end
   end
 
   describe "run/1" do

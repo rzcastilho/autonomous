@@ -9,7 +9,15 @@ defmodule SpeckitOrchestrator.Web.LayoutTest do
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
 
-  alias SpeckitOrchestrator.{Coordinator, Feature, Pipeline}
+  alias SpeckitOrchestrator.{
+    Config,
+    Coordinator,
+    Feature,
+    Layout,
+    Pipeline,
+    RepoIdentity,
+    Store.Writer
+  }
 
   @endpoint SpeckitOrchestrator.Web.Endpoint
 
@@ -19,6 +27,33 @@ defmodule SpeckitOrchestrator.Web.LayoutTest do
 
   defp feat(id),
     do: %Feature{id: id, number: String.to_integer(id), slug: "f#{id}", path: "#{id}.md"}
+
+  defp open_store_run(features) do
+    repo_id = RepoIdentity.partition(Config.repo())
+    {:ok, segment} = RepoIdentity.resolve(Config.repo())
+    {:ok, layout} = Layout.build(Config.repo(), segment, :ad_hoc)
+
+    {:ok, run_id} =
+      Writer.open_run(repo_id, %{
+        features:
+          Enum.map(
+            features,
+            &%{
+              feature_id: &1.id,
+              slug: &1.slug,
+              path: &1.path,
+              number: &1.number,
+              group: &1.group,
+              created_at: &1.created_at
+            }
+          ),
+        settings: %{},
+        scope: :ad_hoc,
+        layout: layout
+      })
+
+    {repo_id, run_id}
+  end
 
   test "nav renders all six items with the six routes", %{conn: conn} do
     {:ok, _view, html} = live(conn, "/")
@@ -90,6 +125,42 @@ defmodule SpeckitOrchestrator.Web.LayoutTest do
     assert html =~ "armed"
   end
 
+  # A parked run's Coordinator stays alive awaiting the operator's
+  # continue_run/end_run decision (contracts/parked-run.md) — the topbar must
+  # say so instead of showing "● live"/"Active run" over a run that has
+  # actually stopped, which used to contradict Mission Control's own parked
+  # banner and "Run complete" report rendered on the very same page.
+  test "status bar renders a parked chip, not live, when the run is parked", %{conn: conn} do
+    run_key = open_store_run([feat("001")])
+    :ok = Writer.record_feature_terminal(run_key, "001", :halted, :critical_finding, [])
+
+    :ok =
+      Writer.park_run(run_key, %{
+        stopped_by: "001",
+        status: :halted,
+        reason: :critical_finding
+      })
+
+    {:ok, pid} =
+      Coordinator.start_link(
+        name: Coordinator,
+        features: [feat("001")],
+        runner: fn _feature, _notify -> :ok end,
+        owner: self()
+      )
+
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    {:ok, _view, html} = live(conn, "/")
+
+    [topbar] = Regex.run(~r/<header class="console-topbar".*?<\/header>/s, html)
+
+    assert topbar =~ "Parked run"
+    assert topbar =~ "run-state-parked"
+    refute topbar =~ "● live"
+    assert topbar =~ ~s(data-parked=)
+  end
+
   # 019, T025: there is exactly one run shape — the status bar names no mode
   # and no cap, active or idle. It used to read global Config for both, so a
   # run started with a per-run `:pr_workflow` opt (or a later live-config
@@ -125,12 +196,13 @@ defmodule SpeckitOrchestrator.Web.LayoutTest do
     refute html =~ "run-meta"
   end
 
-  test "lifecycle colors and phase order come from the shared palette / Pipeline.phases/0" do
-    palette = SpeckitOrchestrator.Web.CoreComponents.palette()
-
+  test "lifecycle labels and phase order come from the shared status transport / Pipeline.phases/0" do
     for status <- Feature.terminal_statuses() ++ [:pending, :blocked, :running] do
-      assert Map.has_key?(palette, status), "missing palette entry for #{status}"
+      assert is_binary(SpeckitOrchestrator.Web.CoreComponents.label(status)),
+             "missing label for #{status}"
     end
+
+    assert SpeckitOrchestrator.Web.CoreComponents.status_class(:never_started) == "blocked"
 
     assigns = %{phases: %{}, status: :pending}
 
@@ -145,7 +217,7 @@ defmodule SpeckitOrchestrator.Web.LayoutTest do
     end
   end
 
-  test "the same status renders with the identical shared-palette color across Mission Control, Pipeline DAG, and Escalations",
+  test "the same status renders with the identical data-status transport across Mission Control and Escalations",
        %{conn: conn} do
     prior = %{
       repo: Application.get_env(:speckit_orchestrator, :repo),
@@ -180,8 +252,7 @@ defmodule SpeckitOrchestrator.Web.LayoutTest do
     Coordinator.notify(pid, "001", :escalated, :needs_human)
     assert %{status: :escalated} = Coordinator.status(pid).per_feature["001"]
 
-    {_label, color} = SpeckitOrchestrator.Web.CoreComponents.palette()[:escalated]
-    swatch = "color: #{color};"
+    swatch = ~s(data-status="escalated")
 
     # 019: an escalated feature with nothing else in flight stops the chain
     # (Release.next/3 rule 2) — the run finishes immediately, so Mission

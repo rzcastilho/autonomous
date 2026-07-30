@@ -18,7 +18,6 @@
         href={path}
         class={["nav-item", assigns[:current_path] == path && "nav-active"]}
       >
-        <span class="nav-glyph">{SpeckitOrchestrator.Web.Layouts.nav_glyph(label)}</span>
         <span class="nav-label">{label}</span>
         <.badge
           :if={label == "Escalations" and escalations > 0}
@@ -32,29 +31,35 @@
       <div class="console-footer-label">TARGET REPO</div>
       <div class="console-footer-value">{ctx.repo}</div>
       <div class="console-status-row">
-        <span class="status-dot" data-ok={ctx.cli_auth == "available"}></span>
-        <span>claude CLI · {ctx.cli_auth}</span>
+        <span class="status-dot" data-health={ctx.cli_auth}></span>
+        <span>claude CLI · <span class="console-status-value">{ctx.cli_auth}</span></span>
       </div>
       <div class="console-status-row">
-        <span class="status-dot" data-ok={ctx.runtime == "up"}></span>
-        <span>BEAM · {ctx.runtime}</span>
+        <span class="status-dot" data-health={ctx.runtime}></span>
+        <span>BEAM · <span class="console-status-value">{ctx.runtime}</span></span>
       </div>
     </div>
   </aside>
 
   <div class="content-column console-main">
-    <header class="console-topbar" data-active={run.active?}>
+    <header class="console-topbar" data-active={run.active?} data-parked={run.parked?}>
       <div class="topbar-run">
-        <%= if run.active? do %>
-          <span class="run-state-chip run-state-active">● live</span>
-          <div class="run-info">
-            <div class="run-title">{run.title}</div>
-          </div>
-        <% else %>
-          <span class="run-state-chip run-state-idle">idle</span>
-          <div class="run-info">
-            <div class="run-title run-title-empty">{run.title}</div>
-          </div>
+        <%= cond do %>
+          <% run.parked? -> %>
+            <span class="run-state-chip run-state-parked">parked</span>
+            <div class="run-info">
+              <div class="run-title">{run.title}</div>
+            </div>
+          <% run.active? -> %>
+            <span class="run-state-chip run-state-active">● live</span>
+            <div class="run-info">
+              <div class="run-title">{run.title}</div>
+            </div>
+          <% true -> %>
+            <span class="run-state-chip run-state-idle">idle</span>
+            <div class="run-info">
+              <div class="run-title run-title-empty">{run.title}</div>
+            </div>
         <% end %>
       </div>
 
