@@ -53,8 +53,7 @@ defmodule SpeckitOrchestrator.Recovery.Rebuild do
   ## Union rule
 
   `features` = `backlog` in backlog order, then any recorded feature the
-  backlog does not name, appended in recorded order. Prereqs come from the
-  backlog when the backlog names the feature, else from the record.
+  backlog does not name, appended in recorded order.
 
   ## Per-feature status
 
@@ -64,15 +63,9 @@ defmodule SpeckitOrchestrator.Recovery.Rebuild do
   status verbatim (unreconciled — `:absent_from_backlog`); a feature the
   record never named is reconciled fresh from evidence
   (`:absent_from_record`); a `{:conflict, reason}` verdict is reported as
-  `:unreconcilable` and seeded `:blocked`.
-
-  Refuses with `{:error, {:inconsistent, discrepancies}}` — no evidence
-  collected, nothing else computed — when any unioned feature names a
-  prereq outside the union (FR-020): a proposal that cannot even be checked
-  for readiness must never be offered for confirmation.
+  `:unreconcilable`.
   """
-  @spec propose(map(), [Feature.t()], keyword()) ::
-          {:ok, proposal()} | {:error, {:inconsistent, [discrepancy()]}}
+  @spec propose(map(), [Feature.t()], keyword()) :: {:ok, proposal()}
   def propose(%{run: run, features: store_features}, backlog, opts \\ []) do
     run_shape = run.scope
     feature_records = Map.new(store_features, &{&1.feature_id, &1})
@@ -81,25 +74,18 @@ defmodule SpeckitOrchestrator.Recovery.Rebuild do
     backlog_ids = MapSet.new(backlog, & &1.id)
     record_only = Enum.reject(record_features, &MapSet.member?(backlog_ids, &1.id))
     features = backlog ++ record_only
-    union_ids = MapSet.new(features, & &1.id)
 
-    case prereq_discrepancies(features, union_ids) do
-      [_ | _] = missing ->
-        {:error, {:inconsistent, missing}}
-
-      [] ->
-        {:ok,
-         build_proposal(
-           run,
-           features,
-           backlog,
-           record_features,
-           backlog_ids,
-           feature_records,
-           run_shape,
-           opts
-         )}
-    end
+    {:ok,
+     build_proposal(
+       run,
+       features,
+       backlog,
+       record_features,
+       backlog_ids,
+       feature_records,
+       run_shape,
+       opts
+     )}
   end
 
   # ---- proposal assembly -----------------------------------------------------
@@ -246,15 +232,5 @@ defmodule SpeckitOrchestrator.Recovery.Rebuild do
     ]
 
     {[row | rows], statuses, resume_phases, discrepancies}
-  end
-
-  # ---- prereq guard (FR-020) --------------------------------------------------
-
-  defp prereq_discrepancies(features, union_ids) do
-    for feature <- features,
-        prereq <- feature.prereqs,
-        not MapSet.member?(union_ids, prereq) do
-      %{kind: :prereq_missing, id: feature.id, detail: prereq}
-    end
   end
 end

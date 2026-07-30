@@ -9,8 +9,8 @@ It drives the GitHub Spec Kit loop (`/speckit.specify → clarify → plan → t
 analyze → implement → converge`) feature-by-feature through the Claude Code CLI.
 Control plane = Jido/OTP; data plane = the `claude` CLI wrapped by the
 `jido_harness` `:claude` provider. Per-phase model routing, an Opus reviewer
-standing in for the human at `clarify`, a deterministic `analyze` gate,
-git-worktree parallelism across features, and a cost circuit breaker.
+standing in for the human at `clarify`, a deterministic `analyze` gate, a
+stacked sequential run over one feature at a time, and a cost circuit breaker.
 
 Build follows a phased plan: **`docs/speckit-orchestrator-implementation-plan.md`**
 is the source of truth for scope, sequencing, and exit criteria. As of now
@@ -79,7 +79,11 @@ logic never depends on guesses.
 dependency, fully unit-testable:
 
 - `Feature` — the work-unit struct + lifecycle status (`:pending → :running →`
-  terminal `:done | :escalated | :halted | :failed`, plus `:blocked`).
+  terminal `:done | :escalated | :halted | :failed`, plus `:never_started` for
+  a feature still `:pending` when a run ends). No `prereqs` field. Carries
+  `number` (parsed from the `NNN` filename prefix, compared numerically — `002`
+  and `0002` collide), `group` (`:backlog | :ad_hoc`), and `created_at`
+  (non-nil only for `:ad_hoc`).
 - `Config` — typed accessors over `config :speckit_orchestrator`. Model routing
   uses **CLI aliases** (`opus`/`sonnet`) — the pinned ClaudeAgentSDK catalog
   rejects full strings like `claude-opus-4-8`; pin reproducibility via
@@ -113,13 +117,21 @@ dependency, fully unit-testable:
 - `Ledger` — cost circuit-breaker `GenServer`. `reserve` is rejected once
   `committed + reserved >= budget`; invariant: `committed < budget + max single
   reservation`. Breaker trips at `committed >= budget`.
-- `Release` — pure wave policy: `(features, statuses, cap, breaker?) → next
-  wave`. Releasable = `:pending` with all prereqs `:done`; wave size =
-  `cap - in_flight`; tripped breaker → empty wave (drain-don't-kill lives in the
-  future Coordinator).
-- `Backlog` — parses `docs/breakdown/NNN-slug.md` files into the dependency DAG
-  via a `## Prerequisites` section. **Fails loudly** at load on a dangling
-  prereq (`MissingPrereqError`) or a cycle (`CycleError`, Kahn-style).
+- `Release` — pure single-run policy: `next/3` takes features, statuses, and a
+  breaker flag and returns `{:release, feature} | :none | {:stopped, id,
+  status}`. One-feature-at-a-time is structural, not a configured cap: any
+  `:running` feature ⇒ `:none`; a tripped breaker ⇒ `:none`
+  (drain-don't-kill lives in the Coordinator); any non-`:done` terminal
+  feature ⇒ `{:stopped, id, status}`, which is what lets the Coordinator tell
+  "the chain broke here" from "nothing left to release" — both used to be an
+  empty wave. `order/1` is the total order every release walks: numbered
+  backlog features ascending by `number`, then the `:ad_hoc` group ascending
+  by `{created_at, number}`. No `cap` parameter anywhere.
+- `Backlog` — parses `docs/breakdown/NNN-slug.md` files, sorts them by
+  `number` ascending. A `## Prerequisites` section is inert prose — ordering
+  has exactly one input, the filename's `NNN`. Gaps in numbering are legal.
+  **Fails loudly** at load only on `Backlog.DuplicateNumberError` — two files
+  whose numbers are numerically equal (`002` vs `0002`).
 
 **Harness boundary (contract observed, code is Phase 2).** `docs/harness-contract.md`
 records the *observed* jido_harness/jido_claude structs. Key facts that shape
@@ -174,13 +186,21 @@ backlog and starts a per-run `Coordinator`; `status/0` reports it. The
 `Coordinator` is a **plain GenServer** (deliberate deviation from the plan's
 "Jido agent" — it supervises Task-based runners reacting to async finish
 notifications; a Jido agent would push spawning into action bodies). It holds
-features/statuses/in-flight, releases dependency-and-cap waves via `Release`, and
-on drain emits a final report (`done`/`escalated`/`halted`/`failed`/`blocked`/
-`not_started`/`spend`). Runner spawning is an **injected seam** (`:runner`) so
-wave/DAG/breaker logic is unit-tested without CLI/worktrees; the facade supplies
+features/statuses/in-flight (never more than one), releases the next feature in
+`Release.order/1` via `Release.next/3`, and on drain emits a final report
+(`done`/`escalated`/`halted`/`failed`/`not_started`/`stopped_by`/`spend`). No
+`cap` field, no `set_cap/2` — how many features run at once is a structural
+property, not a live-tunable one. When `Release.next/3` returns
+`{:stopped, id, status}` with nothing in flight, the Coordinator parks the run
+(`Store.Writer.park_run/2`) instead of draining silently, recording
+`stopped_by`. Runner spawning is an **injected seam** (`:runner`) so the
+release/breaker logic is unit-tested without CLI/worktrees; the facade supplies
 the real runner. A tripped `Ledger` breaker releases nothing new and
-`FeatureRunner` halts in-flight features between phases (drain, not kill). App
-tree: `Ledger` + `{Task.Supervisor, RunnerSup}`; the Coordinator is per-run.
+`FeatureRunner` halts the in-flight feature between phases (drain, not kill).
+App tree: `Ledger` + `{Task.Supervisor, RunnerSup}`; the Coordinator is
+per-run. A parked run refuses new work for that repository until an operator
+resolves it with an explicit `:continue` or `:end` decision
+(`SpeckitOrchestrator.continue_run/1` / `end_run/1`) — see `docs/runbook.md`.
 
 **Feature vertical (Phase 3).** `Worktree` manages per-feature git worktrees
 (`feature/NNN-slug`), asserting the committed `.specify/`/`.claude/` scaffold
@@ -196,8 +216,9 @@ app's Jido instance exists (Phase 4).
 
 ## Test fixtures
 
-`test/fixtures/breakdown/` is the **LedgerLite** 7-feature DAG (plan §7.1) used
-as golden input for the `Backlog` parser and the eventual end-to-end validation
-run. `breakdown_cyclic/` and `breakdown_missing/` prove the load-time guards
-fire. `docs/breakdown-format.md` is the parser's format contract, to reconcile
-with real `macro-spec-breakdown` output later.
+`test/fixtures/breakdown/` is the **LedgerLite** 7-feature backlog (plan §7.1)
+used as golden input for the `Backlog` parser and the eventual end-to-end
+validation run. `breakdown_duplicate/` proves the one remaining load-time
+guard fires: two files whose `NNN` prefixes are numerically equal raise
+`Backlog.DuplicateNumberError`. `docs/breakdown-format.md` is the parser's
+format contract, to reconcile with real `macro-spec-breakdown` output later.

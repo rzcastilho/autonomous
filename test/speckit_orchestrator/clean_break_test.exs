@@ -62,6 +62,8 @@ defmodule SpeckitOrchestrator.CleanBreakTest do
     File.mkdir_p!(Path.join(repo, ".claude/skills"))
     File.write!(Path.join(repo, ".claude/skills/.gitkeep"), "")
     File.write!(Path.join(repo, ".claude/settings.json"), "{}")
+    File.mkdir_p!(Path.join(repo, ".claude/hooks"))
+    File.write!(Path.join(repo, ".claude/hooks/scope_guard.py"), "")
     git!(repo, ["add", "-A"])
     git!(repo, ["commit", "-q", "-m", "base"])
     on_exit(fn -> File.rm_rf(repo) end)

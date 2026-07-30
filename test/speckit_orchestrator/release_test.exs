@@ -1,116 +1,128 @@
 defmodule SpeckitOrchestrator.ReleaseTest do
   use ExUnit.Case, async: true
 
-  alias SpeckitOrchestrator.{Feature, Release}
+  alias SpeckitOrchestrator.{Backlog, Feature, Release}
 
-  defp feat(id, prereqs \\ []) do
-    %Feature{id: id, slug: "f#{id}", path: "#{id}.md", prereqs: prereqs}
-  end
-
-  # Diamond: 1 -> {2, 3} -> 4
-  defp diamond do
-    [feat("001"), feat("002", ["001"]), feat("003", ["001"]), feat("004", ["002", "003"])]
+  defp feat(id, number, opts \\ []) do
+    %Feature{
+      id: id,
+      number: number,
+      slug: "f#{id}",
+      path: "#{id}.md",
+      group: Keyword.get(opts, :group, :backlog),
+      created_at: Keyword.get(opts, :created_at),
+      status: Keyword.get(opts, :status, :pending)
+    }
   end
 
   defp ids(features), do: Enum.map(features, & &1.id)
 
-  test "solo first wave: only the prereq-free feature is releasable" do
-    assert ids(Release.next_wave(diamond(), %{}, 4, false)) == ["001"]
-  end
+  describe "order/1" do
+    test "ascending by number over a gapped backlog" do
+      gapped = [feat("020", 20), feat("001", 1), feat("005", 5)]
+      assert ids(Release.order(gapped)) == ["001", "005", "020"]
+    end
 
-  test "wave releases dependents after the prereq completes" do
-    statuses = %{"001" => :done}
-    assert ids(Release.next_wave(diamond(), statuses, 4, false)) == ["002", "003"]
-  end
+    test "independent of input list order" do
+      a = [feat("001", 1), feat("005", 5), feat("020", 20)]
+      b = [feat("020", 20), feat("001", 1), feat("005", 5)]
+      c = [feat("005", 5), feat("020", 20), feat("001", 1)]
 
-  test "diamond join releases only after BOTH prereqs are done" do
-    only_two = %{"001" => :done, "002" => :done, "003" => :running}
-    assert ids(Release.next_wave(diamond(), only_two, 4, false)) == []
+      assert Release.order(a) == Release.order(b)
+      assert Release.order(b) == Release.order(c)
+    end
 
-    both = %{"001" => :done, "002" => :done, "003" => :done}
-    assert ids(Release.next_wave(diamond(), both, 4, false)) == ["004"]
-  end
+    test "backlog features precede ad-hoc features regardless of numbering" do
+      backlog = feat("003", 3)
+      ad_hoc = feat("adhoc-1", 1, group: :ad_hoc, created_at: ~U[2026-01-01 00:00:00Z])
 
-  test "concurrency cap limits the wave, ties by ascending id" do
-    features = [feat("001"), feat("002"), feat("003")]
-    assert ids(Release.next_wave(features, %{}, 2, false)) == ["001", "002"]
-  end
+      assert ids(Release.order([ad_hoc, backlog])) == ["003", "adhoc-1"]
+    end
 
-  test "in-flight :running features consume slots" do
-    features = [feat("001"), feat("002"), feat("003")]
-    statuses = %{"001" => :running}
-    # cap 2, one running -> 1 slot -> next pending by id
-    assert ids(Release.next_wave(features, statuses, 2, false)) == ["002"]
-  end
+    test "ad-hoc features order by created_at, tie-broken by number" do
+      later = feat("a", 2, group: :ad_hoc, created_at: ~U[2026-01-02 00:00:00Z])
+      earlier = feat("b", 1, group: :ad_hoc, created_at: ~U[2026-01-01 00:00:00Z])
+      tie_high = feat("c", 5, group: :ad_hoc, created_at: ~U[2026-01-01 00:00:00Z])
+      tie_low = feat("d", 3, group: :ad_hoc, created_at: ~U[2026-01-01 00:00:00Z])
 
-  test "tripped breaker releases nothing" do
-    assert Release.next_wave(diamond(), %{"001" => :done}, 4, true) == []
-  end
+      assert ids(Release.order([later, earlier, tie_high, tie_low])) == ["b", "d", "c", "a"]
+    end
 
-  test "dependent of an escalated/failed prereq is not released and is blocked?" do
-    features = [feat("001"), feat("002", ["001"])]
+    test "a fixture's prose ## Prerequisites section has no effect on order (FR-010)" do
+      dir = Path.expand("../fixtures/breakdown", __DIR__)
+      features = Backlog.load!(dir)
 
-    for bad <- [:escalated, :failed, :halted] do
-      statuses = %{"001" => bad}
-      assert Release.next_wave(features, statuses, 4, false) == []
-      assert Release.blocked?(Enum.at(features, 1), statuses)
+      # The fixture's Prerequisites sections describe a dependency DAG where
+      # 003/004/006 depend on 002, etc. — none of that is read by Release;
+      # order/1 must still be a flat ascending walk over `number`.
+      assert ids(Release.order(features)) == ~w(001 002 003 004 005 006 007)
     end
   end
 
-  describe "sequential_order/1" do
-    test "a diamond linearizes to a topological order, ties broken by ascending id" do
-      assert Release.sequential_order(diamond()) == ["001", "002", "003", "004"]
+  describe "next/3" do
+    test "solo lowest-ordered pending feature is released, over a gapped backlog" do
+      gapped = [feat("020", 20), feat("001", 1), feat("005", 5)]
+      assert {:release, %Feature{id: "001"}} = Release.next(gapped, %{}, false)
     end
 
-    test "a chain keeps its chain order regardless of the list's own order" do
-      chain = [feat("003", ["002"]), feat("001"), feat("002", ["001"])]
-      assert Release.sequential_order(chain) == ["001", "002", "003"]
+    test "never two in flight: any :running feature yields :none regardless of others' status" do
+      features = [feat("001", 1), feat("002", 2), feat("003", 3)]
+      statuses = %{"001" => :running}
+
+      assert Release.next(features, statuses, false) == :none
     end
 
-    test "fully independent features order by ascending id" do
-      assert Release.sequential_order([feat("003"), feat("001"), feat("002")]) ==
-               ["001", "002", "003"]
+    test "stop on :escalated: later features stay pending and are never returned" do
+      features = [feat("001", 1), feat("002", 2), feat("003", 3)]
+      statuses = %{"001" => :done, "002" => :escalated}
+
+      assert Release.next(features, statuses, false) == {:stopped, "002", :escalated}
     end
 
-    # Guards against the order silently degrading to a plain id sort: here the
-    # dependency inverts id order, so only a real topological walk gets it right.
-    test "dependency order beats id order when the two disagree" do
-      assert Release.sequential_order([feat("001", ["002"]), feat("002")]) == ["002", "001"]
+    test "stop on :halted: later features stay pending and are never returned" do
+      features = [feat("001", 1), feat("002", 2), feat("003", 3)]
+      statuses = %{"001" => :done, "002" => :halted}
+
+      assert Release.next(features, statuses, false) == {:stopped, "002", :halted}
     end
 
-    test "omits a feature that can never be released, and still terminates" do
-      # 003's prereq is not in the backlog at all, so it is never releasable.
-      # (Backlog.load!/1 rejects this shape; the guard is here so a partial or
-      # hand-built feature list can never spin the walk forever.)
-      features = [feat("001"), feat("003", ["999"])]
-      assert Release.sequential_order(features) == ["001"]
+    test "stop on :failed: later features stay pending and are never returned" do
+      features = [feat("001", 1), feat("002", 2), feat("003", 3)]
+      statuses = %{"001" => :done, "002" => :failed}
+
+      assert Release.next(features, statuses, false) == {:stopped, "002", :failed}
     end
 
-    test "empty backlog yields an empty order" do
-      assert Release.sequential_order([]) == []
+    test "when more than one non-done terminal exists, the lowest-ordered is reported" do
+      features = [feat("001", 1), feat("002", 2), feat("003", 3)]
+      statuses = %{"001" => :halted, "002" => :failed}
+
+      assert Release.next(features, statuses, false) == {:stopped, "001", :halted}
     end
 
-    # The projection's whole claim is that it reproduces the real policy, so
-    # assert exactly that: replaying next_wave/4 at cap 1 must visit the same
-    # ids in the same order.
-    test "matches what next_wave/4 at cap 1 actually releases, step for step" do
-      features = diamond()
-
-      replayed =
-        Enum.reduce(1..4, {%{}, []}, fn _step, {statuses, acc} ->
-          [f] = Release.next_wave(features, statuses, 1, false)
-          {Map.put(statuses, f.id, :done), acc ++ [f.id]}
-        end)
-        |> elem(1)
-
-      assert Release.sequential_order(features) == replayed
+    test "breaker tripped yields :none even with a releasable feature" do
+      features = [feat("001", 1)]
+      assert Release.next(features, %{}, true) == :none
     end
-  end
 
-  test "releasable?/2 requires pending self and all prereqs done" do
-    f = feat("002", ["001"])
-    refute Release.releasable?(f, %{})
-    assert Release.releasable?(f, %{"001" => :done})
-    refute Release.releasable?(%{f | status: :running}, %{"001" => :done})
+    test "breaker tripped outranks a stopped feature: still :none (drain, don't kill)" do
+      features = [feat("001", 1), feat("002", 2)]
+      statuses = %{"001" => :halted}
+
+      assert Release.next(features, statuses, true) == :none
+    end
+
+    test "nothing pending and nothing running or stopped: :none (run complete)" do
+      features = [feat("001", 1)]
+      assert Release.next(features, %{"001" => :done}, false) == :none
+    end
+
+    test "releases across the ad-hoc group only after the backlog is exhausted" do
+      backlog_done = feat("001", 1, status: :done)
+      ad_hoc = feat("adhoc-1", 1, group: :ad_hoc, created_at: ~U[2026-01-01 00:00:00Z])
+
+      assert {:release, %Feature{id: "adhoc-1"}} =
+               Release.next([backlog_done, ad_hoc], %{"001" => :done}, false)
+    end
   end
 end

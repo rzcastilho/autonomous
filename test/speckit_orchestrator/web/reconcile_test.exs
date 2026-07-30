@@ -21,7 +21,12 @@ defmodule SpeckitOrchestrator.Web.ReconcileTest do
   @endpoint SpeckitOrchestrator.Web.Endpoint
 
   @valid_dir Path.expand("../../fixtures/breakdown", __DIR__)
-  @cyclic_dir Path.expand("../../fixtures/breakdown_cyclic", __DIR__)
+  # 019 retired cycle/dangling-prereq detection entirely (Backlog no longer
+  # reads `## Prerequisites`) — `breakdown_cyclic`/`breakdown_missing` are
+  # gone; the one load-time guard left is `DuplicateNumberError` (numerically
+  # equal feature numbers), covered by this fixture (see
+  # `backlog_test.exs`/`web/pipeline_dag_live_test.exs`).
+  @duplicate_dir Path.expand("../../fixtures/breakdown_duplicate", __DIR__)
 
   setup do
     prior = %{
@@ -48,7 +53,13 @@ defmodule SpeckitOrchestrator.Web.ReconcileTest do
     Application.put_env(:speckit_orchestrator, :breakdown_dir, "")
   end
 
-  defp feat(id), do: %Feature{id: id, slug: "slug-#{id}", path: "#{id}.md"}
+  defp feat(id, number),
+    do: %Feature{
+      id: id,
+      number: number,
+      slug: "slug-#{id}",
+      path: "#{id}.md"
+    }
 
   # Forces an immediate reconcile instead of waiting up to the 2s tick — the
   # projection's :reconcile handler is the same code the timer fires.
@@ -63,15 +74,20 @@ defmodule SpeckitOrchestrator.Web.ReconcileTest do
   # ---- T071: outside state change converges within the reconcile tick -----
 
   test "a raw Coordinator.notify/4 call (outside actor) converges on the mounted LiveView via reconcile" do
-    # A second, never-notified feature keeps the run alive after "rc1"
-    # diverts, so Mission Control keeps rendering the live table (not the
-    # drained/finished screen) — this test is about state convergence, not
-    # the run-finished transition (covered elsewhere).
+    # 019: one feature runs at a time, in ascending numeric order — "rc1b"
+    # (the lower number) is the one actually released by the no-op runner
+    # and never notified, so it stays :running and keeps the run alive
+    # (Mission Control keeps rendering the live table, not the
+    # drained/finished screen) for the whole test. "rc1" (the higher number)
+    # is never released by the runner at all — rule 3 blocks it while "rc1b"
+    # runs — its status is instead forced directly by the raw
+    # `Coordinator.notify/4` call this test is about, exactly the "outside
+    # actor" scenario the test name describes.
     pid =
       elem(
         Coordinator.start_link(
           name: Coordinator,
-          features: [feat("rc1"), feat("rc1b")],
+          features: [feat("rc1", 2), feat("rc1b", 1)],
           runner: fn _f, _n -> :ok end,
           owner: self()
         ),
@@ -88,6 +104,7 @@ defmodule SpeckitOrchestrator.Web.ReconcileTest do
     # (e.g. an `iex` session) driving the same run.
     Coordinator.notify(pid, "rc1", :escalated, :needs_human)
     assert %{status: :escalated} = Coordinator.status(pid).per_feature["rc1"]
+    refute Coordinator.status(pid).finished?
 
     force_reconcile()
 
@@ -99,13 +116,18 @@ defmodule SpeckitOrchestrator.Web.ReconcileTest do
   # ---- T072: drain, don't kill — never a depicted mid-phase kill ----------
 
   test "a tripped breaker shows tripped in the status bar without forcing an in-flight feature to a diverted status" do
-    # A second, never-notified feature keeps the run alive after "rc2"
-    # halts, so Mission Control keeps rendering the live table.
+    # "rc2" (the lower number) is the one the no-op runner actually releases
+    # and never notifies. "rc2b" (the higher number) never releases at all
+    # while "rc2" runs (Release.next/3 rule 3) — 019's one-at-a-time release
+    # means there is no second in-flight feature left to keep the run "live"
+    # once "rc2" itself reaches a terminal state below, so the post-halt
+    # assertion checks the finished summary instead of a live per-feature
+    # row (which Mission Control only renders while `not @view.finished?`).
     pid =
       elem(
         Coordinator.start_link(
           name: Coordinator,
-          features: [feat("rc2"), feat("rc2b")],
+          features: [feat("rc2", 1), feat("rc2b", 2)],
           runner: fn _f, _n -> :ok end,
           owner: self()
         ),
@@ -131,13 +153,16 @@ defmodule SpeckitOrchestrator.Web.ReconcileTest do
     assert row =~ ~s(data-status="running")
 
     # The runner drains: finishes the in-flight phase, then halts between
-    # phases — an explicit notify, never a display-layer kill.
+    # phases — an explicit notify, never a display-layer kill. "rc2" was the
+    # only in-flight feature, so the run itself drains/finishes right here —
+    # never redisplayed as if it were still silently running.
     Coordinator.notify(pid, "rc2", :halted, :breaker_tripped)
     force_reconcile()
 
     html = render(view)
-    row = Regex.run(~r/<tr[^>]*data-feature-row="rc2".*?<\/tr>/s, html) |> hd()
-    assert row =~ ~s(data-status="halted")
+    assert html =~ ~s(data-state="finished")
+    assert Coordinator.status(pid).report.halted == ["rc2"]
+    assert Regex.match?(~r/Halted<\/dt>\s*<dd>\s*1\s*<\/dd>/, html)
   end
 
   # ---- T073: coherent empty/error states across views (SC-006) ------------
@@ -158,9 +183,9 @@ defmodule SpeckitOrchestrator.Web.ReconcileTest do
     {:ok, _view, html} = live(conn, "/dag")
     assert html =~ ~s(data-state="empty-backlog")
 
-    point_backlog_at(@cyclic_dir)
+    point_backlog_at(@duplicate_dir)
     {:ok, _view, html} = live(conn, "/dag")
-    assert html =~ ~s(data-state="dag-invalid")
+    assert html =~ ~s(data-state="backlog-invalid")
 
     point_backlog_at(@valid_dir)
 

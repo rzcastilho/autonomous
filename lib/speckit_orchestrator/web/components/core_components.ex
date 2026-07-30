@@ -18,7 +18,8 @@ defmodule SpeckitOrchestrator.Web.CoreComponents do
     escalated: {"Escalated", "#fbbf24"},
     halted: {"Halted", "#fb7185"},
     failed: {"Failed", "#f43f5e"},
-    done: {"Done", "#34d399"}
+    done: {"Done", "#34d399"},
+    never_started: {"Never started", "#475569"}
   }
 
   @doc "The shared lifecycle status → `{label, color}` palette (FR-034)."

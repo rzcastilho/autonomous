@@ -187,12 +187,99 @@ defmodule SpeckitOrchestrator.Worktree do
   Push the feature branch to `remote`, setting upstream (`push -u`). Used by the
   stacked PR workflow after the terminal commit so a PR can be opened against it.
   Runs against the base repo (works whether or not the worktree still exists).
+
+  Every run rebuilds `feature/NNN-slug` from its base, so a *previous* run's
+  push of the same feature leaves a remote branch that has diverged from the
+  one being pushed now — a plain push is rejected non-fast-forward and the
+  publish fails for a feature that built perfectly well. The orchestrator is
+  the sole author of these branches, so it replaces its own stale branch —
+  but only its own:
+
+    1. Read the remote-tracking sha **before** fetching. This is what the
+       orchestrator last knew the remote to be.
+    2. `fetch --prune`, so a branch deleted on the remote stops being named by
+       a local ref that is pure fiction.
+    3. Decide from the two:
+       * gone after the prune — the branch isn't on the remote at all, so a
+         plain `push -u` creates it.
+       * unchanged — the remote is where we left it, so
+         `--force-with-lease=<branch>:<sha>` replaces our own stale branch.
+       * moved — someone else pushed (a review fixup, a rebase). **Refuse**,
+         without pushing. The publish fails loudly rather than overwriting
+         work the orchestrator did not author.
+
+  Step 1 is what makes the lease mean anything. `--force-with-lease` with no
+  explicit sha compares against the remote-tracking ref, which step 2 has just
+  updated to whatever the remote now holds — so a bare lease after a fetch
+  always passes and protects nothing.
+
+  A failed fetch is not fatal on its own — an unreachable remote surfaces as
+  the push error, which names the actual problem.
   """
   @spec push(t(), String.t()) :: :ok | {:error, term()}
   def push(%__MODULE__{repo: repo, branch: branch}, remote) when is_binary(remote) do
-    case git(repo, ["push", "-u", remote, branch]) do
+    known = remote_head(repo, remote, branch)
+    _ = git(repo, ["fetch", "--prune", remote])
+
+    case {known, remote_head(repo, remote, branch)} do
+      {_known, nil} ->
+        do_push(repo, remote, branch, [])
+
+      {same, same} ->
+        do_push(repo, remote, branch, ["--force-with-lease=#{branch}:#{same}"])
+
+      {_known, moved} ->
+        {:error, {:remote_branch_moved, branch, moved}}
+    end
+  end
+
+  defp do_push(repo, remote, branch, flags) do
+    case git(repo, ["push", "-u"] ++ flags ++ [remote, branch]) do
       {:ok, _} -> :ok
       {:error, _} = err -> err
+    end
+  end
+
+  defp remote_head(repo, remote, branch) do
+    case git(repo, ["rev-parse", "--verify", "--quiet", "refs/remotes/#{remote}/#{branch}"]) do
+      {:ok, sha} -> sha
+      {:error, _} -> nil
+    end
+  end
+
+  @doc """
+  Whether `branch` has already landed in `into` — its tip is an ancestor of
+  `into`, so stacking anything else on it would be stacking on merged history.
+
+  Used by the stacked PR workflow to skip merged links when choosing a base
+  (`main <- 001 (merged)` means the next feature belongs on `main`, not on
+  `feature/001-…`). `into` is resolved against `<remote>/<into>` when that
+  remote-tracking ref exists, because the local branch is usually behind
+  whatever has actually been merged upstream.
+
+  A branch that no longer exists locally counts as merged: it is gone because
+  its PR landed and the branch was deleted, and either way it is not something
+  to stack on. `false` on any git failure — the conservative answer, since
+  wrongly reporting "merged" silently reparents a PR onto the trunk.
+  """
+  @spec merged?(Path.t(), String.t(), String.t(), keyword()) :: boolean()
+  def merged?(repo, branch, into, opts \\ []) do
+    if branch_exists?(repo, branch) do
+      target = merge_target(repo, into, Keyword.get(opts, :remote))
+      match?({:ok, _}, git(repo, ["merge-base", "--is-ancestor", "refs/heads/#{branch}", target]))
+    else
+      true
+    end
+  end
+
+  defp merge_target(_repo, into, nil), do: into
+
+  defp merge_target(repo, into, remote) do
+    remote_ref = "refs/remotes/#{remote}/#{into}"
+
+    case git(repo, ["rev-parse", "--verify", "--quiet", remote_ref]) do
+      {:ok, _} -> remote_ref
+      {:error, _} -> into
     end
   end
 

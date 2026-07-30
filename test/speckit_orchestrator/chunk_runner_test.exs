@@ -240,7 +240,7 @@ defmodule SpeckitOrchestrator.ChunkRunnerTest do
 
     on_exit(fn -> File.rm_rf(root) end)
 
-    feature = %Feature{id: "001", slug: "fake", path: "specs/001-fake/spec.md"}
+    feature = %Feature{id: "001", number: 1, slug: "fake", path: "specs/001-fake/spec.md"}
     worktree = %Worktree{path: root, branch: "feature/001-fake", repo: root, feature_id: "001"}
 
     {:ok, pid} =
@@ -296,7 +296,7 @@ defmodule SpeckitOrchestrator.ChunkRunnerTest do
 
     on_exit(fn -> File.rm_rf(root) end)
 
-    feature = %Feature{id: "001", slug: "fake", path: "specs/001-fake/spec.md"}
+    feature = %Feature{id: "001", number: 1, slug: "fake", path: "specs/001-fake/spec.md"}
     worktree = %Worktree{path: root, branch: "feature/001-fake", repo: root, feature_id: "001"}
 
     {:ok, pid} =
@@ -495,7 +495,7 @@ defmodule SpeckitOrchestrator.ChunkRunnerTest do
     # the module-wide sdk_module override for just this test.
     Application.delete_env(:jido_claude, :sdk_module)
 
-    feature = %Feature{id: "001", slug: "smoke", path: Path.join(repo, "specs/001-smoke/spec.md")}
+    feature = %Feature{id: "001", number: 1, slug: "smoke", path: Path.join(repo, "specs/001-smoke/spec.md")}
     worktree = %Worktree{path: repo, branch: "main", repo: repo, feature_id: "001"}
     timeout = :timer.minutes(50)
 

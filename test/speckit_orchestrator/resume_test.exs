@@ -204,9 +204,19 @@ defmodule SpeckitOrchestrator.ResumeTest do
     :ok
   end
 
-  defp unique_id, do: "r#{System.unique_integer([:positive, :monotonic])}"
+  # Numeric — every real feature id is a numeric string (`Backlog`/
+  # `SingleSpec.next_id/1`), and `resolve_identity/3`'s no-store-record
+  # fallback (`checkpoint_identity/2`) derives `Feature.number` straight from
+  # the id via `String.to_integer/1` when no recorded `number` is available.
+  defp unique_id, do: "#{System.unique_integer([:positive, :monotonic])}"
 
-  defp feature(id), do: %Feature{id: id, slug: "resume-facade", path: "#{id}-resume-facade.md"}
+  defp feature(id),
+    do: %Feature{
+      id: id,
+      number: System.unique_integer([:positive, :monotonic]),
+      slug: "resume-facade",
+      path: "#{id}-resume-facade.md"
+    }
 
   defp capturing_runner(test_pid) do
     fn feat, notify ->
@@ -216,16 +226,13 @@ defmodule SpeckitOrchestrator.ResumeTest do
     end
   end
 
-  defp capturing_executor(test_pid) do
-    fn feat, base, notify ->
-      send(test_pid, {:executor_called, feat, base})
-      notify.(feat.id, :halted, :test)
-      :ok
-    end
-  end
-
   defp git!(repo, args),
     do: {_, 0} = System.cmd("git", ["-C", repo | args], stderr_to_stdout: true)
+
+  # 019: every run publishes a PR unconditionally on :done — fake just the
+  # publisher (network/`gh`) so chunked-resume tests reaching :done don't
+  # hang on a real git push to the fixtures' unreachable fake remote.
+  defp fake_publisher, do: fn feature, _base -> {:ok, "https://example/pr/#{feature.id}"} end
 
   defp base_repo do
     repo = Path.join(System.tmp_dir!(), "resume_repo_#{System.unique_integer([:positive])}")
@@ -308,7 +315,7 @@ defmodule SpeckitOrchestrator.ResumeTest do
          repo,
          layout,
          features,
-         context \\ %RunContext{pr_workflow: false, max_concurrency: 2, budget_usd: 100.0}
+         context \\ %RunContext{budget_usd: 100.0}
        ) do
     repo_id = RepoIdentity.partition(repo)
 
@@ -317,7 +324,14 @@ defmodule SpeckitOrchestrator.ResumeTest do
         features:
           Enum.map(
             features,
-            &%{feature_id: &1.id, slug: &1.slug, path: &1.path, prereqs: &1.prereqs}
+            &%{
+              feature_id: &1.id,
+              slug: &1.slug,
+              path: &1.path,
+              number: &1.number,
+              group: &1.group,
+              created_at: &1.created_at
+            }
           ),
         settings: RunContext.to_map(context),
         scope: :ad_hoc,
@@ -522,7 +536,7 @@ defmodule SpeckitOrchestrator.ResumeTest do
       {repo, layout} = hermetic_repo()
 
       run_key =
-        open_run(repo, layout, [%Feature{id: id, slug: "widget", path: "#{id}-widget.md"}])
+        open_run(repo, layout, [%Feature{id: id, number: System.unique_integer([:positive, :monotonic]), slug: "widget", path: "#{id}-widget.md"}])
 
       write_checkpoint(run_key, id, :analyze, :halted)
       me = self()
@@ -562,7 +576,7 @@ defmodule SpeckitOrchestrator.ResumeTest do
       {repo, layout} = hermetic_repo()
 
       run_key =
-        open_run(repo, layout, [%Feature{id: id, slug: "wrong-slug", path: "wrong.md"}])
+        open_run(repo, layout, [%Feature{id: id, number: System.unique_integer([:positive, :monotonic]), slug: "wrong-slug", path: "wrong.md"}])
 
       write_checkpoint(run_key, id, :analyze, :halted)
       me = self()
@@ -590,7 +604,7 @@ defmodule SpeckitOrchestrator.ResumeTest do
       # types at write time, so this is still legitimately reachable).
       id = unique_id()
       {repo, layout} = hermetic_repo()
-      run_key = open_run(repo, layout, [%Feature{id: id, slug: nil, path: nil}])
+      run_key = open_run(repo, layout, [%Feature{id: id, number: System.unique_integer([:positive, :monotonic]), slug: nil, path: nil}])
       write_checkpoint(run_key, id, :analyze, :halted)
       me = self()
 
@@ -613,7 +627,7 @@ defmodule SpeckitOrchestrator.ResumeTest do
 
       run_key =
         open_run(repo, layout_for(repo), [
-          %Feature{id: id, slug: "widget", path: "#{id}-widget.md"}
+          %Feature{id: id, number: System.unique_integer([:positive, :monotonic]), slug: "widget", path: "#{id}-widget.md"}
         ])
 
       write_checkpoint(run_key, id, :analyze, :halted)
@@ -640,7 +654,7 @@ defmodule SpeckitOrchestrator.ResumeTest do
       root = tmp_root()
       point_config_at(repo, root)
 
-      {:ok, wt} = Worktree.create(feature(id), repo: repo, worktree_root: root)
+      {:ok, _wt} = Worktree.create(feature(id), repo: repo, worktree_root: root)
       run_key = open_run(repo, real_layout(repo, root), [feature(id)])
       write_checkpoint(run_key, id, :analyze, :halted)
 
@@ -668,7 +682,7 @@ defmodule SpeckitOrchestrator.ResumeTest do
       root = tmp_root()
       point_config_at(repo, root)
 
-      {:ok, wt} = Worktree.create(feature(id), repo: repo, worktree_root: root)
+      {:ok, _wt} = Worktree.create(feature(id), repo: repo, worktree_root: root)
       run_key = open_run(repo, real_layout(repo, root), [feature(id)])
       write_checkpoint(run_key, id, :analyze, :halted)
 
@@ -696,7 +710,7 @@ defmodule SpeckitOrchestrator.ResumeTest do
       root = tmp_root()
       point_config_at(repo, root)
 
-      {:ok, wt} = Worktree.create(feature(id), repo: repo, worktree_root: root)
+      {:ok, _wt} = Worktree.create(feature(id), repo: repo, worktree_root: root)
       run_key = open_run(repo, real_layout(repo, root), [feature(id)])
       write_checkpoint(run_key, id, :analyze, :halted)
 
@@ -720,7 +734,7 @@ defmodule SpeckitOrchestrator.ResumeTest do
       root = tmp_root()
       point_config_at(repo, root)
 
-      {:ok, wt} = Worktree.create(feature(id), repo: repo, worktree_root: root)
+      {:ok, _wt} = Worktree.create(feature(id), repo: repo, worktree_root: root)
       run_key = open_run(repo, real_layout(repo, root), [feature(id)])
       write_checkpoint(run_key, id, :analyze, :halted)
 
@@ -745,7 +759,7 @@ defmodule SpeckitOrchestrator.ResumeTest do
       root = tmp_root()
       point_config_at(repo, root)
 
-      {:ok, wt} = Worktree.create(feature(id), repo: repo, worktree_root: root)
+      {:ok, _wt} = Worktree.create(feature(id), repo: repo, worktree_root: root)
       run_key = open_run(repo, real_layout(repo, root), [feature(id)])
       write_checkpoint(run_key, id, :analyze, :halted)
 
@@ -776,7 +790,7 @@ defmodule SpeckitOrchestrator.ResumeTest do
       root = tmp_root()
       point_config_at(repo, root)
 
-      {:ok, wt} = Worktree.create(feature(id), repo: repo, worktree_root: root)
+      {:ok, _wt} = Worktree.create(feature(id), repo: repo, worktree_root: root)
       run_key = open_run(repo, real_layout(repo, root), [feature(id)])
       write_checkpoint(run_key, id, :analyze, :halted)
 
@@ -809,7 +823,7 @@ defmodule SpeckitOrchestrator.ResumeTest do
       root = tmp_root()
       point_config_at(repo, root)
 
-      {:ok, wt} = Worktree.create(feature(id), repo: repo, worktree_root: root)
+      {:ok, _wt} = Worktree.create(feature(id), repo: repo, worktree_root: root)
       run_key = open_run(repo, real_layout(repo, root), [feature(id)])
       write_checkpoint(run_key, id, :analyze, :halted)
 
@@ -829,7 +843,7 @@ defmodule SpeckitOrchestrator.ResumeTest do
       root = tmp_root()
       point_config_at(repo, root)
 
-      {:ok, wt} = Worktree.create(feature(id), repo: repo, worktree_root: root)
+      {:ok, _wt} = Worktree.create(feature(id), repo: repo, worktree_root: root)
       run_key = open_run(repo, real_layout(repo, root), [feature(id)])
       write_checkpoint(run_key, id, :analyze, :halted)
 
@@ -890,7 +904,7 @@ defmodule SpeckitOrchestrator.ResumeTest do
       root = tmp_root()
       point_config_at(repo, root)
 
-      {:ok, wt} = Worktree.create(feature(id), repo: repo, worktree_root: root)
+      {:ok, _wt} = Worktree.create(feature(id), repo: repo, worktree_root: root)
       run_key = open_run(repo, real_layout(repo, root), [feature(id)])
       write_checkpoint(run_key, id, :converge, :halted)
 
@@ -993,54 +1007,31 @@ defmodule SpeckitOrchestrator.ResumeTest do
 
   describe "resume/2 — run context reapply" do
     setup do
-      prev_pr_workflow = Application.get_env(:speckit_orchestrator, :pr_workflow)
       prev_log_level = Logger.level()
       Logger.configure(level: :info)
-
-      on_exit(fn ->
-        if prev_pr_workflow != nil,
-          do: Application.put_env(:speckit_orchestrator, :pr_workflow, prev_pr_workflow),
-          else: Application.delete_env(:speckit_orchestrator, :pr_workflow)
-
-        Logger.configure(level: prev_log_level)
-      end)
-
+      on_exit(fn -> Logger.configure(level: prev_log_level) end)
       :ok
     end
 
-    test "routes a checkpoint recording pr_workflow: true through the PR-workflow path even when live Config.pr_workflow?/0 is false" do
-      Application.put_env(:speckit_orchestrator, :pr_workflow, false)
-      id = unique_id()
-      {repo, layout} = hermetic_repo()
+    # 019 retired `:pr_workflow`/`:max_concurrency` — `RunContext` carries
+    # only the eight remaining run-shaping settings (`run_context_test.exs`),
+    # and `resume/2` always dispatches through the single stacked executor
+    # path now (`inject_resume_scope_strategy/12`'s own comment: "there is no
+    # runner-only alternative left to branch on"). The old "routes a
+    # checkpoint recording pr_workflow: true through the PR-workflow path"
+    # and "an explicit pr_workflow: false resume opt wins ... resumes via the
+    # non-PR path" tests verified exactly the branch that no longer exists —
+    # and `:pr_workflow` itself is refused outright as a resume/2 opt now
+    # (`retired_settings_test.exs`'s "refuses :pr_workflow"), so neither has a
+    # new-model equivalent to rewrite into.
 
-      run_key =
-        open_run(
-          repo,
-          layout,
-          [%Feature{id: id, slug: "widget", path: "#{id}-widget.md"}],
-          %RunContext{pr_workflow: true, max_concurrency: 2, budget_usd: 100.0}
-        )
-
-      write_checkpoint(run_key, id, :analyze, :halted)
-
-      me = self()
-
-      assert {:ok, pid} =
-               SpeckitOrchestrator.resume(id, features: [], executor: capturing_executor(me))
-
-      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
-
-      assert_receive {:executor_called, feat, _base}
-      assert feat.id == id
-    end
-
-    test "reapplies recorded max_concurrency/budget_usd/plan_stack/pr_base over live Config defaults" do
+    test "reapplies recorded budget_usd/plan_stack/pr_base/pr_remote over live Config defaults" do
       id = unique_id()
       repo = base_repo()
       root = tmp_root()
       point_config_at(repo, root)
 
-      {:ok, wt} = Worktree.create(feature(id), repo: repo, worktree_root: root)
+      {:ok, _wt} = Worktree.create(feature(id), repo: repo, worktree_root: root)
 
       run_key =
         open_run(
@@ -1048,8 +1039,6 @@ defmodule SpeckitOrchestrator.ResumeTest do
           real_layout(repo, root),
           [feature(id)],
           %RunContext{
-            pr_workflow: false,
-            max_concurrency: 7,
             budget_usd: 42.0,
             plan_stack: ["research", "plan"],
             pr_base: "develop",
@@ -1082,54 +1071,13 @@ defmodule SpeckitOrchestrator.ResumeTest do
       # `run_key` at this point; `Store.run/1` on the specific `run_key` we
       # opened is the right check.)
       assert {:ok, detail} = Store.run(run_key)
-      assert detail.settings["max_concurrency"] == 7
       assert detail.settings["budget_usd"] == 42.0
       assert detail.settings["plan_stack"] == ["research", "plan"]
       assert detail.settings["pr_base"] == "develop"
       assert detail.settings["pr_remote"] == "upstream"
     end
 
-    test "an explicit pr_workflow: false resume opt wins over a checkpoint recording pr_workflow: true — resumes via the non-PR path" do
-      # base_repo/0 has no `.claude/hooks/scope_guard.py`, so the PR workflow's
-      # preflight would always fail here — a canary: if precedence were broken
-      # (recorded true beating the explicit false), resume would route through
-      # run_stacked's real preflight and return {:error, {:preflight, _}}
-      # instead of completing normally via the non-PR resume_runner (which
-      # never preflights at all).
-      id = unique_id()
-      repo = base_repo()
-      root = tmp_root()
-      point_config_at(repo, root)
-
-      {:ok, wt} = Worktree.create(feature(id), repo: repo, worktree_root: root)
-
-      run_key =
-        open_run(
-          repo,
-          real_layout(repo, root),
-          [feature(id)],
-          %RunContext{pr_workflow: true, max_concurrency: 2, budget_usd: 100.0}
-        )
-
-      write_checkpoint(run_key, id, :analyze, :halted)
-
-      me = self()
-
-      assert {:ok, pid} =
-               SpeckitOrchestrator.resume(id,
-                 features: [feature(id)],
-                 owner: me,
-                 pr_workflow: false
-               )
-
-      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
-
-      assert_receive {:run_complete, report}, 30_000
-      assert report.halted == [id]
-      assert phase_recorded?(run_key, id, :analyze)
-    end
-
-    test "a checkpoint with no context key falls back to live Config for all six settings, succeeds without crashing, and logs the fallen-back settings" do
+    test "a checkpoint with no context key falls back to live Config for all four settings, succeeds without crashing, and logs the fallen-back settings" do
       id = unique_id()
       {repo, layout} = hermetic_repo()
 
@@ -1137,7 +1085,14 @@ defmodule SpeckitOrchestrator.ResumeTest do
         open_run(
           repo,
           layout,
-          [%Feature{id: id, slug: "widget", path: "#{id}-widget.md"}],
+          [
+            %Feature{
+              id: id,
+              number: System.unique_integer([:positive, :monotonic]),
+              slug: "widget",
+              path: "#{id}-widget.md"
+            }
+          ],
           %RunContext{}
         )
 
@@ -1153,15 +1108,13 @@ defmodule SpeckitOrchestrator.ResumeTest do
           assert_receive {:runner_called, _feat}
         end)
 
-      assert log =~ "pr_workflow"
-      assert log =~ "max_concurrency"
       assert log =~ "budget_usd"
       assert log =~ "plan_stack"
       assert log =~ "pr_base"
       assert log =~ "pr_remote"
     end
 
-    test "a checkpoint recording only pr_workflow: true (partial context) reapplies that value and falls back + logs for the other five" do
+    test "a checkpoint recording only pr_base (partial context) reapplies that value and falls back + logs for the other three" do
       id = unique_id()
       {repo, layout} = hermetic_repo()
 
@@ -1169,8 +1122,15 @@ defmodule SpeckitOrchestrator.ResumeTest do
         open_run(
           repo,
           layout,
-          [%Feature{id: id, slug: "widget", path: "#{id}-widget.md"}],
-          %RunContext{pr_workflow: true}
+          [
+            %Feature{
+              id: id,
+              number: System.unique_integer([:positive, :monotonic]),
+              slug: "widget",
+              path: "#{id}-widget.md"
+            }
+          ],
+          %RunContext{pr_base: "develop"}
         )
 
       write_checkpoint(run_key, id, :analyze, :halted)
@@ -1186,11 +1146,9 @@ defmodule SpeckitOrchestrator.ResumeTest do
           assert_receive {:runner_called, _feat}
         end)
 
-      refute log =~ "pr_workflow"
-      assert log =~ "max_concurrency"
+      refute log =~ "pr_base"
       assert log =~ "budget_usd"
       assert log =~ "plan_stack"
-      assert log =~ "pr_base"
       assert log =~ "pr_remote"
     end
   end
@@ -1221,7 +1179,7 @@ defmodule SpeckitOrchestrator.ResumeTest do
         FeatureRunner.run(feature(id),
           worktree: wt,
           start_phase: :analyze,
-          run_context: %RunContext{pr_workflow: false, max_concurrency: 1}
+          run_context: %RunContext{}
         )
 
       assert result.feature_id == id
@@ -1321,7 +1279,14 @@ defmodule SpeckitOrchestrator.ResumeTest do
       })
 
       me = self()
-      assert {:ok, pid} = SpeckitOrchestrator.resume(id, features: [feature(id)], owner: me)
+
+      assert {:ok, pid} =
+               SpeckitOrchestrator.resume(id,
+                 features: [feature(id)],
+                 owner: me,
+                 publisher: fake_publisher()
+               )
+
       on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
 
       assert_receive {:run_complete, report}, 30_000
@@ -1367,7 +1332,8 @@ defmodule SpeckitOrchestrator.ResumeTest do
                SpeckitOrchestrator.resume(id,
                  features: [feature(id)],
                  owner: me,
-                 from_task_phase: 2
+                 from_task_phase: 2,
+                 publisher: fake_publisher()
                )
 
       on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
@@ -1411,7 +1377,13 @@ defmodule SpeckitOrchestrator.ResumeTest do
       me = self()
       attach_chunk_resolved(id, me)
 
-      assert {:ok, pid} = SpeckitOrchestrator.resume(id, features: [feature(id)], owner: me)
+      assert {:ok, pid} =
+               SpeckitOrchestrator.resume(id,
+                 features: [feature(id)],
+                 owner: me,
+                 publisher: fake_publisher()
+               )
+
       on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
 
       assert_receive {:chunk_resolved, meta}, 10_000
@@ -1457,7 +1429,13 @@ defmodule SpeckitOrchestrator.ResumeTest do
       me = self()
       attach_chunk_resolved(id, me)
 
-      assert {:ok, pid} = SpeckitOrchestrator.resume(id, features: [feature(id)], owner: me)
+      assert {:ok, pid} =
+               SpeckitOrchestrator.resume(id,
+                 features: [feature(id)],
+                 owner: me,
+                 publisher: fake_publisher()
+               )
+
       on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
 
       assert_receive {:run_complete, _report}, 30_000
@@ -1474,7 +1452,7 @@ defmodule SpeckitOrchestrator.ResumeTest do
       root = tmp_root()
       point_config_at(repo, root)
 
-      {:ok, wt} = Worktree.create(feature(id), repo: repo, worktree_root: root)
+      {:ok, _wt} = Worktree.create(feature(id), repo: repo, worktree_root: root)
       run_key = open_run(repo, real_layout(repo, root), [feature(id)])
 
       # The prior run spent its whole budget and escalated on a persisting

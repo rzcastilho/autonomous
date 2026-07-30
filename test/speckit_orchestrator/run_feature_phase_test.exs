@@ -35,7 +35,7 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhaseTest do
 
   defp context(state_overrides \\ %{}) do
     base = %{
-      feature: %Feature{id: "001", slug: "s", path: "p.md"},
+      feature: %Feature{id: "001", number: 1, slug: "s", path: "p.md"},
       worktree: nil,
       layout: nil,
       session_id: nil,
@@ -144,6 +144,97 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhaseTest do
              RunFeaturePhase.run(%{phase: :implement, scope: {:task_phase, tp}}, ctx)
 
     assert update2.last_signals == %{}
+  end
+
+  # A stacked worktree carries every earlier feature's specs/ directory. These
+  # cases pin that the gates ask about the feature being built, not about
+  # whatever `specs/**` happens to match first (which is reliably the oldest
+  # feature, since Path.wildcard/1 sorts).
+  describe "gates in a stacked worktree" do
+    defp stacked_worktree(opts) do
+      tmp = Path.join(System.tmp_dir!(), "rfp_stack_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(tmp)
+      System.cmd("git", ["init"], cd: tmp)
+      on_exit(fn -> File.rm_rf(tmp) end)
+
+      # The inherited feature: complete, and carrying a NEEDS HUMAN marker
+      # because it escalated when it ran.
+      File.mkdir_p!(Path.join(tmp, "specs/001-core"))
+      File.write!(Path.join(tmp, "specs/001-core/plan.md"), "# 001 plan\n")
+      File.write!(Path.join(tmp, "specs/001-core/tasks.md"), "- [x] T001\n")
+
+      File.write!(
+        Path.join(tmp, "specs/001-core/spec.md"),
+        "# 001\n\n## NEEDS HUMAN\n\nmonth-end proration is ambiguous\n"
+      )
+
+      Enum.each(Keyword.get(opts, :own_files, []), fn {leaf, body} ->
+        File.mkdir_p!(Path.join(tmp, "specs/002-next"))
+        File.write!(Path.join([tmp, "specs/002-next", leaf]), body)
+      end)
+
+      tmp
+    end
+
+    defp with_capturing_sdk do
+      original = Application.get_env(:jido_claude, :sdk_module)
+      Application.put_env(:jido_claude, :sdk_module, CapturingSDK)
+      on_exit(fn -> restore(:jido_claude, :sdk_module, original) end)
+    end
+
+    defp feature_002_ctx(tmp) do
+      context(%{
+        worktree: %{path: tmp},
+        feature: %Feature{id: "002", number: 2, slug: "next", path: "002.md"}
+      })
+    end
+
+    test "the plan gate is not satisfied by an inherited feature's plan.md" do
+      with_capturing_sdk()
+      tmp = stacked_worktree(own_files: [])
+
+      assert {:ok, update} = RunFeaturePhase.run(%{phase: :plan}, feature_002_ctx(tmp))
+
+      # 001's plan.md exists and would have satisfied a specs/**/plan.md glob.
+      assert File.regular?(Path.join(tmp, "specs/001-core/plan.md"))
+      assert update.last_signals == %{missing_artifact: "plan.md"}
+    end
+
+    test "the plan gate passes on the feature's own plan.md" do
+      with_capturing_sdk()
+      tmp = stacked_worktree(own_files: [{"plan.md", "# 002 plan\n"}])
+
+      assert {:ok, update} = RunFeaturePhase.run(%{phase: :plan}, feature_002_ctx(tmp))
+      assert update.last_signals == %{}
+    end
+
+    test "the tasks gate is not satisfied by an inherited feature's tasks.md" do
+      with_capturing_sdk()
+      tmp = stacked_worktree(own_files: [])
+
+      assert {:ok, update} = RunFeaturePhase.run(%{phase: :tasks}, feature_002_ctx(tmp))
+      assert update.last_signals == %{missing_artifact: "tasks.md"}
+    end
+
+    test "the clarify gate does not escalate on a marker left in another feature's spec" do
+      with_capturing_sdk()
+      tmp = stacked_worktree(own_files: [{"spec.md", "# 002\n\nall clear\n"}])
+
+      assert {:ok, update} = RunFeaturePhase.run(%{phase: :clarify}, feature_002_ctx(tmp))
+
+      # 001's spec.md carries the marker; scanning specs/**/spec.md escalated
+      # every descendant of an escalated feature forever.
+      assert File.read!(Path.join(tmp, "specs/001-core/spec.md")) =~ "## NEEDS HUMAN"
+      assert update.last_signals == %{needs_human?: false}
+    end
+
+    test "the clarify gate still escalates on a marker in the feature's own spec" do
+      with_capturing_sdk()
+      tmp = stacked_worktree(own_files: [{"spec.md", "# 002\n\n## NEEDS HUMAN\n\nwhich tz?\n"}])
+
+      assert {:ok, update} = RunFeaturePhase.run(%{phase: :clarify}, feature_002_ctx(tmp))
+      assert update.last_signals == %{needs_human?: true}
+    end
   end
 
   test "a harness error is folded into an :error outcome (no crash, no cost)" do

@@ -62,7 +62,7 @@ defmodule SpeckitOrchestrator.ChunkRunner do
   """
   @spec run(opts()) :: struct()
   def run(%{pid: pid, worktree: worktree, feature: feature, layout: layout} = ctx) do
-    plan = TaskPlan.load(worktree_path(worktree))
+    plan = TaskPlan.load(worktree_path(worktree), feature)
     record = checkpoint_record(Map.get(ctx, :run_key), feature, layout)
 
     {ref, override?} = start_ref(ctx, record)
@@ -196,7 +196,7 @@ defmodule SpeckitOrchestrator.ChunkRunner do
       result = agent1.state.last_result
 
       {outcome, transient?} = classify_outcome(result)
-      after_plan = TaskPlan.load(worktree_path(ctx.worktree))
+      after_plan = TaskPlan.load(worktree_path(ctx.worktree), ctx.feature)
       after_count = TaskPlan.completed_tasks(after_plan)
       progress? = after_count > before_count
 

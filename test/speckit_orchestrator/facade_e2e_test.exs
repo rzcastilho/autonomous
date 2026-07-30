@@ -68,6 +68,8 @@ defmodule SpeckitOrchestrator.FacadeE2ETest do
     File.mkdir_p!(Path.join(repo, ".claude/skills"))
     File.write!(Path.join(repo, ".claude/skills/.gitkeep"), "")
     File.write!(Path.join(repo, ".claude/settings.json"), "{}")
+    File.mkdir_p!(Path.join(repo, ".claude/hooks"))
+    File.write!(Path.join(repo, ".claude/hooks/scope_guard.py"), "")
     git!(repo, ["init", "-q", "-b", "main"])
     git!(repo, ["config", "user.email", "t@e.com"])
     git!(repo, ["config", "user.name", "T"])
@@ -103,8 +105,11 @@ defmodule SpeckitOrchestrator.FacadeE2ETest do
     repo: repo,
     root: root
   } do
-    # no-arg run/0: owner defaults to the caller.
-    {:ok, pid} = SpeckitOrchestrator.run()
+    # 019: every run publishes a PR unconditionally on :done — fake just the
+    # publisher (network/`gh`) so this test stays focused on the real
+    # worktree/FeatureRunner path it exists to exercise.
+    publisher = fn feature, _base -> {:ok, "https://example/pr/#{feature.id}"} end
+    {:ok, pid} = SpeckitOrchestrator.run(publisher: publisher)
     on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
 
     assert_receive {:run_complete, report}, 30_000
@@ -115,9 +120,13 @@ defmodule SpeckitOrchestrator.FacadeE2ETest do
     refute File.dir?(Path.join([root, "worktrees", segment, "001-core"]))
   end
 
-  test "a feature whose worktree can't be created (missing scaffold) is failed" do
-    # Point the run at a repo with a backlog but NO committed .specify/.claude
-    # scaffold, so Worktree.create aborts and the default runner fails it.
+  test "a repo missing the committed .specify/.claude scaffold refuses the whole run at preflight" do
+    # 019: TargetPack.verify's pack/remote preflight is unconditional (FR-003),
+    # and its scaffold check is a strict superset of Worktree.create's own
+    # (.specify, .claude/skills, .claude/settings.json, plus .claude/hooks/
+    # scope_guard.py + a customized, committed constitution). So a repo this
+    # bare can no longer reach Worktree.create at all — the whole run is
+    # refused up front instead of failing one feature mid-run.
     bare = Path.join(System.tmp_dir!(), "e2e_bare_#{System.unique_integer([:positive])}")
     File.mkdir_p!(Path.join(bare, "specs/autonomous/breakdown/core"))
 
@@ -135,10 +144,7 @@ defmodule SpeckitOrchestrator.FacadeE2ETest do
     Application.put_env(:speckit_orchestrator, :repo, bare)
     on_exit(fn -> File.rm_rf(bare) end)
 
-    {:ok, pid} = SpeckitOrchestrator.run(owner: self())
-    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
-
-    assert_receive {:run_complete, report}, 30_000
-    assert report.failed == ["001"]
+    assert {:error, {:preflight, problems}} = SpeckitOrchestrator.run(owner: self())
+    assert {:missing, ".claude/settings.json"} in problems
   end
 end

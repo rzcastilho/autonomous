@@ -7,7 +7,6 @@ defmodule SpeckitOrchestrator.ConfigTest do
     assert Config.repo() == "."
     assert Config.breakdown_dir() == "docs/breakdown"
     assert Config.worktree_root() == "../.speckit-worktrees"
-    assert Config.max_concurrency() == 2
     assert Config.budget_usd() == 74.0
     assert Config.implement_max_turns() == 80
 
@@ -32,10 +31,10 @@ defmodule SpeckitOrchestrator.ConfigTest do
   end
 
   test "put_env override is honored" do
-    original = Application.get_env(:speckit_orchestrator, :max_concurrency)
-    Application.put_env(:speckit_orchestrator, :max_concurrency, 7)
-    on_exit(fn -> Application.put_env(:speckit_orchestrator, :max_concurrency, original) end)
-    assert Config.max_concurrency() == 7
+    original = Application.get_env(:speckit_orchestrator, :budget_usd)
+    Application.put_env(:speckit_orchestrator, :budget_usd, 7)
+    on_exit(fn -> Application.put_env(:speckit_orchestrator, :budget_usd, original) end)
+    assert Config.budget_usd() == 7
   end
 
   test "defaults apply when a key is unset" do

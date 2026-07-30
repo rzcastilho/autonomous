@@ -26,8 +26,17 @@ defmodule SpeckitOrchestrator.Web.MissionControlLiveTest do
     {:ok, conn: Phoenix.ConnTest.build_conn()}
   end
 
-  defp feat(id, prereqs \\ []),
-    do: %Feature{id: id, slug: "slug-#{id}", path: "#{id}.md", prereqs: prereqs}
+  # `number` defaults to a monotonic counter, so list-literal order (left to
+  # right, evaluated at call time) is release order — e.g. `[feat("a"),
+  # feat("b")]` gives "a" the lower number, same relative order the old
+  # `prereqs` argument used to express before 019 retired prerequisites.
+  defp feat(id, number \\ nil),
+    do: %Feature{
+      id: id,
+      number: number || System.unique_integer([:positive, :monotonic]),
+      slug: "slug-#{id}",
+      path: "#{id}.md"
+    }
 
   defp start_coordinator(features) do
     {:ok, pid} =
@@ -43,11 +52,12 @@ defmodule SpeckitOrchestrator.Web.MissionControlLiveTest do
 
   test "mount seeds the status-count strip and backlog table from Coordinator.status/0 + ConsoleProjection.read/0",
        %{conn: conn} do
-    pid = start_coordinator([feat("mc1"), feat("mc2", ["mc1"])])
+    pid = start_coordinator([feat("mc1"), feat("mc2")])
     on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
 
-    # mc1 has no prereqs so it releases immediately (cap 2, no-op runner never
-    # notifies) -> :running; mc2's prereq isn't :done yet -> stays :pending.
+    # mc1 is lowest-ordered so it releases immediately (no-op runner never
+    # notifies) -> :running; one-at-a-time is structural, so mc2 stays
+    # :pending regardless of anything about mc1.
     assert %{status: :running} = Coordinator.status(pid).per_feature["mc1"]
     assert %{status: :pending} = Coordinator.status(pid).per_feature["mc2"]
 
@@ -175,7 +185,7 @@ defmodule SpeckitOrchestrator.Web.MissionControlLiveTest do
        %{conn: conn} do
     refute Process.whereis(Coordinator)
 
-    features = [feat("mc5"), feat("mc6", ["mc5"])]
+    features = [feat("mc5"), feat("mc6")]
     run_key = open_store_run(features)
     :ok = Writer.record_feature_terminal(run_key, "mc5", :halted, "test fixture", [])
 
@@ -232,6 +242,62 @@ defmodule SpeckitOrchestrator.Web.MissionControlLiveTest do
     assert drawer =~ "feature=mc7&amp;phase=analyze"
   end
 
+  test "a done feature's drawer links to the PR recorded when it was published",
+       %{conn: conn} do
+    refute Process.whereis(Coordinator)
+
+    run_key = open_store_run([feat("mc8")])
+    url = "https://github.com/acme/ledgerlite/pull/8"
+
+    :ok = Writer.record_feature_terminal(run_key, "mc8", :done, nil, [])
+    :ok = Writer.record_pr_url(run_key, "mc8", url)
+
+    {:ok, view, _html} = live(conn, "/")
+
+    html = render_click(view, "select_feature", %{"id" => "mc8"})
+    [drawer] = Regex.run(~r/<aside class="feature-drawer".*?<\/aside>/s, html)
+
+    assert drawer =~ ~s(data-action="drawer-view-pr")
+    assert drawer =~ ~s(href="#{url}")
+    refute drawer =~ ~s(data-action="drawer-no-pr")
+  end
+
+  test "a PR opened mid-run reaches an already-mounted console without waiting for a reconcile tick",
+       %{conn: conn} do
+    pid = start_coordinator([feat("mc10")])
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    {:ok, view, _html} = live(conn, "/")
+
+    url = "https://github.com/acme/ledgerlite/pull/10"
+
+    :telemetry.execute([:speckit, :publish, :opened], %{}, %{feature_id: "mc10", url: url})
+    # The projection folds and broadcasts off its own mailbox — this round-trip
+    # guarantees it has done so before we render.
+    :sys.get_state(ConsoleProjection)
+
+    html = render_click(view, "select_feature", %{"id" => "mc10"})
+    [drawer] = Regex.run(~r/<aside class="feature-drawer".*?<\/aside>/s, html)
+
+    assert drawer =~ ~s(href="#{url}")
+  end
+
+  test "a done feature whose publish never produced a URL gets a label, not a dead button",
+       %{conn: conn} do
+    refute Process.whereis(Coordinator)
+
+    run_key = open_store_run([feat("mc9")])
+    :ok = Writer.record_feature_terminal(run_key, "mc9", :done, nil, [])
+
+    {:ok, view, _html} = live(conn, "/")
+
+    html = render_click(view, "select_feature", %{"id" => "mc9"})
+    [drawer] = Regex.run(~r/<aside class="feature-drawer".*?<\/aside>/s, html)
+
+    assert drawer =~ ~s(data-action="drawer-no-pr")
+    refute drawer =~ ~s(data-action="drawer-view-pr")
+  end
+
   # ---- 016 T039: resume lists the whole restored run (FR-022) ---------------
 
   defp minimal_attempt(feature_id, phase) do
@@ -265,14 +331,16 @@ defmodule SpeckitOrchestrator.Web.MissionControlLiveTest do
         features:
           Enum.map(
             features,
-            &%{feature_id: &1.id, slug: &1.slug, path: &1.path, prereqs: &1.prereqs}
+            &%{
+              feature_id: &1.id,
+              slug: &1.slug,
+              path: &1.path,
+              number: &1.number,
+              group: &1.group,
+              created_at: &1.created_at
+            }
           ),
-        settings:
-          RunContext.to_map(%RunContext{
-            pr_workflow: false,
-            max_concurrency: 2,
-            budget_usd: 100.0
-          }),
+        settings: RunContext.to_map(%RunContext{budget_usd: 100.0}),
         scope: :ad_hoc,
         layout: layout
       })
@@ -280,16 +348,16 @@ defmodule SpeckitOrchestrator.Web.MissionControlLiveTest do
     {repo_id, run_id}
   end
 
-  test "after a resume, every feature in the restored run is listed, including ones still waiting on prerequisites",
+  test "after a resume, every feature in the restored run is listed, including ones still pending behind it",
        %{conn: conn} do
     refute Process.whereis(Coordinator)
 
-    features = [feat("mc10"), feat("mc11", ["mc10"]), feat("mc12", ["mc11"])]
+    features = [feat("010"), feat("011"), feat("012")]
     run_key = open_store_run(features)
 
     :ok =
       Writer.record_phase_attempt(run_key, %{
-        attempt: minimal_attempt("mc10", :analyze),
+        attempt: minimal_attempt("010", :analyze),
         checkpoint: %{
           phase: :analyze,
           last_completed_phase: :analyze,
@@ -299,31 +367,66 @@ defmodule SpeckitOrchestrator.Web.MissionControlLiveTest do
         }
       })
 
-    :ok = Writer.record_feature_terminal(run_key, "mc10", :halted, "test fixture", [])
+    :ok = Writer.record_feature_terminal(run_key, "010", :halted, "test fixture", [])
 
     me = self()
 
     assert {:ok, pid} =
-             SpeckitOrchestrator.resume("mc10",
+             SpeckitOrchestrator.resume("010",
                runner: fn feature, notify -> send(me, {:started, feature.id, notify}) end,
                owner: me
              )
 
     on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
 
-    # target dispatched, never notified — 011/012 stay :pending on their
-    # prereq the whole time this test observes the render.
-    assert_receive {:started, "mc10", _notify}, 1_000
+    # target dispatched, never notified — 011/012 stay :pending the whole
+    # time this test observes the render (one-at-a-time is structural).
+    assert_receive {:started, "010", _notify}, 1_000
 
     {:ok, _view, html} = live(conn, "/")
 
-    assert html =~ ~s(data-feature-row="mc10")
-    assert html =~ ~s(data-feature-row="mc11")
-    assert html =~ ~s(data-feature-row="mc12")
+    assert html =~ ~s(data-feature-row="010")
+    assert html =~ ~s(data-feature-row="011")
+    assert html =~ ~s(data-feature-row="012")
 
     [pending_cell] =
       Regex.run(~r/<div class="status-count-cell" data-status="pending">.*?<\/div>/s, html)
 
     assert pending_cell =~ ">2<"
+  end
+
+  # ---- 019 US4: parked-run banner (contracts/parked-run.md § 6) ------------
+
+  test "a parked run renders the banner naming the stopper and both continue/end actions",
+       %{conn: conn} do
+    refute Process.whereis(Coordinator)
+
+    run_key = open_store_run([feat("020"), feat("021")])
+    :ok = Writer.record_feature_terminal(run_key, "020", :halted, :critical_finding, [])
+
+    :ok =
+      Writer.park_run(run_key, %{
+        stopped_by: "020",
+        status: :halted,
+        reason: :critical_finding
+      })
+
+    {:ok, _view, html} = live(conn, "/")
+
+    assert html =~ ~s(data-state="parked")
+    assert html =~ "020"
+    assert html =~ ":critical_finding"
+    assert html =~ ~s(data-action="continue-run")
+    assert html =~ ~s(data-action="end-run")
+  end
+
+  test "no banner renders when the run is in flight, not parked", %{conn: conn} do
+    refute Process.whereis(Coordinator)
+
+    open_store_run([feat("030")])
+
+    {:ok, _view, html} = live(conn, "/")
+
+    refute html =~ ~s(data-state="parked")
   end
 end

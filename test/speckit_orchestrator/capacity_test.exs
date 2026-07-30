@@ -74,7 +74,9 @@ defmodule SpeckitOrchestrator.CapacityTest do
 
     {:ok, run_id} =
       Writer.open_run(repo_id, %{
-        features: [%{feature_id: "001", slug: "f", path: "specs/001", prereqs: []}],
+        features: [
+          %{feature_id: "001", slug: "f", path: "specs/001", number: 1, group: :backlog, created_at: nil}
+        ],
         settings: RunContext.to_map(%RunContext{}),
         scope: :ad_hoc,
         layout: %{}
@@ -85,7 +87,9 @@ defmodule SpeckitOrchestrator.CapacityTest do
 
   test "run/1 refuses under a capacity refusal, starting no work", %{repo: repo} do
     assert {:error, {:preflight, [{:store_capacity, capacity}]}} =
-             SpeckitOrchestrator.run(features: [%Feature{id: "001", slug: "f", path: "001.md"}])
+             SpeckitOrchestrator.run(
+               features: [%Feature{id: "001", number: 1, slug: "f", path: "001.md"}]
+             )
 
     assert capacity.status == :refusing
     assert Process.whereis(@coordinator) == nil

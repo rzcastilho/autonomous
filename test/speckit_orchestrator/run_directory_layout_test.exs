@@ -87,7 +87,7 @@ defmodule SpeckitOrchestrator.RunDirectoryLayoutTest do
     {:ok, segment} = RepoIdentity.resolve(repo)
     {:ok, layout} = Layout.build(repo, segment, {:breakdown, "core"})
 
-    feature = %SpeckitOrchestrator.Feature{id: "001", slug: "demo", path: "001-demo.md"}
+    feature = %SpeckitOrchestrator.Feature{id: "001", number: 1, slug: "demo", path: "001-demo.md"}
 
     assert {:ok, worktree} =
              Worktree.create(feature, repo: repo, worktree_root: layout.worktree_root)

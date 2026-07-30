@@ -2,22 +2,47 @@ defmodule SpeckitOrchestrator.Store.Migrations do
   @moduledoc """
   Ordered `{version, description, fun}` list applied at boot inside
   transactions, using `:mnesia.transform_table/3` for attribute changes (018,
-  research R13, contracts/schema.md § Schema versioning). Version 1 is the
-  schema this feature ships with, so its list is empty — a future schema
-  change appends an entry here and never rewrites history.
+  research R13, contracts/schema.md § Schema versioning). Version 1 was the
+  schema this feature ships with. Version 2 (feature 019,
+  contracts/store-schema-v2.md) is a clean break: no v1 record is readable, so
+  its migration **refuses** rather than transforms — a v1 directory aborts
+  startup naming the incompatibility (FR-022, FR-023) instead of being
+  silently migrated or destroyed.
+
+  Version 3 appends `feature_run.pr_url` — the URL `gh pr create` returned for
+  a `:done` feature, which used to be logged and then dropped, leaving the
+  console's "View PR" affordance with nothing to link to. A v2 record is
+  readable as-is, so this one really does transform: every existing row gets
+  `nil` (its PR, if any, was opened before the URL was ever recorded).
   """
 
-  alias SpeckitOrchestrator.Store.Mnesia
+  alias SpeckitOrchestrator.Store.{Mnesia, Schema}
 
   @type migration :: {pos_integer(), String.t(), (-> :ok | {:error, term()})}
 
   @doc "The schema version this build of the orchestrator understands."
   @spec current_version() :: pos_integer()
-  def current_version, do: 1
+  def current_version, do: 3
 
   @doc "Every migration, ascending by version."
   @spec all() :: [migration()]
-  def all, do: []
+  def all do
+    [
+      {2, "019 clean break — pre-019 records are not readable",
+       fn -> {:error, {:incompatible_record, 1}} end},
+      {3, "append feature_run.pr_url", &add_pr_url/0}
+    ]
+  end
+
+  # `:pr_url` is the last attribute in the table's schema, so the transform is
+  # a plain append — no field of an existing row moves position.
+  defp add_pr_url do
+    transform_table(
+      :speckit_feature_run,
+      &Tuple.insert_at(&1, tuple_size(&1), nil),
+      Schema.table(:speckit_feature_run).attributes
+    )
+  end
 
   @doc """
   Apply every migration whose version is greater than `from_version`

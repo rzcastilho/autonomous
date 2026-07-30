@@ -123,8 +123,13 @@ defmodule SpeckitOrchestrator.RecoveryTest do
     git!(repo, ["commit", "-q", "-m", message])
   end
 
-  defp feat(id, prereqs \\ []),
-    do: %Feature{id: id, slug: "core-ledger", path: "#{id}.md", prereqs: prereqs}
+  defp feat(id, number \\ nil),
+    do: %Feature{
+      id: id,
+      number: number || String.to_integer(id),
+      slug: "core-ledger",
+      path: "#{id}.md"
+    }
 
   # ---- store seeding (018) ---------------------------------------------------
 
@@ -139,12 +144,17 @@ defmodule SpeckitOrchestrator.RecoveryTest do
         features:
           Enum.map(
             features,
-            &%{feature_id: &1.id, slug: &1.slug, path: &1.path, prereqs: &1.prereqs}
+            &%{
+              feature_id: &1.id,
+              slug: &1.slug,
+              path: &1.path,
+              number: &1.number,
+              group: &1.group,
+              created_at: &1.created_at
+            }
           ),
         settings:
           RunContext.to_map(%RunContext{
-            pr_workflow: false,
-            max_concurrency: 1,
             budget_usd: 100.0
           }),
         scope: scope_of(layout),
@@ -245,10 +255,13 @@ defmodule SpeckitOrchestrator.RecoveryTest do
   # ---- US3 (T018): whole-run status coverage ---------------------------------
   #
   # One run exercising every status class (running/pending/escalated/
-  # halted/failed/done) against matching or conflicting evidence, plus a
-  # feature dependent on the conflict feature (must stay blocked) and a
-  # feature dependent on the reconciled `:done` feature (must release,
-  # proving one conflict never freezes the rest of the DAG — FR-014).
+  # halted/failed/done) against matching or conflicting evidence. 019: there
+  # are no prerequisites/dependents anymore — `next_runnable` is
+  # `Release.next/3`'s own single-feature-at-a-time preview, and its rule 2
+  # (find the lowest-ordered escalated/halted/failed feature, anywhere in the
+  # ordered set) means **any** broken feature stops the whole numeric chain,
+  # not just its old dependents — the opposite of the pre-019 DAG's
+  # per-branch isolation.
   defp seed_whole_run_state do
     repo = base_repo()
     Application.put_env(:speckit_orchestrator, :repo, repo)
@@ -267,12 +280,12 @@ defmodule SpeckitOrchestrator.RecoveryTest do
 
     features = [
       feat("001"),
-      feat("002", ["001"]),
+      feat("002"),
       feat("003"),
       feat("004"),
       feat("005"),
       feat("006"),
-      feat("007", ["006"])
+      feat("007")
     ]
 
     run_key = open_run(repo, layout, features)
@@ -307,13 +320,11 @@ defmodule SpeckitOrchestrator.RecoveryTest do
 
     assert %{id: "006", reason: :done_without_artifacts} in report.conflicts
 
-    # Independent, non-dependent-on-the-conflict feature releases normally.
-    assert "002" in report.next_runnable
-    # The conflict feature itself never releases (not :pending).
-    refute "006" in report.next_runnable
-    # A dependent of the conflict feature stays blocked — one conflict never
-    # freezes the rest of the run.
-    refute "007" in report.next_runnable
+    # 019: "003" (escalated) is the lowest-ordered non-done-terminal feature
+    # in the whole set — `Release.next/3` rule 2 stops the entire numeric
+    # chain there, so nothing is next-runnable at all, even though "002" is
+    # itself merely :pending and precedes "003".
+    assert report.next_runnable == []
   end
 
   test "resume_run/1 dispatches continuation at :tasks — specify/clarify/plan never regenerate" do
@@ -398,7 +409,7 @@ defmodule SpeckitOrchestrator.RecoveryTest do
     commit(repo, "speckit: 001 checkpoint after converge")
     git!(repo, ["checkout", "-q", "main"])
 
-    run_key = open_run(repo, layout, [feat("001"), feat("002", ["001"])])
+    run_key = open_run(repo, layout, [feat("001"), feat("002")])
     seed_terminal(run_key, "001", :done, pr_description: %{pr_title: "t", pr_body: "b"})
 
     {layout, run_key}

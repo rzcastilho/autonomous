@@ -55,7 +55,8 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
           phases: %{atom() => phase_cell()},
           spend: number(),
           chunk: chunk_cell() | nil,
-          remediation: remediation_cell() | nil
+          remediation: remediation_cell() | nil,
+          pr_url: String.t() | nil
         }
 
   @type t :: %{features: %{String.t() => feature_slice()}, feed: [event_entry()]}
@@ -71,8 +72,9 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
   Recognized events (see the projection contract's telemetry table):
   `[:speckit, :phase, :start/:stop/:exception]`, `[:speckit, :feature,
   :terminal]`, `[:speckit, :chunk, :start/:stop/:exception/:resolved]`,
-  `[:speckit, :remediation, :start/:stop/:exception]`, and
-  `[:speckit, :run, :scope_narrowing_refused]`. Any other event passes through
+  `[:speckit, :remediation, :start/:stop/:exception]`,
+  `[:speckit, :run, :scope_narrowing_refused]`, and
+  `[:speckit, :publish, :opened/:failed]`. Any other event passes through
   unchanged.
   """
   @spec apply_event(t(), [atom()], map(), map()) :: t()
@@ -306,6 +308,33 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
     )
   end
 
+  # ---- publish (019, FR-018) -------------------------------------------------
+  # A completed feature's PR publish can fail without failing the run — the
+  # local branch still becomes the next base regardless — but the failure
+  # must never be merely swallowed: it shows up here on the live feed. The
+  # success carries the URL so the drawer can link straight to the PR while
+  # the run is still live, without a store read.
+
+  def apply_event(
+        model,
+        [:speckit, :publish, :opened],
+        _measurements,
+        %{feature_id: id, url: url}
+      ) do
+    model
+    |> put_feature(id, %{feature_slice(model, id) | pr_url: url})
+    |> push_feed(entry(id, nil, :info, "PR opened: #{url}"))
+  end
+
+  def apply_event(
+        model,
+        [:speckit, :publish, :failed],
+        _measurements,
+        %{feature_id: id, reason: reason}
+      ) do
+    push_feed(model, entry(id, nil, :warn, "PR publish failed: #{inspect(reason)}"))
+  end
+
   def apply_event(model, _event_name, _measurements, _metadata), do: model
 
   @doc """
@@ -324,6 +353,7 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
     %{
       active?: coordinator_status != nil,
       per_feature: per_feature,
+      observed: features,
       totals: (coordinator_status && coordinator_status[:totals]) || %{},
       inflight: (coordinator_status && coordinator_status[:inflight]) || [],
       finished?: (coordinator_status && coordinator_status[:finished?]) || false,
@@ -368,19 +398,93 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
           status: f.status,
           elapsed_ms: nil,
           slug: f.slug,
-          prereqs: f.prereqs || [],
+          group: f.group,
           current_phase: checkpoint_phase(f.checkpoint),
           phases: checkpoint_phases(f.checkpoint, f.status),
           spend: 0.0,
           chunk: checkpoint_chunk(f.checkpoint),
-          remediation: nil
+          remediation: nil,
+          pr_url: Map.get(f, :pr_url)
         })
+      end)
+
+    overlay_observed(%{view | per_feature: per_feature})
+  end
+
+  def overlay_last_known_statuses(view, _run_detail), do: overlay_observed(view)
+
+  @doc """
+  Let live telemetry outrank a stale recorded status when there is no
+  `Coordinator` to ask.
+
+  The store's status is the *last recorded* one, which is only the truth while
+  nothing is running. A feature's `FeatureRunner` is a `RunnerSup` task with a
+  life of its own — by design, so a Coordinator going away drains rather than
+  kills — so phases can genuinely be running with no Coordinator to report
+  them. `merge/3` had nothing to put in `per_feature` in that case and the
+  overlay filled it from the record, so the console showed a feature's last
+  terminal status (`:failed`) while its telemetry streamed successful phases.
+
+  Only claims `:running`, and only for a feature whose newest phase cell is
+  actually `:active` — a projection that merely remembers finished phases from
+  earlier in the session never resurrects a terminal feature. Everything the
+  projection knows better than the record (phase timeline, spend, chunk,
+  remediation, PR url) is merged over the recorded entry.
+  """
+  @spec overlay_observed(map()) :: map()
+  def overlay_observed(%{active?: true} = view), do: view
+
+  def overlay_observed(%{observed: observed} = view) when is_map(observed) do
+    per_feature =
+      Enum.reduce(observed, view.per_feature, fn {id, slice}, acc ->
+        if phase_in_flight?(slice) do
+          recorded = Map.get(acc, id, %{})
+          Map.put(acc, id, recorded |> Map.merge(known(slice)) |> Map.put(:status, :running))
+        else
+          acc
+        end
       end)
 
     %{view | per_feature: per_feature}
   end
 
-  def overlay_last_known_statuses(view, _run_detail), do: view
+  def overlay_observed(view), do: view
+
+  defp phase_in_flight?(%{phases: phases}) when is_map(phases),
+    do: Enum.any?(phases, fn {_phase, cell} -> cell[:state] == :active end)
+
+  defp phase_in_flight?(_slice), do: false
+
+  # A `nil` in the projection means "never saw one", not "there isn't one" —
+  # letting it win would blank a `pr_url` the record does know. `chunk_cost_seen`
+  # is the fold's own bookkeeping and has no business in a rendered slice.
+  defp known(slice) do
+    slice
+    |> Map.drop([:chunk_cost_seen])
+    |> Map.reject(fn {_key, value} -> is_nil(value) end)
+  end
+
+  @doc """
+  The parked-run projection (019, contracts/parked-run.md § 6): `state`,
+  `stopped_by`, `stopped_reason` from a `SpeckitOrchestrator.run_detail/1`
+  (or `current_run_detail`-shaped) map. Sourced from the store directly
+  (`run.state`/`stopped_by`/`stopped_reason`, already present on every run
+  summary) rather than gated on `active?` — a `:parked` run's Coordinator
+  process is normally still alive (it parks on drain, it does not exit), but
+  this must also read correctly after a cold boot with no live Coordinator
+  at all, so callers compute it unconditionally alongside (not inside)
+  `merge/3`/`overlay_last_known_statuses/2`.
+  """
+  @spec run_state(map() | nil) :: %{
+          state: atom() | nil,
+          stopped_by: String.t() | nil,
+          stopped_reason: term()
+        }
+  def run_state(nil), do: %{state: nil, stopped_by: nil, stopped_reason: nil}
+
+  def run_state(%{run: run}) do
+    %{state: run.state, stopped_by: run.stopped_by, stopped_reason: run.stopped_reason}
+  end
 
   defp checkpoint_phase(nil), do: nil
   defp checkpoint_phase(%{last_completed_phase: phase}), do: phase
@@ -433,7 +537,8 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
           phases: %{},
           spend: 0.0,
           chunk: nil,
-          remediation: nil
+          remediation: nil,
+          pr_url: nil
         })
 
       {id, Map.merge(status_slice, projected)}
@@ -450,7 +555,8 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
         spend: 0.0,
         chunk: nil,
         chunk_cost_seen: 0.0,
-        remediation: nil
+        remediation: nil,
+        pr_url: nil
       })
 
   defp put_feature(model, id, feature),

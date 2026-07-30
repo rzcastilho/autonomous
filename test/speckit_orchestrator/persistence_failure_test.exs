@@ -9,8 +9,8 @@ defmodule SpeckitOrchestrator.PersistenceFailureTest do
 
   @coordinator SpeckitOrchestrator.Coordinator
 
-  defp feat(id, prereqs \\ []),
-    do: %Feature{id: id, slug: "f#{id}", path: "#{id}.md", prereqs: prereqs}
+  defp feat(id, number \\ nil),
+    do: %Feature{id: id, number: number || String.to_integer(id), slug: "f#{id}", path: "#{id}.md"}
 
   defp controllable_runner(test_pid) do
     fn feature, notify -> send(test_pid, {:started, feature.id, notify}) end
@@ -47,7 +47,14 @@ defmodule SpeckitOrchestrator.PersistenceFailureTest do
   defp open_run(repo_id \\ "o:persistence-failure-test", feature_ids \\ ["001", "002"]) do
     features =
       Enum.map(feature_ids, fn id ->
-        %{feature_id: id, slug: "f#{id}", path: "#{id}.md", prereqs: []}
+        %{
+          feature_id: id,
+          slug: "f#{id}",
+          path: "#{id}.md",
+          number: String.to_integer(id),
+          group: :backlog,
+          created_at: nil
+        }
       end)
 
     {:ok, run_id} =
@@ -55,8 +62,6 @@ defmodule SpeckitOrchestrator.PersistenceFailureTest do
         features: features,
         settings:
           RunContext.to_map(%RunContext{
-            pr_workflow: false,
-            max_concurrency: 2,
             budget_usd: 100.0
           }),
         scope: :ad_hoc,
@@ -72,14 +77,13 @@ defmodule SpeckitOrchestrator.PersistenceFailureTest do
     run_key = open_run()
     Health.record_failure(:simulated)
 
-    features = [feat("001"), feat("002", ["001"])]
+    features = [feat("001"), feat("002")]
 
     {:ok, pid} =
       Coordinator.start_link(
         features: features,
         runner: controllable_runner(self()),
         owner: self(),
-        max_concurrency: 2,
         run_key: run_key
       )
 
@@ -93,14 +97,13 @@ defmodule SpeckitOrchestrator.PersistenceFailureTest do
 
   test "a store failure mid-run drains in-flight work then releases no more (0 mid-flight aborts)" do
     run_key = open_run()
-    features = [feat("001"), feat("002", ["001"])]
+    features = [feat("001"), feat("002")]
 
     {:ok, pid} =
       Coordinator.start_link(
         features: features,
         runner: controllable_runner(self()),
         owner: self(),
-        max_concurrency: 2,
         run_key: run_key
       )
 
@@ -130,7 +133,6 @@ defmodule SpeckitOrchestrator.PersistenceFailureTest do
         features: features,
         runner: controllable_runner(self()),
         owner: self(),
-        max_concurrency: 1,
         run_key: run_key
       )
 

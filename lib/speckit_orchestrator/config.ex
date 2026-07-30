@@ -112,19 +112,6 @@ defmodule SpeckitOrchestrator.Config do
   @spec plan_stack() :: [String.t()]
   def plan_stack, do: get(:plan_stack, [])
 
-  @doc "Maximum features running concurrently (worktree-level parallelism)."
-  @spec max_concurrency() :: pos_integer()
-  def max_concurrency, do: get(:max_concurrency, 2)
-
-  @doc """
-  Stacked sequential PR workflow. When true, `run/1` forces sequential execution
-  (cap 1), preflights that the target repo has the `pr_remote/0` remote, branches
-  each feature from the previous completed feature's branch, and on `:done`
-  pushes the branch and opens a PR against that base.
-  """
-  @spec pr_workflow?() :: boolean()
-  def pr_workflow?, do: get(:pr_workflow, false)
-
   @doc "Root base branch for the first feature's PR in the stacked workflow."
   @spec pr_base() :: String.t()
   def pr_base, do: get(:pr_base, "main")

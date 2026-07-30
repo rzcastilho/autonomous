@@ -133,7 +133,7 @@ defmodule SpeckitOrchestrator.AnalyzeRunnerTest do
   defp calls(agent, kind), do: agent |> calls() |> Enum.filter(&(elem(&1, 0) == kind))
 
   defp feature,
-    do: %Feature{id: "017", slug: "auto-remediation", path: "docs/breakdown/017.md"}
+    do: %Feature{id: "017", number: 17, slug: "auto-remediation", path: "docs/breakdown/017.md"}
 
   defp start_agent!(ledger \\ nil) do
     {:ok, pid} =
@@ -199,7 +199,14 @@ defmodule SpeckitOrchestrator.AnalyzeRunnerTest do
     {:ok, run_id} =
       Writer.open_run(repo_id, %{
         features: [
-          %{feature_id: feature().id, slug: feature().slug, path: feature().path, prereqs: []}
+          %{
+            feature_id: feature().id,
+            slug: feature().slug,
+            path: feature().path,
+            number: 17,
+            group: :backlog,
+            created_at: nil
+          }
         ],
         settings: %{},
         scope: :ad_hoc,

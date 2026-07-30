@@ -52,7 +52,13 @@ defmodule SpeckitOrchestrator.ResumeCrashTest do
   end
 
   defp unique_id, do: "rc#{System.unique_integer([:positive, :monotonic])}"
-  defp feature(id), do: %Feature{id: id, slug: "resume-crash", path: "#{id}-resume-crash.md"}
+  defp feature(id),
+    do: %Feature{
+      id: id,
+      number: System.unique_integer([:positive, :monotonic]),
+      slug: "resume-crash",
+      path: "#{id}-resume-crash.md"
+    }
 
   defp git!(repo, args),
     do: {_, 0} = System.cmd("git", ["-C", repo | args], stderr_to_stdout: true)
@@ -117,12 +123,17 @@ defmodule SpeckitOrchestrator.ResumeCrashTest do
     {:ok, run_id} =
       Writer.open_run(repo_id, %{
         features: [
-          %{feature_id: id, slug: "resume-crash", path: "#{id}-resume-crash.md", prereqs: []}
+          %{
+            feature_id: id,
+            slug: "resume-crash",
+            path: "#{id}-resume-crash.md",
+            number: 1,
+            group: :backlog,
+            created_at: nil
+          }
         ],
         settings:
           RunContext.to_map(%RunContext{
-            pr_workflow: false,
-            max_concurrency: 1,
             budget_usd: 100.0
           }),
         scope: :ad_hoc,

@@ -269,3 +269,32 @@ Single experienced Elixir engineer, part-time-friendly; phases 1 and 2 can overl
 3. Skills mode vs slash-command mode for the Spec Kit Claude integration (`--integration-options="--skills"`): pick one in Phase 0 and verify the harness-driven CLI invokes it headlessly; document the choice.
 4. Should `converge` include an automated `git merge --no-ff` into an integration branch, or stop at "branch ready"? v1 plan assumes stop-at-branch.
 5. Escalation resume granularity: v1 re-runs from `clarify` after human resolution — acceptable, or is mid-pipeline resume a v1 requirement?
+
+---
+
+## 10. Post-Phase-7: self-hosted feature delivery
+
+Past the LedgerLite gate, further work runs through the orchestrator's own
+Spec Kit loop against itself — each feature lives in `specs/NNN-slug/` with
+its own spec/plan/tasks, not as a new phase in Section 5. Notable landings:
+
+- **017 — analyze auto-remediation** (`specs/017-analyze-auto-remediation/`):
+  a bounded, switchable corrective loop below the analyze gate. Done.
+- **018 — unified run persistence** (`specs/018-unified-run-persistence/`):
+  Mnesia-backed run/feature records replacing in-memory-only state. Done.
+- **019 — stacked sequential runs as the only behaviour**
+  (`specs/019-stacked-sequential-only/`): collapses the wave-based
+  dependency-and-cap release model and the opt-in stacked-PR toggle into a
+  single run shape — one feature at a time, in ascending numeric order, each
+  branching from the previous completed feature's branch and published as a
+  PR against that base. `pr_workflow` and `max_concurrency` are retired and
+  refused (not silently ignored) at config load, at boot, and at every
+  run-start entry point. A run that stops on a broken link is **parked**
+  rather than drained, and stays parked until an operator picks `:continue`
+  or `:end`. Store schema bumped to v2 with a refusal migration — a
+  pre-019 record aborts startup by name rather than being read or
+  silently dropped. Constitution amended 2.0.0 → 2.1.0 to match. Done —
+  all four user stories (single run shape, numeric ordering,
+  stop-on-first-break, park/continue/end) landed; see
+  `docs/runbook.md` → "Parked runs" and `docs/workflow.md` for the
+  operator-facing shape.

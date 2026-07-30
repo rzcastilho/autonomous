@@ -14,7 +14,7 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLiveTest do
   @endpoint SpeckitOrchestrator.Web.Endpoint
 
   @valid_dir Path.expand("../../fixtures/breakdown", __DIR__)
-  @cyclic_dir Path.expand("../../fixtures/breakdown_cyclic", __DIR__)
+  @duplicate_dir Path.expand("../../fixtures/breakdown_duplicate", __DIR__)
 
   setup do
     prior = %{
@@ -42,10 +42,10 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLiveTest do
   defp git!(repo, args),
     do: {_, 0} = System.cmd("git", ["-C", repo | args], stderr_to_stdout: true)
 
-  # A real git repo (with `origin`) carrying the same 001/002 breakdown files
-  # as @valid_dir, so RepoIdentity.resolve/1 succeeds and the manifest overlay
-  # (U2 segment match) actually engages — @valid_dir itself is a plain
-  # fixture dir, not a git checkout.
+  # A real git repo (with `origin`) carrying the same 001/002/003 breakdown
+  # files as @valid_dir, so RepoIdentity.resolve/1 succeeds and the manifest
+  # overlay (U2 segment match) actually engages — @valid_dir itself is a
+  # plain fixture dir, not a git checkout.
   defp real_repo_with_backlog do
     repo = Path.join(System.tmp_dir!(), "dag_repo_#{System.unique_integer([:positive])}")
     dest = Path.join(repo, "specs/autonomous/breakdown/core")
@@ -67,8 +67,18 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLiveTest do
     layout
   end
 
-  defp feat(id, prereqs \\ []),
-    do: %Feature{id: id, slug: "slug-#{id}", path: "#{id}.md", prereqs: prereqs}
+  defp feat(id, number \\ nil),
+    do: %Feature{id: id, number: number || String.to_integer(id), slug: "slug-#{id}", path: "#{id}.md"}
+
+  defp ad_hoc_feat(id),
+    do: %Feature{
+      id: id,
+      number: String.to_integer(id),
+      slug: "slug-#{id}",
+      path: "#{id}.md",
+      group: :ad_hoc,
+      created_at: DateTime.utc_now()
+    }
 
   # Isolates one node's own markup (up to the next node's opening tag) so
   # `data-status` assertions can't match a sibling node's pill by accident.
@@ -79,14 +89,14 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLiveTest do
     end
   end
 
-  test "renders a node per feature with id/slug/status/spend, edges from prereqs to dependents, and the shared-palette legend",
+  test "renders a chain node per feature with id/slug/status/spend/base-branch, in ascending number order, and the shared-palette legend",
        %{conn: conn} do
     point_backlog_at(@valid_dir)
 
     {:ok, pid} =
       Coordinator.start_link(
         name: Coordinator,
-        features: [feat("001"), feat("002", ["001"])],
+        features: [feat("001"), feat("002")],
         runner: fn _feature, _notify -> :ok end,
         owner: self()
       )
@@ -96,23 +106,29 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLiveTest do
     {:ok, _view, html} = live(conn, "/dag")
 
     assert html =~ ~s(data-view="pipeline-dag")
+    assert html =~ ~s(data-state="chain")
 
     for id <- ~w(001 002 003 004 005 006 007) do
       assert html =~ ~s(data-dag-node="#{id}")
     end
 
     assert html =~ "core-ledger"
-    assert html =~ "<svg"
-    assert html =~ "<path"
-    assert html =~ ~s(data-dag-edge="001:002")
-    assert html =~ ~s(data-dag-edge="002:003")
+
+    # Ascending number order, one link at a time: 001 stacks on pr_base
+    # ("main"), 002 on 001's branch, etc. (FR-018, Worktree's
+    # feature/NNN-slug convention).
+    node_001 = extract_node(html, "001")
+    assert node_001 =~ "stacks on main"
+
+    node_002 = extract_node(html, "002")
+    assert node_002 =~ "stacks on feature/001-core-ledger"
 
     for status <- ~w(pending blocked running escalated halted failed done) do
       assert html =~ ~s(data-legend-status="#{status}")
     end
   end
 
-  test "with 2 breakdown packages the DAG defaults to the first wave and the picker switches waves",
+  test "with 2 breakdown packages the chain defaults to the first wave and the picker switches waves",
        %{conn: conn} do
     src = Path.expand("../../fixtures/breakdown_packages", __DIR__)
     repo = Path.join(System.tmp_dir!(), "dag_waves_#{System.unique_integer([:positive])}")
@@ -220,70 +236,42 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLiveTest do
     end
   end
 
-  # A cap-1 run releases strictly one feature at a time, but the canvas lays
-  # nodes out by prereq depth — so 002/005/007 (all depending only on 001) sit
-  # in one column and read as if they start together. The badges say otherwise.
-  describe "release-order badges (cap-1 runs)" do
-    defp start_run(features, opts) do
+  describe "release-order badges (019: every run is sequential, structurally)" do
+    test "every node is numbered with its release position, no cap variant left to compare against",
+         %{conn: conn} do
+      point_backlog_at(@valid_dir)
+
       {:ok, pid} =
         Coordinator.start_link(
-          [
-            name: Coordinator,
-            features: features,
-            runner: fn _feature, _notify -> :ok end,
-            owner: self()
-          ] ++ opts
+          name: Coordinator,
+          features: [feat("001"), feat("002")],
+          runner: fn _feature, _notify -> :ok end,
+          owner: self()
         )
 
       on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
-      pid
-    end
-
-    test "a stacked (cap-1) run numbers every node with its release position", %{conn: conn} do
-      point_backlog_at(@valid_dir)
-
-      start_run([feat("001"), feat("002", ["001"])],
-        max_concurrency: 1,
-        context: %RunContext{pr_workflow: true, max_concurrency: 1}
-      )
 
       {:ok, _view, html} = live(conn, "/dag")
 
       assert html =~ ~s(data-state="sequential-run")
-      assert html =~ "releases one feature at a time"
+      assert html =~ "one feature at a time"
 
-      # The fixture DAG linearizes to 001..007 — one badge per node, no gaps.
+      # The fixture backlog linearizes to 001..007 — one badge per node, no gaps.
       for {id, position} <- Enum.with_index(~w(001 002 003 004 005 006 007), 1) do
-        [node] =
-          Regex.run(~r/data-dag-node="#{id}".*?<\/div>\s*<div class="dag-node-slug"/s, html)
-
+        node = extract_node(html, id)
         assert node =~ ~s(data-release-order="#{position}")
+        assert node =~ ~s(data-chain-position="#{position}")
       end
     end
 
-    test "a cap > 1 run renders no badges and keeps the prereq-depth wording", %{conn: conn} do
-      point_backlog_at(@valid_dir)
-
-      start_run([feat("001"), feat("002", ["001"])],
-        max_concurrency: 2,
-        context: %RunContext{pr_workflow: false, max_concurrency: 2}
-      )
-
-      {:ok, _view, html} = live(conn, "/dag")
-
-      refute html =~ "data-release-order"
-      refute html =~ ~s(data-state="sequential-run")
-      assert html =~ "columns are prereq depth"
-    end
-
-    test "no live run renders no badges", %{conn: conn} do
+    test "no live run still renders badges from the static backlog order", %{conn: conn} do
       point_backlog_at(@valid_dir)
       refute Process.whereis(Coordinator)
 
       {:ok, _view, html} = live(conn, "/dag")
 
-      refute html =~ "data-release-order"
-      assert html =~ "columns are prereq depth"
+      assert html =~ ~s(data-release-order="1")
+      assert html =~ ~s(data-state="sequential-run")
     end
   end
 
@@ -316,7 +304,7 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLiveTest do
     {:ok, pid} =
       Coordinator.start_link(
         name: Coordinator,
-        features: [feat("001"), feat("099")],
+        features: [feat("001"), ad_hoc_feat("099")],
         runner: fn _feature, _notify -> :ok end,
         owner: self()
       )
@@ -328,6 +316,9 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLiveTest do
     assert html =~ ~s(data-state="ad-hoc-lane")
     assert html =~ ~s(data-dag-node="099")
     assert html =~ ~s(data-status="pending")
+
+    ad_hoc_099 = extract_node(html, "099")
+    assert ad_hoc_099 =~ "stacks on main"
 
     send(view.pid, {:console, :feature_updated, %{id: "099", feature: %{status: :done}}})
     html = render(view)
@@ -343,7 +334,7 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLiveTest do
     {:ok, pid} =
       Coordinator.start_link(
         name: Coordinator,
-        features: [feat("001"), feat("002", ["001"])],
+        features: [feat("001"), feat("002")],
         runner: fn _feature, _notify -> :ok end,
         owner: self()
       )
@@ -357,20 +348,17 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLiveTest do
     for id <- ~w(001 002 003 004 005 006 007) do
       assert html =~ ~s(data-dag-node="#{id}")
     end
-
-    assert html =~ ~s(data-dag-edge="001:002")
   end
 
-  test "an invalid DAG (cycle) renders the dag-invalid state instead of a broken layout", %{
-    conn: conn
-  } do
-    point_backlog_at(@cyclic_dir)
+  test "a backlog with numerically-equal duplicate numbers renders the backlog-invalid state instead of a broken chain",
+       %{conn: conn} do
+    point_backlog_at(@duplicate_dir)
 
     {:ok, _view, html} = live(conn, "/dag")
 
-    assert html =~ ~s(data-state="dag-invalid")
-    assert html =~ "cycle"
-    refute html =~ ~s(data-state="dag")
+    assert html =~ ~s(data-state="backlog-invalid")
+    assert html =~ "duplicate"
+    refute html =~ ~s(data-state="chain")
   end
 
   defp open_store_run(repo, features, scope \\ {:breakdown, "core"}) do
@@ -382,7 +370,14 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLiveTest do
         features:
           Enum.map(
             features,
-            &%{feature_id: &1.id, slug: &1.slug, path: &1.path, prereqs: &1.prereqs}
+            &%{
+              feature_id: &1.id,
+              slug: &1.slug,
+              path: &1.path,
+              number: &1.number,
+              group: &1.group,
+              created_at: &1.created_at
+            }
           ),
         settings: RunContext.to_map(%RunContext{}),
         scope: scope,
@@ -418,7 +413,7 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLiveTest do
     repo = real_repo_with_backlog()
     point_backlog_at(repo)
 
-    run_key = open_store_run(repo, [feat("001"), feat("002", ["001"])])
+    run_key = open_store_run(repo, [feat("001"), feat("002")])
     :ok = Writer.record_feature_terminal(run_key, "001", :halted, "test fixture", [])
 
     refute Process.whereis(Coordinator)
@@ -485,7 +480,7 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLiveTest do
 
     {:ok, _view, html} = live(conn, "/dag")
 
-    refute html =~ ~s(data-state="dag-invalid")
+    refute html =~ ~s(data-state="backlog-invalid")
     assert html =~ ~s(data-state="empty-backlog")
   end
 
@@ -496,7 +491,7 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLiveTest do
     {:ok, pid} =
       Coordinator.start_link(
         name: Coordinator,
-        features: [feat("099")],
+        features: [ad_hoc_feat("099")],
         runner: fn _feature, _notify -> :ok end,
         owner: self()
       )
@@ -505,7 +500,7 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLiveTest do
 
     {:ok, _view, html} = live(conn, "/dag")
 
-    refute html =~ ~s(data-state="dag-invalid")
+    refute html =~ ~s(data-state="backlog-invalid")
     assert html =~ ~s(data-state="ad-hoc-lane")
     assert html =~ ~s(data-dag-node="099")
   end
@@ -517,7 +512,7 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLiveTest do
     {:ok, pid} =
       Coordinator.start_link(
         name: Coordinator,
-        features: [feat("001"), feat("099")],
+        features: [feat("001"), ad_hoc_feat("099")],
         runner: fn _feature, _notify -> :ok end,
         owner: self()
       )
@@ -543,7 +538,7 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLiveTest do
     {:ok, pid} =
       Coordinator.start_link(
         name: Coordinator,
-        features: [feat("001"), feat("099")],
+        features: [feat("001"), ad_hoc_feat("099")],
         runner: fn _feature, _notify -> :ok end,
         owner: self()
       )
@@ -569,7 +564,7 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLiveTest do
     {:ok, pid} =
       Coordinator.start_link(
         name: Coordinator,
-        features: [feat("001"), feat("099")],
+        features: [feat("001"), ad_hoc_feat("099")],
         runner: fn _feature, _notify -> :ok end,
         owner: self()
       )
@@ -591,7 +586,7 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLiveTest do
     {:ok, pid} =
       Coordinator.start_link(
         name: Coordinator,
-        features: [feat("001"), feat("002", ["001"])],
+        features: [feat("001"), feat("002")],
         runner: fn _feature, _notify -> :ok end,
         owner: self()
       )

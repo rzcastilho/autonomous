@@ -30,6 +30,7 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
     Feature,
     Ledger,
     Pipeline,
+    SpecDir,
     TaskPhaseRef,
     TaskPlan,
     Worktree
@@ -140,7 +141,7 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
   defp task_phase_picker(_identity, _checkpoint, phase) when phase != :implement, do: nil
 
   defp task_phase_picker(identity, checkpoint, :implement) do
-    plan = identity |> Worktree.locate() |> Map.fetch!(:path) |> TaskPlan.load()
+    plan = identity |> Worktree.locate() |> Map.fetch!(:path) |> TaskPlan.load(identity)
 
     if plan.structured? do
       ref = ref_from_checkpoint(checkpoint)
@@ -173,14 +174,20 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
   defp identity(id, _feature, %{slug: slug} = feature_detail) when is_binary(slug) do
     %Feature{
       id: id,
+      number: identity_number(id, feature_detail),
       slug: slug,
       path: feature_detail.path || "",
-      prereqs: feature_detail.prereqs || []
+      group: Map.get(feature_detail, :group, :backlog),
+      created_at: Map.get(feature_detail, :created_at)
     }
   end
 
   defp identity(id, feature, _feature_detail) do
-    %Feature{id: id, slug: feature.slug, path: "", prereqs: feature[:prereqs] || []}
+    %Feature{id: id, number: identity_number(id, %{}), slug: feature.slug, path: ""}
+  end
+
+  defp identity_number(id, source) do
+    Map.get(source, :number) || String.to_integer(id)
   end
 
   defp divert_reason(%{reason: reason}), do: reason
@@ -202,14 +209,19 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
   # `:halted`/`:failed` features have no `## NEEDS HUMAN` block to surface.
   defp clarify_block(_identity, status) when status != :escalated, do: nil
 
+  # This feature's own spec.md, resolved through `SpecDir` rather than globbed:
+  # a stacked worktree carries every earlier feature's `specs/` directory, so the
+  # glob surfaced whichever escalation sorted first — reliably an *older*
+  # feature's question, presented to the operator as this one's.
   defp clarify_block(identity, :escalated) do
     identity
     |> Worktree.locate()
     |> Map.fetch!(:path)
-    |> Path.join("specs/**/spec.md")
-    |> Path.wildcard()
-    |> Enum.find_value(&extract_needs_human/1)
+    |> SpecDir.file(identity, "spec.md")
+    |> extract_needs_human()
   end
+
+  defp extract_needs_human(nil), do: nil
 
   defp extract_needs_human(file) do
     with {:ok, content} <- File.read(file),

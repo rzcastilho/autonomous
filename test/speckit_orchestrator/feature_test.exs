@@ -4,9 +4,10 @@ defmodule SpeckitOrchestrator.FeatureTest do
   alias SpeckitOrchestrator.Feature
 
   test "fresh feature defaults to :pending" do
-    f = %Feature{id: "001", slug: "core", path: "x.md"}
+    f = %Feature{id: "001", number: 1, slug: "core", path: "x.md"}
     assert f.status == :pending
-    assert f.prereqs == []
+    assert f.group == :backlog
+    assert f.created_at == nil
   end
 
   test "terminal_statuses are the four end states" do
@@ -16,11 +17,11 @@ defmodule SpeckitOrchestrator.FeatureTest do
 
   test "terminal?/1 on status atoms" do
     for s <- [:done, :escalated, :halted, :failed], do: assert(Feature.terminal?(s))
-    for s <- [:pending, :running, :blocked], do: refute(Feature.terminal?(s))
+    for s <- [:pending, :running], do: refute(Feature.terminal?(s))
   end
 
   test "terminal?/1 on a struct reads its status" do
-    assert Feature.terminal?(%Feature{id: "1", slug: "s", path: "p", status: :done})
-    refute Feature.terminal?(%Feature{id: "1", slug: "s", path: "p", status: :running})
+    assert Feature.terminal?(%Feature{id: "1", number: 1, slug: "s", path: "p", status: :done})
+    refute Feature.terminal?(%Feature{id: "1", number: 1, slug: "s", path: "p", status: :running})
   end
 end

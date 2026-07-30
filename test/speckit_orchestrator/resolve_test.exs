@@ -22,7 +22,7 @@ defmodule SpeckitOrchestrator.ResolveTest do
     repo
   end
 
-  defp feature, do: %Feature{id: "007", slug: "recurring", path: "007-recurring.md"}
+  defp feature, do: %Feature{id: "007", number: 7, slug: "recurring", path: "007-recurring.md"}
 
   test "resolve/2 removes a kept worktree; the branch survives and can be reused" do
     repo = scaffolded_repo()

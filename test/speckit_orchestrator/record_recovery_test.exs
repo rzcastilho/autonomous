@@ -68,8 +68,13 @@ defmodule SpeckitOrchestrator.RecordRecoveryTest do
     git!(repo, ["commit", "-q", "-m", message])
   end
 
-  defp feat(id, prereqs \\ []),
-    do: %Feature{id: id, slug: "core-ledger", path: "#{id}.md", prereqs: prereqs}
+  defp feat(id, number \\ nil),
+    do: %Feature{
+      id: id,
+      number: number || String.to_integer(id),
+      slug: "core-ledger",
+      path: "#{id}.md"
+    }
 
   defp capturing_runner(test_pid) do
     fn feature, notify -> send(test_pid, {:started, feature.id, notify}) end
@@ -92,12 +97,17 @@ defmodule SpeckitOrchestrator.RecordRecoveryTest do
         features:
           Enum.map(
             features,
-            &%{feature_id: &1.id, slug: &1.slug, path: &1.path, prereqs: &1.prereqs}
+            &%{
+              feature_id: &1.id,
+              slug: &1.slug,
+              path: &1.path,
+              number: &1.number,
+              group: &1.group,
+              created_at: &1.created_at
+            }
           ),
         settings:
           RunContext.to_map(%RunContext{
-            pr_workflow: false,
-            max_concurrency: 2,
             budget_usd: 100.0
           }),
         scope: {:breakdown, "core-ledger"},
@@ -194,14 +204,19 @@ defmodule SpeckitOrchestrator.RecordRecoveryTest do
   end
 
   # ---- S5.3: an unloadable backlog refuses with no write ---------------------
+  #
+  # 019 dropped `Backlog`'s prereq/cycle validation entirely — a
+  # `## Prerequisites` section is now inert prose, never read (see
+  # `backlog.ex` moduledoc). The one way left to make `Backlog.load!/1` raise
+  # is `DuplicateNumberError` — two files whose numeric ids collide (FR-012).
 
-  test "recover_record/1 refuses with {:backlog, _} and writes nothing when the backlog has a dangling prereq" do
+  test "recover_record/1 refuses with {:backlog, _} and writes nothing when the backlog has duplicate feature numbers" do
     {layout, run_key} = seed_worked_example()
     on_exit(fn -> File.rm_rf(layout.worktree_root) end)
 
-    # Corrupt the on-disk backlog after the run was opened: 003 now names a
-    # prereq no breakdown file defines.
-    breakdown_file(layout.breakdown_root, "003", "- 999 Missing")
+    # Corrupt the on-disk backlog after the run was opened: a second file
+    # numerically collides with "003" (`"0003"` == `3`, same as `"003"`).
+    breakdown_file(layout.breakdown_root, "0003", "None")
 
     {:ok, before} = Store.run(run_key)
 
@@ -213,41 +228,12 @@ defmodule SpeckitOrchestrator.RecordRecoveryTest do
              Enum.map(before.features, & &1.feature_id)
   end
 
-  # ---- S5.4: a prereq-missing proposal refuses with no write (FR-020) --------
-
-  test "recover_record/1 refuses with {:inconsistent, _} and writes nothing when the union has a missing prereq" do
-    repo = base_repo()
-    Application.put_env(:speckit_orchestrator, :repo, repo)
-
-    {:ok, segment} = RepoIdentity.resolve(repo)
-    {:ok, layout} = Layout.build(repo, segment, {:breakdown, "core-ledger"})
-    on_exit(fn -> File.rm_rf(layout.worktree_root) end)
-
-    File.mkdir_p!(layout.breakdown_root)
-    breakdown_file(layout.breakdown_root, "001", "None")
-
-    # `Backlog.load!/1` itself already fails loud on a dangling prereq
-    # *within* the backlog files, so `propose/3`'s own union guard (FR-020)
-    # is only reachable through a record-only feature (absent from the
-    # backlog on disk, so never validated by `Backlog.load!/1`) naming a
-    # prereq nowhere in the union.
-    run_key = open_run(repo, layout, [feat("001"), feat("004", ["999"])])
-
-    :ok =
-      Writer.record_feature_terminal(run_key, "001", :done, :ok,
-        pr_description: %{pr_title: "t", pr_body: "b"}
-      )
-
-    {:ok, before} = Store.run(run_key)
-
-    assert {:error, {:inconsistent, discrepancies}} = SpeckitOrchestrator.recover_record()
-    assert [%{kind: :prereq_missing, id: "004", detail: "999"}] = discrepancies
-
-    {:ok, after_read} = Store.run(run_key)
-
-    assert Enum.map(after_read.features, & &1.feature_id) ==
-             Enum.map(before.features, & &1.feature_id)
-  end
+  # 019 removed `Recovery.Rebuild.propose/3`'s union prereq-consistency guard
+  # along with `Feature.prereqs` itself — there is no `:prereq_missing`
+  # discrepancy kind and no `{:error, {:inconsistent, _}}` return left to
+  # trigger (see `recovery/rebuild_test.exs`'s matching note), so the old
+  # "S5.4: a prereq-missing proposal refuses with no write" test has no
+  # new-model equivalent to rewrite into.
 
   # ---- no record at all -------------------------------------------------------
 

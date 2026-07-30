@@ -75,10 +75,18 @@ defmodule SpeckitOrchestrator.Web.TranscriptsLiveTest do
     {:ok, run_id} =
       Writer.open_run(repo_id, %{
         features:
-          Enum.map(
-            feature_ids,
-            &%{feature_id: &1, slug: "slug-#{&1}", path: "#{&1}.md", prereqs: []}
-          ),
+          feature_ids
+          |> Enum.with_index(1)
+          |> Enum.map(fn {id, idx} ->
+            %{
+              feature_id: id,
+              slug: "slug-#{id}",
+              path: "#{id}.md",
+              number: idx,
+              group: :backlog,
+              created_at: nil
+            }
+          end),
         settings: %{},
         scope: :ad_hoc,
         layout: layout
@@ -164,7 +172,9 @@ defmodule SpeckitOrchestrator.Web.TranscriptsLiveTest do
 
     {:ok, run_id} =
       Writer.open_run(repo_id, %{
-        features: [%{feature_id: "t6", slug: "slug-t6", path: "t6.md", prereqs: []}],
+        features: [
+          %{feature_id: "t6", slug: "slug-t6", path: "t6.md", number: 6, group: :backlog, created_at: nil}
+        ],
         settings: %{},
         scope: :ad_hoc,
         layout: layout
@@ -220,7 +230,9 @@ defmodule SpeckitOrchestrator.Web.TranscriptsLiveTest do
 
     {:ok, run_id} =
       Writer.open_run(repo_id, %{
-        features: [%{feature_id: "t9", slug: "slug-t9", path: "t9.md", prereqs: []}],
+        features: [
+          %{feature_id: "t9", slug: "slug-t9", path: "t9.md", number: 9, group: :backlog, created_at: nil}
+        ],
         settings: %{},
         scope: :ad_hoc,
         layout: layout

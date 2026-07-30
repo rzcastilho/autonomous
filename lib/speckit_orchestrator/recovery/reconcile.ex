@@ -8,10 +8,9 @@ defmodule SpeckitOrchestrator.Recovery.Reconcile do
   (failed passthrough), 3 (done corroboration), 4 (non-terminal done-signal,
   US1), 5 (mid-run resume, US2), 6 (nothing-to-salvage — no evidence at all,
   US2; applies to both `:pending` and a `:running` feature that crashed
-  before any boundary commit landed), 7 (contradictions, US3). `:blocked` (a
-  prior conflict already held, or any other status outside the documented
-  vocabulary) passes through unchanged — the safe, never-fabricate default
-  (Principle II).
+  before any boundary commit landed), 7 (contradictions, US3). Any status
+  outside the documented vocabulary passes through unchanged — the safe,
+  never-fabricate default (Principle II).
   """
 
   alias SpeckitOrchestrator.{Feature, Pipeline}
@@ -90,9 +89,8 @@ defmodule SpeckitOrchestrator.Recovery.Reconcile do
     end
   end
 
-  # `:blocked` (a prior conflict already held) and any other status outside
-  # the documented vocabulary pass through unchanged — never fabricated
-  # (Principle II).
+  # Any status outside the documented vocabulary passes through unchanged —
+  # never fabricated (Principle II).
   def status(recorded, %Evidence{}, _run_shape), do: recorded
 
   @doc """

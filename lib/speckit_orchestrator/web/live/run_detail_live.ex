@@ -284,6 +284,9 @@ defmodule SpeckitOrchestrator.Web.RunDetailLive do
         {@run.state} · {@run.outcome || "—"} · started {format_datetime(@run.started_at)}
         · {format_elapsed(@run.duration_ms)} · ${format_money(@run.spend_usd)}
         <span :if={@run.halt_reason}>· halted: {inspect(@run.halt_reason)}</span>
+        <span :if={@run.stopped_by} data-marker="stopped-by">
+          · stopped at {@run.stopped_by} ({inspect(@run.stopped_reason)})
+        </span>
       </div>
 
       <div class="run-context-label">SETTINGS</div>

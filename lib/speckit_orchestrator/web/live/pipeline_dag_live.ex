@@ -1,18 +1,21 @@
 defmodule SpeckitOrchestrator.Web.PipelineDagLive do
   @moduledoc """
-  US4 — Pipeline DAG (`/dag`): features as nodes placed by dependency depth
-  (longest prereq chain, `PipelineDagLayout`), prereq→dependent edges, a
-  shared-palette legend, and node-click into the same `FeatureDrawerComponent`
-  as Mission Control (`specs/008-control-plane/tasks.md` T057-T058).
+  Pipeline chain view (`/dag`, name kept for route/URL stability). 019
+  retired dependency prerequisites, so there is no DAG to lay out any more —
+  every run is one linear chain, ascending by feature number, one feature at
+  a time (`Release.order/1`, `Release.next/3`). This view renders exactly
+  that: a numbered-backlog chain and a distinct Ad-hoc chain (FR-027), each
+  link showing the branch it stacks on (FR-018).
 
-  The node/edge shape comes from `Backlog.load!/1` — the full backlog, not
+  The backlog chain's source is `Backlog.load!/1` — the full backlog, not
   just the live run's subset (`contracts/routes.md`) — same source Trigger's
-  backlog preview reads. Node status/phase/spend are merged in from
-  `Coordinator.status/0` + `Ledger.snapshot/1` + `ConsoleProjection.read/0`,
-  the same read-model `MissionControlLive` seeds from, and kept in step via
-  the same PubSub broadcasts (FR-025, FR-026, FR-034). An invalid DAG
-  (`Backlog.load!/1` raises) or an empty backlog each render a coherent
-  state, never a broken layout (SC-006).
+  backlog preview reads. The Ad-hoc chain is whatever live/last-known
+  features aren't in that backlog (an ad-hoc feature has no breakdown file).
+  Node status/phase/spend are merged in from `Coordinator.status/0` +
+  `Ledger.snapshot/1` + `ConsoleProjection.read/0`, the same read-model
+  `MissionControlLive` seeds from, and kept in step via the same PubSub
+  broadcasts. An invalid backlog (`Backlog.load!/1` raises) or an empty one
+  each render a coherent state, never a broken layout (SC-006).
   """
 
   use SpeckitOrchestrator.Web, :live_view
@@ -27,8 +30,6 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
     Release
   }
 
-  alias SpeckitOrchestrator.Web.PipelineDagLayout
-
   @impl true
   def mount(_params, _session, socket) do
     if connected?(socket) do
@@ -42,7 +43,7 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
     {:ok,
      socket
      |> assign(
-       page_title: "Pipeline DAG",
+       page_title: "Pipeline Chain",
        current_path: "/dag",
        selected_feature_id: nil,
        repo: repo,
@@ -50,7 +51,7 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
        selected_package: selected_package,
        known_backlog_ids: known_backlog_ids(repo, packages)
      )
-     |> load_layout()
+     |> load_backlog()
      |> seed()}
   end
 
@@ -64,29 +65,16 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
 
   defp default_package(packages, _run_detail), do: List.first(packages)
 
-  defp load_layout(socket) do
+  defp load_backlog(socket) do
     try do
       # A missing/empty breakdown dir is a valid empty backlog (e.g. a project
       # run only via single-spec/ad-hoc mode never creates one) — not a parse
-      # error; only an existing-but-invalid backlog (dangling prereq, cycle,
+      # error; only an existing-but-invalid backlog (duplicate numbers,
       # unreadable file) should surface as backlog_error.
       features = load_features(socket.assigns.repo, socket.assigns.selected_package)
-      dag_layout = PipelineDagLayout.layout(features)
-
-      assign(socket,
-        backlog_error: nil,
-        features: features,
-        dag_layout: dag_layout,
-        canvas: PipelineDagLayout.canvas_size(dag_layout)
-      )
+      assign(socket, backlog_error: nil, features: Release.order(features))
     rescue
-      e ->
-        assign(socket,
-          backlog_error: Exception.message(e),
-          features: [],
-          dag_layout: nil,
-          canvas: nil
-        )
+      e -> assign(socket, backlog_error: Exception.message(e), features: [])
     end
   end
 
@@ -116,35 +104,11 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
   defp seed(socket) do
     status = coordinator_status()
     view = ConsoleReadModel.merge(status, ledger_snapshot(), ConsoleProjection.read())
-
-    socket
-    |> assign(view: overlay_manifest(view))
-    |> assign_release_order(status)
+    assign(socket, view: overlay_manifest(view))
   end
-
-  # A cap-1 run (any stacked PR run, and any run explicitly capped at 1) releases
-  # strictly one feature at a time, so the canvas annotates each node with its
-  # release position. Without it the layout reads as though a whole column starts
-  # together — columns are prereq depth, and two features at the same depth sit
-  # side by side whether the run can actually overlap them or not.
-  #
-  # Empty for a cap > 1 run: there the overlap depends on phase durations, and a
-  # projected order would be a guess drawn as fact.
-  defp assign_release_order(socket, status) do
-    assign(socket, release_order: release_order(socket.assigns[:features] || [], status))
-  end
-
-  defp release_order(features, %{cap: 1}) when features != [] do
-    features
-    |> Release.sequential_order()
-    |> Enum.with_index(1)
-    |> Map.new()
-  end
-
-  defp release_order(_features, _status), do: %{}
 
   # No live Coordinator (fresh boot, no resume yet) — fall back to the store's
-  # current in-flight run (018) so the DAG reflects the last known status
+  # current in-flight run (018) so the chain reflects the last known status
   # instead of every node defaulting to :pending, and each feature's own
   # checkpoint so its phase timeline shows what actually ran rather than
   # looking like nothing happened. `Store.current_run_key/1` is already
@@ -180,7 +144,7 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
   @impl true
   def handle_info({:console, :feature_updated, %{id: id, feature: feature}}, socket) do
     view = socket.assigns.view
-    default = %{status: :pending, elapsed_ms: nil, slug: nil, prereqs: []}
+    default = %{status: :pending, elapsed_ms: nil, slug: nil, group: nil}
     merged = Map.merge(Map.get(view.per_feature, id, default), feature || %{})
     {:noreply, assign(socket, view: %{view | per_feature: Map.put(view.per_feature, id, merged)})}
   end
@@ -192,11 +156,7 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
         socket
       ) do
     view = ConsoleReadModel.merge(coordinator_status, ledger_snapshot, ConsoleProjection.read())
-
-    {:noreply,
-     socket
-     |> assign(view: overlay_manifest(view))
-     |> assign_release_order(coordinator_status)}
+    {:noreply, assign(socket, view: overlay_manifest(view))}
   end
 
   def handle_info({:console, :run_finished, report}, socket) do
@@ -211,7 +171,7 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
     {:noreply,
      socket
      |> assign(selected_package: slug, selected_feature_id: nil)
-     |> load_layout()
+     |> load_backlog()
      |> seed()}
   end
 
@@ -227,29 +187,42 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
 
   @impl true
   def render(assigns) do
+    pr_base = Config.pr_base()
+
+    ad_hoc =
+      assigns
+      |> ad_hoc_chain()
+      |> Enum.with_index(1)
+      |> Enum.map(fn {feature, position} ->
+        %{feature: feature, position: position, base: pr_base}
+      end)
+
+    backlog = links(assigns.features, pr_base: pr_base)
+    assigns = assign(assigns, backlog_links: backlog, ad_hoc_links: ad_hoc)
+
     ~H"""
     <div class="view-pipeline-dag" data-view="pipeline-dag">
-      <p :if={@backlog_error} class="field-error" data-state="dag-invalid">{@backlog_error}</p>
+      <p :if={@backlog_error} class="field-error" data-state="backlog-invalid">{@backlog_error}</p>
 
       <div
-        :if={@dag_layout && @dag_layout.nodes == []}
+        :if={!@backlog_error && @backlog_links == [] && @ad_hoc_links == []}
         class="empty-state"
         data-state="empty-backlog"
       >
         <p>No features in the backlog.</p>
       </div>
 
-      <div :if={@dag_layout && @dag_layout.nodes != []} class="dag-canvas" data-state="dag">
+      <div
+        :if={!@backlog_error && (@backlog_links != [] or @ad_hoc_links != [])}
+        class="dag-canvas"
+        data-state="chain"
+      >
         <div class="dag-canvas-header">
           <div>
-            <div class="dag-canvas-title">Dependency DAG</div>
-            <div :if={@release_order == %{}} class="dag-canvas-sub">
-              columns are prereq depth, not concurrency — the wave cap decides how
-              many of a column actually run at once
-            </div>
-            <div :if={@release_order != %{}} class="dag-canvas-sub" data-state="sequential-run">
-              this run releases one feature at a time — badges show release order,
-              so a shared column runs top to bottom, not together
+            <div class="dag-canvas-title">Pipeline Chain</div>
+            <div class="dag-canvas-sub" data-state="sequential-run">
+              every run releases one feature at a time, in ascending number order —
+              each link shows the branch it stacks on
             </div>
           </div>
           <form
@@ -271,48 +244,37 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
           </form>
         </div>
 
-        <div class="dag-scroll">
-          <div class="dag-plane" style={"width: #{@canvas.width}px; height: #{@canvas.height}px;"}>
-            <svg class="dag-edges-svg" width="100%" height="100%">
-              <path
-                :for={edge <- @dag_layout.edges}
-                d={edge.d}
-                class="dag-edge"
-                data-dag-edge={"#{edge.from}:#{edge.to}"}
-                fill="none"
-              />
-            </svg>
-
-            <div
-              :for={node <- @dag_layout.nodes}
-              class="dag-node"
-              data-dag-node={node.id}
-              data-node-origin="backlog"
-              style={"left: #{node.x}px; top: #{node.y}px;"}
-              phx-click="select_feature"
-              phx-value-id={node.id}
-            >
-              <div class="dag-node-head">
-                <span
-                  :if={@release_order[node.id]}
-                  class="dag-release-badge"
-                  data-release-order={@release_order[node.id]}
-                  title="release order — this run runs one feature at a time"
-                >
-                  {@release_order[node.id]}
-                </span>
-                <span class="dag-node-id">{node.id}</span>
-                <.status_pill status={node_status(@view, node.id)} />
-              </div>
-              <div class="dag-node-slug">{node.slug}</div>
-              <.phase_strip
-                phases={node_phases(@view, node.id)}
-                status={node_status(@view, node.id)}
-                chunk={node_chunk(@view, node.id)}
-                remediation={node_remediation(@view, node.id)}
-              />
-              <div class="dag-node-spend">${format_money(node_spend(@view, node.id))}</div>
+        <div :if={@backlog_links != []} class="dag-chain" data-chain="backlog">
+          <div
+            :for={link <- @backlog_links}
+            class="dag-node"
+            data-dag-node={link.feature.id}
+            data-node-origin="backlog"
+            data-chain-position={link.position}
+            data-chain-base={link.base}
+            phx-click="select_feature"
+            phx-value-id={link.feature.id}
+          >
+            <div class="dag-node-head">
+              <span
+                class="dag-release-badge"
+                data-release-order={link.position}
+                title="release order — this run runs one feature at a time"
+              >
+                {link.position}
+              </span>
+              <span class="dag-node-id">{link.feature.id}</span>
+              <.status_pill status={node_status(@view, link.feature.id)} />
             </div>
+            <div class="dag-node-slug">{link.feature.slug}</div>
+            <div class="dag-node-base" data-chain-base-label>stacks on {link.base}</div>
+            <.phase_strip
+              phases={node_phases(@view, link.feature.id)}
+              status={node_status(@view, link.feature.id)}
+              chunk={node_chunk(@view, link.feature.id)}
+              remediation={node_remediation(@view, link.feature.id)}
+            />
+            <div class="dag-node-spend">${format_money(node_spend(@view, link.feature.id))}</div>
           </div>
         </div>
 
@@ -325,7 +287,7 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
             <span class="legend-swatch" style={"background-color: #{color};"}></span> {label}
           </div>
           <div
-            :if={ad_hoc_lane(@dag_layout, @view.per_feature, @known_backlog_ids).nodes != []}
+            :if={@ad_hoc_links != []}
             class="dag-legend-item dag-legend-ad-hoc"
             data-legend-origin="ad-hoc"
           >
@@ -334,29 +296,30 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
         </div>
       </div>
 
-      <% ad_hoc_lane = ad_hoc_lane(@dag_layout, @view.per_feature, @known_backlog_ids) %>
-
-      <div :if={ad_hoc_lane.nodes != []} class="dag-ad-hoc-lane" data-state="ad-hoc-lane">
-        <div
-          :for={node <- ad_hoc_lane.nodes}
-          class="dag-node"
-          data-dag-node={node.id}
-          data-node-origin="ad-hoc"
-          phx-click="select_feature"
-          phx-value-id={node.id}
-        >
-          <div class="dag-node-head">
-            <span class="dag-node-id">{node.id}</span>
-            <span class="dag-adhoc-badge" data-adhoc-badge>ad-hoc</span>
-            <.status_pill status={node_status(@view, node.id)} />
+      <div :if={@ad_hoc_links != []} class="dag-ad-hoc-lane" data-state="ad-hoc-lane">
+        <div class="dag-chain" data-chain="ad-hoc">
+          <div
+            :for={link <- @ad_hoc_links}
+            class="dag-node"
+            data-dag-node={link.feature.id}
+            data-node-origin="ad-hoc"
+            phx-click="select_feature"
+            phx-value-id={link.feature.id}
+          >
+            <div class="dag-node-head">
+              <span class="dag-node-id">{link.feature.id}</span>
+              <span class="dag-adhoc-badge" data-adhoc-badge>ad-hoc</span>
+              <.status_pill status={node_status(@view, link.feature.id)} />
+            </div>
+            <div class="dag-node-slug">{link.feature.slug}</div>
+            <div class="dag-node-base" data-chain-base-label>stacks on {link.base}</div>
+            <.phase_strip
+              phases={node_phases(@view, link.feature.id)}
+              status={node_status(@view, link.feature.id)}
+              remediation={node_remediation(@view, link.feature.id)}
+            />
+            <div class="dag-node-spend">${format_money(node_spend(@view, link.feature.id))}</div>
           </div>
-          <div class="dag-node-slug">{node.slug}</div>
-          <.phase_strip
-            phases={node_phases(@view, node.id)}
-            status={node_status(@view, node.id)}
-            remediation={node_remediation(@view, node.id)}
-          />
-          <div class="dag-node-spend">${format_money(node_spend(@view, node.id))}</div>
         </div>
       </div>
 
@@ -370,17 +333,40 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
     """
   end
 
+  # A backlog chain link's base is the previous link's branch
+  # (`feature/<id>-<slug>`, `Worktree`'s naming convention); an Ad-hoc link
+  # always stacks on `pr_base` (FR-028) — it never joins the backlog chain.
+  defp links(features, pr_base: pr_base) do
+    features
+    |> Enum.with_index(1)
+    |> Enum.map_reduce(pr_base, fn {feature, position}, base ->
+      {%{feature: feature, position: position, base: base}, branch(feature)}
+    end)
+    |> elem(0)
+  end
+
+  defp branch(feature), do: "feature/#{feature.id}-#{feature.slug}"
+
+  # Every id present in the view's per-feature map that has no breakdown file
+  # in ANY package — built as pseudo-`Feature` structs (id/slug only) so
+  # `links/2` can treat both chains identically. Ordered by id: structurally
+  # exactly 0 or 1 ad-hoc features are ever live in a given run (FR-026), so
+  # this is a stable, deterministic tie-break rather than a real ordering
+  # decision.
+  defp ad_hoc_chain(assigns) do
+    assigns.view.per_feature
+    |> Map.keys()
+    |> Enum.reject(&MapSet.member?(assigns.known_backlog_ids, &1))
+    |> Enum.sort()
+    |> Enum.map(&%{id: &1, slug: get_in(assigns.view.per_feature, [&1, :slug])})
+  end
+
   defp node_status(view, id), do: get_in(view.per_feature, [id, :status]) || :pending
   defp node_spend(view, id), do: get_in(view.per_feature, [id, :spend]) || 0.0
   defp node_phases(view, id), do: get_in(view.per_feature, [id, :phases]) || %{}
   defp node_chunk(view, id), do: get_in(view.per_feature, [id, :chunk])
 
   defp node_remediation(view, id), do: get_in(view.per_feature, [id, :remediation])
-
-  defp ad_hoc_lane(nil, _per_feature, _known_ids), do: %{nodes: []}
-
-  defp ad_hoc_lane(dag_layout, per_feature, known_ids),
-    do: PipelineDagLayout.ad_hoc_nodes(dag_layout, per_feature, known_ids)
 
   # Every id that has a breakdown file in ANY package, not just the drawn one.
   # A feature is ad-hoc because `run_spec/2` created it with no breakdown file

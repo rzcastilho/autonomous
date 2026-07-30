@@ -9,7 +9,7 @@ defmodule SpeckitOrchestrator.Store.Records do
   (FR-008, SC-011).
   """
 
-  alias SpeckitOrchestrator.Store.Schema
+  alias SpeckitOrchestrator.Store.{Schema, Shape}
 
   defmodule Meta do
     @moduledoc false
@@ -44,6 +44,8 @@ defmodule SpeckitOrchestrator.Store.Records do
       :spend_usd,
       :record_complete?,
       :halt_reason,
+      :stopped_by,
+      :stopped_reason,
       :scope,
       :layout,
       :superseded_by,
@@ -54,8 +56,15 @@ defmodule SpeckitOrchestrator.Store.Records do
             key: {binary(), binary()},
             repo_id: binary(),
             run_id: binary(),
-            state: :in_flight | :completed | :superseded,
-            outcome: :all_done | :escalated | :halted | :failed | :mixed | nil,
+            state: :in_flight | :parked | :completed | :superseded,
+            outcome:
+              :all_done
+              | :escalated
+              | :halted
+              | :failed
+              | :mixed
+              | :ended_by_operator
+              | nil,
             outcome_index: atom(),
             started_at: DateTime.t(),
             ended_at: DateTime.t() | nil,
@@ -63,6 +72,8 @@ defmodule SpeckitOrchestrator.Store.Records do
             spend_usd: float(),
             record_complete?: boolean(),
             halt_reason: term() | nil,
+            stopped_by: binary() | nil,
+            stopped_reason: term() | nil,
             scope: {:breakdown, binary()} | :ad_hoc,
             layout: map(),
             superseded_by: binary() | nil,
@@ -103,12 +114,15 @@ defmodule SpeckitOrchestrator.Store.Records do
       :feature_id,
       :slug,
       :path,
-      :prereqs,
+      :number,
+      :group,
+      :created_at,
       :status,
       :terminal_reason,
       :worktree_path,
       :branch,
       :pr_description,
+      :pr_url,
       :started_at,
       :ended_at
     ]
@@ -119,7 +133,9 @@ defmodule SpeckitOrchestrator.Store.Records do
             feature_id: binary(),
             slug: binary(),
             path: binary(),
-            prereqs: [binary()],
+            number: pos_integer(),
+            group: :backlog | :ad_hoc,
+            created_at: DateTime.t() | nil,
             status:
               :pending
               | :running
@@ -127,12 +143,13 @@ defmodule SpeckitOrchestrator.Store.Records do
               | :escalated
               | :halted
               | :failed
-              | :blocked
+              | :never_started
               | :ended_by_supersession,
             terminal_reason: term() | nil,
             worktree_path: binary() | nil,
             branch: binary() | nil,
             pr_description: map() | nil,
+            pr_url: binary() | nil,
             started_at: DateTime.t() | nil,
             ended_at: DateTime.t() | nil
           }
@@ -336,6 +353,21 @@ defmodule SpeckitOrchestrator.Store.Records do
   `{:error, {:damaged, key, reason}}` on any shape mismatch (wrong record
   name, wrong arity) — never defaults or coerces a field (FR-008, SC-011).
   Absence is the caller's concern (`{:error, :absent}`), not this function's.
+
+  One mismatch is **not** damage: when `Schema`'s attribute list for a table no
+  longer matches the shape that table was booted with, every row in it fails to
+  decode and none of them is corrupt — the tables were never migrated to the
+  shape this build expects. That happens whenever `Schema` changes under a
+  running node, which in dev takes no deliberate act: recompiling is enough for
+  the code reloader to swap the module in. Reporting it as
+  `{:damaged, key, :shape_mismatch}` sent operators hunting a corrupt record
+  and, worse, let a live run fail features over a store that was fine;
+  `{:unmigrated_schema, table, expected, booted}` says what is actually wrong
+  and implies the fix (restart, so migrations run).
+
+  The snapshot lookup happens only on the failure path, so decoding a healthy
+  row costs exactly what it did before. `Store.Shape` owns the snapshot because
+  this module may not touch `:mnesia` to ask a table its shape (Principle I).
   """
   @spec decode(atom(), tuple()) :: {:ok, struct()} | damaged()
   def decode(table, tuple) when is_atom(table) and is_tuple(tuple) do
@@ -345,10 +377,23 @@ defmodule SpeckitOrchestrator.Store.Records do
          true <- length(values) == length(spec.attributes) do
       {:ok, struct!(mod, Enum.zip(spec.attributes, values))}
     else
-      _ -> {:error, {:damaged, safe_key(tuple), :shape_mismatch}}
+      _ -> {:error, {:damaged, safe_key(tuple), mismatch_reason(table)}}
     end
   rescue
     error -> {:error, {:damaged, safe_key(tuple), error}}
+  end
+
+  # Distinguishes "this row is the wrong shape" from "this whole table is".
+  # `:shape_mismatch` whenever there is no recorded shape to compare against —
+  # an unknown table, or a unit test that never booted a store — since without
+  # a snapshot there is no evidence of an unmigrated table, only of a bad tuple.
+  defp mismatch_reason(table) do
+    expected = Schema.table(table) && Schema.table(table).attributes
+
+    case Shape.mismatch(table, expected) do
+      nil -> :shape_mismatch
+      {^expected, booted} -> {:unmigrated_schema, table, expected, booted}
+    end
   end
 
   defp table_for_module!(mod) do

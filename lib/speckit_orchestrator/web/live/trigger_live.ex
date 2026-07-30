@@ -1,9 +1,10 @@
 defmodule SpeckitOrchestrator.Web.TriggerLive do
   @moduledoc """
   US2 — Trigger Run (`/trigger`): starts a backlog run or a single-spec run
-  from a form, with DAG validation and a stacked-PR toggle, landing the
-  operator on Mission Control with a toast confirmation
-  (`specs/008-control-plane/tasks.md` T035-T039).
+  from a form, landing the operator on Mission Control with a toast
+  confirmation (`specs/008-control-plane/tasks.md` T035-T039). 019: every run
+  is a stacked sequential run — there is no toggle, the form only describes
+  the shape.
 
   Reads `Backlog.load!/1` directly for the backlog preview (`contracts/routes.md`)
   and `SpeckitOrchestrator.preview_single_spec/2` for the single-spec live
@@ -18,7 +19,7 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
 
   use SpeckitOrchestrator.Web, :live_view
 
-  alias SpeckitOrchestrator.{Backlog, Config, Remediation, RunContext, Severity}
+  alias SpeckitOrchestrator.{Backlog, Config, Remediation, Severity}
 
   @impl true
   def mount(_params, _session, socket) do
@@ -30,7 +31,6 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
        page_title: "Trigger Run",
        current_path: "/trigger",
        mode: :backlog,
-       pr_workflow?: Config.pr_workflow?(),
        auto_remediation?: Config.auto_remediation?(),
        remediation_threshold: to_string(Config.auto_remediation_threshold()),
        remediation_limit: to_string(Config.auto_remediation_attempt_limit()),
@@ -65,10 +65,6 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
     socket = assign(socket, mode: mode_atom, start_error: nil, field_error: nil)
     socket = if mode_atom == :backlog, do: refresh_backlog_preview(socket), else: socket
     {:noreply, socket}
-  end
-
-  def handle_event("toggle_pr_workflow", _params, socket) do
-    {:noreply, assign(socket, pr_workflow?: not socket.assigns.pr_workflow?)}
   end
 
   # ---- auto-remediation controls (017, contracts/telemetry-console.md §4) ----
@@ -170,24 +166,17 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
     |> Task.await()
   end
 
-  # The toggle is a per-run opt and nothing more. It used to also be mirrored
-  # into app env so the shared status bar could read it back via
-  # `Config.pr_workflow?/0`, but that made a single start with the toggle off
-  # silently overwrite the node's configured default (including one set from
-  # SPECKIT_PR_WORKFLOW) for every later run and every later mount of this
-  # form — sticky until restart. `Layouts.run_view/0` now reads the live run's
-  # own recorded context instead, so no global write is needed.
-  #
-  # The auto-remediation controls (017) are per-run opts on exactly the same
-  # terms: validated here through `Remediation.Settings.validate/1` — the same
-  # single validator `run/1`'s own preflight uses — so a bad limit/threshold is
-  # refused *before* any run is dispatched (FR-010e), and the accepted values
-  # travel as opts only, leaving the node's configured defaults untouched for
-  # the next mount (FR-010f).
+  # 019: the run shape is no longer an opt — every run is stacked sequential,
+  # so there is nothing to pass here for it. The auto-remediation controls
+  # (017) remain per-run opts: validated here through
+  # `Remediation.Settings.validate/1` — the same single validator `run/1`'s
+  # own preflight uses — so a bad limit/threshold is refused *before* any run
+  # is dispatched (FR-010e), and the accepted values travel as opts only,
+  # leaving the node's configured defaults untouched for the next mount
+  # (FR-010f).
   defp start_opts(socket) do
     with {:ok, settings} <- validate_remediation(socket) do
       base = [
-        pr_workflow: socket.assigns.pr_workflow?,
         auto_remediation: settings.enabled?,
         auto_remediation_threshold: settings.threshold,
         auto_remediation_attempt_limit: settings.attempt_limit
@@ -296,13 +285,6 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
 
   @impl true
   def render(assigns) do
-    assigns =
-      assign(
-        assigns,
-        :effective_concurrency,
-        RunContext.effective_max_concurrency(assigns.pr_workflow?, Config.max_concurrency())
-      )
-
     ~H"""
     <div class="view-trigger" data-view="trigger">
       <div class="mode-toggle">
@@ -360,8 +342,8 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
           <dd data-dag-valid={to_string(@backlog_preview.dag_valid?)}>
             {if @backlog_preview.dag_valid?, do: "yes", else: "no"}
           </dd>
-          <dt>Max concurrency</dt>
-          <dd>{@effective_concurrency}</dd>
+          <dt>Run shape</dt>
+          <dd>stacked sequential — one feature at a time</dd>
           <dt>Budget</dt>
           <dd>${format_money(Config.budget_usd())}</dd>
         </dl>
@@ -399,20 +381,10 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
         </form>
       </div>
 
-      <div class="pr-toggle-row">
-        <label class="pr-toggle">
-          <input
-            type="checkbox"
-            phx-click="toggle_pr_workflow"
-            checked={@pr_workflow?}
-            class="switch-input"
-          />
-          <span class="switch-track"><span class="switch-knob"></span></span>
-          <span>Stacked sequential PR workflow</span>
-        </label>
-        <span class="pr-hint" data-pr-workflow={to_string(@pr_workflow?)}>
-          effective concurrency: {@effective_concurrency}
-        </span>
+      <div class="pr-toggle-row" data-run-shape="stacked-sequential">
+        <span>Stacked sequential PR workflow — every run branches one feature at a
+          time from the previous completed feature's branch and opens a PR
+          against it.</span>
       </div>
 
       <div class="pr-toggle-row auto-remediation-row">

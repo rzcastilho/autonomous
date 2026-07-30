@@ -1,7 +1,12 @@
 defmodule SpeckitOrchestrator.RunSpecTest do
   # async: false — swaps the global :jido_claude sdk_module, :speckit_orchestrator
   # app env (repo/worktree_root), and the fixed-name Coordinator.
-  use ExUnit.Case, async: false
+  #
+  # StoreCase, not a plain Case: these tests drive real facade runs, which record
+  # to the node-global store and park it when a drain ends on a non-`:done`
+  # feature. Without per-test clearing, one test's parked run refuses every later
+  # test's `run_spec/2` with `{:parked_run, …}`.
+  use SpeckitOrchestrator.StoreCase, async: false
 
   alias SpeckitOrchestrator.{Coordinator, Ledger, RepoIdentity, SingleSpec}
 
@@ -73,6 +78,8 @@ defmodule SpeckitOrchestrator.RunSpecTest do
     File.mkdir_p!(Path.join(repo, ".claude/skills"))
     File.write!(Path.join(repo, ".claude/skills/.gitkeep"), "")
     File.write!(Path.join(repo, ".claude/settings.json"), "{}")
+    File.mkdir_p!(Path.join(repo, ".claude/hooks"))
+    File.write!(Path.join(repo, ".claude/hooks/scope_guard.py"), "")
     git!(repo, ["add", "-A"])
     git!(repo, ["commit", "-q", "-m", "base"])
     on_exit(fn -> File.rm_rf(repo) end)
@@ -198,7 +205,17 @@ defmodule SpeckitOrchestrator.RunSpecTest do
       root = tmp_root()
       point_config_at(repo, root)
 
-      {:ok, pid} = SpeckitOrchestrator.run_spec("Add a health check endpoint", owner: self())
+      # 019: every run publishes a PR unconditionally on :done — fake just the
+      # publisher (network/`gh`) so this test stays focused on the real
+      # worktree/FeatureRunner path it exists to exercise.
+      publisher = fn feature, _base -> {:ok, "https://example/pr/#{feature.id}"} end
+
+      {:ok, pid} =
+        SpeckitOrchestrator.run_spec("Add a health check endpoint",
+          owner: self(),
+          publisher: publisher
+        )
+
       on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
 
       assert_receive {:run_complete, report}, 30_000
@@ -321,10 +338,15 @@ defmodule SpeckitOrchestrator.RunSpecTest do
     end
   end
 
-  # ---- optional PR workflow (US3) ------------------------------------------
+  # ---- stacked PR workflow (US3) --------------------------------------------
+  # 019: every run is a stacked sequential run — one feature at a time,
+  # branching from the previous completed feature's branch and publishing a
+  # PR against it. This used to be an opt-in toggle (`pr_workflow: true`);
+  # now it is simply how every run works, and `:pr_workflow` itself is a
+  # retired option refused at preflight (`retired_settings_test.exs`).
 
-  describe "optional PR workflow" do
-    test "run_spec(pr_workflow: true) stacks the single feature and opens one PR" do
+  describe "stacked PR workflow" do
+    test "run_spec/2 stacks the single feature and opens one PR" do
       me = self()
 
       executor = fn feature, base, notify ->
@@ -340,7 +362,6 @@ defmodule SpeckitOrchestrator.RunSpecTest do
 
       {:ok, pid} =
         SpeckitOrchestrator.run_spec("Ship this feature",
-          pr_workflow: true,
           repo: "/no/such/repo/#{System.unique_integer([:positive])}",
           executor: executor,
           publisher: publisher,
@@ -355,7 +376,7 @@ defmodule SpeckitOrchestrator.RunSpecTest do
       assert report.done == ["001"]
     end
 
-    test "run_spec(pr_workflow: true) refuses to start when the target preflight fails" do
+    test "run_spec/2 refuses to start when the target preflight fails" do
       bare = Path.join(System.tmp_dir!(), "rs_bare_#{System.unique_integer([:positive])}")
       File.mkdir_p!(bare)
       prev = Application.get_env(:speckit_orchestrator, :repo)
@@ -370,7 +391,7 @@ defmodule SpeckitOrchestrator.RunSpecTest do
       end)
 
       assert {:error, {:preflight, _problems}} =
-               SpeckitOrchestrator.run_spec("Ship this feature", pr_workflow: true)
+               SpeckitOrchestrator.run_spec("Ship this feature")
     end
   end
 end

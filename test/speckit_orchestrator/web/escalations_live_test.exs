@@ -41,7 +41,13 @@ defmodule SpeckitOrchestrator.Web.EscalationsLiveTest do
     {:ok, conn: Phoenix.ConnTest.build_conn()}
   end
 
-  defp feat(id, slug), do: %Feature{id: id, slug: slug, path: "#{id}.md"}
+  defp feat(id, slug),
+    do: %Feature{
+      id: id,
+      number: System.unique_integer([:positive, :monotonic]),
+      slug: slug,
+      path: "#{id}.md"
+    }
 
   # 018: `resume/2` and `EscalationsLive` both read the target's checkpoint
   # and the run's state from the store — every fixture below seeds a
@@ -80,7 +86,14 @@ defmodule SpeckitOrchestrator.Web.EscalationsLiveTest do
 
     features =
       Enum.map(entries, fn {feature, _phase, _status, _opts} ->
-        %{feature_id: feature.id, slug: feature.slug, path: feature.path, prereqs: []}
+        %{
+          feature_id: feature.id,
+          slug: feature.slug,
+          path: feature.path,
+          number: feature.number,
+          group: feature.group,
+          created_at: feature.created_at
+        }
       end)
 
     settings =
@@ -89,7 +102,7 @@ defmodule SpeckitOrchestrator.Web.EscalationsLiveTest do
       |> elem(3)
       |> Keyword.get(
         :run_context,
-        %RunContext{pr_workflow: false, max_concurrency: 2, budget_usd: 100.0}
+        %RunContext{budget_usd: 100.0}
       )
       |> RunContext.to_map()
 
@@ -173,17 +186,27 @@ defmodule SpeckitOrchestrator.Web.EscalationsLiveTest do
       {feat("e3", "slug-e3"), :implement, :failed, reason: :timeout}
     ])
 
+    # 019: one feature releases at a time, and the first divert (Release.next/3
+    # rule 2) stops the whole chain — e2/e3 would never actually be released
+    # by the runner at all, let alone diverted, if this went through the
+    # normal outcome-map dispatch `start_coordinator/2` uses. Forcing all
+    # three statuses directly via `Coordinator.notify/4` (a raw, outside-actor
+    # update — the same mechanism `web/reconcile_test.exs` exercises) is the
+    # only way left to reach "three simultaneously diverted features," and
+    # this test only cares that the Escalations page renders every diverted
+    # entry in `per_feature`, not how each one got there.
     pid =
       start_coordinator(
         [feat("e1", "slug-e1"), feat("e2", "slug-e2"), feat("e3", "slug-e3")],
-        %{
-          "e1" => {:escalated, "needs human"},
-          "e2" => {:halted, "critical finding"},
-          "e3" => {:failed, :timeout}
-        }
+        %{}
       )
 
     on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    Coordinator.notify(pid, "e1", :escalated, "needs human")
+    Coordinator.notify(pid, "e2", :halted, "critical finding")
+    Coordinator.notify(pid, "e3", :failed, :timeout)
+    :sys.get_state(pid)
 
     {:ok, _view, html} = live(conn, "/escalations")
 
@@ -204,12 +227,16 @@ defmodule SpeckitOrchestrator.Web.EscalationsLiveTest do
   test "escalated feature shows clarify questions/options and the recorded run context", %{
     conn: conn
   } do
+    # `specs/<id>-<slug>` — the directory PhaseRequest pins
+    # SPECIFY_FEATURE_DIRECTORY to, and the only one SpecDir will accept as this
+    # feature's. A name unrelated to the feature's id was only ever found because
+    # the old scan globbed `specs/**/spec.md` across every feature in the tree.
     spec_dir =
       [
         Application.fetch_env!(:speckit_orchestrator, :worktree_root),
         "e4-slug-e4",
         "specs",
-        "004-slug-e4"
+        "e4-slug-e4"
       ]
       |> Path.join()
 
@@ -231,8 +258,6 @@ defmodule SpeckitOrchestrator.Web.EscalationsLiveTest do
     """)
 
     ctx = %RunContext{
-      pr_workflow: false,
-      max_concurrency: 2,
       budget_usd: 10.0,
       plan_stack: [],
       pr_base: "main",
@@ -255,7 +280,7 @@ defmodule SpeckitOrchestrator.Web.EscalationsLiveTest do
     assert html =~ "Postgres"
     refute html =~ "unrelated content"
 
-    assert html =~ "pr_workflow"
+    assert html =~ "pr_base"
     assert html =~ "main"
   end
 
@@ -317,7 +342,12 @@ defmodule SpeckitOrchestrator.Web.EscalationsLiveTest do
 
   test "full-restart action calls resolve/2 then run/1, restarting from phase 1 and freeing the worktree",
        %{conn: conn} do
-    pid = start_coordinator([feat("e6", "slug-e6")], %{"e6" => {:halted, "budget"}})
+    # 019: a feature with no store record at all falls back to
+    # `EscalationsLive`'s own `identity_number/2`, which derives
+    # `Feature.number` from the id via `String.to_integer/1` (real feature
+    # ids are always numeric strings — `Backlog`/`SingleSpec.next_id/1`) —
+    # this test's id must be numeric to exercise that fallback honestly.
+    pid = start_coordinator([feat("106", "slug-e6")], %{"106" => {:halted, "budget"}})
     on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
 
     Application.put_env(:speckit_orchestrator, :console_test_runner, fn _feature, _notify ->
@@ -325,26 +355,27 @@ defmodule SpeckitOrchestrator.Web.EscalationsLiveTest do
     end)
 
     {:ok, view, html} = live(conn, "/escalations")
-    assert html =~ ~s(data-escalation="e6")
+    assert html =~ ~s(data-escalation="106")
 
-    html = render_click(view, "full_restart", %{"id" => "e6"})
+    html = render_click(view, "full_restart", %{"id" => "106"})
 
     assert html =~ "restarted from phase 1"
     assert html =~ "worktree freed"
-    refute html =~ ~s(data-escalation="e6")
+    refute html =~ ~s(data-escalation="106")
     assert Process.whereis(Coordinator)
   end
 
   test "missing checkpoint steers to full restart only, no resume option offered", %{conn: conn} do
-    pid = start_coordinator([feat("e7", "slug-e7")], %{"e7" => {:halted, "boom"}})
+    # 019: see the numeric-id note above — this id also has no store record.
+    pid = start_coordinator([feat("107", "slug-e7")], %{"107" => {:halted, "boom"}})
     on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
 
     {:ok, _view, html} = live(conn, "/escalations")
 
-    assert html =~ ~s(data-escalation="e7")
+    assert html =~ ~s(data-escalation="107")
     assert html =~ "No usable checkpoint — full restart only."
     refute html =~ ~s(data-form="resume")
-    assert html =~ ~s(data-action="full-restart-e7")
+    assert html =~ ~s(data-action="full-restart-107")
   end
 
   # ---- 016 T038: resume panel states whole-run continuation + active-run refusal (S7) ----
@@ -365,18 +396,33 @@ defmodule SpeckitOrchestrator.Web.EscalationsLiveTest do
     assert html =~ "Resuming continues the whole run"
   end
 
-  test "a resume attempted while another run is live renders the active-run refusal instead of starting work",
+  # 019: under the sequential one-at-a-time Release policy, a feature that
+  # escalates always drains in-flight to empty with nothing else releasable
+  # (Release.next/3 rule 2 — "stop" is checked before "release" — fires
+  # regardless of any other feature's position), so the Coordinator finishes
+  # (parks) the instant an escalation exists. There is no longer a reachable
+  # state where an escalation card is on-screen *and* `guard_active_run/1`
+  # still sees an unfinished run — the two were only simultaneously true
+  # under the old prereq-blocked-dependent model (a `blocker` stuck forever
+  # `:blocked` on `e15`), which 019 retired outright. The guard itself is
+  # unchanged and still covered directly against the facade in
+  # `resume_test.exs` ("a live unfinished Coordinator refuses resume/2
+  # without :force") and `resume_run_test.exs` — this file only asserts what
+  # the Escalations page itself can still produce: a resume from an already
+  # open (i.e., already-parked) escalation always succeeds, never hits the
+  # active-run refusal. See the "clears the escalation on success" tests
+  # above for that coverage.
+  test "an escalation card only ever exists once its run has parked, so its own resume is never active-run-refused",
        %{conn: conn} do
-    # A blocker feature with no outcome entry never notifies — the Coordinator
-    # this starts stays unfinished for the duration of the test, matching
-    # `guard_active_run/1`'s `finished?` check (FR-010a).
-    pid =
-      start_coordinator(
-        [feat("e15", "slug-e15"), feat("blocker", "slug-blocker")],
-        %{"e15" => {:escalated, "needs human"}}
-      )
-
+    seed_store_checkpoint(feat("e15", "slug-e15"), :clarify, :escalated, reason: "needs human")
+    pid = start_coordinator([feat("e15", "slug-e15")], %{"e15" => {:escalated, "needs human"}})
     on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    assert Coordinator.status(pid).finished?
+
+    Application.put_env(:speckit_orchestrator, :console_test_runner, fn _feature, _notify ->
+      :ok
+    end)
 
     {:ok, view, html} = live(conn, "/escalations")
     assert html =~ ~s(data-escalation="e15")
@@ -388,11 +434,8 @@ defmodule SpeckitOrchestrator.Web.EscalationsLiveTest do
         "from" => "clarify"
       })
 
-    assert html =~ "Resume failed:"
-    assert html =~ "a run is already live for this repository"
-    # refused, not started — the escalation is still open.
-    assert html =~ ~s(data-escalation="e15")
-    assert Process.whereis(Coordinator) == pid
+    assert html =~ "Feature e15 resumed"
+    refute html =~ "a run is already live for this repository"
   end
 
   test "empty escalation set renders the all-clear empty state", %{conn: conn} do

@@ -28,7 +28,8 @@ defmodule SpeckitOrchestrator.Web.MissionControlLive do
     {:ok,
      socket
      |> assign(page_title: "Mission Control", current_path: "/", selected_feature_id: nil)
-     |> seed()}
+     |> seed()
+     |> refresh_run_state()}
   end
 
   defp seed(socket) do
@@ -36,6 +37,25 @@ defmodule SpeckitOrchestrator.Web.MissionControlLive do
       ConsoleReadModel.merge(coordinator_status(), ledger_snapshot(), ConsoleProjection.read())
 
     assign(socket, view: overlay_manifest(view))
+  end
+
+  # 019 (contracts/parked-run.md § 6): the parked banner is sourced from the
+  # store directly, not from the live Coordinator snapshot — it must render
+  # correctly whether the Coordinator that parked the run is still alive
+  # (`view.active?`) or this is a cold boot with none at all. Checked first
+  # because `current_run_detail/0` (below) only ever finds an `:in_flight`
+  # run — a `:parked` one would otherwise never be seen here.
+  defp refresh_run_state(socket) do
+    assign(socket, run_state: current_run_state())
+  end
+
+  defp current_run_state do
+    repo_id = SpeckitOrchestrator.RepoIdentity.partition(SpeckitOrchestrator.Config.repo())
+
+    case SpeckitOrchestrator.Store.parked_run(repo_id) do
+      {:ok, summary} -> ConsoleReadModel.run_state(%{run: summary})
+      :none -> ConsoleReadModel.run_state(current_run_detail())
+    end
   end
 
   # No live Coordinator (fresh boot, no resume yet) — fall back to the store's
@@ -88,12 +108,41 @@ defmodule SpeckitOrchestrator.Web.MissionControlLive do
         socket
       ) do
     view = ConsoleReadModel.merge(coordinator_status, ledger_snapshot, ConsoleProjection.read())
-    {:noreply, assign(socket, view: overlay_manifest(view))}
+    {:noreply, socket |> assign(view: overlay_manifest(view)) |> refresh_run_state()}
   end
 
   def handle_info({:console, :run_finished, report}, socket) do
     view = socket.assigns.view
-    {:noreply, assign(socket, view: %{view | finished?: true, report: report})}
+    # A finish that parked the run already wrote `state: :parked` to the
+    # store synchronously before this broadcast fired (Coordinator.finish_run/1
+    # parks-or-closes before notifying its owner) — safe to re-read here.
+    {:noreply,
+     socket
+     |> assign(view: %{view | finished?: true, report: report})
+     |> refresh_run_state()}
+  end
+
+  # ---- parked-run actions (019, contracts/parked-run.md § 3-5) --------------
+
+  @impl true
+  def handle_event("continue_run", _params, socket) do
+    case SpeckitOrchestrator.continue_run() do
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Continue failed: #{inspect(reason)}")}
+
+      _on_start ->
+        {:noreply, socket |> put_flash(:info, "Run continuing") |> refresh_run_state()}
+    end
+  end
+
+  def handle_event("end_run", _params, socket) do
+    case SpeckitOrchestrator.end_run() do
+      {:ok, _run} ->
+        {:noreply, socket |> put_flash(:info, "Run ended") |> refresh_run_state()}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "End failed: #{inspect(reason)}")}
+    end
   end
 
   # ---- drawer ---------------------------------------------------------------
@@ -118,6 +167,21 @@ defmodule SpeckitOrchestrator.Web.MissionControlLive do
 
     ~H"""
     <div class="view-mission-control" data-view="mission-control">
+      <div :if={@run_state.state == :parked} class="field-error" data-state="parked">
+        <p>
+          Run parked at <strong>{@run_state.stopped_by}</strong>
+          — {inspect(@run_state.stopped_reason)}
+        </p>
+        <p>
+          <button type="button" phx-click="continue_run" class="btn-primary" data-action="continue-run">
+            Continue
+          </button>
+          <button type="button" phx-click="end_run" class="btn-secondary" data-action="end-run">
+            End
+          </button>
+        </p>
+      </div>
+
       <div :if={not @view.active? and not @recovered?} class="empty-state" data-state="no-active-run">
         <p>No active run.</p>
         <p>Start one from <a href="/trigger">Trigger Run</a>.</p>

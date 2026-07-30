@@ -248,6 +248,36 @@ defmodule SpeckitOrchestrator.ConsoleReadModelTest do
     end
   end
 
+  describe "apply_event/4 — [:speckit, :publish, :opened] (019, FR-018)" do
+    test "records the PR url on the feature slice and feeds it, so the drawer can link mid-run" do
+      url = "https://github.com/acme/ledgerlite/pull/3"
+
+      model =
+        ConsoleReadModel.new()
+        |> ConsoleReadModel.apply_event(
+          [:speckit, :publish, :opened],
+          %{},
+          %{feature_id: "001", url: url}
+        )
+
+      assert model.features["001"].pr_url == url
+      assert [%{feature_id: "001", severity: :info, text: text} | _] = model.feed
+      assert text =~ url
+    end
+
+    test "a feature with no publish event keeps a nil pr_url" do
+      model =
+        ConsoleReadModel.new()
+        |> ConsoleReadModel.apply_event(
+          [:speckit, :phase, :start],
+          %{system_time: 1},
+          %{feature_id: "002", phase: :specify, model: "sonnet", step: 1}
+        )
+
+      assert model.features["002"].pr_url == nil
+    end
+  end
+
   describe "apply_event/4 — unknown events" do
     test "passes the model through unchanged" do
       model = ConsoleReadModel.new()
@@ -324,8 +354,9 @@ defmodule SpeckitOrchestrator.ConsoleReadModelTest do
         feature_id: id,
         status: status,
         slug: Keyword.get(opts, :slug),
-        prereqs: Keyword.get(opts, :prereqs, []),
-        checkpoint: Keyword.get(opts, :checkpoint)
+        group: Keyword.get(opts, :group, :backlog),
+        checkpoint: Keyword.get(opts, :checkpoint),
+        pr_url: Keyword.get(opts, :pr_url)
       }
     end
 
@@ -363,17 +394,40 @@ defmodule SpeckitOrchestrator.ConsoleReadModelTest do
     end
 
     test "populated entries carry the full per-feature slice shape (no missing-key crash downstream)" do
-      detail = run_detail([feature_detail("001", :halted, slug: "core-ledger", prereqs: ["000"])])
+      detail =
+        run_detail([feature_detail("001", :halted, slug: "core-ledger", group: :ad_hoc)])
+
       merged = ConsoleReadModel.overlay_last_known_statuses(inactive_view(), detail)
 
       entry = merged.per_feature["001"]
       assert entry.status == :halted
       assert entry.elapsed_ms == nil
       assert entry.slug == "core-ledger"
-      assert entry.prereqs == ["000"]
+      assert entry.group == :ad_hoc
       assert entry.current_phase == nil
       assert entry.phases == %{}
       assert entry.spend == 0.0
+      assert entry.pr_url == nil
+    end
+
+    test "carries a stored pr_url through, so a cold boot still links to a done feature's PR" do
+      url = "https://github.com/acme/ledgerlite/pull/9"
+      detail = run_detail([feature_detail("001", :done, pr_url: url)])
+
+      merged = ConsoleReadModel.overlay_last_known_statuses(inactive_view(), detail)
+
+      assert merged.per_feature["001"].pr_url == url
+    end
+
+    test "tolerates a run detail whose features predate the pr_url field" do
+      detail =
+        run_detail([
+          %{feature_id: "001", status: :done, slug: "x", group: :backlog, checkpoint: nil}
+        ])
+
+      merged = ConsoleReadModel.overlay_last_known_statuses(inactive_view(), detail)
+
+      assert merged.per_feature["001"].pr_url == nil
     end
 
     test "never overwrites an existing per_feature entry" do

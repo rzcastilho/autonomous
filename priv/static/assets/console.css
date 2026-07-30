@@ -710,11 +710,22 @@ a:hover {
   font-size: 13px;
 }
 
-/* Pipeline DAG (US3 / contracts/design-system.md) */
+/* Pipeline chain (US3 / contracts/design-system.md). 019 retired the
+   dependency DAG: there is no coordinate plane and no edge SVG any more, so
+   nodes lay out in normal flow as one vertical chain instead of being
+   absolutely positioned. */
+
+.dag-canvas {
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  padding: 16px 18px;
+}
 
 .dag-canvas-header {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 12px;
   margin-bottom: 16px;
 }
@@ -730,40 +741,32 @@ a:hover {
   color: var(--muted);
 }
 
-.dag-scroll {
-  background: var(--panel);
-  border: 1px solid var(--border-strong);
-  border-radius: 12px;
-  position: relative;
-  height: 520px;
-  overflow: auto;
-  background-image: radial-gradient(#1a1f2b 1px, transparent 1px);
-  background-size: 22px 22px;
-}
-
-.dag-plane {
-  position: relative;
-}
-
-.dag-edges-svg {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-}
-
-.dag-edge {
-  stroke: #2a3142;
-  stroke-width: 1.5;
+.dag-chain {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 20px;
+  max-width: 460px;
 }
 
 .dag-node {
-  position: absolute;
-  width: 168px;
+  position: relative;
   background: #12151d;
   border: 1px solid var(--border-strong);
   border-radius: 10px;
   padding: 12px 13px;
   cursor: pointer;
+}
+
+/* The link connecting a node to the one it stacks on. */
+.dag-chain .dag-node + .dag-node::before {
+  content: "";
+  position: absolute;
+  top: -20px;
+  left: 21px;
+  width: 1px;
+  height: 20px;
+  background: var(--border-strong);
 }
 
 .dag-node:hover {
@@ -786,7 +789,17 @@ a:hover {
 .dag-node-slug {
   font-size: 11px;
   color: #8b93a7;
-  margin: 4px 0 9px;
+  margin: 4px 0 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dag-node-base {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--muted);
+  margin-bottom: 9px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -832,20 +845,13 @@ a:hover {
 }
 
 .dag-ad-hoc-lane {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 14px;
   margin-top: 18px;
   padding-top: 18px;
   border-top: 1px dashed var(--border-strong);
 }
 
-.dag-ad-hoc-lane .dag-node {
-  position: static;
-}
-
-/* Release-order badge — only rendered for a cap-1 (sequential) run, where the
-   order a shared prereq-depth column actually runs in is exactly known. */
+/* Release-order badge — the run releases one feature at a time in ascending
+   number order, so a link's chain position is exactly its release order. */
 .dag-release-badge {
   font-family: var(--font-mono);
   font-size: 9px;
@@ -1450,6 +1456,7 @@ a.btn-primary {
 }
 
 .drawer-pr {
+  display: block;
   background: #0f2a1c;
   border: 1px solid #1c5c3a;
   border-radius: 9px;
@@ -1458,6 +1465,19 @@ a.btn-primary {
   font-size: 12px;
   font-family: var(--font-sans);
   text-align: center;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+a.drawer-pr:hover {
+  border-color: #6ee7b7;
+}
+
+/* :done but no PR URL was recorded — a label, not an affordance. */
+.drawer-pr-absent {
+  background: transparent;
+  border-color: var(--border-strong);
+  color: var(--muted);
 }
 
 @media (max-width: 1120px) {

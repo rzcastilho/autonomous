@@ -85,8 +85,8 @@ defmodule SpeckitOrchestrator.Recovery.Report do
   defp reconciled_label({:resume, phase}), do: "running (resume: #{phase})"
   defp reconciled_label({:conflict, reason}), do: "conflict:#{reason}"
   # A 016 US3 "absent from backlog" row carries its raw recorded status
-  # through unreconciled (e.g. `:running`, `:blocked`) — not a shape
-  # `Reconcile.result/0` ever produces, so it falls through here.
+  # through unreconciled (e.g. `:running`) — not a shape `Reconcile.result/0`
+  # ever produces, so it falls through here.
   defp reconciled_label(other) when is_atom(other), do: to_string(other)
 
   defp note(%{id: id} = row, next_runnable, conflict_reasons, discrepancy_notes) do

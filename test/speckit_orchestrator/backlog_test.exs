@@ -4,85 +4,58 @@ defmodule SpeckitOrchestrator.BacklogTest do
   alias SpeckitOrchestrator.Backlog
 
   @dir Path.expand("../fixtures/breakdown", __DIR__)
-  @cyclic Path.expand("../fixtures/breakdown_cyclic", __DIR__)
-  @missing Path.expand("../fixtures/breakdown_missing", __DIR__)
+  @duplicate Path.expand("../fixtures/breakdown_duplicate", __DIR__)
 
   describe "load!/1 over the LedgerLite fixtures" do
     setup do
       %{features: Backlog.load!(@dir)}
     end
 
-    test "parses all seven features, sorted by id, README ignored", %{features: features} do
+    test "parses all seven features, sorted by number, README ignored", %{features: features} do
       assert Enum.map(features, & &1.id) == ~w(001 002 003 004 005 006 007)
+      assert Enum.map(features, & &1.number) == Enum.to_list(1..7)
     end
 
-    test "reconstructs the expected dependency DAG", %{features: features} do
-      by_id = Map.new(features, &{&1.id, &1})
-      assert by_id["001"].prereqs == []
-      assert by_id["002"].prereqs == ["001"]
-      assert by_id["003"].prereqs == ["002"]
-      assert by_id["004"].prereqs == ["002"]
-      assert by_id["005"].prereqs == ["001"]
-      assert by_id["006"].prereqs == ["002"]
-      assert by_id["007"].prereqs == ["001"]
-    end
-
-    test "features load as :pending with slug and path", %{features: features} do
+    test "features load as :pending, :backlog, with slug and path", %{features: features} do
       f = Enum.find(features, &(&1.id == "001"))
       assert f.slug == "core-ledger"
       assert f.status == :pending
+      assert f.group == :backlog
+      assert f.created_at == nil
       assert String.ends_with?(f.path, "001-core-ledger.md")
     end
 
-    test "dependents/1 maps reverse edges", %{features: features} do
-      deps = Backlog.dependents(features)
-      assert Enum.sort(deps["001"]) == ["002", "005", "007"]
-      assert Enum.sort(deps["002"]) == ["003", "004", "006"]
-      refute Map.has_key?(deps, "003")
+    test "a fixture's ## Prerequisites section is inert prose (FR-010)", %{features: features} do
+      # 003's file declares "## Prerequisites\n\n- 002" — Feature has no
+      # prereqs field at all any more, so there is nothing to assert it
+      # against beyond confirming the struct carries no such data and the
+      # order is unaffected (covered in release_test.exs).
+      refute Map.has_key?(Map.from_struct(hd(features)), :prereqs)
     end
   end
 
-  test "load!/1 raises CycleError on a cyclic backlog" do
-    assert_raise Backlog.CycleError, ~r/cycle/, fn -> Backlog.load!(@cyclic) end
-  end
-
-  test "load!/1 raises MissingPrereqError on a dangling prereq" do
-    assert_raise Backlog.MissingPrereqError, ~r/999/, fn -> Backlog.load!(@missing) end
+  test "load!/1 raises DuplicateNumberError on numerically-equal numbers (differing zero-padding)" do
+    assert_raise Backlog.DuplicateNumberError, ~r/2/, fn -> Backlog.load!(@duplicate) end
   end
 
   test "load!/1 raises ParseError on an unreadable dir" do
     assert_raise Backlog.ParseError, fn -> Backlog.load!(Path.join(@dir, "nope")) end
   end
 
-  describe "extract_prereqs/1" do
-    test "None means no prerequisites" do
-      assert Backlog.extract_prereqs("## Prerequisites\n\nNone\n") == []
-    end
+  test "gapped numbering is legal — no error, sorted ascending" do
+    tmp =
+      Path.join(System.tmp_dir!(), "speckit_backlog_gapped_#{System.unique_integer([:positive])}")
 
-    test "no section means no prerequisites" do
-      assert Backlog.extract_prereqs("# Title\n\nSome body 123 text\n") == []
-    end
+    File.mkdir_p!(tmp)
+    on_exit(fn -> File.rm_rf!(tmp) end)
 
-    test "reads ids only from the Prerequisites section" do
-      content = """
-      # 500 Title with a number
+    File.write!(Path.join(tmp, "020-orphan.md"), "# 020 — Orphan\n")
+    File.write!(Path.join(tmp, "001-first.md"), "# 001 — First\n")
+    File.write!(Path.join(tmp, "005-fifth.md"), "# 005 — Fifth\n")
 
-      ## Prerequisites
+    features = Backlog.load!(tmp)
 
-      - 001 Core
-      - 042 Other
-
-      ## Notes
-
-      Ignore 999 out here.
-      """
-
-      assert Backlog.extract_prereqs(content) == ["001", "042"]
-    end
-
-    test "dedupes repeated ids and is case-insensitive on the heading" do
-      content = "### prerequisites\n\n- 001\n- 001\n"
-      assert Backlog.extract_prereqs(content) == ["001"]
-    end
+    assert Enum.map(features, & &1.id) == ~w(001 005 020)
+    assert Enum.map(features, & &1.number) == [1, 5, 20]
   end
 end

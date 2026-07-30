@@ -17,7 +17,7 @@ defmodule SpeckitOrchestrator.Store.Boot do
   """
 
   alias SpeckitOrchestrator.Config
-  alias SpeckitOrchestrator.Store.{Migrations, Mnesia, Schema}
+  alias SpeckitOrchestrator.Store.{Migrations, Mnesia, Schema, Shape}
 
   @meta :speckit_meta
 
@@ -38,9 +38,45 @@ defmodule SpeckitOrchestrator.Store.Boot do
          :ok <- Mnesia.create_tables(),
          :ok <- Mnesia.wait_for_tables(Schema.names(), 30_000),
          :ok <- verify_and_migrate(),
+         :ok <- verify_table_shapes(),
          :ok <- write_probe() do
       :ok
     end
+  end
+
+  @doc """
+  Every live table's attribute list, compared against `Schema`, then recorded in
+  `Store.Shape`.
+
+  The comparison runs *after* migrations, so by this point the two must agree.
+  When they do not, the recorded schema version claims a shape the tables do not
+  have — almost always an attribute added to `Schema` with no migration written
+  to carry existing tables to it. Refusing here makes that a startup error
+  naming both shapes, rather than every subsequent `Records.decode/2` reporting
+  perfectly good rows as damaged and the run failing somewhere far away.
+
+  Recording the shapes is what lets `Records.decode/2` distinguish, at runtime,
+  a genuinely malformed row from a `Schema` that changed after boot without a
+  restart to migrate the tables.
+  """
+  @spec verify_table_shapes() :: :ok | {:error, term()}
+  def verify_table_shapes do
+    Enum.reduce_while(Schema.tables(), %{}, fn %{name: name, attributes: expected}, acc ->
+      case live_attributes(name) do
+        ^expected -> {:cont, Map.put(acc, name, expected)}
+        actual -> {:halt, {:error, {:schema_shape_mismatch, name, expected, actual}}}
+      end
+    end)
+    |> case do
+      {:error, _reason} = err -> err
+      shapes -> Shape.record(shapes)
+    end
+  end
+
+  defp live_attributes(table) do
+    Mnesia.table_info(table, :attributes)
+  rescue
+    _ -> :unavailable
   end
 
   defp verify_schema_ownership do

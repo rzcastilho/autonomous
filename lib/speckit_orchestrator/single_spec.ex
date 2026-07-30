@@ -2,8 +2,9 @@ defmodule SpeckitOrchestrator.SingleSpec do
   @moduledoc """
   Pure derivation of a `Feature` from a free-text description, for single-spec
   run mode (specs/001-single-spec-run). No breakdown backlog, no operator id or
-  slug — the id is auto-assigned, the slug is derived, and prereqs are always
-  `[]` (a wave of one).
+  slug — the id is auto-assigned, the slug is derived, and the feature is
+  always `group: :ad_hoc` (FR-024/FR-025): it never joins the numbered chain,
+  branches from and publishes against `Config.pr_base()` directly (FR-028).
 
   Carries no IO: callers gather `taken_ids` (existing breakdown ids + feature
   branch ids) and pass them in, so this module stays fully unit-testable and
@@ -36,9 +37,11 @@ defmodule SpeckitOrchestrator.SingleSpec do
         {:ok,
          %Feature{
            id: id,
+           number: String.to_integer(id),
            slug: slug,
            path: Path.join(breakdown_dir, "#{id}-#{slug}.md"),
-           prereqs: [],
+           group: :ad_hoc,
+           created_at: DateTime.utc_now(),
            status: :pending
          }}
     end

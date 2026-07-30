@@ -32,7 +32,16 @@ defmodule SpeckitOrchestrator.PruneTest do
   defp open_run(repo_id, feature_id \\ "001") do
     {:ok, run_id} =
       Writer.open_run(repo_id, %{
-        features: [%{feature_id: feature_id, slug: "f", path: "specs/#{feature_id}", prereqs: []}],
+        features: [
+          %{
+            feature_id: feature_id,
+            slug: "f",
+            path: "specs/#{feature_id}",
+            number: System.unique_integer([:positive, :monotonic]),
+            group: :backlog,
+            created_at: nil
+          }
+        ],
         settings: RunContext.to_map(%RunContext{}),
         scope: :ad_hoc,
         layout: %{}

@@ -37,8 +37,8 @@ defmodule SpeckitOrchestrator.ResumeRunTest do
     end
   end
 
-  defp feat(id, prereqs \\ []),
-    do: %Feature{id: id, slug: "f#{id}", path: "#{id}.md", prereqs: prereqs}
+  defp feat(id, number \\ nil),
+    do: %Feature{id: id, number: number || String.to_integer(id), slug: "f#{id}", path: "#{id}.md"}
 
   defp capturing_runner(test_pid) do
     fn feature, notify -> send(test_pid, {:started, feature.id, notify}) end
@@ -68,7 +68,14 @@ defmodule SpeckitOrchestrator.ResumeRunTest do
         features:
           Enum.map(
             features,
-            &%{feature_id: &1.id, slug: &1.slug, path: &1.path, prereqs: &1.prereqs}
+            &%{
+              feature_id: &1.id,
+              slug: &1.slug,
+              path: &1.path,
+              number: &1.number,
+              group: &1.group,
+              created_at: &1.created_at
+            }
           ),
         settings: RunContext.to_map(context),
         scope: :ad_hoc,
@@ -140,12 +147,12 @@ defmodule SpeckitOrchestrator.ResumeRunTest do
 
   # ---- mixed-state resume (T022) --------------------------------------------
 
-  test "resume_run/1 does not re-run :done, resumes :running, releases :pending in prereq order under cap" do
+  test "resume_run/1 does not re-run :done, releases the rest strictly in ascending numeric order" do
     layout = done_layout("001")
     on_exit(fn -> File.rm_rf(layout.worktree_root) end)
 
-    features = [feat("001"), feat("002", ["001"]), feat("003", ["002"]), feat("004", ["001"])]
-    context = %RunContext{pr_workflow: false, max_concurrency: 2, budget_usd: 100.0}
+    features = [feat("001"), feat("002"), feat("003"), feat("004")]
+    context = %RunContext{budget_usd: 100.0}
 
     run_key =
       open_run(Application.get_env(:speckit_orchestrator, :repo), layout, features, context)
@@ -158,15 +165,20 @@ defmodule SpeckitOrchestrator.ResumeRunTest do
 
     refute_received {:started, "001", _}
 
+    # 019: one feature runs at a time, in ascending numeric order — there is
+    # no dependency fan-out anymore (`Release.next/3` rule 3/4), so "002"
+    # alone releases first, then "003", then "004", strictly in sequence.
     assert_receive {:started, "002", n2}, 1_000
-    assert_receive {:started, "004", n4}, 1_000
     refute_received {:started, "003", _}
-
+    refute_received {:started, "004", _}
     n2.("002", :done, nil)
-    n4.("004", :done, nil)
 
     assert_receive {:started, "003", n3}, 1_000
+    refute_received {:started, "004", _}
     n3.("003", :done, nil)
+
+    assert_receive {:started, "004", n4}, 1_000
+    n4.("004", :done, nil)
 
     assert_receive {:run_complete, report}, 1_000
     assert Enum.sort(report.done) == ["001", "002", "003", "004"]
@@ -193,11 +205,7 @@ defmodule SpeckitOrchestrator.ResumeRunTest do
     on_exit(fn -> File.rm_rf(layout.worktree_root) end)
     repo = Application.get_env(:speckit_orchestrator, :repo)
 
-    open_run(repo, layout, [feat("001")], %RunContext{
-      pr_workflow: false,
-      max_concurrency: 1,
-      budget_usd: 100.0
-    })
+    open_run(repo, layout, [feat("001")], %RunContext{budget_usd: 100.0})
 
     # Simulate an active, unfinished run: a runner that never notifies.
     {:ok, blocking_pid} =
@@ -223,31 +231,31 @@ defmodule SpeckitOrchestrator.ResumeRunTest do
   end
 
   # ---- recorded context reapply, not live Config (T025) ----------------------
-
-  test "the resumed run re-executes under the run's recorded max_concurrency, not live Config" do
-    prev_cap = Application.get_env(:speckit_orchestrator, :max_concurrency)
-    Application.put_env(:speckit_orchestrator, :max_concurrency, 5)
-
-    on_exit(fn ->
-      if prev_cap,
-        do: Application.put_env(:speckit_orchestrator, :max_concurrency, prev_cap),
-        else: Application.delete_env(:speckit_orchestrator, :max_concurrency)
-    end)
-
+  #
+  # 019 retired `:max_concurrency` (and the `Coordinator` `cap`/`set_cap/2`
+  # it drove) — one-at-a-time release is now structural (`Release.next/3`
+  # rule 3), not a configured cap, so there is no "recorded cap wins over a
+  # differing live Config cap" scenario left to prove; sequential release is
+  # unconditionally exercised by every test in this file (e.g. immediately
+  # above) and by `coordinator_test.exs`/`release_test.exs` directly. What
+  # remains meaningful here is that the run's other recorded settings
+  # (`budget_usd`/`plan_stack`/`pr_base`/`pr_remote`) come from the STORE, not
+  # live `Config` — `run_context_test.exs`/`resume_test.exs` already cover
+  # `RunContext.merge/2`'s precedence directly; this proves it end-to-end
+  # through `resume_run/1` specifically.
+  test "the resumed run re-executes under the run's recorded budget_usd/plan_stack/pr_base/pr_remote, not live Config" do
     layout = done_layout("999-cap")
     on_exit(fn -> File.rm_rf(layout.worktree_root) end)
     repo = Application.get_env(:speckit_orchestrator, :repo)
 
     context = %RunContext{
-      pr_workflow: false,
-      max_concurrency: 1,
       budget_usd: 100.0,
       plan_stack: ["research", "plan"],
       pr_base: "develop",
       pr_remote: "upstream"
     }
 
-    open_run(repo, layout, [feat("001"), feat("002"), feat("003")], context)
+    run_key = open_run(repo, layout, [feat("001"), feat("002"), feat("003")], context)
 
     me = self()
     assert {:ok, pid} = SpeckitOrchestrator.resume_run(runner: capturing_runner(me), owner: me)
@@ -266,6 +274,12 @@ defmodule SpeckitOrchestrator.ResumeRunTest do
 
     assert_receive {:run_complete, report}, 1_000
     assert Enum.sort(report.done) == ["001", "002", "003"]
+
+    assert {:ok, detail} = Store.run(run_key)
+    assert detail.settings["budget_usd"] == 100.0
+    assert detail.settings["plan_stack"] == ["research", "plan"]
+    assert detail.settings["pr_base"] == "develop"
+    assert detail.settings["pr_remote"] == "upstream"
   end
 
   # ---- detect-only (T026) ----------------------------------------------------
@@ -276,11 +290,7 @@ defmodule SpeckitOrchestrator.ResumeRunTest do
     repo = Application.get_env(:speckit_orchestrator, :repo)
 
     run_key =
-      open_run(repo, layout, [feat("001"), feat("002", ["001"])], %RunContext{
-        pr_workflow: false,
-        max_concurrency: 2,
-        budget_usd: 100.0
-      })
+      open_run(repo, layout, [feat("001"), feat("002")], %RunContext{budget_usd: 100.0})
 
     seed_converge_marker(run_key, "001")
 
@@ -299,11 +309,7 @@ defmodule SpeckitOrchestrator.ResumeRunTest do
     repo = Application.get_env(:speckit_orchestrator, :repo)
 
     run_key =
-      open_run(repo, layout, [feat("001"), feat("002")], %RunContext{
-        pr_workflow: false,
-        max_concurrency: 2,
-        budget_usd: 100.0
-      })
+      open_run(repo, layout, [feat("001"), feat("002")], %RunContext{budget_usd: 100.0})
 
     :ok = Writer.record_feature_terminal(run_key, "001", :done, :test_fixture, [])
     :ok = Writer.record_feature_terminal(run_key, "002", :escalated, :test_fixture, [])
@@ -329,11 +335,7 @@ defmodule SpeckitOrchestrator.ResumeRunTest do
     repo = Application.get_env(:speckit_orchestrator, :repo)
 
     run_key =
-      open_run(repo, layout, [feat("001")], %RunContext{
-        pr_workflow: false,
-        max_concurrency: 1,
-        budget_usd: 5.0
-      })
+      open_run(repo, layout, [feat("001")], %RunContext{budget_usd: 5.0})
 
     :ok =
       Writer.record_phase_attempt(run_key, %{
@@ -373,11 +375,7 @@ defmodule SpeckitOrchestrator.ResumeRunTest do
     repo = Application.get_env(:speckit_orchestrator, :repo)
 
     run_key =
-      open_run(repo, layout, [feat("001")], %RunContext{
-        pr_workflow: false,
-        max_concurrency: 1,
-        budget_usd: target + 100.0
-      })
+      open_run(repo, layout, [feat("001")], %RunContext{budget_usd: target + 100.0})
 
     :ok =
       Writer.record_phase_attempt(run_key, %{
@@ -420,11 +418,7 @@ defmodule SpeckitOrchestrator.ResumeRunTest do
     {:ok, segment} = RepoIdentity.resolve(repo)
     {:ok, layout} = Layout.build(repo, segment, {:breakdown, "pkg"})
 
-    open_run(repo, layout, [feat(id)], %RunContext{
-      pr_workflow: false,
-      max_concurrency: 1,
-      budget_usd: 100.0
-    })
+    open_run(repo, layout, [feat(id, 1)], %RunContext{budget_usd: 100.0})
 
     me = self()
     assert {:ok, pid} = SpeckitOrchestrator.resume_run(owner: me)
