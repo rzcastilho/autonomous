@@ -22,6 +22,10 @@ defmodule SpeckitOrchestrator.StoreBoundaryTest do
     "severity.ex",
     "remediation.ex",
     "store/records.ex",
+    # The booted-shape snapshot exists precisely so `Records` can ask "did
+    # Schema change since boot?" without reaching for a live table — it would
+    # defeat itself by referencing :mnesia.
+    "store/shape.ex",
     "store/ids.ex",
     "store/capacity.ex",
     "store/prune.ex",

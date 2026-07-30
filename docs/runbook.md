@@ -672,6 +672,27 @@ rm -rf ~/.autonomous/mnesia
 See `specs/019-stacked-sequential-only/contracts/store-schema-v2.md` § 6 for
 the full contract.
 
+### "unmigrated_schema" — recompiled under a running node
+
+```
+{:damaged, {"o:repo", "r000001", "002"}, {:unmigrated_schema, :speckit_feature_run, [...15], [...14]}}
+```
+
+Nothing is corrupt. `Schema` gained an attribute and the project recompiled, so
+the running node expects a shape the tables on disk do not have — no reboot, so
+no migration ran. In dev this needs no deliberate act: recompiling is enough for
+the code reloader to swap `Schema` in, and every read of that table then fails
+against intact rows. A live run can lose features to it.
+
+**Restart.** `Store.Boot` applies the pending migration and the reads recover.
+Nothing to export, nothing to delete.
+
+`Store.Boot.verify_table_shapes/0` runs after migrations and refuses to finish
+booting on a disagreement (`{:schema_shape_mismatch, table, expected, actual}`),
+which catches the other cause: an attribute added to `Schema` with no migration
+written to carry existing tables to it. If a restart aborts with that, the fix is
+a migration, not a reset.
+
 ### Recording a PR the run didn't record
 
 A `:done` feature whose drawer shows **"No PR recorded"** either had its
