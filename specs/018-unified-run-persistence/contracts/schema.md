@@ -132,6 +132,7 @@ them (FR-006):
 | **run start** | `seq` bump · prior `in_flight` run → `superseded` (+ its non-terminal features → `:ended_by_supersession`) · new `run` · `run_settings` · every `feature_run` |
 | **phase attempt end** | `phase_attempt` · `cost_entry` · `checkpoint` (superseded) · `transcript` |
 | **remediation attempt end** | `remediation_attempt` · `cost_entry` · `phase_attempt` · `transcript` |
+| **feature start** | `feature_run` status → `:running`, first-start `started_at`, prior `terminal_reason`/`ended_at` cleared |
 | **feature terminal** | `feature_run` · `checkpoint` (deleted on `:done`) · `escalation` when diverted |
 | **run drained** | `run` state/outcome/`ended_at`/`duration_ms`/`spend_usd` |
 | **escalation resolved** | `escalation.resolution` only |

@@ -115,6 +115,8 @@ defmodule SpeckitOrchestrator.FeatureRunner do
     }
 
     with {:ok, pid} <- start_agent(feature, opts) do
+      record_feature_started(run_key, feature)
+
       try do
         {:ok, _} =
           call(
@@ -481,7 +483,20 @@ defmodule SpeckitOrchestrator.FeatureRunner do
     Logger.info("feature #{feature.id} terminal=#{status} reason=#{inspect(reason)}")
   end
 
-  # ---- terminal recording (018) ---------------------------------------------
+  # ---- start/terminal recording (018) ---------------------------------------
+  #
+  # The start write is what makes the record self-sufficient about a feature in
+  # flight: without it a store-backed reader (run detail, `Recovery`) still
+  # shows the pre-start status — `:pending`, or the *previous* terminal on a
+  # resume — for as long as the feature runs. Same `run_key: nil` no-op as the
+  # terminal write below.
+  defp record_feature_started(nil, _feature), do: :ok
+
+  defp record_feature_started(run_key, feature) do
+    _ = Writer.record_feature_started(run_key, feature.id)
+    :ok
+  end
+
   #
   # `record_feature_terminal/4` carries `pr_description` in the same
   # transaction (replacing `Describe.write_pr/3`); a diverted (:escalated /

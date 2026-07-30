@@ -144,6 +144,7 @@ run.
 open_run(repo_id, %{features:, settings:, scope:, layout:})   :: {:ok, run_id} | {:error, term}
 record_phase_attempt(run_id, %{attempt:, cost:, checkpoint:, transcript:}) :: :ok | {:error, term}
 record_remediation_attempt(run_id, attempt)                    :: :ok | {:error, term}
+record_feature_started(run_id, feature_id)                     :: :ok | {:error, term}
 record_feature_terminal(run_id, feature_id, status, reason)    :: :ok | {:error, term}
 record_escalation(run_id, escalation)                          :: :ok | {:error, term}
 resolve_escalation(escalation_id, resolution)                  :: :ok | {:error, term}

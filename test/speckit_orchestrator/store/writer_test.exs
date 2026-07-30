@@ -315,6 +315,75 @@ defmodule SpeckitOrchestrator.Store.WriterTest do
     end
   end
 
+  describe "record_feature_started/2" do
+    test "flips :pending -> :running and stamps started_at" do
+      {repo, run_id} = open()
+      feature_key = {repo, run_id, "001"}
+
+      assert read_feature(feature_key).status == :pending
+      assert read_feature(feature_key).started_at == nil
+
+      assert :ok = Writer.record_feature_started({repo, run_id}, "001")
+
+      feature = read_feature(feature_key)
+      assert feature.status == :running
+      assert %DateTime{} = feature.started_at
+      assert feature.ended_at == nil
+    end
+
+    # The stale-status bug this exists to fix: a resumed feature is running
+    # again, and every store-backed reader must see that rather than the
+    # divert it is being resumed from.
+    test "a resumed feature loses its previous terminal status and reason" do
+      {repo, run_id} = open()
+      run_key = {repo, run_id}
+      feature_key = {repo, run_id, "001"}
+
+      :ok = Writer.record_feature_started(run_key, "001")
+      first_start = read_feature(feature_key).started_at
+
+      :ok =
+        Writer.record_feature_terminal(
+          run_key,
+          "001",
+          :escalated,
+          {:high_findings, :auto_remediation_exhausted}
+        )
+
+      assert :ok = Writer.record_feature_started(run_key, "001")
+
+      feature = read_feature(feature_key)
+      assert feature.status == :running
+      assert feature.terminal_reason == nil
+      assert feature.ended_at == nil
+      # First start wins — a resume continues the feature, it does not restart
+      # its clock.
+      assert feature.started_at == first_start
+    end
+
+    test "pr_description/pr_url survive a restart" do
+      {repo, run_id} = open()
+      run_key = {repo, run_id}
+      pr = %{pr_title: "Add x", pr_body: "## Summary\n- x"}
+
+      :ok = Writer.record_feature_terminal(run_key, "001", :done, nil, pr_description: pr)
+      :ok = Writer.record_pr_url(run_key, "001", "https://example.test/pr/1")
+
+      assert :ok = Writer.record_feature_started(run_key, "001")
+
+      feature = read_feature({repo, run_id, "001"})
+      assert feature.pr_description == pr
+      assert feature.pr_url == "https://example.test/pr/1"
+    end
+
+    test "an unknown feature is an error, never a fabricated row" do
+      {repo, run_id} = open()
+
+      assert {:error, {:absent, {^repo, ^run_id, "404"}}} =
+               Writer.record_feature_started({repo, run_id}, "404")
+    end
+  end
+
   describe "record_feature_terminal/4" do
     test "updates status/terminal_reason/ended_at and deletes the checkpoint on :done" do
       {repo, run_id} = open()

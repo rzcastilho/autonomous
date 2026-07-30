@@ -14,6 +14,7 @@ defmodule SpeckitOrchestrator.Store do
   @callback add_features(run_key(), [map()]) :: :ok | {:error, term()}
   @callback record_phase_attempt(run_key(), map()) :: :ok | {:error, term()}
   @callback record_remediation_attempt(run_key(), map()) :: :ok | {:error, term()}
+  @callback record_feature_started(run_key(), binary()) :: :ok | {:error, term()}
   @callback record_feature_terminal(run_key(), binary(), atom(), term(), keyword()) ::
               :ok | {:error, term()}
   @callback record_pr_url(run_key(), binary(), binary()) :: :ok | {:error, term()}
@@ -48,6 +49,11 @@ defmodule SpeckitOrchestrator.Store do
   @spec record_remediation_attempt(run_key(), map()) :: :ok | {:error, term()}
   def record_remediation_attempt(run_key, payload),
     do: Writer.record_remediation_attempt(run_key, payload)
+
+  @doc "See `Store.Writer.record_feature_started/2`."
+  @spec record_feature_started(run_key(), binary()) :: :ok | {:error, term()}
+  def record_feature_started(run_key, feature_id),
+    do: Writer.record_feature_started(run_key, feature_id)
 
   @doc "See `Store.Writer.record_feature_terminal/5`."
   @spec record_feature_terminal(run_key(), binary(), atom(), term(), keyword()) ::

@@ -680,6 +680,40 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
     assert record2.status == :in_progress
   end
 
+  test "the feature_run row reads :running while the feature is in flight, not the status it started from (018, store-backed)" do
+    Application.put_env(:speckit_orchestrator, :test_fake_scenario, :escalate)
+    wt = scaffolded_worktree()
+    run_key = open_store_run()
+
+    test_pid = self()
+    handler = "started-tele-#{System.unique_integer([:positive])}"
+
+    :telemetry.attach(
+      handler,
+      [:speckit, :phase, :start],
+      fn _event, _meas, %{phase: phase}, _ ->
+        if phase == :specify do
+          {:ok, detail} = SpeckitOrchestrator.Store.run(run_key)
+          send(test_pid, {:row_at_specify, hd(detail.features)})
+        end
+      end,
+      nil
+    )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+
+    FeatureRunner.run(feature(), worktree: wt, notify: self(), run_key: run_key)
+
+    assert_received {:row_at_specify, row}
+    assert row.status == :running
+    assert %DateTime{} = row.started_at
+
+    # …and the terminal write still lands, so the row is only :running while
+    # the feature actually is.
+    {:ok, detail} = SpeckitOrchestrator.Store.run(run_key)
+    assert hd(detail.features).status == :escalated
+  end
+
   @tag :integration
   test "commits the worktree once per phase — a phase-boundary commit exists after each phase that changed something" do
     Application.put_env(:speckit_orchestrator, :test_fake_scenario, :halt)
