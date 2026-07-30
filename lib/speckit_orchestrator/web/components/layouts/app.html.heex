@@ -42,18 +42,24 @@
   </aside>
 
   <div class="content-column console-main">
-    <header class="console-topbar" data-active={run.active?}>
+    <header class="console-topbar" data-active={run.active?} data-parked={run.parked?}>
       <div class="topbar-run">
-        <%= if run.active? do %>
-          <span class="run-state-chip run-state-active">● live</span>
-          <div class="run-info">
-            <div class="run-title">{run.title}</div>
-          </div>
-        <% else %>
-          <span class="run-state-chip run-state-idle">idle</span>
-          <div class="run-info">
-            <div class="run-title run-title-empty">{run.title}</div>
-          </div>
+        <%= cond do %>
+          <% run.parked? -> %>
+            <span class="run-state-chip run-state-parked">parked</span>
+            <div class="run-info">
+              <div class="run-title">{run.title}</div>
+            </div>
+          <% run.active? -> %>
+            <span class="run-state-chip run-state-active">● live</span>
+            <div class="run-info">
+              <div class="run-title">{run.title}</div>
+            </div>
+          <% true -> %>
+            <span class="run-state-chip run-state-idle">idle</span>
+            <div class="run-info">
+              <div class="run-title run-title-empty">{run.title}</div>
+            </div>
         <% end %>
       </div>
 

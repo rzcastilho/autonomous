@@ -9,7 +9,15 @@ defmodule SpeckitOrchestrator.Web.LayoutTest do
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
 
-  alias SpeckitOrchestrator.{Coordinator, Feature, Pipeline}
+  alias SpeckitOrchestrator.{
+    Config,
+    Coordinator,
+    Feature,
+    Layout,
+    Pipeline,
+    RepoIdentity,
+    Store.Writer
+  }
 
   @endpoint SpeckitOrchestrator.Web.Endpoint
 
@@ -19,6 +27,33 @@ defmodule SpeckitOrchestrator.Web.LayoutTest do
 
   defp feat(id),
     do: %Feature{id: id, number: String.to_integer(id), slug: "f#{id}", path: "#{id}.md"}
+
+  defp open_store_run(features) do
+    repo_id = RepoIdentity.partition(Config.repo())
+    {:ok, segment} = RepoIdentity.resolve(Config.repo())
+    {:ok, layout} = Layout.build(Config.repo(), segment, :ad_hoc)
+
+    {:ok, run_id} =
+      Writer.open_run(repo_id, %{
+        features:
+          Enum.map(
+            features,
+            &%{
+              feature_id: &1.id,
+              slug: &1.slug,
+              path: &1.path,
+              number: &1.number,
+              group: &1.group,
+              created_at: &1.created_at
+            }
+          ),
+        settings: %{},
+        scope: :ad_hoc,
+        layout: layout
+      })
+
+    {repo_id, run_id}
+  end
 
   test "nav renders all six items with the six routes", %{conn: conn} do
     {:ok, _view, html} = live(conn, "/")
@@ -88,6 +123,42 @@ defmodule SpeckitOrchestrator.Web.LayoutTest do
     assert html =~ "Active run"
     assert html =~ "cost-gauge"
     assert html =~ "armed"
+  end
+
+  # A parked run's Coordinator stays alive awaiting the operator's
+  # continue_run/end_run decision (contracts/parked-run.md) — the topbar must
+  # say so instead of showing "● live"/"Active run" over a run that has
+  # actually stopped, which used to contradict Mission Control's own parked
+  # banner and "Run complete" report rendered on the very same page.
+  test "status bar renders a parked chip, not live, when the run is parked", %{conn: conn} do
+    run_key = open_store_run([feat("001")])
+    :ok = Writer.record_feature_terminal(run_key, "001", :halted, :critical_finding, [])
+
+    :ok =
+      Writer.park_run(run_key, %{
+        stopped_by: "001",
+        status: :halted,
+        reason: :critical_finding
+      })
+
+    {:ok, pid} =
+      Coordinator.start_link(
+        name: Coordinator,
+        features: [feat("001")],
+        runner: fn _feature, _notify -> :ok end,
+        owner: self()
+      )
+
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    {:ok, _view, html} = live(conn, "/")
+
+    [topbar] = Regex.run(~r/<header class="console-topbar".*?<\/header>/s, html)
+
+    assert topbar =~ "Parked run"
+    assert topbar =~ "run-state-parked"
+    refute topbar =~ "● live"
+    assert topbar =~ ~s(data-parked=)
   end
 
   # 019, T025: there is exactly one run shape — the status bar names no mode

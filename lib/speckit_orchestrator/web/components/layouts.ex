@@ -14,7 +14,7 @@ defmodule SpeckitOrchestrator.Web.Layouts do
 
   use SpeckitOrchestrator.Web, :html
 
-  alias SpeckitOrchestrator.{Config, Coordinator, Ledger}
+  alias SpeckitOrchestrator.{Config, Coordinator, Ledger, RepoIdentity, Store}
 
   embed_templates("layouts/*")
 
@@ -61,10 +61,12 @@ defmodule SpeckitOrchestrator.Web.Layouts do
   def run_view do
     status = coordinator_status()
     ledger = Ledger.snapshot()
+    parked? = status != nil and parked_run?()
 
     %{
       active?: status != nil,
-      title: if(status, do: "Active run", else: "No active run"),
+      parked?: parked?,
+      title: title_for(status, parked?),
       committed: ledger.committed * 1.0,
       reserved: ledger.reserved * 1.0,
       budget: ledger.budget * 1.0,
@@ -73,9 +75,22 @@ defmodule SpeckitOrchestrator.Web.Layouts do
     }
   end
 
+  defp title_for(nil, _parked?), do: "No active run"
+  defp title_for(_status, true), do: "Parked run"
+  defp title_for(_status, false), do: "Active run"
+
   defp coordinator_status do
     if Process.whereis(Coordinator) do
       Coordinator.status(Coordinator)
     end
+  end
+
+  # A parked run's Coordinator stays alive awaiting an operator decision
+  # (`contracts/parked-run.md`) — without this check the topbar's "● live"
+  # chip keeps pulsing over a run that has actually stopped and is doing
+  # nothing, contradicting the parked banner/report shown on Mission Control.
+  defp parked_run? do
+    repo_id = RepoIdentity.partition(Config.repo())
+    match?({:ok, _}, Store.parked_run(repo_id))
   end
 end

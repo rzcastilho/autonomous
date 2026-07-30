@@ -156,7 +156,9 @@ defmodule SpeckitOrchestrator.Web.ConfigLive do
             <legend class="sr-only">Budget</legend>
             <div class="range-row-head">
               <span class="range-row-title">Cost breaker budget</span>
-              <span class="range-row-value" id="budget-range-value">${@budget_usd}</span>
+              <span class="range-row-value" id="budget-range-value">
+                ${format_money(@budget_usd)}
+              </span>
             </div>
             <input
               type="range"
@@ -166,7 +168,7 @@ defmodule SpeckitOrchestrator.Web.ConfigLive do
               step="0.5"
               value={@budget_usd}
               class="range-input"
-              oninput="document.getElementById('budget-range-value').textContent = '$' + this.value"
+              oninput="document.getElementById('budget-range-value').textContent = '$' + parseFloat(this.value).toFixed(2)"
             />
             <.form_refusal :if={@errors[:budget_usd]} label="Budget refused" data-error="budget_usd">
               {@errors[:budget_usd]}

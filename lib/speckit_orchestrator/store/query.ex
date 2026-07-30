@@ -210,7 +210,7 @@ defmodule SpeckitOrchestrator.Store.Query do
       started_at: run.started_at,
       ended_at: run.ended_at,
       duration_ms: run.duration_ms,
-      spend_usd: run.spend_usd,
+      spend_usd: effective_spend(run),
       record_complete?: run.record_complete?,
       halt_reason: run.halt_reason,
       stopped_by: run.stopped_by,
@@ -220,6 +220,20 @@ defmodule SpeckitOrchestrator.Store.Query do
       layout: run.layout,
       feature_statuses: feature_statuses_for(run.key)
     }
+  end
+
+  # `spend_usd` is only written at `close_run/3` — a still-open run (in
+  # flight or parked) carries its `0.0` default (writer.ex) here regardless
+  # of what it actually spent. Fall back to the cost-entry roll-up (same
+  # source `recovery.ex`'s `spend_of/1` uses to seed the `Ledger` on resume)
+  # so an open run's history/detail view shows real spend instead of $0.00.
+  defp effective_spend(%{spend_usd: spend}) when is_float(spend) and spend != 0.0, do: spend
+  defp effective_spend(run), do: cost_entries_total(run.key)
+
+  defp cost_entries_total(run_key) do
+    :speckit_cost_entry
+    |> index_read_decoded(run_key, :run_key)
+    |> Enum.reduce(0.0, &(&1.amount_usd + &2))
   end
 
   defp feature_statuses_for(run_key) do

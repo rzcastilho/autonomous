@@ -611,6 +611,12 @@ fieldset {
   border: 1px solid var(--border-strong);
 }
 
+.run-state-parked {
+  background: color-mix(in srgb, var(--escalated) 10%, transparent);
+  color: var(--escalated);
+  border: 1px solid var(--escalated);
+}
+
 .run-info {
   min-width: 0;
 }
