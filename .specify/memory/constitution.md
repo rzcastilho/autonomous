@@ -1,49 +1,101 @@
 <!--
 Sync Impact Report
-Version change: 2.0.0 → 2.1.0
-Bump rationale: MINOR — three clauses are materially rewritten because feature
-  019-stacked-sequential-only retires their *subjects*, not because any
-  governance bound is relaxed. Principle II loses the dangling-prereq/cycle
-  guard (prerequisites cease to exist) and gains three explicitly named
-  refusals, one of which — raise on numerically-equal feature numbers — is the
-  direct replacement guard; the other two (retired settings, records predating
-  a recorded clean break) are new loud failures the principle did not previously
-  mandate. The Persistence subsection admits a "refusal migration" as a
-  legitimate, versioned migration outcome for a recorded clean break, while
-  keeping the existing ban on silently dropping state and adding an explicit
-  ban on auto-deleting it at startup. The Development Workflow worktree clause
-  drops the cross-feature parallelism it assumed; worktrees, branch naming,
-  scaffold travel, and the `specify init` prohibition are unchanged. Net effect
-  is more mandated loud failures and fewer permitted silent ones — an expansion
-  of governance, so MINOR rather than MAJOR (contrast 2.0.0, which weakened an
-  unconditional escalation guarantee and was MAJOR for exactly that reason).
-Modified principles:
-  - II. Fail Loud at Boundaries (backlog guard replaced; three named refusals
-    added: ambiguous ordering, retired settings, pre-clean-break records)
-Added principles: none
-Removed principles: none
+Version change: 2.1.0 → 2.2.0
+Bump rationale: MINOR — one new principle (VII) and one new normative section
+  (Operator Surface Design) are added, adopting docs/design-constitution.md as a
+  binding visual + interaction contract for operator-facing surfaces. No existing
+  principle is removed, redefined, or weakened: I–VI stand unchanged in text and
+  in force, and the only edit to an existing section is a cross-reference added
+  to Technology Stack → Frontend. This mirrors the reasoning that made 1.1.0
+  MINOR (new principle VI + new Technology Stack section). It is not MAJOR
+  because no governance bound is relaxed — the amendment only adds constraints,
+  and the surfaces it constrains previously had no constitution-level design
+  rules at all.
+Modified principles: none (I–VI unchanged)
+Added principles:
+  - VII. Operator Surfaces Tell the Truth
+Added sections:
+  - Operator Surface Design
 Modified sections:
-  - Technology Stack → Persistence (schema-evolution bullet: refusal migrations
-    permitted for a recorded clean break; auto-delete at startup banned)
-  - Development Workflow (worktree bullet: one feature at a time)
-Added sections: none
+  - Technology Stack → Frontend (cross-reference to Operator Surface Design; the
+    no-Node/npm and no-CSS-framework bar is unchanged)
 Removed sections: none
 Templates requiring updates:
   ✅ .specify/templates/plan-template.md — Constitution Check is principle-agnostic
   ✅ .specify/templates/spec-template.md — no principle-specific references
   ✅ .specify/templates/tasks-template.md — no principle-specific references
   ✅ .specify/templates/checklist-template.md — generic; no change
-  ✅ specs/019-stacked-sequential-only/plan.md — Constitution Check conditionals
-     and Complexity Tracking already cite this amendment by version
-  ⚠ CLAUDE.md — describes `Feature.prereqs`, `Backlog`'s DAG validation,
-     `Release.next_wave/4`, and git-worktree parallelism across features. Left
-     as-is deliberately: those descriptions are accurate for the code on `main`
-     today. They are updated by 019's own implementation, in the same change
-     that makes them false (tracked in specs/019-stacked-sequential-only/plan.md
-     § Project Structure).
-  ⚠ docs/breakdown-format.md, docs/workflow.md, docs/runbook.md — same reason,
-     same tracking.
-Follow-up TODOs: none
+  ⚠ docs/design-constitution.md — normative by reference but UNCOMMITTED as of
+     this amendment. It MUST be committed in the same change; a constitution that
+     cites an untracked file cites nothing (Principle II).
+  ⚠ specs/011-control-plane-ui-redesign/contracts/design-system.md — the
+     feature-local predecessor. Left as-is: it is an accurate record of what 011
+     shipped. It is nonetheless superseded — docs/design-constitution.md is the
+     authority for any new or redesigned surface.
+  ⚠ priv/static/assets/console.css — shipped tokens predate the contract and
+     diverge from it in name and in value: `--border`/`--border-strong` hold the
+     contract's `--border-subtle`/`--border` values; `--muted` is the contract's
+     `--text-faint`, with `--text-secondary`/`--text-muted` absent;
+     `--accent-2: #4b2fd6` vs the contract's `--accent-deep: #5a3fe0`;
+     `--card`/`--raised` and the status-token block are missing; status pills use
+     a `20` alpha suffix where the contract specifies `1a` fill + `40` border.
+     Reconciliation is a recorded feature, not silent drift — see Operator
+     Surface Design.
+  ⚠ CLAUDE.md — its Frontend/observability description does not mention a design
+     contract. Update when the reconciliation feature lands.
+Follow-up TODOs:
+  - Commit docs/design-constitution.md (blocking; see above).
+  - Open a feature to reconcile console.css and the shared components with the
+    contract's token set, recording any deliberate divergence in that feature's
+    Complexity Tracking.
+
+Prior report (2.1.0):
+  Version change: 2.0.0 → 2.1.0
+  Bump rationale: MINOR — three clauses are materially rewritten because feature
+    019-stacked-sequential-only retires their *subjects*, not because any
+    governance bound is relaxed. Principle II loses the dangling-prereq/cycle
+    guard (prerequisites cease to exist) and gains three explicitly named
+    refusals, one of which — raise on numerically-equal feature numbers — is the
+    direct replacement guard; the other two (retired settings, records predating
+    a recorded clean break) are new loud failures the principle did not
+    previously mandate. The Persistence subsection admits a "refusal migration"
+    as a legitimate, versioned migration outcome for a recorded clean break,
+    while keeping the existing ban on silently dropping state and adding an
+    explicit ban on auto-deleting it at startup. The Development Workflow
+    worktree clause drops the cross-feature parallelism it assumed; worktrees,
+    branch naming, scaffold travel, and the `specify init` prohibition are
+    unchanged. Net effect is more mandated loud failures and fewer permitted
+    silent ones — an expansion of governance, so MINOR rather than MAJOR
+    (contrast 2.0.0, which weakened an unconditional escalation guarantee and
+    was MAJOR for exactly that reason).
+  Modified principles:
+    - II. Fail Loud at Boundaries (backlog guard replaced; three named refusals
+      added: ambiguous ordering, retired settings, pre-clean-break records)
+  Added principles: none
+  Removed principles: none
+  Modified sections:
+    - Technology Stack → Persistence (schema-evolution bullet: refusal
+      migrations permitted for a recorded clean break; auto-delete at startup
+      banned)
+    - Development Workflow (worktree bullet: one feature at a time)
+  Added sections: none
+  Removed sections: none
+  Templates requiring updates:
+    ✅ .specify/templates/plan-template.md — Constitution Check is principle-agnostic
+    ✅ .specify/templates/spec-template.md — no principle-specific references
+    ✅ .specify/templates/tasks-template.md — no principle-specific references
+    ✅ .specify/templates/checklist-template.md — generic; no change
+    ✅ specs/019-stacked-sequential-only/plan.md — Constitution Check conditionals
+       and Complexity Tracking already cite this amendment by version
+    ⚠ CLAUDE.md — describes `Feature.prereqs`, `Backlog`'s DAG validation,
+       `Release.next_wave/4`, and git-worktree parallelism across features. Left
+       as-is deliberately: those descriptions are accurate for the code on `main`
+       today. They are updated by 019's own implementation, in the same change
+       that makes them false (tracked in specs/019-stacked-sequential-only/plan.md
+       § Project Structure).
+    ⚠ docs/breakdown-format.md, docs/workflow.md, docs/runbook.md — same reason,
+       same tracking.
+  Follow-up TODOs: none
 
 Prior report (2.0.0):
   Version change: 1.3.0 → 2.0.0
@@ -314,6 +366,67 @@ and cost guarantees rest on OTP supervision and pure-core separation. Idiomatic
 functional/OTP design is what makes Principles I–V mechanically enforceable
 rather than aspirational.
 
+### VII. Operator Surfaces Tell the Truth
+
+Every operator-facing surface — the LiveView console, any future dashboard, any
+report rendered for a human — MUST obey the design contract in
+`docs/design-constitution.md`, which is normative by reference and versioned with
+this constitution. Its load-bearing rules:
+
+- **The operator is watching a machine, not browsing a site.** Density,
+  legibility at a glance, and truthfulness take precedence over whitespace and
+  delight. Consumer-web tropes — hero sections, marketing gradients, decorative
+  illustration, emoji, marketing copy — are prohibited.
+- **State is the content.** Every view MUST answer "what is happening right now"
+  above the fold: status, progress, and spend are primary; chrome is secondary.
+  Global run state — run state, subject, budget gauge, breaker status — MUST
+  persist on every view, and a budget gauge MUST show committed and reserved
+  distinctly (Principle IV accounts for both, so a gauge that merges them
+  misreports the breaker's actual headroom).
+- **The UI speaks the system's vocabulary.** Labels MUST use the real
+  identifiers an operator would type — function names (`resume/2`), atoms
+  (`:escalated`), paths (`checkpoint.json`), config keys
+  (`auto_remediation_threshold`). Renaming a real identifier to a friendlier
+  synonym is prohibited.
+- **Show the receipt.** Any state a surface asserts MUST be traceable to a
+  visible artifact — a path, a transcript, a record ID. Progress, spend, and
+  release MUST advance from real recorded state, never from a timer standing in
+  for it. This is the display-side companion of the rule that the console is
+  never a second source of truth.
+- **Machine values are mono; prose is sans.** Anything the machine produced or
+  the operator would type MUST render in the mono family; anything written for a
+  human MUST render in the sans family. The two roles MUST NOT be mixed, and a
+  constrained identifier MUST ellipsize rather than wrap.
+- **Status color is semantic, never decorative.** Each run status owns exactly
+  one color, used identically in every representation of that state — dot, chip,
+  phase pip, node border, timeline rail. A status color MUST NEVER appear on a
+  non-status element, and no surface may introduce a second accent hue.
+- **Motion means "live."** Animation is permitted only where there is a live
+  referent: active work, a streaming transcript, a drawer entering, a scrim
+  fading. Animating a resting element, or animating on entry for flourish, is
+  prohibited.
+- **Recovery paths are visually ranked and consequence-labelled.** Distinct
+  recovery paths (`resume/2` vs `resolve/1`, `continue_run/1` vs `end_run/1`)
+  MUST NOT collapse into one ambiguous button: the cheapest correct action is
+  the primary, the expensive or destructive alternative is a visually
+  subordinate control in the same row, and each MUST state its consequence.
+  Every override the API accepts (`:from`, `:prompt`) MUST be exposed at the
+  point of decision under its real option name, defaulting to what the system
+  would choose unaided.
+- **Every entity is inspectable, and empty states are status reports.** Clicking
+  any row, node, or card MUST open the same detail surface for that entity — one
+  entity, one detail view. An empty state MUST state the healthy condition and
+  why (`No open escalations`), never issue a call to action.
+
+Rationale: The console is how a human exercises the bounds that Principles IV
+and V mandate — a breaker to respect, an escalation to resolve, a recovery path
+to choose. A surface that renames `:escalated`, hides reserved spend, merges
+`resume/2` with `resolve/1`, or animates something that is not actually running
+does not merely look wrong: it misinforms the only decision-maker the system
+defers to, at the exact moment it defers. Fixing the visual and interaction
+contract at constitution level makes "the UI lied" a compliance failure rather
+than a matter of taste.
+
 ## Technology Stack
 
 The stack below is normative: adding a runtime dependency, a frontend build step,
@@ -405,6 +518,48 @@ is held in **Mnesia**, which ships with Erlang/OTP.
 - The console is an observability/operator surface over run state — it MUST NOT
   become a second source of truth. It reads the persisted run state; that
   persisted state remains authoritative.
+- What the console *looks like* and *how it behaves* is governed by Principle VII
+  and the Operator Surface Design section below, not by per-feature taste.
+
+## Operator Surface Design
+
+`docs/design-constitution.md` is the authoritative reference for the concrete
+values Principle VII enforces: the color tokens (surfaces, borders, four text
+steps, the single violet accent, the seven status colors), the two-family type
+scale, geometry and spacing, the core component specs (status dot, chip, phase
+pips, data table, record block, event feed, timeline, toast, drawer), and the
+four permitted keyframes.
+
+- **Precedence.** Principle VII governs; `docs/design-constitution.md` supplies
+  the values and component specs; the implementation obeys both. Where the doc
+  and an implementation disagree, the doc wins. Where Principle VII and the doc
+  disagree, this constitution wins and the doc MUST be corrected.
+- **Values live in exactly one place.** Token values are NOT duplicated into this
+  constitution, so there is one thing to amend and nothing to drift. Surfaces
+  MUST consume the shared token set; a raw hex value, font size, or radius
+  hard-coded in a template or component instead of a token is a violation.
+- **The doc MUST be committed.** A design contract cited by this constitution
+  but absent from the repository is unenforceable (Principle II). Amending the
+  doc is an amendment of this constitution's design surface and MUST follow the
+  Governance procedure.
+- **Reconciling shipped surfaces.** Surfaces that predate this amendment
+  (`priv/static/assets/console.css` and the shared components, whose tokens
+  diverge from the contract in both name and value) MUST be reconciled by a
+  recorded feature. Until then the divergence is a known, recorded debt, not a
+  licence to add new divergence: new and redesigned surfaces MUST use the
+  contract's token set. Any divergence kept deliberately MUST be recorded in that
+  feature's Complexity Tracking with the reason, per Governance.
+- **Feature-local design contracts are subordinate.** A prior per-feature design
+  contract (e.g. `specs/011-control-plane-ui-redesign/contracts/design-system.md`)
+  remains an accurate historical record of what that feature shipped and MUST NOT
+  be retroactively rewritten, but it no longer governs. New work cites
+  `docs/design-constitution.md`.
+- **The prohibitions are absolute.** Never: light backgrounds · a second accent
+  hue · background gradients · emoji · decorative illustration · marketing copy ·
+  centered body text · type below the doc's floor · pure `#000` or `#fff` · a
+  status color used decoratively · a friendly rename of a real system identifier ·
+  a destructive action styled identically to a safe one · animation without a
+  live referent.
 
 ## Quality & Test Discipline
 
@@ -446,4 +601,4 @@ deviation already is. Reviews and PRs MUST verify compliance with these
 principles; the constitution and the implementation plan together are the
 runtime guidance for autonomous and human contributors alike.
 
-**Version**: 2.1.0 | **Ratified**: 2026-07-11 | **Last Amended**: 2026-07-29
+**Version**: 2.2.0 | **Ratified**: 2026-07-11 | **Last Amended**: 2026-07-29
