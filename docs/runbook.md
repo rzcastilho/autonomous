@@ -380,6 +380,46 @@ failure.
 
 ---
 
+## Auto-remediation and the exhaustion policy (017, 021)
+
+Before the `analyze` gate decides, a bounded corrective loop MAY retry
+findings at or above a configured severity threshold (default High), up to a
+per-run attempt limit (default 2). The Trigger Run page's **Analyze
+auto-remediation** control group sets this per run: the switch, the severity
+threshold, the attempt limit, and — as of feature 021 — **On exhaustion**, a
+fourth control choosing what the gate does if the loop spends its full
+attempt budget and a High finding is still there:
+
+- **escalate** (default) — the feature ends `:escalated`, exactly as it would
+  with the loop off. Nothing about this changes.
+- **proceed** — the feature advances past the residual finding instead, and
+  finishes the pipeline unattended. What it advanced past is recorded and
+  surfaced in three places: the run's final report (an `advanced: NNN, …`
+  line), the console's `/runs/:run_id` feature panel (an "Advanced with
+  unresolved findings" block, listing the policy, attempts consumed, and each
+  finding), and the feature's pull request body (an "Advanced with unresolved
+  analyze findings" section naming the same findings). **Review that PR
+  section before merging** — the findings are unresolved in the branch by
+  definition, and this is the last point a human sees them.
+
+Critical is unaffected by this control in every case: it halts unconditionally
+(`:halted`), regardless of the exhaustion policy or the severity threshold.
+
+`iex`-driven runs pass the equivalent opt:
+
+```elixir
+iex> SpeckitOrchestrator.run(auto_remediation_exhaustion_policy: :proceed)
+```
+
+An unrecognized value (either surface) is refused before any run starts — no
+`Coordinator`, no store row — naming `auto-remediation-exhaustion-policy` as
+the offending setting. A run started with nothing set, or with `:escalate`
+explicit, behaves byte-for-byte like a run before feature 021 existed; the
+default never changes just because a previous run chose `:proceed` (each
+launch re-reads the configured default).
+
+---
+
 ## Resume a halted/escalated feature (mid-pipeline)
 
 `SpeckitOrchestrator.resume/2` restarts a previously-escalated or halted

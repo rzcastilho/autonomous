@@ -162,6 +162,81 @@ defmodule SpeckitOrchestrator.Web.RunDetailLiveTest do
     assert html =~ "unavailable"
   end
 
+  # ---- 021-analyze-exhaustion-policy console surfaces (T035, contracts/advanced-record.md §4)
+
+  test "the run header's settings chips show the run's captured exhaustion policy", %{
+    conn: conn,
+    repo_id: repo_id
+  } do
+    features = [
+      %{
+        feature_id: "001",
+        slug: "f-001",
+        path: "specs/001",
+        number: 1,
+        group: :backlog,
+        created_at: nil
+      }
+    ]
+
+    {:ok, run_id} =
+      Writer.open_run(repo_id, %{
+        features: features,
+        settings: %{budget_usd: 100.0, auto_remediation_exhaustion_policy: "proceed"},
+        scope: :ad_hoc,
+        layout: %{}
+      })
+
+    {:ok, _view, html} = live(conn, "/runs/#{run_id}")
+
+    assert html =~ "auto_remediation_exhaustion_policy"
+    assert html =~ "proceed"
+  end
+
+  test "the feature marker renders for a feature advanced past unresolved findings and is absent for a clean one",
+       %{conn: conn, repo_id: repo_id} do
+    run_id = open(repo_id, ["001", "002"])
+    record_attempt(repo_id, run_id, "001", :analyze, 1)
+    record_attempt(repo_id, run_id, "002", :analyze, 1)
+
+    :ok =
+      Writer.record_phase_attempt({repo_id, run_id}, %{
+        attempt: %{
+          feature_id: "001",
+          phase: :analyze,
+          ordinal: 2,
+          step: 2,
+          label: "analyze-2",
+          started_at: DateTime.utc_now(),
+          ended_at: DateTime.utc_now(),
+          duration_ms: 10,
+          outcome: :ok,
+          model: "sonnet",
+          cost_usd: 0.1,
+          cost_kind: :actual
+        },
+        advanced_with_findings: %{
+          policy: "proceed",
+          attempts_used: 2,
+          attempt_limit: 2,
+          threshold: "high",
+          max_severity: "high",
+          findings: [%{"severity" => "high", "title" => "stubborn finding"}],
+          advanced_at: DateTime.utc_now()
+        }
+      })
+
+    {:ok, _view, html} = live(conn, "/runs/#{run_id}")
+
+    assert html =~ ~s(data-feature="001")
+    assert html =~ ~s(data-advanced-with-findings)
+    assert html =~ "stubborn finding"
+
+    # Only feature 001 was marked — exactly one occurrence of the block, so
+    # feature 002 (clean) renders it nowhere.
+    assert html |> String.split(~s(data-advanced-with-findings)) |> length() == 2
+  end
+
   test "a parked run's header names the stopper and reason, and a never-started feature renders as such",
        %{conn: conn, repo_id: repo_id} do
     run_id = open(repo_id, ["001", "002"])

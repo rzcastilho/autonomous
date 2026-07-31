@@ -91,29 +91,44 @@ dependency, fully unit-testable:
 - `Pipeline` — the pure phase transition table. `next/3` is the whole decision
   surface: advance, or divert via the **clarify gate** (`## NEEDS HUMAN` →
   `:escalated`) or **analyze gate** (Critical finding → `:halted`
-  unconditionally; High → `:escalated` **only when the run's severity
-  threshold is High or lower**). The gate is threshold-governed as of
+  unconditionally at every policy and threshold; High → `:escalated` when the
+  run's severity threshold is High or lower, **unless** the loop exhausted its
+  attempts on that finding and the run's exhaustion policy is `:proceed`, in
+  which case it advances instead). The gate is threshold-governed as of
   constitution 2.0.0: one knob (`auto_remediation_threshold`, signalled as
   `gate_threshold`, default `:high`) decides both when auto-remediation runs
   and when the gate diverts, so a run pinned to `:critical` advances past a
-  High finding instead of escalating. Critical outranks every threshold and
-  can never be configured away. Gate signals are extracted upstream and passed
-  in, keeping this module side-effect free. `Pipeline` still sees exactly one
-  `:analyze` outcome per feature run.
-- `Severity` / `Remediation` (feature 017) — a bounded, switchable
-  **auto-remediation loop** sits strictly *below* the analyze gate, inside the
-  `:analyze` step: when analyze reports findings at or above a configured
-  severity threshold (default High), a corrective step runs against them
-  verbatim and analyze re-runs, up to a per-run attempt limit (default 2)
-  before the gate ever decides. `Severity` is the pure `:low < :medium < :high
-  < :critical` order; `Remediation.next/2` is the loop's own decision table
-  (remediate / gate / halt / fail), the direct analogue of `Pipeline.next/3`.
-  On exhaustion the gate decides from the **final** analyze run exactly as it
-  does today, with the reason decorated to name exhausted auto-remediation;
-  disabling the loop restores today's fail-fast behaviour byte-for-byte. Every
-  attempt is Ledger-accounted and individually recorded — see
-  `docs/speckit-orchestrator-implementation-plan.md` and
-  `specs/017-analyze-auto-remediation/`.
+  High finding instead of escalating. Constitution 3.0.0 (feature 021) adds a
+  second knob, `auto_remediation_exhaustion_policy` (signalled as
+  `:exhaustion_policy`, default `:escalate`), consulted only on the exhaustion
+  branch — with the loop absent or `:escalate` chosen the gate is
+  byte-identical to before 021. Critical outranks every policy and threshold
+  and can never be configured away. Gate signals are extracted upstream and
+  passed in, keeping this module side-effect free. `Pipeline` still sees
+  exactly one `:analyze` outcome per feature run.
+- `Severity` / `Remediation` (feature 017; exhaustion policy, feature 021) — a
+  bounded, switchable **auto-remediation loop** sits strictly *below* the
+  analyze gate, inside the `:analyze` step: when analyze reports findings at
+  or above a configured severity threshold (default High), a corrective step
+  runs against them verbatim and analyze re-runs, up to a per-run attempt
+  limit (default 2) before the gate ever decides. `Severity` is the pure
+  `:low < :medium < :high < :critical` order; `Remediation.next/2` is the
+  loop's own decision table (remediate / gate / halt / fail), the direct
+  analogue of `Pipeline.next/3`. On exhaustion the gate decides from the
+  **final** analyze run under the rules above *and* the run's
+  `exhaustion_policy` — `:escalate` (default) reproduces today's outcome
+  byte-for-byte; `:proceed` advances the feature past a residual High finding
+  instead of escalating, and `Remediation.exhaustion_advance/2` records what
+  it advanced past (an `advanced_with_findings` annotation on
+  `speckit_feature_run`, schema v4) so the run's report, the console
+  (`RunDetailLive`'s `data-advanced-with-findings` block), and the feature's
+  PR body (`Remediation.pr_note/1`) all surface it to a human reviewer — the
+  advance is never a new terminal status, only a decoration on `:done`.
+  Disabling the loop, or leaving the policy at `:escalate`, restores today's
+  fail-fast behaviour byte-for-byte. Every attempt is Ledger-accounted and
+  individually recorded — see `docs/speckit-orchestrator-implementation-plan.md`,
+  `specs/017-analyze-auto-remediation/` (the loop), and
+  `specs/021-analyze-exhaustion-policy/` (the policy).
 - `Ledger` — cost circuit-breaker `GenServer`. `reserve` is rejected once
   `committed + reserved >= budget`; invariant: `committed < budget + max single
   reservation`. Breaker trips at `committed >= budget`.
