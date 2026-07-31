@@ -135,6 +135,12 @@ config :speckit_orchestrator,
   auto_remediation_threshold: :high,
   auto_remediation_attempt_limit: 2,
   auto_remediation_model: nil,
+  # Exhaustion policy (feature 021) — read only when the attempt limit above is
+  # reached with residual findings still at or above the threshold. Default
+  # :escalate reproduces today's behaviour byte-for-byte; :proceed lets the
+  # gate advance instead. See Remediation.Settings.validate/1 for the single
+  # validation point (FR-010); this is only the default.
+  auto_remediation_exhaustion_policy: :escalate,
   # Per-phase USD cost estimates. Used as a FALLBACK only — the Claude adapter
   # emits a :usage event with actual cost_usd when the CLI reports
   # total_cost_usd; the estimate is recorded when it does not.

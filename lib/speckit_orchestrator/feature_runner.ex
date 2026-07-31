@@ -152,7 +152,8 @@ defmodule SpeckitOrchestrator.FeatureRunner do
                 run_context,
                 layout,
                 step_opts,
-                run_key
+                run_key,
+                nil
               )
           end
 
@@ -229,7 +230,7 @@ defmodule SpeckitOrchestrator.FeatureRunner do
     :telemetry.span([:speckit, :phase], meta, fn ->
       {:ok, agent} = call(pid, "remediation.run", %{}, timeout)
       entry = List.first(agent.state.history) || %{}
-      record_attempt(run_key, feature, :remediation, 0, 1, started_at, agent, nil)
+      record_attempt(run_key, feature, :remediation, 0, 1, started_at, agent, nil, nil)
 
       Logger.info("feature #{feature.id} remediation -> #{inspect(Map.get(entry, :outcome))}")
 
@@ -254,17 +255,22 @@ defmodule SpeckitOrchestrator.FeatureRunner do
          run_context,
          layout,
          step_opts,
-         run_key
+         run_key,
+         mark
        ) do
     started_at = DateTime.utc_now()
     agent = run_step(pid, feature, phase, step, timeout, ledger, worktree, layout, step_opts)
     st = agent.state
+    gate_sigs = gate_signals(phase, st, step_opts)
 
-    transition =
-      terminal_override(st) ||
-        Pipeline.next(phase, st.last_outcome, gate_signals(phase, st, step_opts))
-
+    transition = terminal_override(st) || Pipeline.next(phase, st.last_outcome, gate_sigs)
     decorated = decorate(transition, phase, st)
+
+    # Feature 021: the exhaustion mark is decided at the :analyze boundary
+    # (the only phase that can produce it) and threaded forward so the
+    # eventual `{:done, :done}` reason can be decorated at :converge —
+    # `mark || …` means once set it survives every later phase unchanged.
+    mark = mark || exhaustion_mark(phase, gate_sigs, st)
 
     # One store transaction per phase-attempt boundary (FR-006, R7): the
     # attempt, its cost, the checkpoint this boundary leaves (or the
@@ -279,7 +285,8 @@ defmodule SpeckitOrchestrator.FeatureRunner do
       attempt_ordinal(st),
       started_at,
       agent,
-      checkpoint_for(decorated, phase, st)
+      checkpoint_for(decorated, phase, st),
+      if(phase == :analyze, do: mark)
     )
 
     case decorated do
@@ -310,12 +317,13 @@ defmodule SpeckitOrchestrator.FeatureRunner do
               run_context,
               layout,
               step_opts,
-              run_key
+              run_key,
+              mark
             )
         end
 
       {:done, :done} ->
-        {:done, :done, agent}
+        {:done, done_reason(mark), agent}
 
       {:escalated, reason} ->
         {:escalated, reason, agent}
@@ -327,6 +335,41 @@ defmodule SpeckitOrchestrator.FeatureRunner do
         {:failed, reason, agent}
     end
   end
+
+  # ---- exhaustion mark (feature 021, contracts/advanced-record.md) ----------
+
+  # `analyze_remediation` is only present once the loop actually ran; a clock
+  # read for `:advanced_at` is the caller's job (keeps `Remediation.
+  # exhaustion_advance/2` pure) — `Remediation` decides `:mark | :none` from
+  # exactly the values the gate used, so the mark and the gate can never
+  # disagree (FR-009).
+  defp exhaustion_mark(:analyze, gate_sigs, st) do
+    case Map.get(st, :analyze_remediation) do
+      %{attempts_used: n, limit: limit} ->
+        state = %{
+          attempts_used: n,
+          attempt_limit: limit,
+          findings: Map.get(gate_sigs, :analyze_residual_findings, []),
+          advanced_at: DateTime.utc_now()
+        }
+
+        case Remediation.exhaustion_advance(gate_sigs, state) do
+          {:mark, record} -> record
+          :none -> nil
+        end
+
+      _absent ->
+        nil
+    end
+  end
+
+  defp exhaustion_mark(_phase, _gate_sigs, _st), do: nil
+
+  # Status is never changed (FR-008a) — only the reason `feature.finalize` and
+  # `notify/4` report is decorated, exactly as `Remediation.terminal_reason/2`
+  # already decorates a halted/escalated reason.
+  defp done_reason(nil), do: :done
+  defp done_reason(_mark), do: {:done, :advanced_with_unresolved_findings}
 
   # ---- checkpoint shape (per transition) -----------------------------------
 
@@ -626,8 +669,18 @@ defmodule SpeckitOrchestrator.FeatureRunner do
   # and the transcript — never separately, so a reader can never see one
   # without the others (FR-006). `run_key: nil` (no store-backed run) is a
   # silent no-op — most unit tests call this module directly with no store.
-  defp record_attempt(nil, _feature, _phase, _step, _ordinal, _started_at, _agent, _checkpoint),
-    do: :ok
+  defp record_attempt(
+         nil,
+         _feature,
+         _phase,
+         _step,
+         _ordinal,
+         _started_at,
+         _agent,
+         _checkpoint,
+         _mark
+       ),
+       do: :ok
 
   # `AnalyzeRunner`'s failure and breaker paths already committed the analyze
   # run, and hand back the *remediation* agent — recording that here would
@@ -642,13 +695,14 @@ defmodule SpeckitOrchestrator.FeatureRunner do
          _ordinal,
          _started_at,
          %{state: %{analyze_attempt_recorded?: true}},
-         checkpoint
+         checkpoint,
+         _mark
        ) do
     _ = checkpoint && Writer.record_checkpoint(run_key, feature.id, checkpoint)
     :ok
   end
 
-  defp record_attempt(run_key, feature, phase, step, ordinal, started_at, agent, checkpoint) do
+  defp record_attempt(run_key, feature, phase, step, ordinal, started_at, agent, checkpoint, mark) do
     st = agent.state
     result = st.last_result
     {cost_amount, cost_kind} = Cost.for_phase(phase, result || %PhaseResult{})
@@ -676,7 +730,8 @@ defmodule SpeckitOrchestrator.FeatureRunner do
         attempt: attempt,
         cost: %{amount_usd: cost_amount, kind: cost_kind},
         checkpoint: checkpoint,
-        transcript: result && result.final_text
+        transcript: result && result.final_text,
+        advanced_with_findings: mark
       })
 
     :ok
@@ -692,8 +747,13 @@ defmodule SpeckitOrchestrator.FeatureRunner do
     signals = st.last_signals || %{}
 
     case Map.get(step_opts, :remediation_settings) do
-      %Settings{threshold: threshold} -> Map.put(signals, :gate_threshold, threshold)
-      _absent -> signals
+      %Settings{threshold: threshold, exhaustion_policy: policy} ->
+        signals
+        |> Map.put(:gate_threshold, threshold)
+        |> Map.put(:exhaustion_policy, policy)
+
+      _absent ->
+        signals
     end
   end
 

@@ -141,6 +141,35 @@ defmodule SpeckitOrchestrator.CoordinatorTest do
     refute Map.has_key?(Coordinator.status(pid), :cap)
   end
 
+  # ---- feature 021: advanced_with_findings ⊆ done ----------------------------
+
+  test "a feature that reached :done with the decorated reason lands in advanced_with_findings, a subset of done" do
+    features = [feat("001"), feat("002")]
+    start(features)
+
+    n1 = await_started("001")
+    n1.("001", :done, {:done, :advanced_with_unresolved_findings})
+
+    n2 = await_started("002")
+    n2.("002", :done, :done)
+
+    assert_receive {:run_complete, report}, 1_000
+    assert report.done == ["001", "002"]
+    assert report.advanced_with_findings == ["001"]
+    assert MapSet.subset?(MapSet.new(report.advanced_with_findings), MapSet.new(report.done))
+  end
+
+  test "no feature marked leaves advanced_with_findings empty (SC-002 — :escalate path unaffected)" do
+    features = [feat("001")]
+    start(features)
+
+    n1 = await_started("001")
+    n1.("001", :done, :done)
+
+    assert_receive {:run_complete, report}, 1_000
+    assert report.advanced_with_findings == []
+  end
+
   # ---- :statuses init option (crash recovery) --------------------------------
 
   test "a supplied :statuses init option seeds state.statuses instead of the all-:pending default" do

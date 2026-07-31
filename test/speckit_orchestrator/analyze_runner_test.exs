@@ -465,6 +465,45 @@ defmodule SpeckitOrchestrator.AnalyzeRunnerTest do
     assert Ledger.breaker_tripped?(ledger)
   end
 
+  # ---- feature 021: exhaustion signal + residual findings -------------------
+
+  test "exhaustion sets signals.exhausted? and carries the FINAL run's residual findings verbatim" do
+    script("persistent-high")
+    pid = start_agent!()
+
+    result = run(pid: pid, settings: settings(attempt_limit: 2))
+
+    assert result.state.last_signals[:exhausted?] == true
+
+    assert result.state.last_signals[:analyze_residual_findings] == [
+             %{
+               "severity" => "high",
+               "title" => "tasks.md has no task for FR-004",
+               "detail" => "Pass 3."
+             }
+           ]
+  end
+
+  test "a converged (non-exhausted) run carries no exhaustion signal or residual findings" do
+    script("high-then-clean")
+    pid = start_agent!()
+
+    result = run(pid: pid)
+
+    refute Map.has_key?(result.state.last_signals, :exhausted?)
+    refute Map.has_key?(result.state.last_signals, :analyze_residual_findings)
+  end
+
+  test "disabled: no exhaustion signal is ever produced (FR-015 — the policy is inert)" do
+    script("persistent-high")
+    pid = start_agent!()
+
+    result = run(pid: pid, settings: settings(enabled?: false))
+
+    refute Map.has_key?(result.state.last_signals, :exhausted?)
+    refute Map.has_key?(result.state.last_signals, :analyze_residual_findings)
+  end
+
   test "worsening findings are decided by the FINAL run only (High -> Critical)", %{agent: agent} do
     script("worsening")
     pid = start_agent!()

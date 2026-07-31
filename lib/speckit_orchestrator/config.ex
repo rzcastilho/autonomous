@@ -176,6 +176,11 @@ defmodule SpeckitOrchestrator.Config do
   @spec auto_remediation_model() :: String.t() | nil
   def auto_remediation_model, do: get(:auto_remediation_model, nil)
 
+  @doc "The default exhaustion policy for a run that does not choose one (feature 021, FR-002)."
+  @spec auto_remediation_exhaustion_policy() :: :escalate | :proceed
+  def auto_remediation_exhaustion_policy,
+    do: get(:auto_remediation_exhaustion_policy, :escalate)
+
   @default_cost_estimates %{
     specify: 0.20,
     clarify: 0.40,

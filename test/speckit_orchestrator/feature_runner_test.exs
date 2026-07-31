@@ -569,6 +569,122 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
     assert Enum.any?(feature_detail.phase_attempts, &(&1.phase == :analyze))
   end
 
+  # ---- feature 021: exhaustion policy :proceed -------------------------------
+
+  test "exhaustion policy :proceed advances past a persistent High finding, annotates the store, and decorates the :done reason" do
+    Application.put_env(:speckit_orchestrator, :test_fake_scenario, :analyze_high)
+    wt = scaffolded_worktree()
+    run_key = open_store_run()
+
+    test_pid = self()
+    handler = "exhaustion-proceed-#{System.unique_integer([:positive])}"
+
+    :telemetry.attach(
+      handler,
+      [:speckit, :remediation, :start],
+      fn _event, _meas, meta, _ -> send(test_pid, {:attempt, meta}) end,
+      nil
+    )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+
+    result =
+      FeatureRunner.run(feature(),
+        worktree: wt,
+        notify: self(),
+        run_key: run_key,
+        run_context: %RunContext{auto_remediation_exhaustion_policy: "proceed"}
+      )
+
+    # Advanced past the gate instead of escalating, and the pipeline finished
+    # unattended — no operator input, worktree removed like any other :done.
+    assert result.status == :done
+    assert result.reason == {:done, :advanced_with_unresolved_findings}
+    assert_received {:feature_finished, "001", :done, {:done, :advanced_with_unresolved_findings}}
+    refute File.dir?(wt.path)
+
+    # Auto-remediation spent exactly attempt_limit attempts, no more.
+    assert_received {:attempt, %{phase: :analyze, attempt: 1, limit: 2, threshold: :high}}
+    assert_received {:attempt, %{phase: :analyze, attempt: 2, limit: 2}}
+    refute_received {:attempt, %{attempt: 3}}
+
+    {:ok, detail} = SpeckitOrchestrator.Store.run(run_key)
+    [feature_detail] = detail.features
+
+    assert %{
+             policy: "proceed",
+             attempts_used: 2,
+             attempt_limit: 2,
+             threshold: "high",
+             findings: [%{"severity" => "high"} | _]
+           } = feature_detail.advanced_with_findings
+  end
+
+  test "exhaustion policy :escalate is byte-identical to the pre-021 escalation (SC-002)" do
+    Application.put_env(:speckit_orchestrator, :test_fake_scenario, :analyze_high)
+    wt = scaffolded_worktree()
+    run_key = open_store_run()
+
+    result =
+      FeatureRunner.run(feature(),
+        worktree: wt,
+        notify: self(),
+        run_key: run_key,
+        run_context: %RunContext{auto_remediation_exhaustion_policy: "escalate"}
+      )
+
+    assert result.status == :escalated
+    assert result.reason == {:high_findings, :auto_remediation_exhausted}
+    assert File.dir?(wt.path)
+
+    {:ok, detail} = SpeckitOrchestrator.Store.run(run_key)
+    [feature_detail] = detail.features
+    assert feature_detail.advanced_with_findings == nil
+  end
+
+  test "no exhaustion_policy opt (default :escalate) is byte-identical to the pre-021 escalation (SC-002)" do
+    Application.put_env(:speckit_orchestrator, :test_fake_scenario, :analyze_high)
+    wt = scaffolded_worktree()
+    run_key = open_store_run()
+
+    result = FeatureRunner.run(feature(), worktree: wt, notify: self(), run_key: run_key)
+
+    assert result.status == :escalated
+    assert result.reason == {:high_findings, :auto_remediation_exhausted}
+    assert File.dir?(wt.path)
+
+    {:ok, detail} = SpeckitOrchestrator.Store.run(run_key)
+    [feature_detail] = detail.features
+    assert feature_detail.advanced_with_findings == nil
+  end
+
+  # FR-015: with auto-remediation disabled, the exhaustion policy has no
+  # observable effect for either value — there is no loop to exhaust.
+  test "exhaustion policy :proceed with auto-remediation disabled has no effect (FR-015)" do
+    Application.put_env(:speckit_orchestrator, :test_fake_scenario, :analyze_high)
+    wt = scaffolded_worktree()
+    run_key = open_store_run()
+
+    result =
+      FeatureRunner.run(feature(),
+        worktree: wt,
+        notify: self(),
+        run_key: run_key,
+        run_context: %RunContext{
+          auto_remediation: false,
+          auto_remediation_exhaustion_policy: "proceed"
+        }
+      )
+
+    assert result.status == :escalated
+    assert result.reason == :high_findings
+    assert File.dir?(wt.path)
+
+    {:ok, detail} = SpeckitOrchestrator.Store.run(run_key)
+    [feature_detail] = detail.features
+    assert feature_detail.advanced_with_findings == nil
+  end
+
   test "pinning the loop off makes no remediation call and leaves the reason bare (SC-007a)" do
     Application.put_env(:speckit_orchestrator, :test_fake_scenario, :analyze_high)
     wt = scaffolded_worktree()

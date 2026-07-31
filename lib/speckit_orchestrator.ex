@@ -66,8 +66,8 @@ defmodule SpeckitOrchestrator do
   preflight step and before any side effect (FR-004, SC-005,
   contracts/run-start.md).
 
-  Captures the eight run-shaping settings (`budget_usd`, `plan_stack`,
-  `pr_base`, `pr_remote`, the four `auto_remediation*` keys) from the
+  Captures the nine run-shaping settings (`budget_usd`, `plan_stack`,
+  `pr_base`, `pr_remote`, the five `auto_remediation*` keys) from the
   effective opts at call time (`RunContext.capture/1`) and threads them into
   every feature's `FeatureRunner.run/2` call, so a diverted feature's
   checkpoint records the run shape it actually ran under (FR-006) — see
@@ -80,11 +80,13 @@ defmodule SpeckitOrchestrator do
   preflight, since it delegates to `run/1` once its single-feature seed is
   prepared.
 
-  Also preflights the analyze auto-remediation settings (017, FR-011): an
-  out-of-range `:auto_remediation_attempt_limit`, an unrecognized
-  `:auto_remediation_threshold` or an unknown `:auto_remediation_model` refuses
-  the run with e.g. `{:error, {:preflight, [{:invalid_attempt_limit, 0}]}}` and
-  starts no work — no clamping, no silent default.
+  Also preflights the analyze auto-remediation settings (017, FR-011; 021,
+  FR-010): an out-of-range `:auto_remediation_attempt_limit`, an unrecognized
+  `:auto_remediation_threshold`, an unknown `:auto_remediation_model`, or an
+  unrecognized `:auto_remediation_exhaustion_policy` (any value other than
+  `:escalate`/`:proceed` or the matching string) refuses the run with e.g.
+  `{:error, {:preflight, [{:invalid_attempt_limit, 0}]}}` and starts no
+  work — no clamping, no silent default.
 
   Also preflights the store (018, FR-009/FR-031b): unwritable at start, or
   under its capacity ceiling with no reclaimable headroom, both refuse with
@@ -592,7 +594,7 @@ defmodule SpeckitOrchestrator do
       `false`.
 
   Also reapplies the run-shaping context (`budget_usd`, `plan_stack`,
-  `pr_base`, `pr_remote`, the four `auto_remediation*` keys) the checkpoint
+  `pr_base`, `pr_remote`, the five `auto_remediation*` keys) the checkpoint
   recorded at the original run's start (FR-006), so the resumed run
   re-executes under its original shape without the caller re-declaring it.
   Precedence (fixed, documented once): **explicit resume opt > recorded
@@ -2169,14 +2171,16 @@ defmodule SpeckitOrchestrator do
   # recorded on :done (018 — replaces `Describe.read_pr/2`); fall back to a
   # template if it is absent/empty or this run isn't store-backed.
   defp pr_text(feature, base) do
+    note = Remediation.pr_note(store_advanced_with_findings(feature.id))
+
     case store_pr_description(feature.id) do
       %{pr_title: t, pr_body: b} when t not in [nil, ""] and b not in [nil, ""] ->
-        {t, b}
+        {t, b <> note}
 
       _ ->
         {"feat(#{feature.id}-#{feature.slug}): autonomous build",
          "Autonomous build of feature #{feature.id} (#{feature.slug}) by " <>
-           "speckit_orchestrator.\n\nStacked on `#{base}`."}
+           "speckit_orchestrator.\n\nStacked on `#{base}`." <> note}
     end
   end
 
@@ -2186,6 +2190,21 @@ defmodule SpeckitOrchestrator do
          %{pr_description: %{} = pr} <-
            Enum.find(detail.features, &(&1.feature_id == feature_id)) do
       pr
+    else
+      _ -> nil
+    end
+  end
+
+  # Feature 021, contracts/advanced-record.md §5.3: best-effort like
+  # `store_pr_description/1` — a non-store-backed run or a read failure
+  # yields `nil`, and `Remediation.pr_note/1` renders that as `""`, so a PR
+  # still opens.
+  defp store_advanced_with_findings(feature_id) do
+    with run_key when run_key != nil <- current_run_key(),
+         {:ok, detail} <- Store.run(run_key),
+         %{advanced_with_findings: %{} = record} <-
+           Enum.find(detail.features, &(&1.feature_id == feature_id)) do
+      record
     else
       _ -> nil
     end

@@ -3,12 +3,13 @@ defmodule SpeckitOrchestrator.Store.MigrationsTest do
 
   alias SpeckitOrchestrator.Store.Migrations
 
-  test "current_version/0 is 3 (019 clean break + feature_run.pr_url)" do
-    assert Migrations.current_version() == 3
+  test "current_version/0 is 4 (019 clean break + feature_run.pr_url + feature_run.advanced_with_findings)" do
+    assert Migrations.current_version() == 4
   end
 
-  test "all/0 is the v2 refusal followed by the v3 pr_url transform" do
-    assert [{2, v2_description, v2_fun}, {3, v3_description, v3_fun}] = Migrations.all()
+  test "all/0 is the v2 refusal, the v3 pr_url transform, and the v4 advanced_with_findings transform" do
+    assert [{2, v2_description, v2_fun}, {3, v3_description, v3_fun}, {4, v4_description, v4_fun}] =
+             Migrations.all()
 
     assert v2_description =~ "019 clean break"
     assert is_function(v2_fun, 0)
@@ -16,6 +17,9 @@ defmodule SpeckitOrchestrator.Store.MigrationsTest do
 
     assert v3_description =~ "pr_url"
     assert is_function(v3_fun, 0)
+
+    assert v4_description =~ "advanced_with_findings"
+    assert is_function(v4_fun, 0)
   end
 
   describe "apply_pending/1" do

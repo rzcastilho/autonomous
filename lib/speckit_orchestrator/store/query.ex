@@ -286,6 +286,7 @@ defmodule SpeckitOrchestrator.Store.Query do
       pr_url: f.pr_url,
       started_at: f.started_at,
       ended_at: f.ended_at,
+      advanced_with_findings: f.advanced_with_findings,
       phase_attempts:
         :speckit_phase_attempt
         |> Mnesia.index_read(f.key, :feature_key)
