@@ -84,6 +84,12 @@ defmodule SpeckitOrchestrator.FeatureRunner do
       position (checkpoint-implement-chunk.md §3); threaded straight into
       `ChunkRunner.run/1`'s `:start_task_phase`. `nil` (default) resolves
       against the checkpoint instead.
+    * `:stack_base` — the git ref this feature's branch was forked from (the
+      stacked workflow's resolved stack base: the previous feature's branch, or
+      `Config.pr_base()`). Used **only** as the reference for the `:done`
+      squash's fork-point lookup. `nil` (default) resolves to
+      `Config.pr_base()` at squash time, which is correct for the bottom of the
+      stack and for ad-hoc features.
     * `:reset_implement_sessions` — `true` clears the carried
       `implement_chunk.sessions_used` to `0` before the chunk loop starts
       (FR-013b — an explicit grant of more session budget). Default `false`
@@ -102,6 +108,10 @@ defmodule SpeckitOrchestrator.FeatureRunner do
     remediation_model = Keyword.get(opts, :remediation_model)
     run_context = Keyword.get(opts, :run_context)
     layout = Keyword.get(opts, :layout)
+    # Resolved lazily at squash time (`merge_base/3`) — a dry run with no
+    # worktree never squashes, and must not pay for a `Config.pr_base()` that
+    # may not be configured at all.
+    stack_base = Keyword.get(opts, :stack_base)
     # The store's `{repo_id, run_id}` for this run (018) — `nil` for a caller
     # with no store-backed run (most unit tests calling this module directly),
     # in which case every store write below is a silent no-op.
@@ -152,7 +162,8 @@ defmodule SpeckitOrchestrator.FeatureRunner do
                 run_context,
                 layout,
                 step_opts,
-                run_key
+                run_key,
+                nil
               )
           end
 
@@ -160,7 +171,7 @@ defmodule SpeckitOrchestrator.FeatureRunner do
         {message, pr} = commit_message_and_pr(feature, status, worktree, layout)
         record_feature_terminal(run_key, feature, status, reason, pr)
         record_diversion_escalation(run_key, feature, agent, status, reason)
-        handle_worktree(feature, status, worktree, message)
+        handle_worktree(feature, status, worktree, message, stack_base)
         emit_terminal(feature, status, reason, agent.state.cost_total)
         notify(notify, feature.id, status, reason)
         stop_agent(pid)
@@ -173,7 +184,7 @@ defmodule SpeckitOrchestrator.FeatureRunner do
         }
       catch
         kind, err ->
-          handle_worktree(feature, :failed, worktree, nil)
+          handle_worktree(feature, :failed, worktree, nil, stack_base)
           record_feature_terminal(run_key, feature, :failed, {kind, err}, nil)
           notify(notify, feature.id, :failed, {kind, err})
           stop_agent(pid)
@@ -229,7 +240,7 @@ defmodule SpeckitOrchestrator.FeatureRunner do
     :telemetry.span([:speckit, :phase], meta, fn ->
       {:ok, agent} = call(pid, "remediation.run", %{}, timeout)
       entry = List.first(agent.state.history) || %{}
-      record_attempt(run_key, feature, :remediation, 0, 1, started_at, agent, nil)
+      record_attempt(run_key, feature, :remediation, 0, 1, started_at, agent, nil, nil)
 
       Logger.info("feature #{feature.id} remediation -> #{inspect(Map.get(entry, :outcome))}")
 
@@ -254,17 +265,22 @@ defmodule SpeckitOrchestrator.FeatureRunner do
          run_context,
          layout,
          step_opts,
-         run_key
+         run_key,
+         mark
        ) do
     started_at = DateTime.utc_now()
     agent = run_step(pid, feature, phase, step, timeout, ledger, worktree, layout, step_opts)
     st = agent.state
+    gate_sigs = gate_signals(phase, st, step_opts)
 
-    transition =
-      terminal_override(st) ||
-        Pipeline.next(phase, st.last_outcome, gate_signals(phase, st, step_opts))
-
+    transition = terminal_override(st) || Pipeline.next(phase, st.last_outcome, gate_sigs)
     decorated = decorate(transition, phase, st)
+
+    # Feature 021: the exhaustion mark is decided at the :analyze boundary
+    # (the only phase that can produce it) and threaded forward so the
+    # eventual `{:done, :done}` reason can be decorated at :converge —
+    # `mark || …` means once set it survives every later phase unchanged.
+    mark = mark || exhaustion_mark(phase, gate_sigs, st)
 
     # One store transaction per phase-attempt boundary (FR-006, R7): the
     # attempt, its cost, the checkpoint this boundary leaves (or the
@@ -279,7 +295,8 @@ defmodule SpeckitOrchestrator.FeatureRunner do
       attempt_ordinal(st),
       started_at,
       agent,
-      checkpoint_for(decorated, phase, st)
+      checkpoint_for(decorated, phase, st),
+      if(phase == :analyze, do: mark)
     )
 
     case decorated do
@@ -310,12 +327,13 @@ defmodule SpeckitOrchestrator.FeatureRunner do
               run_context,
               layout,
               step_opts,
-              run_key
+              run_key,
+              mark
             )
         end
 
       {:done, :done} ->
-        {:done, :done, agent}
+        {:done, done_reason(mark), agent}
 
       {:escalated, reason} ->
         {:escalated, reason, agent}
@@ -327,6 +345,41 @@ defmodule SpeckitOrchestrator.FeatureRunner do
         {:failed, reason, agent}
     end
   end
+
+  # ---- exhaustion mark (feature 021, contracts/advanced-record.md) ----------
+
+  # `analyze_remediation` is only present once the loop actually ran; a clock
+  # read for `:advanced_at` is the caller's job (keeps `Remediation.
+  # exhaustion_advance/2` pure) — `Remediation` decides `:mark | :none` from
+  # exactly the values the gate used, so the mark and the gate can never
+  # disagree (FR-009).
+  defp exhaustion_mark(:analyze, gate_sigs, st) do
+    case Map.get(st, :analyze_remediation) do
+      %{attempts_used: n, limit: limit} ->
+        state = %{
+          attempts_used: n,
+          attempt_limit: limit,
+          findings: Map.get(gate_sigs, :analyze_residual_findings, []),
+          advanced_at: DateTime.utc_now()
+        }
+
+        case Remediation.exhaustion_advance(gate_sigs, state) do
+          {:mark, record} -> record
+          :none -> nil
+        end
+
+      _absent ->
+        nil
+    end
+  end
+
+  defp exhaustion_mark(_phase, _gate_sigs, _st), do: nil
+
+  # Status is never changed (FR-008a) — only the reason `feature.finalize` and
+  # `notify/4` report is decorated, exactly as `Remediation.terminal_reason/2`
+  # already decorates a halted/escalated reason.
+  defp done_reason(nil), do: :done
+  defp done_reason(_mark), do: {:done, :advanced_with_unresolved_findings}
 
   # ---- checkpoint shape (per transition) -----------------------------------
 
@@ -545,31 +598,46 @@ defmodule SpeckitOrchestrator.FeatureRunner do
     AgentServer.call(pid, Signal.new!(type, data, source: "/runner"), timeout)
   end
 
-  defp handle_worktree(_feature, _status, nil, _message), do: :ok
+  defp handle_worktree(_feature, _status, nil, _message, _stack_base), do: :ok
 
   # Commit whatever the pipeline generated onto the feature branch BEFORE the
   # worktree is torn down — otherwise a successful run's spec/plan/tasks/code is
   # discarded on removal. `message` was authored (Claude, PR workflow) or
   # templated by `commit_message_and_pr/4` before the store write, so the git
   # history and the recorded `pr_description` always agree.
-  defp handle_worktree(_feature, :done, %Worktree{repo: repo, branch: branch} = wt, message) do
-    _ = Worktree.squash(wt, merge_base(repo, branch), message)
+  defp handle_worktree(
+         _feature,
+         :done,
+         %Worktree{repo: repo, branch: branch} = wt,
+         message,
+         stack_base
+       ) do
+    _ = Worktree.squash(wt, merge_base(repo, branch, stack_base), message)
     Worktree.remove(wt)
   end
 
-  defp handle_worktree(feature, status, %Worktree{} = wt, _message) do
+  defp handle_worktree(feature, status, %Worktree{} = wt, _message, _stack_base) do
     _ = Worktree.commit(wt, "speckit: feature #{feature.id} pipeline artifacts (#{status})")
     Worktree.keep_for_inspection(wt)
   end
 
   # The branch's fork point, for squash/3's --soft reset target: the commit
-  # where the feature branch diverged from Config.pr_base() (the plain
-  # workflow's implicit base — its worktree is created from "HEAD" of the
-  # currently checked-out branch, which is pr_base by default — and the
-  # stacked workflow's explicit stack-base). Falls back to "HEAD" (a no-op
-  # reset) if the merge-base lookup itself fails.
-  defp merge_base(repo, branch) do
-    case System.cmd("git", ["-C", repo, "merge-base", branch, Config.pr_base()],
+  # where the feature branch diverged from `stack_base` — the ref its worktree
+  # was actually created from (the previous feature's branch in a stacked run,
+  # `Config.pr_base()` at the bottom of the stack or for an ad-hoc feature).
+  #
+  # It must NOT be `Config.pr_base()` unconditionally. For a feature stacked on
+  # an unmerged predecessor, `merge-base(feature/002, main)` is where *001*
+  # forked from main, so the soft reset walks back past 001's commit entirely:
+  # the squashed 002 is reparented onto `main`, carrying 001's changes in its
+  # own diff. Its PR against `feature/001-…` then re-proposes 001's work and
+  # conflicts with it file for file.
+  #
+  # Falls back to "HEAD" (a no-op reset) if the merge-base lookup itself fails.
+  defp merge_base(repo, branch, stack_base) do
+    against = stack_base || Config.pr_base()
+
+    case System.cmd("git", ["-C", repo, "merge-base", branch, against],
            stderr_to_stdout: true
          ) do
       {out, 0} -> String.trim(out)
@@ -626,8 +694,18 @@ defmodule SpeckitOrchestrator.FeatureRunner do
   # and the transcript — never separately, so a reader can never see one
   # without the others (FR-006). `run_key: nil` (no store-backed run) is a
   # silent no-op — most unit tests call this module directly with no store.
-  defp record_attempt(nil, _feature, _phase, _step, _ordinal, _started_at, _agent, _checkpoint),
-    do: :ok
+  defp record_attempt(
+         nil,
+         _feature,
+         _phase,
+         _step,
+         _ordinal,
+         _started_at,
+         _agent,
+         _checkpoint,
+         _mark
+       ),
+       do: :ok
 
   # `AnalyzeRunner`'s failure and breaker paths already committed the analyze
   # run, and hand back the *remediation* agent — recording that here would
@@ -642,13 +720,14 @@ defmodule SpeckitOrchestrator.FeatureRunner do
          _ordinal,
          _started_at,
          %{state: %{analyze_attempt_recorded?: true}},
-         checkpoint
+         checkpoint,
+         _mark
        ) do
     _ = checkpoint && Writer.record_checkpoint(run_key, feature.id, checkpoint)
     :ok
   end
 
-  defp record_attempt(run_key, feature, phase, step, ordinal, started_at, agent, checkpoint) do
+  defp record_attempt(run_key, feature, phase, step, ordinal, started_at, agent, checkpoint, mark) do
     st = agent.state
     result = st.last_result
     {cost_amount, cost_kind} = Cost.for_phase(phase, result || %PhaseResult{})
@@ -676,7 +755,8 @@ defmodule SpeckitOrchestrator.FeatureRunner do
         attempt: attempt,
         cost: %{amount_usd: cost_amount, kind: cost_kind},
         checkpoint: checkpoint,
-        transcript: result && result.final_text
+        transcript: result && result.final_text,
+        advanced_with_findings: mark
       })
 
     :ok
@@ -692,8 +772,13 @@ defmodule SpeckitOrchestrator.FeatureRunner do
     signals = st.last_signals || %{}
 
     case Map.get(step_opts, :remediation_settings) do
-      %Settings{threshold: threshold} -> Map.put(signals, :gate_threshold, threshold)
-      _absent -> signals
+      %Settings{threshold: threshold, exhaustion_policy: policy} ->
+        signals
+        |> Map.put(:gate_threshold, threshold)
+        |> Map.put(:exhaustion_policy, policy)
+
+      _absent ->
+        signals
     end
   end
 

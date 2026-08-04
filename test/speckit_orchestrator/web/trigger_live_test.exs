@@ -277,4 +277,63 @@ defmodule SpeckitOrchestrator.Web.TriggerLiveTest do
       assert html2 =~ ~s(data-auto-remediation="true")
     end
   end
+
+  # ---- 021-analyze-exhaustion-policy launch control (T032, contracts/exhaustion-policy.md §5)
+
+  describe "exhaustion policy launch control" do
+    setup do
+      prior = %{
+        auto_remediation: Application.get_env(:speckit_orchestrator, :auto_remediation),
+        auto_remediation_exhaustion_policy:
+          Application.get_env(:speckit_orchestrator, :auto_remediation_exhaustion_policy)
+      }
+
+      on_exit(fn ->
+        Enum.each(prior, fn
+          {k, nil} -> Application.delete_env(:speckit_orchestrator, k)
+          {k, v} -> Application.put_env(:speckit_orchestrator, k, v)
+        end)
+      end)
+
+      :ok
+    end
+
+    test "the control is pre-filled from Config's default (escalate)", %{conn: conn} do
+      point_backlog_at(@valid_dir)
+
+      {:ok, _view, html} = live(conn, "/trigger")
+
+      assert html =~ ~s(data-exhaustion-policy)
+      assert html =~ ~s(<option value="escalate" selected)
+    end
+
+    test "an unrecognized exhaustion policy is refused before the run starts, naming the setting",
+         %{conn: conn} do
+      point_backlog_at(@valid_dir)
+      Application.put_env(:speckit_orchestrator, :auto_remediation, true)
+
+      {:ok, view, _html} = live(conn, "/trigger")
+
+      render_change(view, "update_remediation", %{"exhaustion_policy" => "urgent"})
+
+      html = render_click(view, "start_backlog", %{})
+
+      assert html =~ ~s(data-error="auto-remediation-exhaustion-policy")
+      refute Process.whereis(Coordinator)
+    end
+
+    test "choosing proceed captures it into the started run's opts", %{conn: conn} do
+      point_backlog_at(@valid_dir)
+      Application.put_env(:speckit_orchestrator, :auto_remediation, true)
+
+      {:ok, view, _html} = live(conn, "/trigger")
+
+      render_change(view, "update_remediation", %{"exhaustion_policy" => "proceed"})
+
+      result = render_click(view, "start_backlog", %{})
+      {:ok, _mc_view, mc_html} = follow_redirect(result, conn)
+
+      assert mc_html =~ "auto_remediation_exhaustion_policy: :proceed"
+    end
+  end
 end

@@ -117,6 +117,13 @@ defmodule SpeckitOrchestrator.Web.RunDetailLive do
 
   defp safe_atom(s), do: String.to_existing_atom(s)
 
+  # ---- advanced-with-findings (021, contracts/advanced-record.md §4.2) ------
+
+  defp finding_severity(finding), do: Map.get(finding, "severity", "unknown")
+
+  defp finding_text(finding),
+    do: Map.get(finding, "title") || Map.get(finding, "detail") || inspect(finding)
+
   # ---- render ---------------------------------------------------------------
 
   @impl true
@@ -224,6 +231,28 @@ defmodule SpeckitOrchestrator.Web.RunDetailLive do
                   limit=<span>{r.attempt_limit}</span>
                   threshold=<span>{r.threshold}</span>
                   cost=<span>${format_money(r.cost_usd)}</span>
+                </span>
+              </div>
+            </div>
+
+            <div :if={f.advanced_with_findings} data-advanced-with-findings>
+              <div class="run-context-label">ADVANCED WITH UNRESOLVED FINDINGS</div>
+              <div class="run-context">
+                <span class="run-context-chip">
+                  auto_remediation_exhaustion_policy: {f.advanced_with_findings.policy}
+                </span>
+                <span class="run-context-chip">
+                  attempts: {f.advanced_with_findings.attempts_used}/{f.advanced_with_findings.attempt_limit}
+                </span>
+                <span class="run-context-chip">threshold: {f.advanced_with_findings.threshold}</span>
+              </div>
+              <div
+                :for={finding <- f.advanced_with_findings.findings}
+                class="run-context"
+                data-severity={finding_severity(finding)}
+              >
+                <span class="run-context-chip">
+                  {finding_severity(finding)} — {finding_text(finding)}
                 </span>
               </div>
             </div>

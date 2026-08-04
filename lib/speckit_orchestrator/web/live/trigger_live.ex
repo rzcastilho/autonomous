@@ -34,6 +34,7 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
        auto_remediation?: Config.auto_remediation?(),
        remediation_threshold: to_string(Config.auto_remediation_threshold()),
        remediation_limit: to_string(Config.auto_remediation_attempt_limit()),
+       remediation_exhaustion_policy: to_string(Config.auto_remediation_exhaustion_policy()),
        remediation_error: nil,
        description: "",
        preview: nil,
@@ -82,6 +83,8 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
      assign(socket,
        remediation_threshold: Map.get(params, "threshold", socket.assigns.remediation_threshold),
        remediation_limit: Map.get(params, "attempt_limit", socket.assigns.remediation_limit),
+       remediation_exhaustion_policy:
+         Map.get(params, "exhaustion_policy", socket.assigns.remediation_exhaustion_policy),
        remediation_error: nil
      )}
   end
@@ -195,7 +198,8 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
       base = [
         auto_remediation: settings.enabled?,
         auto_remediation_threshold: settings.threshold,
-        auto_remediation_attempt_limit: settings.attempt_limit
+        auto_remediation_attempt_limit: settings.attempt_limit,
+        auto_remediation_exhaustion_policy: settings.exhaustion_policy
       ]
 
       base = maybe_put_slug(base, socket.assigns[:selected_package])
@@ -212,7 +216,8 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
       enabled?: socket.assigns.auto_remediation?,
       threshold: socket.assigns.remediation_threshold,
       attempt_limit: parse_limit(socket.assigns.remediation_limit),
-      model: Config.auto_remediation_model()
+      model: Config.auto_remediation_model(),
+      exhaustion_policy: socket.assigns.remediation_exhaustion_policy
     }
 
     case Remediation.Settings.validate(input) do
@@ -228,6 +233,10 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
 
       {:error, {:unknown_model, value}} ->
         {:error, {"auto-remediation-model", "Unknown model: #{inspect(value)}"}}
+
+      {:error, {:invalid_exhaustion_policy, value}} ->
+        {:error,
+         {"auto-remediation-exhaustion-policy", "Unrecognized exhaustion policy: #{value}"}}
     end
   end
 
@@ -451,6 +460,28 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
               data-remediation-limit
               disabled={not @auto_remediation?}
             />
+          </label>
+
+          <label class="field-label-inline">
+            On exhaustion
+            <select
+              name="exhaustion_policy"
+              data-exhaustion-policy
+              disabled={not @auto_remediation?}
+            >
+              <option
+                value="escalate"
+                selected={@remediation_exhaustion_policy == "escalate"}
+              >
+                escalate
+              </option>
+              <option
+                value="proceed"
+                selected={@remediation_exhaustion_policy == "proceed"}
+              >
+                proceed
+              </option>
+            </select>
           </label>
         </form>
       </div>

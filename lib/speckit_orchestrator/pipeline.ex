@@ -18,7 +18,15 @@ defmodule SpeckitOrchestrator.Pipeline do
     inclusive floor over `Severity`'s ordering, so raising it to `:critical`
     lets a High finding advance instead of diverting, and lowering it below
     `:high` creates no new terminal state (Low and Medium have none). Critical
-    outranks every threshold and therefore always halts.
+    outranks every threshold and therefore always halts — no policy (below)
+    can change that.
+  * **exhaustion policy** (feature 021) — when auto-remediation exhausted its
+    attempts (`signals.exhausted? == true`) on a High finding the run's
+    threshold would otherwise escalate, the run's `signals.exhaustion_policy`
+    decides: `:escalate` (default, absent ⇒ this) reproduces the row above
+    byte-for-byte; `:proceed` advances instead. This never applies to a
+    Critical finding, never applies before the attempt limit is reached, and
+    never applies to a finding the threshold would have let through anyway.
   * **artifact gate** — a phase returned a successful transcript but wrote none
     of the files it exists to produce. `signals.missing_artifact` at `:plan`,
     `:tasks`, or `:implement` → `:failed`.
@@ -53,6 +61,8 @@ defmodule SpeckitOrchestrator.Pipeline do
           optional(:critical?) => boolean(),
           optional(:high?) => boolean(),
           optional(:gate_threshold) => Severity.severity(),
+          optional(:exhausted?) => boolean(),
+          optional(:exhaustion_policy) => :escalate | :proceed,
           optional(:not_ready?) => boolean(),
           optional(:missing_artifact) => String.t()
         }
@@ -124,10 +134,15 @@ defmodule SpeckitOrchestrator.Pipeline do
   def next(:analyze, :ok, %{critical?: true}), do: {:halted, :critical_finding}
 
   def next(:analyze, :ok, %{high?: true} = signals) do
-    if Severity.at_or_above?(:high, gate_threshold(signals)) do
-      {:escalated, :high_findings}
-    else
-      advance_transition(:analyze)
+    cond do
+      not Severity.at_or_above?(:high, gate_threshold(signals)) ->
+        advance_transition(:analyze)
+
+      exhausted?(signals) and exhaustion_policy(signals) == :proceed ->
+        advance_transition(:analyze)
+
+      true ->
+        {:escalated, :high_findings}
     end
   end
 
@@ -140,6 +155,14 @@ defmodule SpeckitOrchestrator.Pipeline do
   # The run's severity threshold, as an inclusive floor. Absent means `:high`,
   # the default — which reproduces the pre-threshold gate exactly.
   defp gate_threshold(signals), do: Map.get(signals, :gate_threshold) || :high
+
+  # Whether auto-remediation exhausted its attempts on the final analyze run.
+  # Absent means false, reproducing the pre-021 gate (feature 021 FR-002/SC-002).
+  defp exhausted?(signals), do: Map.get(signals, :exhausted?, false)
+
+  # The run's exhaustion policy. Absent means :escalate, the default — which
+  # reproduces the pre-021 gate exactly (feature 021 FR-002/SC-002).
+  defp exhaustion_policy(signals), do: Map.get(signals, :exhaustion_policy) || :escalate
 
   @spec advance_transition(phase()) :: transition()
   defp advance_transition(phase) do

@@ -1,53 +1,89 @@
 <!--
 Sync Impact Report
-Version change: 2.1.0 → 2.2.0
-Bump rationale: MINOR — one new principle (VII) and one new normative section
-  (Operator Surface Design) are added, adopting docs/design-constitution.md as a
-  binding visual + interaction contract for operator-facing surfaces. No existing
-  principle is removed, redefined, or weakened: I–VI stand unchanged in text and
-  in force, and the only edit to an existing section is a cross-reference added
-  to Technology Stack → Frontend. This mirrors the reasoning that made 1.1.0
-  MINOR (new principle VI + new Technology Stack section). It is not MAJOR
-  because no governance bound is relaxed — the amendment only adds constraints,
-  and the surfaces it constrains previously had no constitution-level design
-  rules at all.
-Modified principles: none (I–VI unchanged)
-Added principles:
-  - VII. Operator Surfaces Tell the Truth
-Added sections:
-  - Operator Surface Design
-Modified sections:
-  - Technology Stack → Frontend (cross-reference to Operator Surface Design; the
-    no-Node/npm and no-CSS-framework bar is unchanged)
+Version change: 2.2.0 → 3.0.0
+Bump rationale: MAJOR — Principle V's exhaustion guarantee is redefined in a
+  backward-incompatible way. Today "on exhaustion the gate decides the outcome
+  from the final analyze run under the rules above, unchanged" holds
+  unconditionally. This amendment adds a per-run **exhaustion policy**
+  (*escalate*, default — today's behaviour, byte-identical; *proceed* — advance
+  past a residual High finding instead of escalating) that a run can select, so
+  a human-facing terminal state that was previously unconditional on exhaustion
+  becomes configurable away for exactly one cell: residual High, exhaustion
+  reached, threshold High or lower. That is the same shape of relaxation the
+  2.0.0 amendment made MAJOR (threshold-governed High), not an MINOR expansion —
+  precedent followed exactly. Critical is untouched: it halts unconditionally at
+  every policy and every threshold, matching how 2.0.0 also left Critical
+  absolute. The relaxation is paired with a new, compensating obligation this
+  amendment also adds: under *proceed*, the findings advanced past MUST be
+  recorded durably and surfaced to the pull request reviewer — the last
+  remaining human gate — so an unattended advance is never silent.
+Modified principles:
+  - V. Human-in-the-Loop Escalation (exhaustion is now policy-governed for High;
+    Critical still unconditionally halts; advancing past findings under
+    *proceed* MUST be recorded and surfaced to the PR reviewer)
+Added principles: none
+Added sections: none
 Removed sections: none
 Templates requiring updates:
   ✅ .specify/templates/plan-template.md — Constitution Check is principle-agnostic
   ✅ .specify/templates/spec-template.md — no principle-specific references
   ✅ .specify/templates/tasks-template.md — no principle-specific references
   ✅ .specify/templates/checklist-template.md — generic; no change
-  ⚠ docs/design-constitution.md — normative by reference but UNCOMMITTED as of
-     this amendment. It MUST be committed in the same change; a constitution that
-     cites an untracked file cites nothing (Principle II).
-  ⚠ specs/011-control-plane-ui-redesign/contracts/design-system.md — the
-     feature-local predecessor. Left as-is: it is an accurate record of what 011
-     shipped. It is nonetheless superseded — docs/design-constitution.md is the
-     authority for any new or redesigned surface.
-  ⚠ priv/static/assets/console.css — shipped tokens predate the contract and
-     diverge from it in name and in value: `--border`/`--border-strong` hold the
-     contract's `--border-subtle`/`--border` values; `--muted` is the contract's
-     `--text-faint`, with `--text-secondary`/`--text-muted` absent;
-     `--accent-2: #4b2fd6` vs the contract's `--accent-deep: #5a3fe0`;
-     `--card`/`--raised` and the status-token block are missing; status pills use
-     a `20` alpha suffix where the contract specifies `1a` fill + `40` border.
-     Reconciliation is a recorded feature, not silent drift — see Operator
-     Surface Design.
-  ⚠ CLAUDE.md — its Frontend/observability description does not mention a design
-     contract. Update when the reconciliation feature lands.
-Follow-up TODOs:
-  - Commit docs/design-constitution.md (blocking; see above).
-  - Open a feature to reconcile console.css and the shared components with the
-    contract's token set, recording any deliberate divergence in that feature's
-    Complexity Tracking.
+  ✅ specs/021-analyze-exhaustion-policy/plan.md — Complexity Tracking already
+     cites this amendment by version and records the rejected simpler
+     alternatives
+Follow-up TODOs: none — the amendment lands in the same change as the code and
+  tests that implement it (FR-016).
+
+Prior report (2.2.0):
+  Version change: 2.1.0 → 2.2.0
+  Bump rationale: MINOR — one new principle (VII) and one new normative section
+    (Operator Surface Design) are added, adopting docs/design-constitution.md as a
+    binding visual + interaction contract for operator-facing surfaces. No existing
+    principle is removed, redefined, or weakened: I–VI stand unchanged in text and
+    in force, and the only edit to an existing section is a cross-reference added
+    to Technology Stack → Frontend. This mirrors the reasoning that made 1.1.0
+    MINOR (new principle VI + new Technology Stack section). It is not MAJOR
+    because no governance bound is relaxed — the amendment only adds constraints,
+    and the surfaces it constrains previously had no constitution-level design
+    rules at all.
+  Modified principles: none (I–VI unchanged)
+  Added principles:
+    - VII. Operator Surfaces Tell the Truth
+  Added sections:
+    - Operator Surface Design
+  Modified sections:
+    - Technology Stack → Frontend (cross-reference to Operator Surface Design; the
+      no-Node/npm and no-CSS-framework bar is unchanged)
+  Removed sections: none
+  Templates requiring updates:
+    ✅ .specify/templates/plan-template.md — Constitution Check is principle-agnostic
+    ✅ .specify/templates/spec-template.md — no principle-specific references
+    ✅ .specify/templates/tasks-template.md — no principle-specific references
+    ✅ .specify/templates/checklist-template.md — generic; no change
+    ⚠ docs/design-constitution.md — normative by reference but UNCOMMITTED as of
+       this amendment. It MUST be committed in the same change; a constitution that
+       cites an untracked file cites nothing (Principle II).
+    ⚠ specs/011-control-plane-ui-redesign/contracts/design-system.md — the
+       feature-local predecessor. Left as-is: it is an accurate record of what 011
+       shipped. It is nonetheless superseded — docs/design-constitution.md is the
+       authority for any new or redesigned surface.
+    ⚠ priv/static/assets/console.css — shipped tokens predate the contract and
+       diverge from it in name and in value: `--border`/`--border-strong` hold the
+       contract's `--border-subtle`/`--border` values; `--muted` is the contract's
+       `--text-faint`, with `--text-secondary`/`--text-muted` absent;
+       `--accent-2: #4b2fd6` vs the contract's `--accent-deep: #5a3fe0`;
+       `--card`/`--raised` and the status-token block are missing; status pills use
+       a `20` alpha suffix where the contract specifies `1a` fill + `40` border.
+       Reconciliation is a recorded feature, not silent drift — see Operator
+       Surface Design.
+    ⚠ CLAUDE.md — its Frontend/observability description does not mention a design
+       contract. Update when the reconciliation feature lands.
+  Follow-up TODOs:
+    - Commit docs/design-constitution.md (blocking; see above).
+    - Open a feature to reconcile console.css and the shared components with the
+      contract's token set, recording any deliberate divergence in that feature's
+      Complexity Tracking.
 
 Prior report (2.1.0):
   Version change: 2.0.0 → 2.1.0
@@ -302,12 +338,32 @@ all of:
 - it is bounded by a per-run attempt limit (1–5, default 2) that MUST NOT be
   exceeded within one feature run;
 - on exhaustion the gate decides the outcome from the **final** analyze run
-  under the rules above, unchanged, with a recorded reason naming exhausted
-  auto-remediation;
+  under the rules above **and the run's exhaustion policy** (below), with a
+  recorded reason naming exhausted auto-remediation;
 - every attempt and every analyze re-run is subject to the cost breaker of
   Principle IV and is individually recorded;
 - it is switchable per run, and disabling it MUST restore fail-fast behaviour
   exactly.
+
+A run additionally chooses an **exhaustion policy**, consulted only at the
+moment the loop above exhausts its attempt limit with a residual finding at or
+above the threshold:
+
+- ***escalate*** (default) — the gate decides exactly as it does with the loop
+  disabled: a residual High escalates, byte-identical to today.
+- ***proceed*** — the gate advances past a residual High finding instead of
+  escalating it, for that one feature only. The findings advanced past MUST be
+  recorded durably (not merely logged) and surfaced to the run's report, the
+  operator console, and the feature's pull request body, so the last remaining
+  human gate — the PR reviewer — sees exactly what was left unresolved. This
+  MUST NOT create a new terminal lifecycle status: the feature still reaches
+  `:done` (or an ordinary downstream failure); the advance is an annotation on
+  that outcome, never a status of its own.
+
+Critical is unaffected by the exhaustion policy in every respect: it halts
+unconditionally, at every policy and every threshold, and is matched before
+the policy is ever consulted. No policy, threshold, or configuration may
+relax the Critical halt.
 
 Escalated and halted features MUST retain their worktree for post-mortem;
 only `:done` features remove it. A human resolution path (`resolve/1`) MUST
@@ -328,6 +384,16 @@ Critical: a constitution Critical finding always halts, at every threshold, so
 no configuration can ship a constitution violation unattended. Raising the
 threshold to Critical is a recorded, per-run decision to accept High findings
 automatically; operators who want the old guarantee keep the default.
+
+The exhaustion policy relaxes the High branch a second, narrower way, bounded
+to the single cell where the loop already tried and failed: attempts spent,
+finding still present, at or above threshold. Choosing *proceed* is a
+recorded, per-run decision to let such a feature finish unattended rather than
+stall an entire backlog run on one stubborn, non-mechanically-fixable finding;
+operators who want the unconditional guarantee keep the default (*escalate*).
+The compensating control — record and surface to the PR reviewer — is not
+optional cosmetic detail: it is what keeps *proceed* from silently shipping
+unreviewed work, the exact failure mode this principle exists to prevent.
 
 ### VI. Idiomatic Elixir/OTP & Functional Design
 
@@ -601,4 +667,4 @@ deviation already is. Reviews and PRs MUST verify compliance with these
 principles; the constitution and the implementation plan together are the
 runtime guidance for autonomous and human contributors alike.
 
-**Version**: 2.2.0 | **Ratified**: 2026-07-11 | **Last Amended**: 2026-07-29
+**Version**: 3.0.0 | **Ratified**: 2026-07-11 | **Last Amended**: 2026-07-31

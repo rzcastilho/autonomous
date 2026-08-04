@@ -14,15 +14,45 @@ defmodule SpeckitOrchestrator.Store.Migrations do
   console's "View PR" affordance with nothing to link to. A v2 record is
   readable as-is, so this one really does transform: every existing row gets
   `nil` (its PR, if any, was opened before the URL was ever recorded).
+
+  Version 4 (feature 021, contracts/advanced-record.md §2.2) appends
+  `feature_run.advanced_with_findings` — the record of a feature that advanced
+  under the `:proceed` exhaustion policy past a residual finding the gate
+  would otherwise have escalated. Structurally identical to version 3: a plain
+  append, every v3 row gets `nil` (the fact did not exist when those rows were
+  written).
   """
 
   alias SpeckitOrchestrator.Store.{Mnesia, Schema}
 
   @type migration :: {pos_integer(), String.t(), (-> :ok | {:error, term()})}
 
+  # The exact attribute shape each historical migration transforms INTO — not
+  # `Schema.table/1`, which always reflects the CURRENT (latest) schema and
+  # would hand a later version's attribute count to an earlier version's
+  # transform.
+  @feature_run_v3_attributes [
+    :key,
+    :run_key,
+    :feature_id,
+    :slug,
+    :path,
+    :number,
+    :group,
+    :created_at,
+    :status,
+    :terminal_reason,
+    :worktree_path,
+    :branch,
+    :pr_description,
+    :started_at,
+    :ended_at,
+    :pr_url
+  ]
+
   @doc "The schema version this build of the orchestrator understands."
   @spec current_version() :: pos_integer()
-  def current_version, do: 3
+  def current_version, do: 4
 
   @doc "Every migration, ascending by version."
   @spec all() :: [migration()]
@@ -30,13 +60,24 @@ defmodule SpeckitOrchestrator.Store.Migrations do
     [
       {2, "019 clean break — pre-019 records are not readable",
        fn -> {:error, {:incompatible_record, 1}} end},
-      {3, "append feature_run.pr_url", &add_pr_url/0}
+      {3, "append feature_run.pr_url", &add_pr_url/0},
+      {4, "append feature_run.advanced_with_findings", &add_advanced_with_findings/0}
     ]
   end
 
-  # `:pr_url` is the last attribute in the table's schema, so the transform is
+  # `:pr_url` is the last attribute in the v3 table shape, so the transform is
   # a plain append — no field of an existing row moves position.
   defp add_pr_url do
+    transform_table(
+      :speckit_feature_run,
+      &Tuple.insert_at(&1, tuple_size(&1), nil),
+      @feature_run_v3_attributes
+    )
+  end
+
+  # `:advanced_with_findings` is the last attribute in the current table
+  # shape, so this is likewise a plain append.
+  defp add_advanced_with_findings do
     transform_table(
       :speckit_feature_run,
       &Tuple.insert_at(&1, tuple_size(&1), nil),

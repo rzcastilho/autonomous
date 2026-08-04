@@ -169,7 +169,8 @@ defmodule SpeckitOrchestrator.Store.Writer do
           required(:attempt) => map(),
           optional(:cost) => %{amount_usd: float(), kind: :actual | :estimate} | nil,
           optional(:checkpoint) => map() | nil,
-          optional(:transcript) => binary() | nil
+          optional(:transcript) => binary() | nil,
+          optional(:advanced_with_findings) => map() | nil
         }) :: :ok | {:error, term()}
   def record_phase_attempt({repo_id, run_id} = run_key, %{attempt: attempt} = payload) do
     run_transaction(fn ->
@@ -203,6 +204,7 @@ defmodule SpeckitOrchestrator.Store.Writer do
       write_cost_entry(attempt_id, run_key, Map.get(payload, :cost))
       write_checkpoint(run_key, feature_key, Map.get(payload, :checkpoint))
       write_transcript(attempt_id, Map.get(payload, :transcript))
+      write_advanced_with_findings(feature_key, Map.get(payload, :advanced_with_findings))
 
       :ok
     end)
@@ -817,6 +819,28 @@ defmodule SpeckitOrchestrator.Store.Writer do
         updated_at: DateTime.utc_now()
       })
     )
+  end
+
+  # Feature 021, contracts/advanced-record.md §2.3: written in the same
+  # transaction as the analyze phase-attempt boundary, so a reader can never
+  # see the attempt without the annotation it produced. Absent/nil is a
+  # no-op — the feature-run row is left untouched, never cleared back to nil.
+  defp write_advanced_with_findings(_feature_key, nil), do: :ok
+
+  defp write_advanced_with_findings(feature_key, record) do
+    case Mnesia.read(:speckit_feature_run, feature_key, :write) do
+      [tuple] ->
+        case Records.decode(:speckit_feature_run, tuple) do
+          {:ok, feature} ->
+            Mnesia.write(Records.encode(%{feature | advanced_with_findings: record}))
+
+          {:error, damaged} ->
+            Mnesia.abort(damaged)
+        end
+
+      [] ->
+        Mnesia.abort({:absent, feature_key})
+    end
   end
 
   defp write_transcript(_attempt_id, nil), do: :ok

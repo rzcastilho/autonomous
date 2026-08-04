@@ -371,12 +371,24 @@ defmodule SpeckitOrchestrator.AnalyzeRunner do
   defp exhaustion_signals(signals, _state, nil), do: signals
 
   defp exhaustion_signals(signals, state, attempts) do
-    Map.put(signals, :remediation, %{
+    signals
+    |> Map.put(:remediation, %{
       attempts: attempts,
       limit: state.settings.attempt_limit,
       exhausted?: true
     })
+    |> Map.put(:exhausted?, true)
+    |> Map.put(:analyze_residual_findings, residual_findings(state))
   end
+
+  # Feature 021, contracts/advanced-record.md §1.2: the same call the loop
+  # already makes to decide whether to remediate, evaluated against the
+  # FINAL analyze run — findings carried verbatim, never reshaped.
+  defp residual_findings(%{last_result: %AnalyzeResult{} = result, settings: settings}) do
+    AnalyzeResult.findings_at_or_above(result, settings.threshold)
+  end
+
+  defp residual_findings(_state), do: []
 
   # A halt/failure below has no `Pipeline.next/3` vocabulary of its own
   # (`Pipeline` stays untouched) — `terminal_reason` is the existing seam

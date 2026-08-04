@@ -8,7 +8,7 @@ defmodule SpeckitOrchestrator.Remediation do
   See `specs/017-analyze-auto-remediation/contracts/remediation.md`.
   """
 
-  alias SpeckitOrchestrator.{AnalyzeResult, Pipeline}
+  alias SpeckitOrchestrator.{AnalyzeResult, Pipeline, Severity}
   alias SpeckitOrchestrator.Remediation.Settings
 
   @type state :: %{
@@ -127,22 +127,136 @@ defmodule SpeckitOrchestrator.Remediation do
 
   def terminal_reason(transition, _state), do: transition
 
+  @typedoc """
+  The advanced-with-unresolved-findings record (feature 021,
+  contracts/advanced-record.md §1) — produced exactly when `exhaustion_advance/2`
+  marks a feature. `policy`/`threshold`/`max_severity` are strings, never
+  atoms, so the record survives `Store.Export.encode/1` running with no
+  database at all.
+  """
+  @type advance_record :: %{
+          policy: String.t(),
+          attempts_used: non_neg_integer(),
+          attempt_limit: pos_integer(),
+          threshold: String.t(),
+          max_severity: String.t(),
+          findings: [AnalyzeResult.finding()],
+          advanced_at: DateTime.t()
+        }
+
+  @doc """
+  `{:mark, record}` when the run's *proceed* policy advanced a feature past
+  residual findings the gate would otherwise have escalated; `:none`
+  otherwise (contracts/advanced-record.md §1.1).
+
+  Marks only when ALL hold (FR-009):
+    * the loop exhausted its attempts (`signals.exhausted?`),
+    * the policy is `:proceed`,
+    * the finding is not Critical (Critical halts before this is ever
+      consulted — FR-005),
+    * the final analyze run reported a High finding (`signals.high?`),
+    * `Severity.at_or_above?(:high, threshold)` — i.e. the gate WOULD have
+      diverted at this run's threshold.
+
+  `state` carries exactly what the caller already has at the analyze
+  boundary: `:attempts_used`, `:attempt_limit`, `:findings` (the residual
+  candidates, verbatim), and `:advanced_at` (the caller's timestamp — this
+  function reads no clock, so it stays pure and the mark and the gate can
+  never disagree).
+  """
+  @spec exhaustion_advance(Pipeline.signals(), map()) :: {:mark, advance_record()} | :none
+  def exhaustion_advance(signals, state) do
+    if advances?(signals) do
+      {:mark, advance_record(signals, state)}
+    else
+      :none
+    end
+  end
+
+  defp advances?(signals) do
+    Map.get(signals, :exhausted?, false) and
+      Map.get(signals, :exhaustion_policy) == :proceed and
+      not Map.get(signals, :critical?, false) and
+      Map.get(signals, :high?, false) and
+      Severity.at_or_above?(:high, gate_threshold(signals))
+  end
+
+  defp gate_threshold(signals), do: Map.get(signals, :gate_threshold) || :high
+
+  defp advance_record(signals, state) do
+    findings = Map.get(state, :findings, [])
+    max_severity = findings |> Enum.map(&Severity.parse_finding/1) |> Severity.max()
+
+    %{
+      policy: Atom.to_string(Map.fetch!(signals, :exhaustion_policy)),
+      attempts_used: Map.fetch!(state, :attempts_used),
+      attempt_limit: Map.fetch!(state, :attempt_limit),
+      threshold: Atom.to_string(gate_threshold(signals)),
+      max_severity: to_string(max_severity),
+      findings: findings,
+      advanced_at: Map.fetch!(state, :advanced_at)
+    }
+  end
+
+  @doc """
+  Markdown section naming the residual findings a feature advanced past
+  (feature 021, contracts/advanced-record.md §5). Pure and total: `nil` ⇒
+  `""`, so `SpeckitOrchestrator.pr_text/2` can append its output
+  unconditionally without branching on whether the feature was marked.
+  """
+  @spec pr_note(advance_record() | nil) :: String.t()
+  def pr_note(nil), do: ""
+
+  def pr_note(%{} = record) do
+    findings_md = Enum.map_join(record.findings, "\n", &finding_line/1)
+
+    """
+
+
+    ---
+
+    ## Advanced with unresolved analyze findings
+
+    This branch was built by `speckit_orchestrator` with
+    `auto_remediation_exhaustion_policy: proceed`. Auto-remediation used #{record.attempts_used} of #{record.attempt_limit} attempts and did not clear the findings below; the analyze gate was permitted to advance instead of escalating to a human. **These findings are unresolved in this branch.**
+
+    Severity threshold: `#{record.threshold}`
+
+    #{findings_md}
+    """
+  end
+
+  defp finding_line(finding) do
+    severity = Map.get(finding, "severity", "unknown")
+    text = Map.get(finding, "title") || Map.get(finding, "detail") || inspect(finding)
+    "- **#{severity}** — #{text}"
+  end
+
   defmodule Settings do
     @moduledoc """
     The three operator-chosen knobs (enabled?/threshold/attempt_limit) plus
     the configuration-level model override, fixed for the run's lifetime
-    (contracts/remediation.md §1).
+    (contracts/remediation.md §1), and the exhaustion policy (feature 021,
+    contracts/exhaustion-policy.md §1) — a fifth knob with the same lifetime,
+    validation, and capture rules.
     """
 
     alias SpeckitOrchestrator.{Config, Severity}
 
-    defstruct enabled?: true, threshold: :high, attempt_limit: 2, model: nil
+    @type policy :: :escalate | :proceed
+
+    defstruct enabled?: true,
+              threshold: :high,
+              attempt_limit: 2,
+              model: nil,
+              exhaustion_policy: :escalate
 
     @type t :: %__MODULE__{
             enabled?: boolean(),
             threshold: Severity.severity(),
             attempt_limit: 1..5,
-            model: String.t()
+            model: String.t(),
+            exhaustion_policy: policy()
           }
 
     @doc """
@@ -152,14 +266,16 @@ defmodule SpeckitOrchestrator.Remediation do
     `attempt_limit` (must be an integer `1..5` — `0`, `6`, `"2"`, `2.0`, `nil`
     all reject; zero is not an off-switch, FR-004a), `model` (`nil` resolves
     to the analyze model; a non-nil value must be a known CLI alias,
-    FR-009a). Never clamps, never substitutes a default for a bad value,
-    never partially applies.
+    FR-009a), `exhaustion_policy` (must be `:escalate`/`:proceed` or the
+    matching string, feature 021 FR-010). Never clamps, never substitutes a
+    default for a bad value, never partially applies.
     """
     @spec validate(map() | keyword()) ::
             {:ok, t()}
             | {:error, {:invalid_threshold, term()}}
             | {:error, {:invalid_attempt_limit, term()}}
             | {:error, {:unknown_model, term()}}
+            | {:error, {:invalid_exhaustion_policy, term()}}
     def validate(input) do
       enabled? = fetch(input, :enabled?, true)
 
@@ -169,13 +285,16 @@ defmodule SpeckitOrchestrator.Remediation do
 
       with {:ok, threshold} <- validate_threshold(fetch(input, :threshold, :high)),
            {:ok, attempt_limit} <- validate_attempt_limit(fetch(input, :attempt_limit, 2)),
-           {:ok, model} <- validate_model(fetch(input, :model, nil)) do
+           {:ok, model} <- validate_model(fetch(input, :model, nil)),
+           {:ok, exhaustion_policy} <-
+             validate_exhaustion_policy(fetch(input, :exhaustion_policy, :escalate)) do
         {:ok,
          %__MODULE__{
            enabled?: enabled?,
            threshold: threshold,
            attempt_limit: attempt_limit,
-           model: model
+           model: model,
+           exhaustion_policy: exhaustion_policy
          }}
       end
     end
@@ -196,7 +315,8 @@ defmodule SpeckitOrchestrator.Remediation do
         enabled?: default(ctx.auto_remediation, true),
         threshold: default(ctx.auto_remediation_threshold, :high),
         attempt_limit: default(ctx.auto_remediation_attempt_limit, 2),
-        model: ctx.auto_remediation_model
+        model: ctx.auto_remediation_model,
+        exhaustion_policy: default(ctx.auto_remediation_exhaustion_policy, :escalate)
       })
     end
 
@@ -210,7 +330,16 @@ defmodule SpeckitOrchestrator.Remediation do
             field(map, "auto_remediation_attempt_limit", :auto_remediation_attempt_limit),
             2
           ),
-        model: field(map, "auto_remediation_model", :auto_remediation_model)
+        model: field(map, "auto_remediation_model", :auto_remediation_model),
+        exhaustion_policy:
+          default(
+            field(
+              map,
+              "auto_remediation_exhaustion_policy",
+              :auto_remediation_exhaustion_policy
+            ),
+            :escalate
+          )
       })
     end
 
@@ -239,5 +368,30 @@ defmodule SpeckitOrchestrator.Remediation do
     defp validate_attempt_limit(value), do: {:error, {:invalid_attempt_limit, value}}
 
     defp validate_model(model), do: Config.remediation_model(:analyze, model)
+
+    defp validate_exhaustion_policy(value) do
+      case parse_policy(value) do
+        {:ok, policy} -> {:ok, policy}
+        :error -> {:error, {:invalid_exhaustion_policy, value}}
+      end
+    end
+
+    @doc """
+    Parse an exhaustion policy value (feature 021, contracts/exhaustion-policy.md
+    §2.1). Atoms pass through; strings match case-insensitively; never calls
+    `String.to_atom/1` on the input.
+    """
+    @spec parse_policy(term()) :: {:ok, policy()} | :error
+    def parse_policy(value) when value in [:escalate, :proceed], do: {:ok, value}
+
+    def parse_policy(value) when is_binary(value) do
+      case String.downcase(value) do
+        "escalate" -> {:ok, :escalate}
+        "proceed" -> {:ok, :proceed}
+        _ -> :error
+      end
+    end
+
+    def parse_policy(_value), do: :error
   end
 end

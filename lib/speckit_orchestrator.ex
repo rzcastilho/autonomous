@@ -66,8 +66,8 @@ defmodule SpeckitOrchestrator do
   preflight step and before any side effect (FR-004, SC-005,
   contracts/run-start.md).
 
-  Captures the eight run-shaping settings (`budget_usd`, `plan_stack`,
-  `pr_base`, `pr_remote`, the four `auto_remediation*` keys) from the
+  Captures the nine run-shaping settings (`budget_usd`, `plan_stack`,
+  `pr_base`, `pr_remote`, the five `auto_remediation*` keys) from the
   effective opts at call time (`RunContext.capture/1`) and threads them into
   every feature's `FeatureRunner.run/2` call, so a diverted feature's
   checkpoint records the run shape it actually ran under (FR-006) — see
@@ -80,11 +80,13 @@ defmodule SpeckitOrchestrator do
   preflight, since it delegates to `run/1` once its single-feature seed is
   prepared.
 
-  Also preflights the analyze auto-remediation settings (017, FR-011): an
-  out-of-range `:auto_remediation_attempt_limit`, an unrecognized
-  `:auto_remediation_threshold` or an unknown `:auto_remediation_model` refuses
-  the run with e.g. `{:error, {:preflight, [{:invalid_attempt_limit, 0}]}}` and
-  starts no work — no clamping, no silent default.
+  Also preflights the analyze auto-remediation settings (017, FR-011; 021,
+  FR-010): an out-of-range `:auto_remediation_attempt_limit`, an unrecognized
+  `:auto_remediation_threshold`, an unknown `:auto_remediation_model`, or an
+  unrecognized `:auto_remediation_exhaustion_policy` (any value other than
+  `:escalate`/`:proceed` or the matching string) refuses the run with e.g.
+  `{:error, {:preflight, [{:invalid_attempt_limit, 0}]}}` and starts no
+  work — no clamping, no silent default.
 
   Also preflights the store (018, FR-009/FR-031b): unwritable at start, or
   under its capacity ceiling with no reclaimable headroom, both refuse with
@@ -592,7 +594,7 @@ defmodule SpeckitOrchestrator do
       `false`.
 
   Also reapplies the run-shaping context (`budget_usd`, `plan_stack`,
-  `pr_base`, `pr_remote`, the four `auto_remediation*` keys) the checkpoint
+  `pr_base`, `pr_remote`, the five `auto_remediation*` keys) the checkpoint
   recorded at the original run's start (FR-006), so the resumed run
   re-executes under its original shape without the caller re-declaring it.
   Precedence (fixed, documented once): **explicit resume opt > recorded
@@ -1470,9 +1472,12 @@ defmodule SpeckitOrchestrator do
     end
   end
 
-  # `base` (the stack's current top) is used only for a never-started
-  # :pending feature; a checkpointed feature ignores it and reuses/recreates
-  # its own existing worktree/branch.
+  # `base` (the stack's current top) is what a never-started :pending feature
+  # branches from; a checkpointed feature does not re-branch — it
+  # reuses/recreates its own existing worktree/branch — but still passes `base`
+  # on as `:stack_base`, the reference the `:done` squash resolves its fork
+  # point against. Dropping it there is what reparented a resumed feature's
+  # squashed commit onto `pr_base`, flattening the stack.
   defp resume_run_executor(run_context, layout, resume_phases, run_key) do
     fn feature, base, notify ->
       Task.Supervisor.start_child(SpeckitOrchestrator.RunnerSup, fn ->
@@ -1494,6 +1499,7 @@ defmodule SpeckitOrchestrator do
         run_from_checkpoint(
           feature,
           checkpoint,
+          base,
           notify,
           run_context,
           layout,
@@ -1512,6 +1518,7 @@ defmodule SpeckitOrchestrator do
   defp run_from_checkpoint(
          feature,
          checkpoint,
+         base,
          notify,
          run_context,
          layout,
@@ -1535,6 +1542,7 @@ defmodule SpeckitOrchestrator do
               start_phase: start_phase,
               run_context: run_context,
               layout: layout,
+              stack_base: base,
               run_key: run_key
             )
 
@@ -1559,6 +1567,7 @@ defmodule SpeckitOrchestrator do
           notify: notify,
           run_context: run_context,
           layout: layout,
+          stack_base: base || Config.pr_base(),
           run_key: run_key
         )
 
@@ -1642,8 +1651,11 @@ defmodule SpeckitOrchestrator do
   # a distinct worktree error, not silently re-created from HEAD. Shaped as an
   # `:executor` (feature, base, notify) so `run_stacked/4`'s stacked_runner
   # wraps it with stacking + preflight + PR-on-:done (FR-009). `base` (the
-  # current stack top) is ignored: a resumed feature reuses/recreates its own
-  # existing worktree/branch, not a fresh one branched off the stack.
+  # current stack top) does not pick a branch point here — a resumed feature
+  # reuses/recreates its own existing worktree/branch, not a fresh one branched
+  # off the stack — but it is still passed as `:stack_base` so the `:done`
+  # squash resolves its fork point against the branch this feature actually
+  # sits on rather than `pr_base`.
   defp resume_executor(
          start_phase,
          prompt,
@@ -1654,7 +1666,7 @@ defmodule SpeckitOrchestrator do
          start_task_phase,
          run_key
        ) do
-    fn feature, _base, notify ->
+    fn feature, base, notify ->
       Task.Supervisor.start_child(SpeckitOrchestrator.RunnerSup, fn ->
         case resume_worktree(feature, layout) do
           {:ok, worktree} ->
@@ -1670,6 +1682,7 @@ defmodule SpeckitOrchestrator do
               layout: layout,
               start_task_phase: start_task_phase,
               reset_implement_sessions: true,
+              stack_base: base || Config.pr_base(),
               run_key: run_key
             )
 
@@ -1915,7 +1928,7 @@ defmodule SpeckitOrchestrator do
       Task.Supervisor.start_child(SpeckitOrchestrator.RunnerSup, fn ->
         case Worktree.create(feature, [base: base] ++ worktree_create_opts(layout)) do
           {:ok, worktree} ->
-            run_seeded(feature, worktree, description, notify, run_context, layout)
+            run_seeded(feature, worktree, base, description, notify, run_context, layout)
 
           {:error, reason} ->
             notify.(feature.id, :failed, {:worktree, reason})
@@ -1926,7 +1939,7 @@ defmodule SpeckitOrchestrator do
     end
   end
 
-  defp run_seeded(feature, worktree, description, notify, run_context, layout) do
+  defp run_seeded(feature, worktree, base, description, notify, run_context, layout) do
     case write_seed(worktree, feature, description, layout) do
       :ok ->
         FeatureRunner.run(feature,
@@ -1935,6 +1948,7 @@ defmodule SpeckitOrchestrator do
           notify: notify,
           run_context: run_context,
           layout: layout,
+          stack_base: base,
           run_key: current_run_key()
         )
 
@@ -2144,6 +2158,7 @@ defmodule SpeckitOrchestrator do
             notify: notify,
             run_context: run_context,
             layout: layout,
+            stack_base: base,
             run_key: current_run_key()
           )
 
@@ -2169,14 +2184,16 @@ defmodule SpeckitOrchestrator do
   # recorded on :done (018 — replaces `Describe.read_pr/2`); fall back to a
   # template if it is absent/empty or this run isn't store-backed.
   defp pr_text(feature, base) do
+    note = Remediation.pr_note(store_advanced_with_findings(feature.id))
+
     case store_pr_description(feature.id) do
       %{pr_title: t, pr_body: b} when t not in [nil, ""] and b not in [nil, ""] ->
-        {t, b}
+        {t, b <> note}
 
       _ ->
         {"feat(#{feature.id}-#{feature.slug}): autonomous build",
          "Autonomous build of feature #{feature.id} (#{feature.slug}) by " <>
-           "speckit_orchestrator.\n\nStacked on `#{base}`."}
+           "speckit_orchestrator.\n\nStacked on `#{base}`." <> note}
     end
   end
 
@@ -2186,6 +2203,21 @@ defmodule SpeckitOrchestrator do
          %{pr_description: %{} = pr} <-
            Enum.find(detail.features, &(&1.feature_id == feature_id)) do
       pr
+    else
+      _ -> nil
+    end
+  end
+
+  # Feature 021, contracts/advanced-record.md §5.3: best-effort like
+  # `store_pr_description/1` — a non-store-backed run or a read failure
+  # yields `nil`, and `Remediation.pr_note/1` renders that as `""`, so a PR
+  # still opens.
+  defp store_advanced_with_findings(feature_id) do
+    with run_key when run_key != nil <- current_run_key(),
+         {:ok, detail} <- Store.run(run_key),
+         %{advanced_with_findings: %{} = record} <-
+           Enum.find(detail.features, &(&1.feature_id == feature_id)) do
+      record
     else
       _ -> nil
     end

@@ -96,7 +96,8 @@ defmodule SpeckitOrchestrator.Store.Schema do
           :pr_description,
           :started_at,
           :ended_at,
-          :pr_url
+          :pr_url,
+          :advanced_with_findings
         ],
         type: :set,
         storage: :disc_copies,

@@ -1,6 +1,6 @@
 defmodule SpeckitOrchestrator.RunContext do
   @moduledoc """
-  The eight run-shaping settings captured at `run/1` time and reapplied on
+  The nine run-shaping settings captured at `run/1` time and reapplied on
   `resume/2`. Pure value object — no IO beyond reading `Config` in
   `capture/1`. Excludes secrets/credentials by construction (FR-011): only
   bool/number/string/list-of-string fields exist.
@@ -21,7 +21,8 @@ defmodule SpeckitOrchestrator.RunContext do
             auto_remediation: nil,
             auto_remediation_threshold: nil,
             auto_remediation_attempt_limit: nil,
-            auto_remediation_model: nil
+            auto_remediation_model: nil,
+            auto_remediation_exhaustion_policy: nil
 
   @type t :: %__MODULE__{
           budget_usd: number() | nil,
@@ -31,7 +32,8 @@ defmodule SpeckitOrchestrator.RunContext do
           auto_remediation: boolean() | nil,
           auto_remediation_threshold: String.t() | nil,
           auto_remediation_attempt_limit: pos_integer() | nil,
-          auto_remediation_model: String.t() | nil
+          auto_remediation_model: String.t() | nil,
+          auto_remediation_exhaustion_policy: String.t() | nil
         }
 
   @keys [
@@ -42,7 +44,8 @@ defmodule SpeckitOrchestrator.RunContext do
     :auto_remediation,
     :auto_remediation_threshold,
     :auto_remediation_attempt_limit,
-    :auto_remediation_model
+    :auto_remediation_model,
+    :auto_remediation_exhaustion_policy
   ]
 
   @doc "Resolves each field from `opts`, falling back to live `Config` — the capture boundary."
@@ -65,7 +68,14 @@ defmodule SpeckitOrchestrator.RunContext do
           Config.auto_remediation_attempt_limit()
         ),
       auto_remediation_model:
-        Keyword.get(opts, :auto_remediation_model, Config.auto_remediation_model())
+        Keyword.get(opts, :auto_remediation_model, Config.auto_remediation_model()),
+      auto_remediation_exhaustion_policy:
+        opts
+        |> Keyword.get(
+          :auto_remediation_exhaustion_policy,
+          Config.auto_remediation_exhaustion_policy()
+        )
+        |> stringify_policy()
     }
   end
 
@@ -77,7 +87,13 @@ defmodule SpeckitOrchestrator.RunContext do
   defp stringify_threshold(value) when is_binary(value), do: value
   defp stringify_threshold(value) when is_atom(value), do: Atom.to_string(value)
 
-  @doc "JSON-ready, string-keyed map of exactly the eight settings, for the checkpoint."
+  # Same treatment as stringify_threshold/1, for the exhaustion policy
+  # (feature 021, research R3).
+  defp stringify_policy(nil), do: nil
+  defp stringify_policy(value) when is_binary(value), do: value
+  defp stringify_policy(value) when is_atom(value), do: Atom.to_string(value)
+
+  @doc "JSON-ready, string-keyed map of exactly the nine settings, for the checkpoint."
   @spec to_map(t()) :: %{String.t() => term()}
   def to_map(%__MODULE__{} = ctx) do
     %{
@@ -88,7 +104,8 @@ defmodule SpeckitOrchestrator.RunContext do
       "auto_remediation" => ctx.auto_remediation,
       "auto_remediation_threshold" => ctx.auto_remediation_threshold,
       "auto_remediation_attempt_limit" => ctx.auto_remediation_attempt_limit,
-      "auto_remediation_model" => ctx.auto_remediation_model
+      "auto_remediation_model" => ctx.auto_remediation_model,
+      "auto_remediation_exhaustion_policy" => ctx.auto_remediation_exhaustion_policy
     }
   end
 
@@ -105,7 +122,8 @@ defmodule SpeckitOrchestrator.RunContext do
       auto_remediation: Map.get(map, "auto_remediation"),
       auto_remediation_threshold: Map.get(map, "auto_remediation_threshold"),
       auto_remediation_attempt_limit: Map.get(map, "auto_remediation_attempt_limit"),
-      auto_remediation_model: Map.get(map, "auto_remediation_model")
+      auto_remediation_model: Map.get(map, "auto_remediation_model"),
+      auto_remediation_exhaustion_policy: Map.get(map, "auto_remediation_exhaustion_policy")
     }
   end
 

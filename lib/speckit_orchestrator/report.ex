@@ -21,8 +21,10 @@ defmodule SpeckitOrchestrator.Report do
       "totals: #{format_totals(Map.get(snapshot, :totals, %{}))}",
       "spend:  $#{fmt_spend(Map.get(snapshot, :spend, 0.0))}" <>
         breaker(Map.get(snapshot, :breaker_tripped, false)),
+      advanced_line(snapshot),
       run_state(snapshot)
     ]
+    |> Enum.reject(&is_nil/1)
     |> Enum.join("\n")
   end
 
@@ -45,6 +47,18 @@ defmodule SpeckitOrchestrator.Report do
 
   defp breaker(true), do: "  [BREAKER TRIPPED]"
   defp breaker(false), do: ""
+
+  # Feature 021: absent entirely when no feature advanced under *proceed*, so
+  # the :escalate-path report is byte-identical to today's (SC-002).
+  defp advanced_line(snapshot) do
+    case Map.get(snapshot, :report) do
+      %{advanced_with_findings: [_ | _] = ids} ->
+        "advanced: #{Enum.join(ids, ", ")}   (proceeded past unresolved findings)"
+
+      _ ->
+        nil
+    end
+  end
 
   defp run_state(%{finished?: true}), do: "state:  finished"
   defp run_state(_), do: "state:  running"

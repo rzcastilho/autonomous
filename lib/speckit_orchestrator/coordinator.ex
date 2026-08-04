@@ -281,16 +281,28 @@ defmodule SpeckitOrchestrator.Coordinator do
     grouped =
       Enum.group_by(state.statuses, fn {_id, status} -> classify(status) end, fn {id, _} -> id end)
 
+    done = ids(grouped, :done)
+
     %{
-      done: ids(grouped, :done),
+      done: done,
       escalated: ids(grouped, :escalated),
       halted: ids(grouped, :halted),
       failed: ids(grouped, :failed),
       not_started: ids(grouped, :pending),
       stopped_by: format_stopped(stopped),
       spend: spend(state),
-      breaker_tripped: breaker_tripped?(state)
+      breaker_tripped: breaker_tripped?(state),
+      advanced_with_findings: advanced_with_findings(state, done)
     }
+  end
+
+  # Feature 021: derived from the reasons the Coordinator already retains, so
+  # `notify/4`'s arity and the `:runner` seam are unchanged — always a SUBSET
+  # of `done`, never a sibling category (FR-008a).
+  defp advanced_with_findings(state, done) do
+    Enum.filter(done, fn id ->
+      match?({:done, :advanced_with_unresolved_findings}, Map.get(state.reasons, id))
+    end)
   end
 
   defp format_stopped(nil), do: nil

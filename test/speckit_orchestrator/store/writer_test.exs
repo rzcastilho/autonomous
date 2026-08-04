@@ -224,6 +224,70 @@ defmodule SpeckitOrchestrator.Store.WriterTest do
       assert checkpoint.last_completed_phase == :clarify
     end
 
+    # Feature 021, contracts/advanced-record.md §2.3.
+    test "advanced_with_findings lands in the same transaction as the analyze phase attempt" do
+      {repo, run_id} = open()
+      run_key = {repo, run_id}
+      feature_key = {repo, run_id, "001"}
+
+      record = %{
+        policy: "proceed",
+        attempts_used: 2,
+        attempt_limit: 2,
+        threshold: "high",
+        max_severity: "high",
+        findings: [%{"severity" => "high", "title" => "gap"}],
+        advanced_at: DateTime.utc_now()
+      }
+
+      assert :ok =
+               Writer.record_phase_attempt(run_key, %{
+                 attempt: %{
+                   feature_id: "001",
+                   phase: :analyze,
+                   ordinal: 1,
+                   step: 5,
+                   label: "analyze",
+                   started_at: DateTime.utc_now(),
+                   ended_at: DateTime.utc_now(),
+                   duration_ms: 1,
+                   outcome: :ok,
+                   model: "sonnet",
+                   cost_usd: 0.0,
+                   cost_kind: :estimate
+                 },
+                 advanced_with_findings: record
+               })
+
+      assert read_feature(feature_key).advanced_with_findings == record
+    end
+
+    test "an absent/nil advanced_with_findings leaves the feature-run row untouched" do
+      {repo, run_id} = open()
+      run_key = {repo, run_id}
+      feature_key = {repo, run_id, "001"}
+
+      :ok =
+        Writer.record_phase_attempt(run_key, %{
+          attempt: %{
+            feature_id: "001",
+            phase: :analyze,
+            ordinal: 1,
+            step: 5,
+            label: "analyze",
+            started_at: DateTime.utc_now(),
+            ended_at: DateTime.utc_now(),
+            duration_ms: 1,
+            outcome: :ok,
+            model: "sonnet",
+            cost_usd: 0.0,
+            cost_kind: :estimate
+          }
+        })
+
+      assert read_feature(feature_key).advanced_with_findings == nil
+    end
+
     test "parallel writers to disjoint feature keys lose no update (FR-007, SC-008)" do
       feature_ids = for n <- 1..20, do: String.pad_leading(Integer.to_string(n), 3, "0")
       {repo, run_id} = open(@repo, feature_ids)

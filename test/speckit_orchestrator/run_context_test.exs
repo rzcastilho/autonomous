@@ -12,7 +12,8 @@ defmodule SpeckitOrchestrator.RunContextTest do
     :auto_remediation,
     :auto_remediation_threshold,
     :auto_remediation_attempt_limit,
-    :auto_remediation_model
+    :auto_remediation_model,
+    :auto_remediation_exhaustion_policy
   ]
 
   setup do
@@ -39,7 +40,8 @@ defmodule SpeckitOrchestrator.RunContextTest do
         auto_remediation: false,
         auto_remediation_threshold: :critical,
         auto_remediation_attempt_limit: 3,
-        auto_remediation_model: "opus"
+        auto_remediation_model: "opus",
+        auto_remediation_exhaustion_policy: :proceed
       ]
 
       assert RunContext.capture(opts) == %RunContext{
@@ -50,7 +52,8 @@ defmodule SpeckitOrchestrator.RunContextTest do
                auto_remediation: false,
                auto_remediation_threshold: "critical",
                auto_remediation_attempt_limit: 3,
-               auto_remediation_model: "opus"
+               auto_remediation_model: "opus",
+               auto_remediation_exhaustion_policy: "proceed"
              }
     end
 
@@ -63,6 +66,7 @@ defmodule SpeckitOrchestrator.RunContextTest do
       Application.put_env(:speckit_orchestrator, :auto_remediation_threshold, :medium)
       Application.put_env(:speckit_orchestrator, :auto_remediation_attempt_limit, 4)
       Application.put_env(:speckit_orchestrator, :auto_remediation_model, "sonnet")
+      Application.put_env(:speckit_orchestrator, :auto_remediation_exhaustion_policy, :proceed)
 
       assert RunContext.capture([]) == %RunContext{
                budget_usd: 12.0,
@@ -72,7 +76,8 @@ defmodule SpeckitOrchestrator.RunContextTest do
                auto_remediation: false,
                auto_remediation_threshold: "medium",
                auto_remediation_attempt_limit: 4,
-               auto_remediation_model: "sonnet"
+               auto_remediation_model: "sonnet",
+               auto_remediation_exhaustion_policy: "proceed"
              }
     end
 
@@ -90,6 +95,7 @@ defmodule SpeckitOrchestrator.RunContextTest do
       assert ctx.auto_remediation_threshold == "high"
       assert ctx.auto_remediation_attempt_limit == 2
       assert ctx.auto_remediation_model == nil
+      assert ctx.auto_remediation_exhaustion_policy == "escalate"
     end
 
     test "auto_remediation_threshold is always stored as a string, never an atom" do
@@ -99,10 +105,23 @@ defmodule SpeckitOrchestrator.RunContextTest do
       assert RunContext.capture(auto_remediation_threshold: "low").auto_remediation_threshold ==
                "low"
     end
+
+    test "auto_remediation_exhaustion_policy is always stored as a string, never an atom (feature 021)" do
+      assert RunContext.capture(auto_remediation_exhaustion_policy: :proceed).auto_remediation_exhaustion_policy ==
+               "proceed"
+
+      assert RunContext.capture(auto_remediation_exhaustion_policy: "proceed").auto_remediation_exhaustion_policy ==
+               "proceed"
+    end
+
+    test "an opts-supplied :proceed does not change the default a later opts-less capture sees (FR-012)" do
+      RunContext.capture(auto_remediation_exhaustion_policy: :proceed)
+      assert RunContext.capture([]).auto_remediation_exhaustion_policy == "escalate"
+    end
   end
 
   describe "to_map/1" do
-    test "produces a JSON-ready string-keyed map of exactly the eight settings" do
+    test "produces a JSON-ready string-keyed map of exactly the nine settings" do
       ctx = %RunContext{
         budget_usd: 25.0,
         plan_stack: ["research", "plan"],
@@ -111,7 +130,8 @@ defmodule SpeckitOrchestrator.RunContextTest do
         auto_remediation: true,
         auto_remediation_threshold: "high",
         auto_remediation_attempt_limit: 2,
-        auto_remediation_model: nil
+        auto_remediation_model: nil,
+        auto_remediation_exhaustion_policy: "escalate"
       }
 
       assert RunContext.to_map(ctx) == %{
@@ -122,11 +142,12 @@ defmodule SpeckitOrchestrator.RunContextTest do
                "auto_remediation" => true,
                "auto_remediation_threshold" => "high",
                "auto_remediation_attempt_limit" => 2,
-               "auto_remediation_model" => nil
+               "auto_remediation_model" => nil,
+               "auto_remediation_exhaustion_policy" => "escalate"
              }
     end
 
-    test "map keys are exactly the eight settings, nothing else" do
+    test "map keys are exactly the nine settings, nothing else" do
       map = RunContext.to_map(%RunContext{})
 
       assert Map.keys(map) |> Enum.sort() ==
@@ -138,7 +159,8 @@ defmodule SpeckitOrchestrator.RunContextTest do
                  "auto_remediation",
                  "auto_remediation_threshold",
                  "auto_remediation_attempt_limit",
-                 "auto_remediation_model"
+                 "auto_remediation_model",
+                 "auto_remediation_exhaustion_policy"
                ])
     end
   end
@@ -162,12 +184,13 @@ defmodule SpeckitOrchestrator.RunContextTest do
                %RunContext{pr_base: "trunk"}
     end
 
-    test "round-trips the four auto-remediation fields through to_map/from_map" do
+    test "round-trips the five auto-remediation fields through to_map/from_map" do
       ctx = %RunContext{
         auto_remediation: false,
         auto_remediation_threshold: "critical",
         auto_remediation_attempt_limit: 5,
-        auto_remediation_model: "opus"
+        auto_remediation_model: "opus",
+        auto_remediation_exhaustion_policy: "proceed"
       }
 
       assert ctx |> RunContext.to_map() |> RunContext.from_map() == ctx
@@ -196,14 +219,15 @@ defmodule SpeckitOrchestrator.RunContextTest do
 
       assert Keyword.fetch(merged, :pr_base) == :error
       assert :pr_base in fell_back
-      assert length(fell_back) == 8
+      assert length(fell_back) == 9
     end
 
     test "explicit opt > recorded > absent precedence holds for the auto-remediation fields too" do
       recorded = %RunContext{
         auto_remediation: false,
         auto_remediation_threshold: "critical",
-        auto_remediation_attempt_limit: 4
+        auto_remediation_attempt_limit: 4,
+        auto_remediation_exhaustion_policy: "proceed"
       }
 
       {merged, fell_back} = RunContext.merge([auto_remediation: true], recorded)
@@ -211,6 +235,7 @@ defmodule SpeckitOrchestrator.RunContextTest do
       assert Keyword.get(merged, :auto_remediation) == true
       assert Keyword.get(merged, :auto_remediation_threshold) == "critical"
       assert Keyword.get(merged, :auto_remediation_attempt_limit) == 4
+      assert Keyword.get(merged, :auto_remediation_exhaustion_policy) == "proceed"
       assert Keyword.fetch(merged, :auto_remediation_model) == :error
       assert :auto_remediation_model in fell_back
     end

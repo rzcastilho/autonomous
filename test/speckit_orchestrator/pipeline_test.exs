@@ -1,7 +1,7 @@
 defmodule SpeckitOrchestrator.PipelineTest do
   use ExUnit.Case, async: true
 
-  alias SpeckitOrchestrator.Pipeline
+  alias SpeckitOrchestrator.{Pipeline, Severity}
 
   @advances %{
     specify: :clarify,
@@ -103,6 +103,14 @@ defmodule SpeckitOrchestrator.PipelineTest do
   describe "analyze gate" do
     test "critical? at analyze halts" do
       assert Pipeline.next(:analyze, :ok, %{critical?: true}) == {:halted, :critical_finding}
+
+      # Feature 021 regression pin (FR-005, SC-003): no exhaustion policy
+      # value reaches a Critical finding — it always halts.
+      assert Pipeline.next(:analyze, :ok, %{
+               critical?: true,
+               exhausted?: true,
+               exhaustion_policy: :proceed
+             }) == {:halted, :critical_finding}
     end
 
     test "critical? false at analyze advances" do
@@ -117,6 +125,14 @@ defmodule SpeckitOrchestrator.PipelineTest do
   describe "analyze high gate" do
     test "high? at analyze escalates for a human" do
       assert Pipeline.next(:analyze, :ok, %{high?: true}) == {:escalated, :high_findings}
+
+      # Feature 021 regression pin (SC-002): the exhaustion policy — absent,
+      # or explicitly :escalate — must not change this pre-021 case.
+      assert Pipeline.next(:analyze, :ok, %{high?: true, exhaustion_policy: :escalate}) ==
+               {:escalated, :high_findings}
+
+      assert Pipeline.next(:analyze, :ok, %{high?: true, exhausted?: true}) ==
+               {:escalated, :high_findings}
     end
 
     test "critical? outranks high? (halt beats escalate)" do
@@ -138,6 +154,16 @@ defmodule SpeckitOrchestrator.PipelineTest do
 
       assert Pipeline.next(:analyze, :ok, %{high?: true, gate_threshold: :high}) ==
                {:escalated, :high_findings}
+
+      # Feature 021 regression pin (SC-002): an absent/explicit-:escalate
+      # exhaustion policy must not change this pre-021, pre-threshold case
+      # even once exhausted.
+      assert Pipeline.next(:analyze, :ok, %{
+               high?: true,
+               gate_threshold: :high,
+               exhausted?: true,
+               exhaustion_policy: :escalate
+             }) == {:escalated, :high_findings}
     end
 
     test "threshold :critical lets a High finding advance instead of escalating" do
@@ -172,6 +198,121 @@ defmodule SpeckitOrchestrator.PipelineTest do
         # exactly as they do today.
         assert Pipeline.next(:analyze, :ok, %{gate_threshold: threshold}) == {:cont, :implement}
       end
+    end
+  end
+
+  # Feature 021: the exhaustion policy reaches row 3 of the amended analyze
+  # gate only when the loop actually exhausted its attempts on a High finding
+  # the threshold would otherwise escalate. Absent signals (`exhausted?`,
+  # `exhaustion_policy`) must reproduce the pre-021 gate exactly.
+  describe "exhaustion policy gate (feature 021)" do
+    test "high? + exhausted? + policy :proceed at threshold :high advances (FR-004)" do
+      assert Pipeline.next(:analyze, :ok, %{
+               high?: true,
+               exhausted?: true,
+               exhaustion_policy: :proceed,
+               gate_threshold: :high
+             }) == {:cont, :implement}
+    end
+
+    test "the same signals with exhaustion_policy :escalate still escalates (FR-003)" do
+      assert Pipeline.next(:analyze, :ok, %{
+               high?: true,
+               exhausted?: true,
+               exhaustion_policy: :escalate,
+               gate_threshold: :high
+             }) == {:escalated, :high_findings}
+    end
+
+    test "the same signals with exhausted? absent still escalates (SC-002)" do
+      assert Pipeline.next(:analyze, :ok, %{
+               high?: true,
+               exhaustion_policy: :proceed,
+               gate_threshold: :high
+             }) == {:escalated, :high_findings}
+    end
+
+    test "the same signals with exhaustion_policy absent still escalates (FR-002 default)" do
+      assert Pipeline.next(:analyze, :ok, %{
+               high?: true,
+               exhausted?: true,
+               gate_threshold: :high
+             }) == {:escalated, :high_findings}
+    end
+
+    test "exhausted? + policy :proceed at a below-threshold gate_threshold advances anyway (row 2, unchanged)" do
+      assert Pipeline.next(:analyze, :ok, %{
+               high?: true,
+               exhausted?: true,
+               exhaustion_policy: :escalate,
+               gate_threshold: :critical
+             }) == {:cont, :implement}
+    end
+
+    test "I1 — critical? always halts, for every threshold and every policy (SC-003)" do
+      for threshold <- Severity.values(),
+          policy <- [:escalate, :proceed],
+          exhausted? <- [true, false] do
+        assert Pipeline.next(:analyze, :ok, %{
+                 critical?: true,
+                 high?: true,
+                 gate_threshold: threshold,
+                 exhaustion_policy: policy,
+                 exhausted?: exhausted?
+               }) == {:halted, :critical_finding}
+      end
+    end
+
+    test "I2 — exhausted? absent or false reproduces the pre-021 outcome for the same map" do
+      base = %{high?: true, gate_threshold: :high}
+
+      for exhausted? <- [nil, false],
+          policy <- [:escalate, :proceed] do
+        signals =
+          base
+          |> Map.put(:exhaustion_policy, policy)
+          |> then(fn s ->
+            if is_nil(exhausted?), do: s, else: Map.put(s, :exhausted?, exhausted?)
+          end)
+
+        assert Pipeline.next(:analyze, :ok, signals) == {:escalated, :high_findings}
+      end
+    end
+
+    test "I3 — policy :escalate reproduces the pre-021 outcome for the same map, exhausted or not" do
+      for threshold <- Severity.values(), exhausted? <- [true, false] do
+        signals = %{
+          high?: true,
+          gate_threshold: threshold,
+          exhaustion_policy: :escalate,
+          exhausted?: exhausted?
+        }
+
+        expected =
+          if Severity.at_or_above?(:high, threshold),
+            do: {:escalated, :high_findings},
+            else: {:cont, :implement}
+
+        assert Pipeline.next(:analyze, :ok, signals) == expected
+      end
+    end
+
+    test "I4 — the policy never changes a non-analyze phase's outcome" do
+      for phase <- [:specify, :clarify, :plan, :tasks, :implement, :converge] do
+        assert Pipeline.next(phase, :ok, %{
+                 high?: true,
+                 exhausted?: true,
+                 exhaustion_policy: :proceed
+               }) == Pipeline.next(phase, :ok, %{})
+      end
+    end
+
+    test "I4 — the policy never changes an :error outcome at analyze" do
+      assert Pipeline.next(:analyze, :error, %{
+               high?: true,
+               exhausted?: true,
+               exhaustion_policy: :proceed
+             }) == {:failed, {:analyze, :error}}
     end
   end
 
