@@ -84,6 +84,12 @@ defmodule SpeckitOrchestrator.FeatureRunner do
       position (checkpoint-implement-chunk.md §3); threaded straight into
       `ChunkRunner.run/1`'s `:start_task_phase`. `nil` (default) resolves
       against the checkpoint instead.
+    * `:stack_base` — the git ref this feature's branch was forked from (the
+      stacked workflow's resolved stack base: the previous feature's branch, or
+      `Config.pr_base()`). Used **only** as the reference for the `:done`
+      squash's fork-point lookup. `nil` (default) resolves to
+      `Config.pr_base()` at squash time, which is correct for the bottom of the
+      stack and for ad-hoc features.
     * `:reset_implement_sessions` — `true` clears the carried
       `implement_chunk.sessions_used` to `0` before the chunk loop starts
       (FR-013b — an explicit grant of more session budget). Default `false`
@@ -102,6 +108,10 @@ defmodule SpeckitOrchestrator.FeatureRunner do
     remediation_model = Keyword.get(opts, :remediation_model)
     run_context = Keyword.get(opts, :run_context)
     layout = Keyword.get(opts, :layout)
+    # Resolved lazily at squash time (`merge_base/3`) — a dry run with no
+    # worktree never squashes, and must not pay for a `Config.pr_base()` that
+    # may not be configured at all.
+    stack_base = Keyword.get(opts, :stack_base)
     # The store's `{repo_id, run_id}` for this run (018) — `nil` for a caller
     # with no store-backed run (most unit tests calling this module directly),
     # in which case every store write below is a silent no-op.
@@ -161,7 +171,7 @@ defmodule SpeckitOrchestrator.FeatureRunner do
         {message, pr} = commit_message_and_pr(feature, status, worktree, layout)
         record_feature_terminal(run_key, feature, status, reason, pr)
         record_diversion_escalation(run_key, feature, agent, status, reason)
-        handle_worktree(feature, status, worktree, message)
+        handle_worktree(feature, status, worktree, message, stack_base)
         emit_terminal(feature, status, reason, agent.state.cost_total)
         notify(notify, feature.id, status, reason)
         stop_agent(pid)
@@ -174,7 +184,7 @@ defmodule SpeckitOrchestrator.FeatureRunner do
         }
       catch
         kind, err ->
-          handle_worktree(feature, :failed, worktree, nil)
+          handle_worktree(feature, :failed, worktree, nil, stack_base)
           record_feature_terminal(run_key, feature, :failed, {kind, err}, nil)
           notify(notify, feature.id, :failed, {kind, err})
           stop_agent(pid)
@@ -588,31 +598,46 @@ defmodule SpeckitOrchestrator.FeatureRunner do
     AgentServer.call(pid, Signal.new!(type, data, source: "/runner"), timeout)
   end
 
-  defp handle_worktree(_feature, _status, nil, _message), do: :ok
+  defp handle_worktree(_feature, _status, nil, _message, _stack_base), do: :ok
 
   # Commit whatever the pipeline generated onto the feature branch BEFORE the
   # worktree is torn down — otherwise a successful run's spec/plan/tasks/code is
   # discarded on removal. `message` was authored (Claude, PR workflow) or
   # templated by `commit_message_and_pr/4` before the store write, so the git
   # history and the recorded `pr_description` always agree.
-  defp handle_worktree(_feature, :done, %Worktree{repo: repo, branch: branch} = wt, message) do
-    _ = Worktree.squash(wt, merge_base(repo, branch), message)
+  defp handle_worktree(
+         _feature,
+         :done,
+         %Worktree{repo: repo, branch: branch} = wt,
+         message,
+         stack_base
+       ) do
+    _ = Worktree.squash(wt, merge_base(repo, branch, stack_base), message)
     Worktree.remove(wt)
   end
 
-  defp handle_worktree(feature, status, %Worktree{} = wt, _message) do
+  defp handle_worktree(feature, status, %Worktree{} = wt, _message, _stack_base) do
     _ = Worktree.commit(wt, "speckit: feature #{feature.id} pipeline artifacts (#{status})")
     Worktree.keep_for_inspection(wt)
   end
 
   # The branch's fork point, for squash/3's --soft reset target: the commit
-  # where the feature branch diverged from Config.pr_base() (the plain
-  # workflow's implicit base — its worktree is created from "HEAD" of the
-  # currently checked-out branch, which is pr_base by default — and the
-  # stacked workflow's explicit stack-base). Falls back to "HEAD" (a no-op
-  # reset) if the merge-base lookup itself fails.
-  defp merge_base(repo, branch) do
-    case System.cmd("git", ["-C", repo, "merge-base", branch, Config.pr_base()],
+  # where the feature branch diverged from `stack_base` — the ref its worktree
+  # was actually created from (the previous feature's branch in a stacked run,
+  # `Config.pr_base()` at the bottom of the stack or for an ad-hoc feature).
+  #
+  # It must NOT be `Config.pr_base()` unconditionally. For a feature stacked on
+  # an unmerged predecessor, `merge-base(feature/002, main)` is where *001*
+  # forked from main, so the soft reset walks back past 001's commit entirely:
+  # the squashed 002 is reparented onto `main`, carrying 001's changes in its
+  # own diff. Its PR against `feature/001-…` then re-proposes 001's work and
+  # conflicts with it file for file.
+  #
+  # Falls back to "HEAD" (a no-op reset) if the merge-base lookup itself fails.
+  defp merge_base(repo, branch, stack_base) do
+    against = stack_base || Config.pr_base()
+
+    case System.cmd("git", ["-C", repo, "merge-base", branch, against],
            stderr_to_stdout: true
          ) do
       {out, 0} -> String.trim(out)

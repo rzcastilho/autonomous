@@ -241,7 +241,10 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
   defp git!(repo, args),
     do: {_, 0} = System.cmd("git", ["-C", repo | args], stderr_to_stdout: true)
 
-  defp scaffolded_worktree do
+  # `:stack_base` builds an extra branch off main carrying its own commit and
+  # forks the feature's worktree from it, modelling the stacked workflow's
+  # `main <- 000 <- 001` shape.
+  defp scaffolded_worktree(opts \\ []) do
     repo = Path.join(System.tmp_dir!(), "fr_repo_#{System.unique_integer([:positive])}")
     root = Path.join(System.tmp_dir!(), "fr_root_#{System.unique_integer([:positive])}")
     File.mkdir_p!(repo)
@@ -256,12 +259,26 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
     git!(repo, ["add", "-A"])
     git!(repo, ["commit", "-q", "-m", "base"])
 
+    base =
+      case Keyword.get(opts, :stack_base) do
+        nil ->
+          "HEAD"
+
+        branch ->
+          git!(repo, ["checkout", "-q", "-b", branch])
+          File.write!(Path.join(repo, "below.txt"), "from the branch below\n")
+          git!(repo, ["add", "-A"])
+          git!(repo, ["commit", "-q", "-m", "below"])
+          git!(repo, ["checkout", "-q", "main"])
+          branch
+      end
+
     on_exit(fn ->
       File.rm_rf(repo)
       File.rm_rf(root)
     end)
 
-    {:ok, wt} = Worktree.create(feature(), repo: repo, worktree_root: root)
+    {:ok, wt} = Worktree.create(feature(), repo: repo, worktree_root: root, base: base)
     wt
   end
 
@@ -867,6 +884,47 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
 
     {log, 0} = System.cmd("git", ["-C", wt.repo, "log", "--format=%s", wt.branch])
     refute log =~ "checkpoint after"
+  end
+
+  @tag :integration
+  test "on :done, the squash forks from :stack_base, so a stacked feature stays a child of the branch below it" do
+    # The stack: main <- feature/000-below <- (this feature). Squashing against
+    # Config.pr_base() ("main") instead of the stack base would reset past
+    # 000's commit, reparenting this feature onto main and swallowing 000's
+    # changes into its own diff — which is what made the stacked PR conflict
+    # with the branch it targets.
+    wt = scaffolded_worktree(stack_base: "feature/000-below")
+
+    {below_sha, 0} =
+      System.cmd("git", ["-C", wt.repo, "rev-parse", "feature/000-below"])
+
+    below_sha = String.trim(below_sha)
+
+    result =
+      FeatureRunner.run(feature(),
+        worktree: wt,
+        notify: self(),
+        stack_base: "feature/000-below"
+      )
+
+    assert result.status == :done
+
+    # Exactly one commit on top of the branch below — not on top of main.
+    {count, 0} =
+      System.cmd("git", ["-C", wt.repo, "rev-list", "--count", "#{below_sha}..#{wt.branch}"])
+
+    assert String.trim(count) == "1"
+
+    # …and that commit's parent is the branch below itself.
+    {parent, 0} = System.cmd("git", ["-C", wt.repo, "rev-parse", "#{wt.branch}^"])
+    assert String.trim(parent) == below_sha
+
+    # The file 000 added is untouched by this feature's diff — it is inherited
+    # history, not re-proposed content.
+    {diff, 0} =
+      System.cmd("git", ["-C", wt.repo, "diff", "--name-only", "#{below_sha}..#{wt.branch}"])
+
+    refute diff =~ "below.txt"
   end
 
   @tag :integration

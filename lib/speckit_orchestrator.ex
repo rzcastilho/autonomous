@@ -1472,9 +1472,12 @@ defmodule SpeckitOrchestrator do
     end
   end
 
-  # `base` (the stack's current top) is used only for a never-started
-  # :pending feature; a checkpointed feature ignores it and reuses/recreates
-  # its own existing worktree/branch.
+  # `base` (the stack's current top) is what a never-started :pending feature
+  # branches from; a checkpointed feature does not re-branch — it
+  # reuses/recreates its own existing worktree/branch — but still passes `base`
+  # on as `:stack_base`, the reference the `:done` squash resolves its fork
+  # point against. Dropping it there is what reparented a resumed feature's
+  # squashed commit onto `pr_base`, flattening the stack.
   defp resume_run_executor(run_context, layout, resume_phases, run_key) do
     fn feature, base, notify ->
       Task.Supervisor.start_child(SpeckitOrchestrator.RunnerSup, fn ->
@@ -1496,6 +1499,7 @@ defmodule SpeckitOrchestrator do
         run_from_checkpoint(
           feature,
           checkpoint,
+          base,
           notify,
           run_context,
           layout,
@@ -1514,6 +1518,7 @@ defmodule SpeckitOrchestrator do
   defp run_from_checkpoint(
          feature,
          checkpoint,
+         base,
          notify,
          run_context,
          layout,
@@ -1537,6 +1542,7 @@ defmodule SpeckitOrchestrator do
               start_phase: start_phase,
               run_context: run_context,
               layout: layout,
+              stack_base: base,
               run_key: run_key
             )
 
@@ -1561,6 +1567,7 @@ defmodule SpeckitOrchestrator do
           notify: notify,
           run_context: run_context,
           layout: layout,
+          stack_base: base || Config.pr_base(),
           run_key: run_key
         )
 
@@ -1644,8 +1651,11 @@ defmodule SpeckitOrchestrator do
   # a distinct worktree error, not silently re-created from HEAD. Shaped as an
   # `:executor` (feature, base, notify) so `run_stacked/4`'s stacked_runner
   # wraps it with stacking + preflight + PR-on-:done (FR-009). `base` (the
-  # current stack top) is ignored: a resumed feature reuses/recreates its own
-  # existing worktree/branch, not a fresh one branched off the stack.
+  # current stack top) does not pick a branch point here — a resumed feature
+  # reuses/recreates its own existing worktree/branch, not a fresh one branched
+  # off the stack — but it is still passed as `:stack_base` so the `:done`
+  # squash resolves its fork point against the branch this feature actually
+  # sits on rather than `pr_base`.
   defp resume_executor(
          start_phase,
          prompt,
@@ -1656,7 +1666,7 @@ defmodule SpeckitOrchestrator do
          start_task_phase,
          run_key
        ) do
-    fn feature, _base, notify ->
+    fn feature, base, notify ->
       Task.Supervisor.start_child(SpeckitOrchestrator.RunnerSup, fn ->
         case resume_worktree(feature, layout) do
           {:ok, worktree} ->
@@ -1672,6 +1682,7 @@ defmodule SpeckitOrchestrator do
               layout: layout,
               start_task_phase: start_task_phase,
               reset_implement_sessions: true,
+              stack_base: base || Config.pr_base(),
               run_key: run_key
             )
 
@@ -1917,7 +1928,7 @@ defmodule SpeckitOrchestrator do
       Task.Supervisor.start_child(SpeckitOrchestrator.RunnerSup, fn ->
         case Worktree.create(feature, [base: base] ++ worktree_create_opts(layout)) do
           {:ok, worktree} ->
-            run_seeded(feature, worktree, description, notify, run_context, layout)
+            run_seeded(feature, worktree, base, description, notify, run_context, layout)
 
           {:error, reason} ->
             notify.(feature.id, :failed, {:worktree, reason})
@@ -1928,7 +1939,7 @@ defmodule SpeckitOrchestrator do
     end
   end
 
-  defp run_seeded(feature, worktree, description, notify, run_context, layout) do
+  defp run_seeded(feature, worktree, base, description, notify, run_context, layout) do
     case write_seed(worktree, feature, description, layout) do
       :ok ->
         FeatureRunner.run(feature,
@@ -1937,6 +1948,7 @@ defmodule SpeckitOrchestrator do
           notify: notify,
           run_context: run_context,
           layout: layout,
+          stack_base: base,
           run_key: current_run_key()
         )
 
@@ -2146,6 +2158,7 @@ defmodule SpeckitOrchestrator do
             notify: notify,
             run_context: run_context,
             layout: layout,
+            stack_base: base,
             run_key: current_run_key()
           )
 
