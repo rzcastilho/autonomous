@@ -90,11 +90,13 @@ dependency, fully unit-testable:
   `ANTHROPIC_DEFAULT_*_MODEL` env. `model_for/1` raises on an unrouted phase.
 - `Pipeline` — the pure phase transition table. `next/3` is the whole decision
   surface: advance, or divert via the **clarify gate** (`## NEEDS HUMAN` →
-  `:escalated`) or **analyze gate** (Critical finding → `:halted`
-  unconditionally at every policy and threshold; High → `:escalated` when the
-  run's severity threshold is High or lower, **unless** the loop exhausted its
-  attempts on that finding and the run's exhaustion policy is `:proceed`, in
-  which case it advances instead). The gate is threshold-governed as of
+  `:escalated`) or **analyze gate** (Critical finding → `:halted`; High →
+  `:escalated` when the run's severity threshold is High or lower — either,
+  **unless** the loop exhausted its attempts on that finding and the run's
+  exhaustion policy is `:proceed`, in which case it advances instead). The
+  clarify gate is the one that has no knobs at all: `## NEEDS HUMAN` escalates
+  unconditionally, which is why a run configured with `:proceed` still stops
+  there. The analyze gate is threshold-governed as of
   constitution 2.0.0: one knob (`auto_remediation_threshold`, signalled as
   `gate_threshold`, default `:high`) decides both when auto-remediation runs
   and when the gate diverts, so a run pinned to `:critical` advances past a
@@ -102,8 +104,10 @@ dependency, fully unit-testable:
   second knob, `auto_remediation_exhaustion_policy` (signalled as
   `:exhaustion_policy`, default `:escalate`), consulted only on the exhaustion
   branch — with the loop absent or `:escalate` chosen the gate is
-  byte-identical to before 021. Critical outranks every policy and threshold
-  and can never be configured away. Gate signals are extracted upstream and
+  byte-identical to before 021. Constitution 4.0.0 brings **Critical** under
+  that same policy: no threshold can reach it (Critical is the ceiling of the
+  severity order), and only an exhausted loop plus an explicit `:proceed`
+  advances past one — every default run still halts. Gate signals are extracted upstream and
   passed in, keeping this module side-effect free. `Pipeline` still sees
   exactly one `:analyze` outcome per feature run.
 - `Severity` / `Remediation` (feature 017; exhaustion policy, feature 021) — a

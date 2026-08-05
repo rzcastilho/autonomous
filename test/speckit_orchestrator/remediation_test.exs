@@ -329,9 +329,58 @@ defmodule SpeckitOrchestrator.RemediationTest do
       assert Remediation.exhaustion_advance(signals, advance_state()) == :none
     end
 
-    test "does not mark a Critical finding — halted before this is ever consulted (FR-005)" do
+    # Constitution 4.0.0: a Critical advance is the same policy decision as a
+    # High one, so it is marked by the same rule — and `max_severity` reads
+    # `critical`, which is what tells a PR reviewer a constitution violation
+    # (not a quality finding) was advanced past.
+    test "marks a Critical finding advanced past by an exhausted :proceed run" do
       signals = %{
         exhausted?: true,
+        exhaustion_policy: :proceed,
+        high?: false,
+        critical?: true,
+        gate_threshold: :high
+      }
+
+      state = advance_state(%{findings: [%{"severity" => "critical", "title" => "float money"}]})
+
+      assert {:mark, record} = Remediation.exhaustion_advance(signals, state)
+      assert record.max_severity == "critical"
+      assert record.policy == "proceed"
+      assert record.findings == [%{"severity" => "critical", "title" => "float money"}]
+    end
+
+    # A Critical is above every threshold, so unlike High it is marked no
+    # matter what the threshold was set to — the gate would have diverted it
+    # in every one of those runs.
+    test "marks a Critical finding at threshold :critical too" do
+      signals = %{
+        exhausted?: true,
+        exhaustion_policy: :proceed,
+        high?: true,
+        critical?: true,
+        gate_threshold: :critical
+      }
+
+      assert {:mark, record} = Remediation.exhaustion_advance(signals, advance_state())
+      assert record.threshold == "critical"
+    end
+
+    test "does not mark a Critical the policy did not advance (:escalate halts it)" do
+      signals = %{
+        exhausted?: true,
+        exhaustion_policy: :escalate,
+        high?: true,
+        critical?: true,
+        gate_threshold: :high
+      }
+
+      assert Remediation.exhaustion_advance(signals, advance_state()) == :none
+    end
+
+    test "does not mark a Critical the loop never exhausted its attempts on" do
+      signals = %{
+        exhausted?: false,
         exhaustion_policy: :proceed,
         high?: true,
         critical?: true,
@@ -413,6 +462,32 @@ defmodule SpeckitOrchestrator.RemediationTest do
       assert note =~ "Severity threshold: `high`"
       assert note =~ "tasks.md has no task for FR-004"
       assert note =~ "plan.md wording nit"
+
+      # A High advance says what the gate would have done instead: escalate.
+      assert note =~ "instead of escalating to a human"
+      refute note =~ "constitution Critical finding was advanced past"
+    end
+
+    # Constitution 4.0.0 makes the PR body the only gate left in front of an
+    # advanced-past Critical, and requires the note to say so in those terms
+    # rather than leave it to be inferred from a severity label in a list.
+    test "names a Critical advance as a constitution violation with no gate left" do
+      record = %{
+        policy: "proceed",
+        attempts_used: 2,
+        attempt_limit: 2,
+        threshold: "high",
+        max_severity: "critical",
+        findings: [%{"severity" => "critical", "title" => "money stored as float"}],
+        advanced_at: ~U[2026-08-05 12:00:00Z]
+      }
+
+      note = Remediation.pr_note(record)
+
+      assert note =~ "instead of halting on a constitution Critical finding"
+      assert note =~ "A constitution Critical finding was advanced past."
+      assert note =~ "this pull request is the last review"
+      assert note =~ "money stored as float"
     end
   end
 
