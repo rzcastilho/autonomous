@@ -207,6 +207,108 @@ defmodule SpeckitOrchestrator.Web.EscalationsLiveTest do
     assert html =~ "sess-21"
   end
 
+  # Regression (019), the recovery half of the same blind spot: the page's
+  # *display* resolves the run parked-first, but its resume handler called
+  # `SpeckitOrchestrator.resume/2` raw — and that reads the run through
+  # `Store.current_run_key/1`, which only ever finds an `:in_flight` one. So
+  # every resume from a genuinely parked run (i.e. every real escalation)
+  # failed `:no_manifest` while the form sat there fully populated.
+  # `continue_run/1` is the parked-run door and takes the same options.
+  test "resume from a parked run continues it instead of failing :no_manifest", %{conn: conn} do
+    run_key =
+      seed_store_run([
+        {feat("022", "slug-022"), :clarify, :escalated,
+         reason: "needs human", session_id: "sess-22"}
+      ])
+
+    :ok =
+      Writer.park_run(run_key, %{stopped_by: "022", status: :escalated, reason: "needs human"})
+
+    pid = start_coordinator([feat("022", "slug-022")], %{"022" => {:escalated, "needs human"}})
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    Application.put_env(:speckit_orchestrator, :console_test_runner, fn _feature, _notify ->
+      :ok
+    end)
+
+    {:ok, view, _html} = live(conn, "/escalations")
+
+    html =
+      render_submit(view, "resume", %{
+        "feature_id" => "022",
+        "prompt" => "the palette collapses during drag",
+        "from" => "clarify"
+      })
+
+    assert html =~ "Feature 022 resumed"
+    refute html =~ "no_manifest"
+    assert {:ok, %{run: %{state: :in_flight}}} = Store.run(run_key)
+  end
+
+  # `continue_run/1` always resumes the run's own `stopped_by`, so a parked
+  # run recovers through the feature that parked it. Silently applying this
+  # operator's guidance to a different feature would be worse than refusing.
+  test "resume targeting a feature other than the one that parked the run refuses loudly", %{
+    conn: conn
+  } do
+    run_key =
+      seed_store_run([
+        {feat("023", "slug-023"), :clarify, :escalated, reason: "needs human"},
+        {feat("024", "slug-024"), :analyze, :halted, reason: "critical finding"}
+      ])
+
+    :ok =
+      Writer.park_run(run_key, %{stopped_by: "023", status: :escalated, reason: "needs human"})
+
+    pid =
+      start_coordinator([feat("023", "slug-023"), feat("024", "slug-024")], %{})
+
+    Coordinator.notify(pid, "023", :escalated, "needs human")
+    Coordinator.notify(pid, "024", :halted, "critical finding")
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    {:ok, view, _html} = live(conn, "/escalations")
+
+    html =
+      render_submit(view, "resume", %{
+        "feature_id" => "024",
+        "prompt" => "",
+        "from" => "analyze"
+      })
+
+    assert html =~ "the run is parked at 023"
+    assert {:ok, %{run: %{state: :parked}}} = Store.run(run_key)
+  end
+
+  # The restart half: with a parked run `resolve/1` refuses
+  # `:decision_required` without an explicit decision, and the fresh `run/1`
+  # that follows would be refused too (a parked run is never superseded
+  # automatically). A full restart is the operator closing the stopped chain
+  # out and starting over, so the page decides `:end`.
+  test "full restart from a parked run ends it, then starts a fresh run", %{conn: conn} do
+    run_key =
+      seed_store_run([{feat("107", "slug-107"), :clarify, :escalated, reason: "needs human"}])
+
+    :ok =
+      Writer.park_run(run_key, %{stopped_by: "107", status: :escalated, reason: "needs human"})
+
+    pid = start_coordinator([feat("107", "slug-107")], %{"107" => {:escalated, "needs human"}})
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    Application.put_env(:speckit_orchestrator, :console_test_runner, fn _feature, _notify ->
+      :ok
+    end)
+
+    {:ok, view, _html} = live(conn, "/escalations")
+
+    html = render_click(view, "full_restart", %{"id" => "107"})
+
+    assert html =~ "restarted from phase 1"
+    refute html =~ "decision_required"
+    assert {:ok, %{run: %{state: :completed, outcome: :ended_by_operator}}} =
+             Store.run(run_key)
+  end
+
   test "lists every diverted feature with divert reason + checkpoint pointer", %{conn: conn} do
     seed_store_run([
       {feat("e1", "slug-e1"), :clarify, :escalated, reason: "needs human", session_id: "sess-1"},

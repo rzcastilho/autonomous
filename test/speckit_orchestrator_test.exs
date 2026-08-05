@@ -1,6 +1,11 @@
 defmodule SpeckitOrchestratorTest do
-  # async: false — starts a named Coordinator via the facade.
-  use ExUnit.Case, async: false
+  # async: false — starts a named Coordinator via the facade. StoreCase (not
+  # plain ExUnit.Case) because `run/1`'s preflight refuses
+  # `{:parked_run, …}` for a repository that already has one, and the store is
+  # node-global: any earlier test in the suite that parked a run (several
+  # console and store tests do) made this one fail on a repository it never
+  # touched. Clearing the tables first is exactly what StoreCase exists for.
+  use SpeckitOrchestrator.StoreCase, async: false
   import ExUnit.CaptureIO
 
   alias SpeckitOrchestrator.Feature
