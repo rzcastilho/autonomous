@@ -47,20 +47,24 @@ defmodule SpeckitOrchestrator.Web.RunDetailLive do
   end
 
   @impl true
-  def handle_event("open_transcript", %{"ref" => ref}, socket) do
-    attempt_id = decode_attempt_ref(socket.assigns.run_id, ref)
+  # The row's Transcript button is a disclosure, not a one-way open: clicking
+  # the attempt whose transcript is already showing collapses it. The panel
+  # therefore needs no close affordance of its own — the control that opened it
+  # is the control that closes it, and it stays on the row it belongs to.
+  def handle_event("toggle_transcript", %{"ref" => ref}, socket) do
+    if showing?(socket, ref) do
+      {:noreply, assign(socket, transcript: nil)}
+    else
+      attempt_id = decode_attempt_ref(socket.assigns.run_id, ref)
 
-    transcript =
-      case SpeckitOrchestrator.transcript(attempt_id) do
-        {:ok, t} -> Map.from_struct(t)
-        {:error, reason} -> %{error: reason}
-      end
+      transcript =
+        case SpeckitOrchestrator.transcript(attempt_id) do
+          {:ok, t} -> Map.from_struct(t)
+          {:error, reason} -> %{error: reason}
+        end
 
-    {:noreply, assign(socket, transcript: Map.put(transcript, :ref, ref))}
-  end
-
-  def handle_event("close_transcript", _params, socket) do
-    {:noreply, assign(socket, transcript: nil)}
+      {:noreply, assign(socket, transcript: Map.put(transcript, :ref, ref))}
+    end
   end
 
   def handle_event("resolve_escalation", %{"ref" => ref} = params, socket) do
@@ -113,6 +117,13 @@ defmodule SpeckitOrchestrator.Web.RunDetailLive do
     [feature_id, ordinal] = String.split(ref, "::", parts: 2)
     {repo_id(), run_id, feature_id, String.to_integer(ordinal)}
   end
+
+  # One transcript is open at a time, keyed by its attempt ref — the same
+  # predicate the row's disclosure state and the toggle handler both read, so
+  # the button's `aria-expanded` cannot drift from what is actually rendered.
+  defp showing?(%{assigns: assigns}, ref), do: showing?(assigns, ref)
+  defp showing?(%{transcript: %{ref: ref}}, ref), do: true
+  defp showing?(_assigns, _ref), do: false
 
   defp repo_id, do: SpeckitOrchestrator.RepoIdentity.partition(Config.repo())
 
@@ -200,10 +211,11 @@ defmodule SpeckitOrchestrator.Web.RunDetailLive do
                     <td>
                       <button
                         type="button"
-                        phx-click="open_transcript"
+                        phx-click="toggle_transcript"
                         phx-value-ref={attempt_ref(a)}
                         class="btn-secondary"
                         data-action={"transcript-#{attempt_ref(a)}"}
+                        aria-expanded={to_string(showing?(assigns, attempt_ref(a)))}
                       >
                         Transcript
                       </button>
@@ -216,12 +228,7 @@ defmodule SpeckitOrchestrator.Web.RunDetailLive do
                   >
                     <td colspan="7">
                       <div class="transcript-panel" data-transcript={@transcript.ref}>
-                        <div class="checkpoint-box-label">
-                          TRANSCRIPT
-                          <button type="button" phx-click="close_transcript" class="btn-secondary">
-                            &times;
-                          </button>
-                        </div>
+                        <div class="checkpoint-box-label">TRANSCRIPT</div>
                         <p :if={@transcript[:error]} class="field-error">
                           {inspect(@transcript.error)}
                         </p>

@@ -116,8 +116,34 @@ defmodule SpeckitOrchestrator.Web.RunDetailLiveTest do
     {:ok, view, html} = live(conn, "/runs/#{run_id}")
     refute html =~ "verbatim transcript body"
 
-    html = render_click(view, "open_transcript", %{"ref" => "001::specify::1"})
+    html = render_click(view, "toggle_transcript", %{"ref" => "001::specify::1"})
     assert html =~ "verbatim transcript body"
+  end
+
+  test "the Transcript button toggles its own panel shut, and swaps between attempts", %{
+    conn: conn,
+    repo_id: repo_id
+  } do
+    run_id = open(repo_id, ["001"])
+    record_attempt(repo_id, run_id, "001", :specify, 1)
+    record_attempt(repo_id, run_id, "001", :plan, 1)
+
+    {:ok, view, _html} = live(conn, "/runs/#{run_id}")
+
+    html = render_click(view, "toggle_transcript", %{"ref" => "001::specify::1"})
+    assert html =~ ~s(data-transcript-row="001::specify::1")
+
+    # Same attempt again — the button that opened the panel closes it, so the
+    # panel needs no close control of its own.
+    html = render_click(view, "toggle_transcript", %{"ref" => "001::specify::1"})
+    refute html =~ ~s(data-transcript-row="001::specify::1")
+    refute html =~ "verbatim transcript body"
+
+    # A different attempt replaces the open one rather than toggling it shut.
+    _reopened = render_click(view, "toggle_transcript", %{"ref" => "001::specify::1"})
+    html = render_click(view, "toggle_transcript", %{"ref" => "001::plan::1"})
+    assert html =~ ~s(data-transcript-row="001::plan::1")
+    refute html =~ ~s(data-transcript-row="001::specify::1")
   end
 
   test "resolve_escalation action clears the open escalation (FR-026)", %{
