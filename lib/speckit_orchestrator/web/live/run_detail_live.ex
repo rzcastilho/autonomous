@@ -9,9 +9,10 @@ defmodule SpeckitOrchestrator.Web.RunDetailLive do
   query logic of its own (FR-030c).
 
   Actions: export the run (`export_run/3`, written under
-  `<autonomous_root>/exports/`) and resolve an open escalation
+  `<autonomous_root>/exports/`) and annotate an open escalation
   (`resolve_escalation/2`, FR-026 — records a resolution, never deletes the
-  entry).
+  entry). Recovery itself is *not* an action here: a diverted feature's
+  checkpoint links to `/escalations`, which owns `resume/2` and full restart.
   """
 
   use SpeckitOrchestrator.Web, :live_view
@@ -117,6 +118,28 @@ defmodule SpeckitOrchestrator.Web.RunDetailLive do
 
   defp safe_atom(s), do: String.to_existing_atom(s)
 
+  # ---- resolution + recovery affordances ------------------------------------
+
+  # `resolve_escalation/2` (FR-026) records `by` and `note` alongside
+  # `resolved_at`, but only the timestamp was ever rendered — the operator's
+  # own account of *why* they closed the escalation was reachable nowhere but
+  # `Store.Export`'s JSON. Surfaced here so the console shows what it stores.
+  defp resolution_detail(%{resolution: %{} = resolution}) do
+    for key <- [:by, :note],
+        value = blank_to_nil(to_string(Map.get(resolution, key) || "")),
+        do: {key, value}
+  end
+
+  defp resolution_detail(_escalation), do: []
+
+  # This page is the post-mortem, not a control surface: recovery forms live
+  # once, on `/escalations` (018, T046-T050). A diverted feature's checkpoint
+  # links out to them rather than duplicating `resume/2`'s guidance,
+  # start-phase override, and task-phase picker in a second LiveView —
+  # `FeatureDrawerComponent` links out from the drawer for the same reason.
+  defp diverted?(%{status: status}), do: status in [:escalated, :halted, :failed]
+  defp diverted?(_feature), do: false
+
   # ---- advanced-with-findings (021, contracts/advanced-record.md §4.2) ------
 
   defp finding_severity(finding), do: Map.get(finding, "severity", "unknown")
@@ -220,6 +243,14 @@ defmodule SpeckitOrchestrator.Web.RunDetailLive do
                 <dt>reason</dt>
                 <dd>{inspect(f.checkpoint.reason)}</dd>
               </dl>
+              <a
+                :if={diverted?(f)}
+                href={"/escalations#escalation-#{f.feature_id}"}
+                class="btn-secondary"
+                data-action="run-detail-resume"
+              >
+                resume/2 from checkpoint
+              </a>
             </div>
 
             <div :if={f.remediation_attempts != []} data-remediation-attempts>
@@ -272,6 +303,17 @@ defmodule SpeckitOrchestrator.Web.RunDetailLive do
                   </span>
                 </div>
                 <pre>reason: {inspect(e.reason)} / evidence: {inspect(e.evidence)}</pre>
+
+                <div
+                  :if={resolution_detail(e) != []}
+                  class="run-context"
+                  data-resolution={escalation_ref(e)}
+                >
+                  <span :for={{label, value} <- resolution_detail(e)} class="run-context-chip">
+                    {label}: <span>{value}</span>
+                  </span>
+                </div>
+
                 <form
                   :if={!e.resolution}
                   phx-submit="resolve_escalation"
@@ -284,8 +326,11 @@ defmodule SpeckitOrchestrator.Web.RunDetailLive do
                     <textarea name="note" phx-debounce="200" class="resume-textarea"></textarea>
                   </label>
                   <button type="submit" class="btn-primary" data-action={"resolve-#{escalation_ref(e)}"}>
-                    &check; Resolve
+                    &check; resolve_escalation/2
                   </button>
+                  <span class="action-hint">
+                    records this note against the escalation — does not restart the feature
+                  </span>
                 </form>
               </div>
             </div>

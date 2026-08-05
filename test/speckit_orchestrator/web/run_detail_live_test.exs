@@ -142,6 +142,60 @@ defmodule SpeckitOrchestrator.Web.RunDetailLiveTest do
     assert html =~ ~s(data-marker="resolved")
   end
 
+  # `resolve_escalation/2` has always recorded `note` (and `by`) next to
+  # `resolved_at`, but the page rendered only the timestamp — the operator's
+  # account of *why* they closed the escalation was reachable nowhere but the
+  # JSON `Store.Export` writes. A write-only textarea is worse than none.
+  test "the recorded resolution note is rendered back, not just its timestamp", %{
+    conn: conn,
+    repo_id: repo_id
+  } do
+    run_id = open(repo_id, ["001"])
+
+    :ok =
+      Writer.record_escalation({repo_id, run_id}, %{
+        feature_id: "001",
+        kind: :escalated,
+        phase: :clarify,
+        reason: "needs human",
+        evidence: %{}
+      })
+
+    {:ok, view, _html} = live(conn, "/runs/#{run_id}")
+
+    html =
+      render_submit(view, "resolve_escalation", %{
+        "ref" => "001::1",
+        "note" => "picked option A (eager upgrade)"
+      })
+
+    assert html =~ ~s(data-resolution="001::1")
+    assert html =~ "picked option A (eager upgrade)"
+  end
+
+  # Recovery lives once, on `/escalations` (018, T046-T050). Run detail is the
+  # post-mortem — before this it displayed the checkpoint with nothing to act
+  # on, so the only button in reach was `resolve_escalation/2`, which restarts
+  # nothing.
+  test "a diverted feature's checkpoint links out to the recovery forms", %{
+    conn: conn,
+    repo_id: repo_id
+  } do
+    run_id = open(repo_id, ["001", "002"])
+    record_attempt(repo_id, run_id, "001", :specify, 1)
+    record_attempt(repo_id, run_id, "002", :clarify, 1)
+
+    :ok = Writer.record_feature_terminal({repo_id, run_id}, "002", :escalated, :needs_human, [])
+
+    {:ok, _view, html} = live(conn, "/runs/#{run_id}")
+
+    assert html =~ ~s(href="/escalations#escalation-002")
+    assert html =~ "resume/2 from checkpoint"
+    # 001 is still running — its checkpoint is a progress marker, not a
+    # recovery point, and must not offer one.
+    refute html =~ ~s(href="/escalations#escalation-001")
+  end
+
   test "export action writes exactly one file under autonomous_root/exports", %{
     conn: conn,
     repo_id: repo_id
