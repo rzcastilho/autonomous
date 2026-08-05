@@ -116,8 +116,34 @@ defmodule SpeckitOrchestrator.Web.RunDetailLiveTest do
     {:ok, view, html} = live(conn, "/runs/#{run_id}")
     refute html =~ "verbatim transcript body"
 
-    html = render_click(view, "open_transcript", %{"ref" => "001::specify::1"})
+    html = render_click(view, "toggle_transcript", %{"ref" => "001::specify::1"})
     assert html =~ "verbatim transcript body"
+  end
+
+  test "the Transcript button toggles its own panel shut, and swaps between attempts", %{
+    conn: conn,
+    repo_id: repo_id
+  } do
+    run_id = open(repo_id, ["001"])
+    record_attempt(repo_id, run_id, "001", :specify, 1)
+    record_attempt(repo_id, run_id, "001", :plan, 1)
+
+    {:ok, view, _html} = live(conn, "/runs/#{run_id}")
+
+    html = render_click(view, "toggle_transcript", %{"ref" => "001::specify::1"})
+    assert html =~ ~s(data-transcript-row="001::specify::1")
+
+    # Same attempt again — the button that opened the panel closes it, so the
+    # panel needs no close control of its own.
+    html = render_click(view, "toggle_transcript", %{"ref" => "001::specify::1"})
+    refute html =~ ~s(data-transcript-row="001::specify::1")
+    refute html =~ "verbatim transcript body"
+
+    # A different attempt replaces the open one rather than toggling it shut.
+    _reopened = render_click(view, "toggle_transcript", %{"ref" => "001::specify::1"})
+    html = render_click(view, "toggle_transcript", %{"ref" => "001::plan::1"})
+    assert html =~ ~s(data-transcript-row="001::plan::1")
+    refute html =~ ~s(data-transcript-row="001::specify::1")
   end
 
   test "resolve_escalation action clears the open escalation (FR-026)", %{
@@ -140,6 +166,60 @@ defmodule SpeckitOrchestrator.Web.RunDetailLiveTest do
 
     html = render_submit(view, "resolve_escalation", %{"ref" => "001::1", "note" => "reviewed"})
     assert html =~ ~s(data-marker="resolved")
+  end
+
+  # `resolve_escalation/2` has always recorded `note` (and `by`) next to
+  # `resolved_at`, but the page rendered only the timestamp — the operator's
+  # account of *why* they closed the escalation was reachable nowhere but the
+  # JSON `Store.Export` writes. A write-only textarea is worse than none.
+  test "the recorded resolution note is rendered back, not just its timestamp", %{
+    conn: conn,
+    repo_id: repo_id
+  } do
+    run_id = open(repo_id, ["001"])
+
+    :ok =
+      Writer.record_escalation({repo_id, run_id}, %{
+        feature_id: "001",
+        kind: :escalated,
+        phase: :clarify,
+        reason: "needs human",
+        evidence: %{}
+      })
+
+    {:ok, view, _html} = live(conn, "/runs/#{run_id}")
+
+    html =
+      render_submit(view, "resolve_escalation", %{
+        "ref" => "001::1",
+        "note" => "picked option A (eager upgrade)"
+      })
+
+    assert html =~ ~s(data-resolution="001::1")
+    assert html =~ "picked option A (eager upgrade)"
+  end
+
+  # Recovery lives once, on `/escalations` (018, T046-T050). Run detail is the
+  # post-mortem — before this it displayed the checkpoint with nothing to act
+  # on, so the only button in reach was `resolve_escalation/2`, which restarts
+  # nothing.
+  test "a diverted feature's checkpoint links out to the recovery forms", %{
+    conn: conn,
+    repo_id: repo_id
+  } do
+    run_id = open(repo_id, ["001", "002"])
+    record_attempt(repo_id, run_id, "001", :specify, 1)
+    record_attempt(repo_id, run_id, "002", :clarify, 1)
+
+    :ok = Writer.record_feature_terminal({repo_id, run_id}, "002", :escalated, :needs_human, [])
+
+    {:ok, _view, html} = live(conn, "/runs/#{run_id}")
+
+    assert html =~ ~s(href="/escalations#escalation-002")
+    assert html =~ "resume/2 from checkpoint"
+    # 001 is still running — its checkpoint is a progress marker, not a
+    # recovery point, and must not offer one.
+    refute html =~ ~s(href="/escalations#escalation-001")
   end
 
   test "export action writes exactly one file under autonomous_root/exports", %{

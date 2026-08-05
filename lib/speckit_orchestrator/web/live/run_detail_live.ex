@@ -9,9 +9,10 @@ defmodule SpeckitOrchestrator.Web.RunDetailLive do
   query logic of its own (FR-030c).
 
   Actions: export the run (`export_run/3`, written under
-  `<autonomous_root>/exports/`) and resolve an open escalation
+  `<autonomous_root>/exports/`) and annotate an open escalation
   (`resolve_escalation/2`, FR-026 — records a resolution, never deletes the
-  entry).
+  entry). Recovery itself is *not* an action here: a diverted feature's
+  checkpoint links to `/escalations`, which owns `resume/2` and full restart.
   """
 
   use SpeckitOrchestrator.Web, :live_view
@@ -46,20 +47,24 @@ defmodule SpeckitOrchestrator.Web.RunDetailLive do
   end
 
   @impl true
-  def handle_event("open_transcript", %{"ref" => ref}, socket) do
-    attempt_id = decode_attempt_ref(socket.assigns.run_id, ref)
+  # The row's Transcript button is a disclosure, not a one-way open: clicking
+  # the attempt whose transcript is already showing collapses it. The panel
+  # therefore needs no close affordance of its own — the control that opened it
+  # is the control that closes it, and it stays on the row it belongs to.
+  def handle_event("toggle_transcript", %{"ref" => ref}, socket) do
+    if showing?(socket, ref) do
+      {:noreply, assign(socket, transcript: nil)}
+    else
+      attempt_id = decode_attempt_ref(socket.assigns.run_id, ref)
 
-    transcript =
-      case SpeckitOrchestrator.transcript(attempt_id) do
-        {:ok, t} -> Map.from_struct(t)
-        {:error, reason} -> %{error: reason}
-      end
+      transcript =
+        case SpeckitOrchestrator.transcript(attempt_id) do
+          {:ok, t} -> Map.from_struct(t)
+          {:error, reason} -> %{error: reason}
+        end
 
-    {:noreply, assign(socket, transcript: Map.put(transcript, :ref, ref))}
-  end
-
-  def handle_event("close_transcript", _params, socket) do
-    {:noreply, assign(socket, transcript: nil)}
+      {:noreply, assign(socket, transcript: Map.put(transcript, :ref, ref))}
+    end
   end
 
   def handle_event("resolve_escalation", %{"ref" => ref} = params, socket) do
@@ -113,9 +118,38 @@ defmodule SpeckitOrchestrator.Web.RunDetailLive do
     {repo_id(), run_id, feature_id, String.to_integer(ordinal)}
   end
 
+  # One transcript is open at a time, keyed by its attempt ref — the same
+  # predicate the row's disclosure state and the toggle handler both read, so
+  # the button's `aria-expanded` cannot drift from what is actually rendered.
+  defp showing?(%{assigns: assigns}, ref), do: showing?(assigns, ref)
+  defp showing?(%{transcript: %{ref: ref}}, ref), do: true
+  defp showing?(_assigns, _ref), do: false
+
   defp repo_id, do: SpeckitOrchestrator.RepoIdentity.partition(Config.repo())
 
   defp safe_atom(s), do: String.to_existing_atom(s)
+
+  # ---- resolution + recovery affordances ------------------------------------
+
+  # `resolve_escalation/2` (FR-026) records `by` and `note` alongside
+  # `resolved_at`, but only the timestamp was ever rendered — the operator's
+  # own account of *why* they closed the escalation was reachable nowhere but
+  # `Store.Export`'s JSON. Surfaced here so the console shows what it stores.
+  defp resolution_detail(%{resolution: %{} = resolution}) do
+    for key <- [:by, :note],
+        value = blank_to_nil(to_string(Map.get(resolution, key) || "")),
+        do: {key, value}
+  end
+
+  defp resolution_detail(_escalation), do: []
+
+  # This page is the post-mortem, not a control surface: recovery forms live
+  # once, on `/escalations` (018, T046-T050). A diverted feature's checkpoint
+  # links out to them rather than duplicating `resume/2`'s guidance,
+  # start-phase override, and task-phase picker in a second LiveView —
+  # `FeatureDrawerComponent` links out from the drawer for the same reason.
+  defp diverted?(%{status: status}), do: status in [:escalated, :halted, :failed]
+  defp diverted?(_feature), do: false
 
   # ---- advanced-with-findings (021, contracts/advanced-record.md §4.2) ------
 
@@ -177,10 +211,11 @@ defmodule SpeckitOrchestrator.Web.RunDetailLive do
                     <td>
                       <button
                         type="button"
-                        phx-click="open_transcript"
+                        phx-click="toggle_transcript"
                         phx-value-ref={attempt_ref(a)}
                         class="btn-secondary"
                         data-action={"transcript-#{attempt_ref(a)}"}
+                        aria-expanded={to_string(showing?(assigns, attempt_ref(a)))}
                       >
                         Transcript
                       </button>
@@ -193,12 +228,7 @@ defmodule SpeckitOrchestrator.Web.RunDetailLive do
                   >
                     <td colspan="7">
                       <div class="transcript-panel" data-transcript={@transcript.ref}>
-                        <div class="checkpoint-box-label">
-                          TRANSCRIPT
-                          <button type="button" phx-click="close_transcript" class="btn-secondary">
-                            &times;
-                          </button>
-                        </div>
+                        <div class="checkpoint-box-label">TRANSCRIPT</div>
                         <p :if={@transcript[:error]} class="field-error">
                           {inspect(@transcript.error)}
                         </p>
@@ -220,6 +250,14 @@ defmodule SpeckitOrchestrator.Web.RunDetailLive do
                 <dt>reason</dt>
                 <dd>{inspect(f.checkpoint.reason)}</dd>
               </dl>
+              <a
+                :if={diverted?(f)}
+                href={"/escalations#escalation-#{f.feature_id}"}
+                class="btn-secondary"
+                data-action="run-detail-resume"
+              >
+                resume/2 from checkpoint
+              </a>
             </div>
 
             <div :if={f.remediation_attempts != []} data-remediation-attempts>
@@ -272,6 +310,17 @@ defmodule SpeckitOrchestrator.Web.RunDetailLive do
                   </span>
                 </div>
                 <pre>reason: {inspect(e.reason)} / evidence: {inspect(e.evidence)}</pre>
+
+                <div
+                  :if={resolution_detail(e) != []}
+                  class="run-context"
+                  data-resolution={escalation_ref(e)}
+                >
+                  <span :for={{label, value} <- resolution_detail(e)} class="run-context-chip">
+                    {label}: <span>{value}</span>
+                  </span>
+                </div>
+
                 <form
                   :if={!e.resolution}
                   phx-submit="resolve_escalation"
@@ -284,8 +333,11 @@ defmodule SpeckitOrchestrator.Web.RunDetailLive do
                     <textarea name="note" phx-debounce="200" class="resume-textarea"></textarea>
                   </label>
                   <button type="submit" class="btn-primary" data-action={"resolve-#{escalation_ref(e)}"}>
-                    &check; Resolve
+                    &check; resolve_escalation/2
                   </button>
+                  <span class="action-hint">
+                    records this note against the escalation — does not restart the feature
+                  </span>
                 </form>
               </div>
             </div>

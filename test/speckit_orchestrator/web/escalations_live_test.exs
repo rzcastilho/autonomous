@@ -178,6 +178,35 @@ defmodule SpeckitOrchestrator.Web.EscalationsLiveTest do
     assert html =~ "implementation changes"
   end
 
+  # Regression (019): the escalation that leaves nothing in flight *parks* its
+  # own run, and `SpeckitOrchestrator.current_run_id/0` only ever finds an
+  # `:in_flight` one. Sourcing this page's `run_detail/1` from it alone meant
+  # the run resolved to `nil` the moment it parked, so a perfectly good
+  # checkpoint rendered as "No usable checkpoint" and the guided `resume/2`
+  # form was withheld exactly when the operator needed it — leaving full
+  # restart as the only console recovery path (FR-023).
+  test "offers resume from the checkpoint after the escalation parked the run", %{conn: conn} do
+    run_key =
+      seed_store_run([
+        {feat("021", "slug-021"), :clarify, :escalated,
+         reason: "needs human", session_id: "sess-21"}
+      ])
+
+    :ok =
+      Writer.park_run(run_key, %{stopped_by: "021", status: :escalated, reason: "needs human"})
+
+    pid = start_coordinator([feat("021", "slug-021")], %{"021" => {:escalated, "needs human"}})
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    {:ok, _view, html} = live(conn, "/escalations")
+
+    assert html =~ ~s(data-escalation="021")
+    assert html =~ ~s(data-checkpoint="ok")
+    refute html =~ ~s(data-checkpoint="absent")
+    assert html =~ ~s(id="resume-form-021")
+    assert html =~ "sess-21"
+  end
+
   test "lists every diverted feature with divert reason + checkpoint pointer", %{conn: conn} do
     seed_store_run([
       {feat("e1", "slug-e1"), :clarify, :escalated, reason: "needs human", session_id: "sess-1"},

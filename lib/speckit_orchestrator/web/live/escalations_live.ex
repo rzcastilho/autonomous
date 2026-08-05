@@ -13,7 +13,9 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
   (018) supplies the pointer and, for `:escalated` features, the feature's
   worktree is globbed for its `spec.md`'s `## NEEDS HUMAN` block (FR-021). No
   checkpoint steers the view to full-restart only — `resume/2` is never
-  offered without one (FR-023).
+  offered without one (FR-023). The run it reads that detail from is resolved
+  parked-first (019), since the escalation that brought the operator here is
+  usually the same one that parked the run.
 
   Test seam: `Application.get_env(:speckit_orchestrator, :console_test_runner)`,
   mirroring `TriggerLive`, is injected as the `:runner` opt on both recovery
@@ -30,6 +32,7 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
     Feature,
     Ledger,
     Pipeline,
+    RepoIdentity,
     SpecDir,
     TaskPhaseRef,
     TaskPlan,
@@ -71,12 +74,27 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
     view =
       ConsoleReadModel.merge(coordinator_status(), ledger_snapshot(), ConsoleProjection.read())
 
-    run_id = SpeckitOrchestrator.current_run_id()
+    run_id = current_run_id()
 
     assign(socket,
       run_id: run_id,
       escalations: build_escalations(view, current_run_detail(run_id))
     )
+  end
+
+  # 019 (contracts/parked-run.md § 6), mirroring `MissionControlLive`: an
+  # escalation that leaves nothing in flight *parks* its run, and
+  # `current_run_id/0` only ever finds an `:in_flight` one. Without the parked
+  # lookup first, the very run this page exists to recover from resolves to
+  # `nil`, every feature's checkpoint reads as absent, and the guided
+  # `resume/2` form is withheld exactly when it is needed (FR-023).
+  defp current_run_id do
+    repo_id = RepoIdentity.partition(Config.repo())
+
+    case SpeckitOrchestrator.Store.parked_run(repo_id) do
+      {:ok, %{run_id: run_id}} -> run_id
+      _ -> SpeckitOrchestrator.current_run_id()
+    end
   end
 
   defp current_run_detail(nil), do: nil

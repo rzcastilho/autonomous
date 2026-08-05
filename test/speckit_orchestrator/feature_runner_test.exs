@@ -282,6 +282,45 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
     wt
   end
 
+  # A dry run has no worktree, so every phase's cwd falls back to
+  # `Config.repo()` — which defaults to `"."`, *this* checkout. That made the
+  # dry-run test read whatever the working copy happened to contain: with
+  # `.specify/feature.json` pointing at the feature last worked on here,
+  # `SpecDir.candidates/2`'s `recorded/1` entry resolved the dry run's converge
+  # step onto that feature's own `tasks.md`, and any open box in it failed the
+  # run with `{:unchecked_tasks, [...]}`. The test asserted nothing about this
+  # repo and had no business reading it. Pin `:repo` to a scratch git repo
+  # instead: the dry-run fallback is still exercised, but against a tree the
+  # test owns. Being under `System.tmp_dir!/0` is also what re-enables
+  # `FakeArtifacts` (it refuses to write outside tmp precisely so dry runs
+  # could not litter this repo), so the phases now lay down their artifacts
+  # the way every worktree-backed test does.
+  defp dry_run_repo do
+    repo = Path.join(System.tmp_dir!(), "fr_dry_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(repo)
+    git!(repo, ["init", "-q", "-b", "main"])
+    git!(repo, ["config", "user.email", "t@e.com"])
+    git!(repo, ["config", "user.name", "T"])
+    File.mkdir_p!(Path.join(repo, ".specify/memory"))
+    File.write!(Path.join(repo, ".specify/memory/constitution.md"), "# C\n")
+    git!(repo, ["add", "-A"])
+    git!(repo, ["commit", "-q", "-m", "base"])
+
+    prior = Application.get_env(:speckit_orchestrator, :repo)
+    Application.put_env(:speckit_orchestrator, :repo, repo)
+
+    on_exit(fn ->
+      case prior do
+        nil -> Application.delete_env(:speckit_orchestrator, :repo)
+        v -> Application.put_env(:speckit_orchestrator, :repo, v)
+      end
+
+      File.rm_rf(repo)
+    end)
+
+    repo
+  end
+
   test "happy path: runs the full pipeline to :done and removes the worktree" do
     wt = scaffolded_worktree()
     {:ok, ledger} = Ledger.start_link(budget: 100, name: nil)
@@ -726,6 +765,7 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
   end
 
   test "runs without a worktree (dry run in base repo), notify as a function" do
+    dry_run_repo()
     me = self()
     notify = fn id, status, reason -> send(me, {:notified, id, status, reason}) end
     result = FeatureRunner.run(feature(), notify: notify)
