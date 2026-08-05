@@ -104,11 +104,31 @@ defmodule SpeckitOrchestrator.PipelineTest do
     test "critical? at analyze halts" do
       assert Pipeline.next(:analyze, :ok, %{critical?: true}) == {:halted, :critical_finding}
 
-      # Feature 021 regression pin (FR-005, SC-003): no exhaustion policy
-      # value reaches a Critical finding — it always halts.
+      # Constitution 4.0.0: the exhaustion policy governs Critical on exactly
+      # the same terms as High. `:escalate` (and its absence) still halts, so
+      # every default run behaves as it always did.
       assert Pipeline.next(:analyze, :ok, %{
                critical?: true,
                exhausted?: true,
+               exhaustion_policy: :escalate
+             }) == {:halted, :critical_finding}
+
+      # An exhausted loop plus an explicit `:proceed` is the one combination
+      # that advances past it.
+      assert Pipeline.next(:analyze, :ok, %{
+               critical?: true,
+               exhausted?: true,
+               exhaustion_policy: :proceed
+             }) == {:cont, :implement}
+
+      # `:proceed` alone never advances a Critical — the loop must have spent
+      # its attempts on that very finding first.
+      assert Pipeline.next(:analyze, :ok, %{critical?: true, exhaustion_policy: :proceed}) ==
+               {:halted, :critical_finding}
+
+      assert Pipeline.next(:analyze, :ok, %{
+               critical?: true,
+               exhausted?: false,
                exhaustion_policy: :proceed
              }) == {:halted, :critical_finding}
     end
@@ -249,17 +269,42 @@ defmodule SpeckitOrchestrator.PipelineTest do
              }) == {:cont, :implement}
     end
 
-    test "I1 — critical? always halts, for every threshold and every policy (SC-003)" do
+    # Constitution 4.0.0 replaces 021's I1 ("critical? always halts"): no
+    # *threshold* lets a Critical through — it is the top of the ordering, so
+    # there is nothing to raise the floor above — and only the exhaustion
+    # policy, on an exhausted loop, can. Every other cell still halts.
+    test "I1 — critical? halts at every threshold; only exhausted + :proceed advances it" do
       for threshold <- Severity.values(),
           policy <- [:escalate, :proceed],
           exhausted? <- [true, false] do
-        assert Pipeline.next(:analyze, :ok, %{
-                 critical?: true,
-                 high?: true,
-                 gate_threshold: threshold,
-                 exhaustion_policy: policy,
-                 exhausted?: exhausted?
-               }) == {:halted, :critical_finding}
+        signals = %{
+          critical?: true,
+          high?: true,
+          gate_threshold: threshold,
+          exhaustion_policy: policy,
+          exhausted?: exhausted?
+        }
+
+        expected =
+          if exhausted? and policy == :proceed,
+            do: {:cont, :implement},
+            else: {:halted, :critical_finding}
+
+        assert Pipeline.next(:analyze, :ok, signals) == expected
+      end
+    end
+
+    # The bound that survives 4.0.0: with the loop off or at its default
+    # policy — i.e. every run that did not explicitly opt in — a Critical
+    # halts exactly as it did before, at every threshold.
+    test "I1b — policy :escalate (and its absence) halts Critical at every threshold" do
+      for threshold <- Severity.values(), exhausted? <- [true, false] do
+        base = %{critical?: true, high?: true, gate_threshold: threshold, exhausted?: exhausted?}
+
+        assert Pipeline.next(:analyze, :ok, base) == {:halted, :critical_finding}
+
+        assert Pipeline.next(:analyze, :ok, Map.put(base, :exhaustion_policy, :escalate)) ==
+                 {:halted, :critical_finding}
       end
     end
 

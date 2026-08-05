@@ -402,8 +402,14 @@ attempt budget and a High finding is still there:
   section before merging** — the findings are unresolved in the branch by
   definition, and this is the last point a human sees them.
 
-Critical is unaffected by this control in every case: it halts unconditionally
-(`:halted`), regardless of the exhaustion policy or the severity threshold.
+As of constitution 4.0.0 this control governs **Critical** too, on exactly the
+same terms. The severity threshold still cannot reach a Critical — it is the
+ceiling of the order — so the only combination that advances past one is an
+enabled loop that spent its full attempt budget on that finding *and* an
+explicit `proceed`. Anything else halts: loop off, attempts remaining, or the
+default `escalate`. When it does advance, the PR body says so in those words —
+the note names it as a constitution Critical advanced past, and states that no
+automated gate remains in front of it. Treat that PR as the review it is.
 
 `iex`-driven runs pass the equivalent opt:
 

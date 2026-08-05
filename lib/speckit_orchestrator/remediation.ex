@@ -152,11 +152,16 @@ defmodule SpeckitOrchestrator.Remediation do
   Marks only when ALL hold (FR-009):
     * the loop exhausted its attempts (`signals.exhausted?`),
     * the policy is `:proceed`,
-    * the finding is not Critical (Critical halts before this is ever
-      consulted — FR-005),
-    * the final analyze run reported a High finding (`signals.high?`),
-    * `Severity.at_or_above?(:high, threshold)` — i.e. the gate WOULD have
-      diverted at this run's threshold.
+    * the final analyze run reported a finding the gate WOULD otherwise have
+      diverted — a Critical (`signals.critical?`, which no threshold lets
+      through), or a High (`signals.high?`) with
+      `Severity.at_or_above?(:high, threshold)`.
+
+  Constitution 4.0.0 brought Critical under the same policy as High, so a
+  Critical advance is marked by the same rule and recorded through the same
+  `advanced_with_findings` record — `max_severity` then reads `critical`,
+  which is what tells the PR reviewer a constitution violation was advanced
+  past rather than a quality finding.
 
   `state` carries exactly what the caller already has at the analyze
   boundary: `:attempts_used`, `:attempt_limit`, `:findings` (the residual
@@ -176,9 +181,16 @@ defmodule SpeckitOrchestrator.Remediation do
   defp advances?(signals) do
     Map.get(signals, :exhausted?, false) and
       Map.get(signals, :exhaustion_policy) == :proceed and
-      not Map.get(signals, :critical?, false) and
-      Map.get(signals, :high?, false) and
-      Severity.at_or_above?(:high, gate_threshold(signals))
+      diverting_finding?(signals)
+  end
+
+  # Exactly the gate's own two divert conditions, in the same order
+  # `Pipeline.next/3` evaluates them — Critical regardless of threshold, then
+  # High at or above the threshold. Keeping them mirrored is what guarantees a
+  # feature is marked if and only if the policy is what advanced it.
+  defp diverting_finding?(signals) do
+    Map.get(signals, :critical?, false) or
+      (Map.get(signals, :high?, false) and Severity.at_or_above?(:high, gate_threshold(signals)))
   end
 
   defp gate_threshold(signals), do: Map.get(signals, :gate_threshold) || :high
@@ -218,13 +230,29 @@ defmodule SpeckitOrchestrator.Remediation do
     ## Advanced with unresolved analyze findings
 
     This branch was built by `speckit_orchestrator` with
-    `auto_remediation_exhaustion_policy: proceed`. Auto-remediation used #{record.attempts_used} of #{record.attempt_limit} attempts and did not clear the findings below; the analyze gate was permitted to advance instead of escalating to a human. **These findings are unresolved in this branch.**
+    `auto_remediation_exhaustion_policy: proceed`. Auto-remediation used #{record.attempts_used} of #{record.attempt_limit} attempts and did not clear the findings below; the analyze gate was permitted to advance instead of #{diverted_verb(record)}. **These findings are unresolved in this branch.**
 
-    Severity threshold: `#{record.threshold}`
+    Severity threshold: `#{record.threshold}`#{critical_warning(record)}
 
     #{findings_md}
     """
   end
+
+  # What the gate would have done had the policy been `:escalate`: a Critical
+  # halts, everything else escalates. Named honestly, because "instead of
+  # escalating to a human" would understate a Critical advance.
+  defp diverted_verb(%{max_severity: "critical"}), do: "halting on a constitution Critical finding"
+  defp diverted_verb(_record), do: "escalating to a human"
+
+  # A Critical is a constitution violation, not a quality nit — the PR
+  # reviewer is now the only gate left in front of it, so the note says so
+  # rather than leaving it to be inferred from a severity label in a list.
+  defp critical_warning(%{max_severity: "critical"}) do
+    "\n\n> **A constitution Critical finding was advanced past.** " <>
+      "No automated gate remains in front of it — this pull request is the last review."
+  end
+
+  defp critical_warning(_record), do: ""
 
   defp finding_line(finding) do
     severity = Map.get(finding, "severity", "unknown")

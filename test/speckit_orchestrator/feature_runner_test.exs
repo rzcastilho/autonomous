@@ -676,6 +676,82 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
            } = feature_detail.advanced_with_findings
   end
 
+  # ---- constitution 4.0.0: the policy governs Critical too -------------------
+
+  test "exhaustion policy :proceed advances past a persistent Critical finding and records it as critical" do
+    Application.put_env(:speckit_orchestrator, :test_fake_scenario, :halt)
+    wt = scaffolded_worktree()
+    run_key = open_store_run()
+
+    result =
+      FeatureRunner.run(feature(),
+        worktree: wt,
+        notify: self(),
+        run_key: run_key,
+        run_context: %RunContext{auto_remediation_exhaustion_policy: "proceed"}
+      )
+
+    assert result.status == :done
+    assert result.reason == {:done, :advanced_with_unresolved_findings}
+    refute File.dir?(wt.path)
+
+    {:ok, detail} = SpeckitOrchestrator.Store.run(run_key)
+    [feature_detail] = detail.features
+
+    # `max_severity` is what tells the PR reviewer a constitution violation was
+    # advanced past rather than a quality finding.
+    assert %{
+             policy: "proceed",
+             max_severity: "critical",
+             attempts_used: 2,
+             attempt_limit: 2,
+             findings: [%{"severity" => "critical"} | _]
+           } = feature_detail.advanced_with_findings
+  end
+
+  test "a Critical still halts under the default policy, with the worktree kept" do
+    Application.put_env(:speckit_orchestrator, :test_fake_scenario, :halt)
+    wt = scaffolded_worktree()
+    run_key = open_store_run()
+
+    result = FeatureRunner.run(feature(), worktree: wt, notify: self(), run_key: run_key)
+
+    assert result.status == :halted
+    assert result.reason == {:critical_finding, :auto_remediation_exhausted}
+    assert File.dir?(wt.path)
+
+    {:ok, detail} = SpeckitOrchestrator.Store.run(run_key)
+    [feature_detail] = detail.features
+    assert feature_detail.advanced_with_findings == nil
+  end
+
+  # The narrowest bound 4.0.0 keeps: `:proceed` alone is not enough — with no
+  # loop to exhaust, a Critical halts exactly as it did before the amendment.
+  test "exhaustion policy :proceed with auto-remediation disabled still halts a Critical" do
+    Application.put_env(:speckit_orchestrator, :test_fake_scenario, :halt)
+    wt = scaffolded_worktree()
+    run_key = open_store_run()
+
+    result =
+      FeatureRunner.run(feature(),
+        worktree: wt,
+        notify: self(),
+        run_key: run_key,
+        run_context: %RunContext{
+          auto_remediation: false,
+          auto_remediation_exhaustion_policy: "proceed"
+        }
+      )
+
+    assert result.status == :halted
+    assert result.reason == :critical_finding
+    assert File.dir?(wt.path)
+
+    {:ok, detail} = SpeckitOrchestrator.Store.run(run_key)
+    [feature_detail] = detail.features
+    assert feature_detail.advanced_with_findings == nil
+  end
+
   test "exhaustion policy :escalate is byte-identical to the pre-021 escalation (SC-002)" do
     Application.put_env(:speckit_orchestrator, :test_fake_scenario, :analyze_high)
     wt = scaffolded_worktree()

@@ -18,15 +18,20 @@ defmodule SpeckitOrchestrator.Pipeline do
     inclusive floor over `Severity`'s ordering, so raising it to `:critical`
     lets a High finding advance instead of diverting, and lowering it below
     `:high` creates no new terminal state (Low and Medium have none). Critical
-    outranks every threshold and therefore always halts — no policy (below)
-    can change that.
-  * **exhaustion policy** (feature 021) — when auto-remediation exhausted its
-    attempts (`signals.exhausted? == true`) on a High finding the run's
-    threshold would otherwise escalate, the run's `signals.exhaustion_policy`
-    decides: `:escalate` (default, absent ⇒ this) reproduces the row above
-    byte-for-byte; `:proceed` advances instead. This never applies to a
-    Critical finding, never applies before the attempt limit is reached, and
-    never applies to a finding the threshold would have let through anyway.
+    sits at the top of that ordering, so no threshold lets a Critical through
+    — only the exhaustion policy below can, and only after the loop has spent
+    its attempts on it.
+  * **exhaustion policy** (feature 021, extended to Critical in constitution
+    4.0.0) — when auto-remediation exhausted its attempts
+    (`signals.exhausted? == true`) on a finding the run's threshold would
+    otherwise divert, the run's `signals.exhaustion_policy` decides:
+    `:escalate` (default, absent ⇒ this) reproduces the rows above
+    byte-for-byte; `:proceed` advances instead. It never applies before the
+    attempt limit is reached, and never applies to a finding the threshold
+    would have let through anyway. Critical is governed by the same rule as
+    High: `:escalate` halts it exactly as before, and only an explicit,
+    recorded `:proceed` on an exhausted loop advances past it — annotated on
+    the run's report, the console, and the PR body, never as a new status.
   * **artifact gate** — a phase returned a successful transcript but wrote none
     of the files it exists to produce. `signals.missing_artifact` at `:plan`,
     `:tasks`, or `:implement` → `:failed`.
@@ -130,8 +135,19 @@ defmodule SpeckitOrchestrator.Pipeline do
 
   def next(:clarify, :ok, %{needs_human?: true}), do: {:escalated, :needs_human}
 
-  # Critical outranks every threshold, so this needs no threshold check.
-  def next(:analyze, :ok, %{critical?: true}), do: {:halted, :critical_finding}
+  # Critical sits at the top of `Severity`'s ordering, so no threshold can let
+  # it through — `Severity.at_or_above?(:critical, threshold)` is true for
+  # every threshold a run can hold, and the High branch's threshold row has no
+  # Critical counterpart to evaluate. The exhaustion policy is the one thing
+  # that governs it (constitution 4.0.0): attempts spent on this very finding,
+  # and an explicit `:proceed`.
+  def next(:analyze, :ok, %{critical?: true} = signals) do
+    if exhausted?(signals) and exhaustion_policy(signals) == :proceed do
+      advance_transition(:analyze)
+    else
+      {:halted, :critical_finding}
+    end
+  end
 
   def next(:analyze, :ok, %{high?: true} = signals) do
     cond do

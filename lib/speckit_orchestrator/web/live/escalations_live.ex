@@ -15,7 +15,10 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
   checkpoint steers the view to full-restart only — `resume/2` is never
   offered without one (FR-023). The run it reads that detail from is resolved
   parked-first (019), since the escalation that brought the operator here is
-  usually the same one that parked the run.
+  usually the same one that parked the run — and so are both recovery actions:
+  with a parked run, resume routes through `continue_run/1` and full restart
+  decides `:end` for `resolve/1`, because neither `resume/2` nor `run/1` can
+  see (or supersede) a parked run on its own.
 
   Test seam: `Application.get_env(:speckit_orchestrator, :console_test_runner)`,
   mirroring `TriggerLive`, is injected as the `:runner` opt on both recovery
@@ -272,7 +275,7 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
           |> Keyword.put(:remediation_model, blank_to_nil(Map.get(params, "remediation_model")))
           |> maybe_put_task_phase(Map.get(params, "from_task_phase"))
 
-        case run_unlinked(fn -> SpeckitOrchestrator.resume(id, opts) end) do
+        case dispatch_resume(id, opts) do
           {:ok, _pid} ->
             {:noreply, socket |> put_flash(:info, "Feature #{id} resumed") |> refresh()}
 
@@ -290,7 +293,7 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
       escalation ->
         opts = Keyword.put(test_opts(), :features, [escalation.identity])
 
-        with :ok <- SpeckitOrchestrator.resolve(id, opts),
+        with :ok <- dispatch_resolve(id, opts),
              {:ok, _pid} <- run_unlinked(fn -> SpeckitOrchestrator.run(opts) end) do
           {:noreply,
            socket
@@ -309,6 +312,59 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
 
   def handle_event("close_drawer", _params, socket) do
     {:noreply, assign(socket, selected_feature_id: nil)}
+  end
+
+  # 019: a `:parked` run is invisible to `resume/2` — it resolves the run
+  # through `Store.current_run_key/1`, which only ever finds an `:in_flight`
+  # one, so a raw resume on the very run this page exists to recover from
+  # fails `:no_manifest` (the same blind spot `current_run_id/0` above already
+  # works around for the *display* half). `continue_run/1` is the parked-run
+  # door: it flips `:parked -> :in_flight` under the same `run_id` and then
+  # runs exactly the `resume/2` machinery below on the feature that stopped
+  # the chain, taking every option this form builds.
+  #
+  # It always resumes `stopped_by`, though, so a parked run only recovers
+  # through the feature that parked it — targeting a different diverted
+  # feature would silently apply this operator's guidance to the wrong one.
+  # That refuses loudly instead.
+  defp dispatch_resume(id, opts) do
+    case parked_stopped_by() do
+      {:ok, ^id} -> run_unlinked(fn -> SpeckitOrchestrator.continue_run(opts) end)
+      {:ok, stopped_by} -> {:error, {:parked_elsewhere, stopped_by}}
+      :none -> run_unlinked(fn -> SpeckitOrchestrator.resume(id, opts) end)
+    end
+  end
+
+  # 019, the same blind spot on the restart half: with a parked run,
+  # `resolve/1` requires an explicit `:decision` and refuses
+  # `:decision_required` without one — and the fresh `run/1` that follows
+  # would be refused too (`preflight_parked_run`), since a parked run is never
+  # superseded automatically. A full restart *is* the operator closing the
+  # stopped chain out and starting over, so it decides `:end`: the parked run
+  # completes as `:ended_by_operator`, the worktree is freed, and the new
+  # `run/1` rebuilds from the backlog at `specify`. `end_run/1` answers
+  # `{:ok, summary}`, not `:ok`.
+  defp dispatch_resolve(id, opts) do
+    case parked_stopped_by() do
+      :none ->
+        SpeckitOrchestrator.resolve(id, opts)
+
+      {:ok, _stopped_by} ->
+        case SpeckitOrchestrator.resolve(id, Keyword.put(opts, :decision, :end)) do
+          :ok -> :ok
+          {:ok, _summary} -> :ok
+          {:error, reason} -> {:error, reason}
+        end
+    end
+  end
+
+  defp parked_stopped_by do
+    repo_id = RepoIdentity.partition(Config.repo())
+
+    case SpeckitOrchestrator.Store.parked_run(repo_id) do
+      {:ok, %{stopped_by: stopped_by}} -> {:ok, stopped_by}
+      _ -> :none
+    end
   end
 
   defp test_opts do
@@ -346,6 +402,13 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
   defp format_resume_error({:unknown_phase, p}), do: "unknown phase #{inspect(p)}"
   defp format_resume_error({:unknown_feature, id}), do: "unknown feature #{id}"
   defp format_resume_error({:unknown_model, alias}), do: "unknown model #{inspect(alias)}"
+
+  defp format_resume_error({:parked_elsewhere, stopped_by}),
+    do:
+      "the run is parked at #{stopped_by} — recover that feature first, " <>
+        "or close the run out with a full restart"
+
+  defp format_resume_error(:no_parked_run), do: "no parked run to continue"
 
   defp format_resume_error({:active_run, _pid}),
     do: "a run is already live for this repository — stop it, or retry with force"

@@ -90,18 +90,23 @@ flowchart TB
 - **Data plane** is the Spec Kit loop run through the `claude` CLI, one phase
   per fresh `claude -p` session, in an isolated **git worktree** per feature.
 - **Two gates** divert the linear pipeline: `clarify` escalates on a *material*
-  `## NEEDS HUMAN` (→ `escalated`); `analyze` halts unconditionally on a
-  Critical constitution violation (→ `halted`) and escalates on a High finding
-  (→ `escalated`) when the run's severity threshold is High or lower.
+  `## NEEDS HUMAN` (→ `escalated`) — no run setting can wave that one through;
+  `analyze` halts on a Critical constitution violation (→ `halted`) and
+  escalates on a High finding (→ `escalated`) when the run's severity threshold
+  is High or lower.
 - **Auto-remediation loop, and what happens when it runs out.** Before the
   analyze gate decides, a bounded corrective loop (feature 017) may retry
   findings at or above the threshold, up to a per-run attempt limit (default
   2). On exhaustion the gate reads the run's **exhaustion policy** (feature
   021, `auto_remediation_exhaustion_policy`, default `:escalate`): `:escalate`
   reproduces today's outcome exactly; `:proceed` advances the feature past a
-  residual High finding instead of escalating, and records what it advanced
-  past on the run's report, the console, and the feature's PR body, so the PR
-  reviewer sees it. Critical is unaffected — it halts regardless of policy.
+  residual finding instead of diverting, and records what it advanced past on
+  the run's report, the console, and the feature's PR body, so the PR reviewer
+  sees it. Constitution 4.0.0 governs Critical by that same policy: no
+  threshold reaches a Critical (it is the ceiling of the severity order), and
+  only an exhausted loop plus an explicit `:proceed` advances past one — the
+  default (`:escalate`), a loop that is off, and a loop with attempts left all
+  still halt.
 - **Terminals commit before teardown.** `:done` commits the generated branch,
   pushes it, and opens a PR against the previous feature's branch (or
   `pr_base` for the first), then removes the worktree; `escalated`/`halted`/

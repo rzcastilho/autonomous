@@ -1,26 +1,24 @@
 <!--
 Sync Impact Report
-Version change: 2.2.0 → 3.0.0
-Bump rationale: MAJOR — Principle V's exhaustion guarantee is redefined in a
-  backward-incompatible way. Today "on exhaustion the gate decides the outcome
-  from the final analyze run under the rules above, unchanged" holds
-  unconditionally. This amendment adds a per-run **exhaustion policy**
-  (*escalate*, default — today's behaviour, byte-identical; *proceed* — advance
-  past a residual High finding instead of escalating) that a run can select, so
-  a human-facing terminal state that was previously unconditional on exhaustion
-  becomes configurable away for exactly one cell: residual High, exhaustion
-  reached, threshold High or lower. That is the same shape of relaxation the
-  2.0.0 amendment made MAJOR (threshold-governed High), not an MINOR expansion —
-  precedent followed exactly. Critical is untouched: it halts unconditionally at
-  every policy and every threshold, matching how 2.0.0 also left Critical
-  absolute. The relaxation is paired with a new, compensating obligation this
-  amendment also adds: under *proceed*, the findings advanced past MUST be
-  recorded durably and surfaced to the pull request reviewer — the last
-  remaining human gate — so an unattended advance is never silent.
+Version change: 3.0.0 → 4.0.0
+Bump rationale: MAJOR — Principle V's last absolute bound is relaxed. Through
+  3.0.0 a constitution Critical finding halted "unconditionally, at every
+  policy and every threshold", and the text said in as many words that no
+  configuration may relax it. This amendment brings Critical under the exact
+  rule 3.0.0 wrote for High: the run's exhaustion policy decides, and only in
+  the one cell where the auto-remediation loop already spent its attempt limit
+  on that very finding. *escalate* (the default) keeps today's halt
+  byte-for-byte at every threshold, so any run that did not explicitly opt in
+  is unchanged; *proceed* advances past the residual Critical with the same
+  durable `advanced_with_findings` record, report line, console block, and PR
+  note the High branch already carries — plus a PR note that names the advance
+  as a constitution violation and the reviewer as the only remaining gate.
+  Thresholds still cannot let a Critical through: Critical is the top of the
+  severity ordering, so there is no floor to raise above it.
 Modified principles:
-  - V. Human-in-the-Loop Escalation (exhaustion is now policy-governed for High;
-    Critical still unconditionally halts; advancing past findings under
-    *proceed* MUST be recorded and surfaced to the PR reviewer)
+  - V. Human-in-the-Loop Escalation (the Critical halt is exhaustion-policy
+    governed rather than absolute; the compensating record/surface obligation
+    3.0.0 introduced now covers Critical, and names it as such to the reviewer)
 Added principles: none
 Added sections: none
 Removed sections: none
@@ -29,11 +27,51 @@ Templates requiring updates:
   ✅ .specify/templates/spec-template.md — no principle-specific references
   ✅ .specify/templates/tasks-template.md — no principle-specific references
   ✅ .specify/templates/checklist-template.md — generic; no change
-  ✅ specs/021-analyze-exhaustion-policy/plan.md — Complexity Tracking already
-     cites this amendment by version and records the rejected simpler
-     alternatives
+  ⚠️ specs/017-analyze-auto-remediation/, specs/021-analyze-exhaustion-policy/ —
+     historical spec artifacts, deliberately left as written: they record what
+     those features shipped under 2.0.0/3.0.0, and their "Critical is
+     unaffected" statements are now superseded by this amendment rather than
+     wrong at the time. `docs/` and `CLAUDE.md` carry the current behaviour.
 Follow-up TODOs: none — the amendment lands in the same change as the code and
-  tests that implement it (FR-016).
+  tests that implement it. Operator decision recorded: the previous absolute
+  Critical bound was judged too rigid in live operation, since the loop can
+  already remediate Criticals and only the post-exhaustion gate was fixed.
+
+Prior report (3.0.0):
+  Version change: 2.2.0 → 3.0.0
+  Bump rationale: MAJOR — Principle V's exhaustion guarantee is redefined in a
+    backward-incompatible way. Today "on exhaustion the gate decides the outcome
+    from the final analyze run under the rules above, unchanged" holds
+    unconditionally. This amendment adds a per-run **exhaustion policy**
+    (*escalate*, default — today's behaviour, byte-identical; *proceed* — advance
+    past a residual High finding instead of escalating) that a run can select, so
+    a human-facing terminal state that was previously unconditional on exhaustion
+    becomes configurable away for exactly one cell: residual High, exhaustion
+    reached, threshold High or lower. That is the same shape of relaxation the
+    2.0.0 amendment made MAJOR (threshold-governed High), not an MINOR expansion —
+    precedent followed exactly. Critical is untouched: it halts unconditionally at
+    every policy and every threshold, matching how 2.0.0 also left Critical
+    absolute. The relaxation is paired with a new, compensating obligation this
+    amendment also adds: under *proceed*, the findings advanced past MUST be
+    recorded durably and surfaced to the pull request reviewer — the last
+    remaining human gate — so an unattended advance is never silent.
+  Modified principles:
+    - V. Human-in-the-Loop Escalation (exhaustion is now policy-governed for High;
+      Critical still unconditionally halts; advancing past findings under
+      *proceed* MUST be recorded and surfaced to the PR reviewer)
+  Added principles: none
+  Added sections: none
+  Removed sections: none
+  Templates requiring updates:
+    ✅ .specify/templates/plan-template.md — Constitution Check is principle-agnostic
+    ✅ .specify/templates/spec-template.md — no principle-specific references
+    ✅ .specify/templates/tasks-template.md — no principle-specific references
+    ✅ .specify/templates/checklist-template.md — generic; no change
+    ✅ specs/021-analyze-exhaustion-policy/plan.md — Complexity Tracking already
+       cites this amendment by version and records the rejected simpler
+       alternatives
+  Follow-up TODOs: none — the amendment lands in the same change as the code and
+    tests that implement it (FR-016).
 
 Prior report (2.2.0):
   Version change: 2.1.0 → 2.2.0
@@ -319,8 +357,10 @@ failure. The clarify gate MUST escalate a feature to `:escalated` on an
 unresolved `## NEEDS HUMAN` marker in `spec.md`.
 
 The analyze gate MUST halt to `:halted` on a constitution Critical finding.
-Critical outranks every threshold, so this halt is unconditional and MUST NOT
-be configurable away. The gate MUST escalate to `:escalated` on a High finding
+Critical is the top of the severity ordering, so **no threshold** may let one
+through; the only thing that may is the exhaustion policy below, and only in
+the single cell where the auto-remediation loop already spent its attempt
+limit on that very finding. The gate MUST escalate to `:escalated` on a High finding
 **when the run's configured severity threshold is High or lower** — the same
 single threshold that decides when auto-remediation runs. A run configured
 with threshold Critical therefore advances past a High finding rather than
@@ -350,9 +390,10 @@ moment the loop above exhausts its attempt limit with a residual finding at or
 above the threshold:
 
 - ***escalate*** (default) — the gate decides exactly as it does with the loop
-  disabled: a residual High escalates, byte-identical to today.
-- ***proceed*** — the gate advances past a residual High finding instead of
-  escalating it, for that one feature only. The findings advanced past MUST be
+  disabled: a residual High escalates and a residual Critical halts,
+  byte-identical to 3.0.0.
+- ***proceed*** — the gate advances past the residual finding instead of
+  diverting it, for that one feature only. The findings advanced past MUST be
   recorded durably (not merely logged) and surfaced to the run's report, the
   operator console, and the feature's pull request body, so the last remaining
   human gate — the PR reviewer — sees exactly what was left unresolved. This
@@ -360,10 +401,17 @@ above the threshold:
   `:done` (or an ordinary downstream failure); the advance is an annotation on
   that outcome, never a status of its own.
 
-Critical is unaffected by the exhaustion policy in every respect: it halts
-unconditionally, at every policy and every threshold, and is matched before
-the policy is ever consulted. No policy, threshold, or configuration may
-relax the Critical halt.
+The policy governs Critical on the same terms as High, with two additional
+obligations that MUST hold:
+
+- a Critical MUST NOT be advanced past on the strength of a threshold, an
+  absent signal, or a default. Only an exhausted loop plus an explicit
+  `proceed` on the run may do it — a run that never enabled auto-remediation,
+  never reached its attempt limit, or left the policy at its default MUST
+  still halt;
+- the record surfaced to the PR reviewer MUST name the advance as a
+  constitution violation advanced past, and MUST state that no automated gate
+  remains in front of it.
 
 Escalated and halted features MUST retain their worktree for post-mortem;
 only `:done` features remove it. A human resolution path (`resolve/1`) MUST
@@ -379,21 +427,36 @@ attempts, and restores today's exact behaviour when disabled.
 Making the gate threshold-governed *does* relax it, deliberately and only for
 High: one knob now answers one question — "how severe must a finding be before
 a human is involved?" — instead of splitting that answer between a remediation
-threshold and a separate hardcoded gate. The bound that remains absolute is
-Critical: a constitution Critical finding always halts, at every threshold, so
-no configuration can ship a constitution violation unattended. Raising the
+threshold and a separate hardcoded gate. Thresholds still cannot reach
+Critical, because Critical is the ceiling of that ordering: raising the
 threshold to Critical is a recorded, per-run decision to accept High findings
-automatically; operators who want the old guarantee keep the default.
+automatically, and it never touches the Critical branch.
 
-The exhaustion policy relaxes the High branch a second, narrower way, bounded
-to the single cell where the loop already tried and failed: attempts spent,
-finding still present, at or above threshold. Choosing *proceed* is a
-recorded, per-run decision to let such a feature finish unattended rather than
-stall an entire backlog run on one stubborn, non-mechanically-fixable finding;
+The exhaustion policy relaxes the gate a second, narrower way, bounded to the
+single cell where the loop already tried and failed: attempts spent, finding
+still present, at or above threshold. Choosing *proceed* is a recorded,
+per-run decision to let such a feature finish unattended rather than stall an
+entire backlog run on one stubborn, non-mechanically-fixable finding;
 operators who want the unconditional guarantee keep the default (*escalate*).
 The compensating control — record and surface to the PR reviewer — is not
 optional cosmetic detail: it is what keeps *proceed* from silently shipping
 unreviewed work, the exact failure mode this principle exists to prevent.
+
+4.0.0 extends that same cell to Critical, which 3.0.0 had held absolute. The
+argument for the old bound was that no configuration should ship a
+constitution violation unattended; the argument against it, from live
+operation, is that the loop already *remediates* Criticals at every threshold
+and only the post-exhaustion gate was fixed — so an operator who had
+deliberately accepted "advance and let the PR reviewer decide" for High had no
+way to express the same judgment for a Critical the loop demonstrably could
+not fix, and lost the whole run to it. The relaxation is deliberately the
+narrowest one that answers this: it is unreachable without an enabled loop, a
+spent attempt limit, and an explicit non-default policy, it never changes a
+lifecycle status, and it hands the reviewer a note that says in plain words
+that a constitution violation was advanced past and that nothing automated
+stands in front of it. "Unattended" is precisely what it must never become —
+the advance is a transfer of the decision to a named human gate, not the
+removal of one.
 
 ### VI. Idiomatic Elixir/OTP & Functional Design
 
@@ -667,4 +730,4 @@ deviation already is. Reviews and PRs MUST verify compliance with these
 principles; the constitution and the implementation plan together are the
 runtime guidance for autonomous and human contributors alike.
 
-**Version**: 3.0.0 | **Ratified**: 2026-07-11 | **Last Amended**: 2026-07-31
+**Version**: 4.0.0 | **Ratified**: 2026-07-11 | **Last Amended**: 2026-08-05
