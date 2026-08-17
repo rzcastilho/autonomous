@@ -1,7 +1,7 @@
 defmodule SpeckitOrchestrator.ChunkingTest do
   use ExUnit.Case, async: true
 
-  alias SpeckitOrchestrator.{ChunkState, Chunking, TaskPhaseRef, TaskPlan}
+  alias SpeckitOrchestrator.{ChunkState, Chunking, Config, TaskPhaseRef, TaskPlan}
   alias SpeckitOrchestrator.TaskPlan.{Task, TaskPhase}
 
   # ---- fixtures --------------------------------------------------------------
@@ -53,6 +53,17 @@ defmodule SpeckitOrchestrator.ChunkingTest do
       terminal ->
         {terminal, Enum.reverse(scopes)}
     end
+  end
+
+  # Folds `implement_no_progress_limit - 1` no-progress exhaustion signals —
+  # each one still redispatches the same scope, leaving the state one fold away
+  # from row 4. The limit is read from `Config` rather than hardcoded so these
+  # tests describe the rule instead of the current default.
+  defp fold_no_progress_to_brink(state) do
+    Enum.map_reduce(1..(Config.implement_no_progress_limit() - 1)//1, state, fn _i, acc ->
+      {:dispatch, scope, next} = Chunking.next(acc, %{outcome: :exhausted, progress?: false})
+      {scope, next}
+    end)
   end
 
   defp succeed_fun(scope, state) do
@@ -149,14 +160,15 @@ defmodule SpeckitOrchestrator.ChunkingTest do
     end
 
     test "reaching the no-progress limit fails as stuck_task_phase" do
+      limit = Config.implement_no_progress_limit()
       state = Chunking.start(five_phase_plan())
       {:dispatch, {:task_phase, tp1}, state1} = Chunking.next(state, %{})
 
-      {:dispatch, {:task_phase, ^tp1}, state2} =
-        Chunking.next(state1, %{outcome: :exhausted, progress?: false})
+      {scopes, brink} = fold_no_progress_to_brink(state1)
+      assert Enum.all?(scopes, &match?({:task_phase, ^tp1}, &1))
 
-      assert {:failed, {:stuck_task_phase, ref, 2}, _state3} =
-               Chunking.next(state2, %{outcome: :exhausted, progress?: false})
+      assert {:failed, {:stuck_task_phase, ref, ^limit}, _state} =
+               Chunking.next(brink, %{outcome: :exhausted, progress?: false})
 
       assert ref == %TaskPhaseRef{ordinal: 1, number: "1", title: "Phase 1"}
     end
@@ -232,6 +244,7 @@ defmodule SpeckitOrchestrator.ChunkingTest do
 
   describe "row 4 — stuck ref identity for sweep/fallback scopes" do
     test "no-progress during the sweep fails with a sweep TaskPhaseRef" do
+      limit = Config.implement_no_progress_limit()
       plan = make_plan([make_task_phase(1, 1, false)])
       state = Chunking.start(plan)
 
@@ -239,26 +252,27 @@ defmodule SpeckitOrchestrator.ChunkingTest do
 
       {:dispatch, {:sweep, _tasks}, s2} = Chunking.next(s1, %{outcome: :ok, plan: plan})
 
-      {:dispatch, {:sweep, _tasks}, s3} =
-        Chunking.next(s2, %{outcome: :exhausted, progress?: false})
+      {scopes, brink} = fold_no_progress_to_brink(s2)
+      assert Enum.all?(scopes, &match?({:sweep, _tasks}, &1))
 
-      assert {:failed, {:stuck_task_phase, ref, 2}, _s4} =
-               Chunking.next(s3, %{outcome: :exhausted, progress?: false})
+      assert {:failed, {:stuck_task_phase, ref, ^limit}, _s} =
+               Chunking.next(brink, %{outcome: :exhausted, progress?: false})
 
       assert ref == %TaskPhaseRef{ordinal: 2, number: "sweep", title: "final sweep"}
     end
 
     test "no-progress during the unstructured fallback fails with a whole_list TaskPhaseRef" do
+      limit = Config.implement_no_progress_limit()
       plan = make_plan([], false)
       state = Chunking.start(plan)
 
       {:dispatch, :whole_list, s1} = Chunking.next(state, %{})
 
-      {:dispatch, :whole_list, s2} =
-        Chunking.next(s1, %{outcome: :exhausted, progress?: false})
+      {scopes, brink} = fold_no_progress_to_brink(s1)
+      assert Enum.all?(scopes, &(&1 == :whole_list))
 
-      assert {:failed, {:stuck_task_phase, ref, 2}, _s3} =
-               Chunking.next(s2, %{outcome: :exhausted, progress?: false})
+      assert {:failed, {:stuck_task_phase, ref, ^limit}, _s} =
+               Chunking.next(brink, %{outcome: :exhausted, progress?: false})
 
       assert ref == %TaskPhaseRef{ordinal: 1, number: nil, title: "tasks.md"}
     end
@@ -428,7 +442,7 @@ defmodule SpeckitOrchestrator.ChunkingTest do
       # decision table actually emits.
       stuck_state = Chunking.start(five_phase_plan())
       {:dispatch, {:task_phase, _tp1}, s1} = Chunking.next(stuck_state, %{})
-      {:dispatch, _scope, s2} = Chunking.next(s1, %{outcome: :exhausted, progress?: false})
+      {_scopes, s2} = fold_no_progress_to_brink(s1)
 
       assert {:failed, stuck_reason, _} =
                Chunking.next(s2, %{outcome: :exhausted, progress?: false})

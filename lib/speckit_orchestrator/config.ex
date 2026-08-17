@@ -126,7 +126,7 @@ defmodule SpeckitOrchestrator.Config do
 
   @doc "Turn cap for the long-running implement phase."
   @spec implement_max_turns() :: pos_integer()
-  def implement_max_turns, do: get(:implement_max_turns, 80)
+  def implement_max_turns, do: get(:implement_max_turns, 200)
 
   @doc """
   How many times to retry a phase that fails **transiently** (a server/API drop —
@@ -142,7 +142,7 @@ defmodule SpeckitOrchestrator.Config do
   ceiling (`implement_sessions_per_task_phase/0` + `implement_sessions_headroom/0`).
   """
   @spec implement_no_progress_limit() :: pos_integer()
-  def implement_no_progress_limit, do: get(:implement_no_progress_limit, 2)
+  def implement_no_progress_limit, do: get(:implement_no_progress_limit, 3)
 
   @doc """
   Session-ceiling formula multiplier (FR-013a): the ceiling is

@@ -30,7 +30,8 @@ to today.
 ```
 Implement ONLY the tasks in "Phase <number>: <title>" of tasks.md.
 Do NOT start, plan, or edit files for tasks belonging to any other phase.
-Mark each task you complete as [X] in tasks.md before finishing.
+Mark each task as [X] in tasks.md immediately as you complete it — do not
+batch this to the end of the session.
 This session is scoped deliberately: completing this phase alone is a
 successful outcome. Ignore any instruction to keep working until every task
 in tasks.md is complete — that condition does not apply to this session.
@@ -41,13 +42,23 @@ in tasks.md is complete — that condition does not apply to this session.
 ```
 Complete ONLY these remaining unchecked tasks from tasks.md, in this order:
 <T007, T012, …>.
-Mark each task you complete as [X] in tasks.md before finishing.
+Mark each task as [X] in tasks.md immediately as you complete it — do not
+batch this to the end of the session.
 Completing exactly these tasks is a successful outcome for this session.
 ```
 
 The last clause of each block is the explicit release FR-005 requires from the
 `speckit-implement` skill's `## Done When` → "All tasks in tasks.md completed and
 marked `[X]`" (research R4).
+
+The tick-immediately clause is load-bearing for §3's progress measurement, not
+a style preference. Progress is *only* the checked-task count moving, and an
+`error_max_turns` kill lands before any end-of-session bookkeeping — so a
+session that batches its ticks reports zero progress however much code it
+wrote, and `implement_no_progress_limit` such sessions in a row trip
+`{:stuck_task_phase, …}` on a task-phase that was actually advancing (observed
+live: `overrun` feature 001, task-phase 2, 2426 lines written across two
+sessions, zero boxes ticked).
 
 `:resume_prompt` composition is unchanged: operator guidance is appended after
 the scoping block, and reaches **only the first dispatched chunk** of the
