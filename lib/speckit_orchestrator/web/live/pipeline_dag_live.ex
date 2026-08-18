@@ -38,7 +38,8 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
 
     repo = Config.repo()
     packages = package_slugs(Path.join([repo, Config.specs_root(), "breakdown"]))
-    selected_package = default_package(packages, current_run_detail())
+    run_detail = current_run_detail()
+    selected_package = default_package(packages, run_detail)
 
     {:ok,
      socket
@@ -52,7 +53,7 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
        known_backlog_ids: known_backlog_ids(repo, packages)
      )
      |> load_backlog()
-     |> seed()}
+     |> seed(run_detail)}
   end
 
   # Default the drawn wave to the current in-flight run's package; otherwise
@@ -101,10 +102,16 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
     end
   end
 
-  defp seed(socket) do
+  defp seed(socket), do: seed(socket, current_run_detail())
+
+  defp seed(socket, run_detail) do
     status = coordinator_status()
     view = ConsoleReadModel.merge(status, ledger_snapshot(), ConsoleProjection.read())
-    assign(socket, view: overlay_manifest(view))
+
+    assign(socket,
+      view: overlay_manifest(view, run_detail),
+      run_package: run_package(run_detail)
+    )
   end
 
   # No live Coordinator (fresh boot, no resume yet) — fall back to the store's
@@ -113,9 +120,17 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
   # checkpoint so its phase timeline shows what actually ran rather than
   # looking like nothing happened. `Store.current_run_key/1` is already
   # scoped to this repo, so no cross-repo staleness check is needed.
-  defp overlay_manifest(view) do
-    ConsoleReadModel.overlay_last_known_statuses(view, current_run_detail())
+  defp overlay_manifest(view, run_detail) do
+    ConsoleReadModel.overlay_last_known_statuses(view, run_detail)
   end
+
+  # Which breakdown package the in-flight run is scoped to — the only wave
+  # allowed to draw live status (see `chain_view/1`). `:ad_hoc` is returned as
+  # itself so it can never equal a package slug; `nil` means "unknown scope",
+  # which disables the gate rather than blanking every wave.
+  defp run_package(%{run: %{scope: {:breakdown, slug}}}), do: slug
+  defp run_package(%{run: %{scope: :ad_hoc}}), do: :ad_hoc
+  defp run_package(_run_detail), do: nil
 
   defp current_run_detail do
     case SpeckitOrchestrator.current_run_id() do
@@ -155,8 +170,14 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
         {:console, :reconciled, %{coordinator: coordinator_status, ledger: ledger_snapshot}},
         socket
       ) do
+    run_detail = current_run_detail()
     view = ConsoleReadModel.merge(coordinator_status, ledger_snapshot, ConsoleProjection.read())
-    {:noreply, assign(socket, view: overlay_manifest(view))}
+
+    {:noreply,
+     assign(socket,
+       view: overlay_manifest(view, run_detail),
+       run_package: run_package(run_detail)
+     )}
   end
 
   def handle_info({:console, :run_finished, report}, socket) do
@@ -198,7 +219,16 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
       end)
 
     backlog = links(assigns.features, pr_base: pr_base)
-    assigns = assign(assigns, backlog_links: backlog, ad_hoc_links: ad_hoc)
+    chain = chain_view(assigns)
+    ad_hoc_ids = MapSet.new(ad_hoc, & &1.feature.id)
+
+    assigns =
+      assign(assigns,
+        backlog_links: backlog,
+        ad_hoc_links: ad_hoc,
+        chain_view: chain,
+        drawer_feature: drawer_feature(assigns, chain, ad_hoc_ids)
+      )
 
     ~H"""
     <div class="view-pipeline-dag" data-view="pipeline-dag">
@@ -254,7 +284,7 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
             data-node-origin="backlog"
             data-chain-position={link.position}
             data-chain-base={link.base}
-            data-status={status_class(node_status(@view, link.feature.id))}
+            data-status={status_class(node_status(@chain_view, link.feature.id))}
             phx-click="select_feature"
             phx-value-id={link.feature.id}
           >
@@ -267,17 +297,17 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
                 {pad_ordinal(link.position)}
               </span>
               <span class="dag-node-id">{link.feature.id}</span>
-              <.status_pill status={node_status(@view, link.feature.id)} />
+              <.status_pill status={node_status(@chain_view, link.feature.id)} />
             </div>
             <div class="dag-node-slug">{link.feature.slug}</div>
             <div class="dag-node-base" data-chain-base-label>stacks on {link.base}</div>
             <.phase_strip
-              phases={node_phases(@view, link.feature.id)}
-              status={node_status(@view, link.feature.id)}
-              chunk={node_chunk(@view, link.feature.id)}
-              remediation={node_remediation(@view, link.feature.id)}
+              phases={node_phases(@chain_view, link.feature.id)}
+              status={node_status(@chain_view, link.feature.id)}
+              chunk={node_chunk(@chain_view, link.feature.id)}
+              remediation={node_remediation(@chain_view, link.feature.id)}
             />
-            <div class="dag-node-spend">${format_money(node_spend(@view, link.feature.id))}</div>
+            <div class="dag-node-spend">${format_money(node_spend(@chain_view, link.feature.id))}</div>
           </div>
         </div>
 
@@ -330,11 +360,41 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
       <.feature_drawer
         :if={@selected_feature_id}
         feature_id={@selected_feature_id}
-        feature={Map.get(@view.per_feature, @selected_feature_id)}
+        feature={@drawer_feature}
         on_close="close_drawer"
       />
     </div>
     """
+  end
+
+  # Feature ids are per-package — `NNN` of `NNN-slug.md` — so `001` in one wave
+  # and `001` in another are *different* features that collide in the run's
+  # per-feature map, which is keyed by id alone (`ConsoleReadModel`, the
+  # `:feature_id` telemetry metadata, the store's feature records). Drawing the
+  # live view under every wave therefore made an idle wave look like it was
+  # running the active wave's phases. Only the wave the run is actually scoped
+  # to draws live status/phases/spend; the rest are drawn cold. A run whose
+  # scope we can't read (`run_package == nil`) and the legacy no-packages layout
+  # (`selected_package == nil`) leave the gate off, so neither can regress.
+  defp chain_view(assigns) do
+    if drawing_run_package?(assigns),
+      do: assigns.view,
+      else: %{assigns.view | per_feature: %{}}
+  end
+
+  defp drawing_run_package?(%{run_package: nil}), do: true
+  defp drawing_run_package?(%{selected_package: nil}), do: true
+  defp drawing_run_package?(%{run_package: package, selected_package: package}), do: true
+  defp drawing_run_package?(_assigns), do: false
+
+  # The drawer reads from whichever chain owns the clicked node, so a gated-out
+  # backlog node opens empty rather than showing the colliding id's live run.
+  defp drawer_feature(%{selected_feature_id: nil}, _chain, _ad_hoc_ids), do: nil
+
+  defp drawer_feature(%{selected_feature_id: id} = assigns, chain, ad_hoc_ids) do
+    if MapSet.member?(ad_hoc_ids, id),
+      do: Map.get(assigns.view.per_feature, id),
+      else: Map.get(chain.per_feature, id)
   end
 
   # A backlog chain link's base is the previous link's branch
