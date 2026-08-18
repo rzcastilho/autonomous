@@ -236,6 +236,78 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLiveTest do
     end
   end
 
+  describe "live status is scoped to the run's own wave" do
+    # Feature ids are per-package: `001` in alpha and `001` in beta are
+    # different features that collide in the run's per-feature map, which is
+    # keyed by id alone. Switching the picker to an idle wave used to redraw
+    # the running wave's status/phases under the idle wave's nodes.
+    defp repo_with_colliding_packages do
+      src = Path.expand("../../fixtures/breakdown_packages", __DIR__)
+      repo = Path.join(System.tmp_dir!(), "dag_collide_#{System.unique_integer([:positive])}")
+      dest = Path.join(repo, "specs/autonomous/breakdown")
+      File.mkdir_p!(dest)
+      File.cp_r!(src, dest)
+
+      git!(repo, ["init", "-q", "-b", "main"])
+      git!(repo, ["remote", "add", "origin", "git@example.com:test/#{Path.basename(repo)}.git"])
+      on_exit(fn -> File.rm_rf(repo) end)
+      Application.put_env(:speckit_orchestrator, :repo, repo)
+      repo
+    end
+
+    test "an idle wave's same-numbered node is drawn cold, not with the running wave's status",
+         %{conn: conn} do
+      repo = repo_with_colliding_packages()
+
+      run_key = open_store_run(repo, [feat("001")], {:breakdown, "alpha"})
+      :ok = Writer.record_feature_terminal(run_key, "001", :halted, "test fixture", [])
+
+      refute Process.whereis(Coordinator)
+
+      {:ok, view, html} = live(conn, "/dag")
+
+      # The run's own wave draws its real status.
+      assert html =~ "widget"
+      assert extract_node(html, "001") =~ ~s(data-status="halted")
+
+      html =
+        view
+        |> element(~s(form[data-form="wave-picker"]))
+        |> render_change(%{"slug" => "beta"})
+
+      # Same id, different wave, nothing running there.
+      assert html =~ "gadget"
+      node = extract_node(html, "001")
+      assert node =~ ~s(<span class="status-chip" data-status="pending">)
+      refute node =~ ~s(<span class="status-chip" data-status="halted">)
+    end
+
+    test "the drawer for an idle wave's node does not show the running wave's feature",
+         %{conn: conn} do
+      repo = repo_with_colliding_packages()
+
+      run_key = open_store_run(repo, [feat("001")], {:breakdown, "alpha"})
+      :ok = Writer.record_feature_terminal(run_key, "001", :halted, "test fixture", [])
+
+      {:ok, view, _html} = live(conn, "/dag")
+
+      html =
+        view
+        |> element(~s(form[data-form="wave-picker"]))
+        |> render_change(%{"slug" => "beta"})
+
+      refute extract_node(html, "001") =~ ~s(<span class="status-chip" data-status="halted">)
+
+      html = view |> element(~s([data-dag-node="001"])) |> render_click()
+
+      assert html =~ ~s(id="feature-drawer")
+      drawer = html |> String.split(~s(id="feature-drawer")) |> List.last()
+      # The alpha run's 001 (slug-001, :halted) must not leak into beta's drawer.
+      refute drawer =~ "slug-001"
+      refute drawer =~ ~s(<span class="status-chip" data-status="halted">)
+    end
+  end
+
   describe "release-order badges (019: every run is sequential, structurally)" do
     test "every node is numbered with its release position, no cap variant left to compare against",
          %{conn: conn} do
