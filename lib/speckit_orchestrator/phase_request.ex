@@ -169,11 +169,19 @@ defmodule SpeckitOrchestrator.PhaseRequest do
   defp apply_scope(prompt, :implement, {:sweep, tasks}), do: prompt <> sweep_block(tasks)
   defp apply_scope(prompt, _phase, _scope), do: prompt
 
+  # The "[X] immediately, do not batch" clause is load-bearing, not style:
+  # `ChunkRunner` measures progress purely as the checked-task count moving
+  # (`TaskPlan.completed_tasks/1` before vs after), and an `error_max_turns`
+  # kill lands *before* any end-of-session bookkeeping. A session that batches
+  # its ticks therefore reports zero progress no matter how much code it wrote,
+  # and two such sessions in a row trip `{:stuck_task_phase, …}` on a
+  # task-phase that was in fact advancing.
   defp task_phase_block(%TaskPhase{number: number, title: title}) do
     "\n\n---\n" <>
       "Implement ONLY the tasks in \"Phase #{number}: #{title}\" of tasks.md.\n" <>
       "Do NOT start, plan, or edit files for tasks belonging to any other phase.\n" <>
-      "Mark each task you complete as [X] in tasks.md before finishing.\n" <>
+      "Mark each task as [X] in tasks.md immediately as you complete it — do not\n" <>
+      "batch this to the end of the session.\n" <>
       "This session is scoped deliberately: completing this phase alone is a\n" <>
       "successful outcome. Ignore any instruction to keep working until every task\n" <>
       "in tasks.md is complete — that condition does not apply to this session."
@@ -185,7 +193,8 @@ defmodule SpeckitOrchestrator.PhaseRequest do
     "\n\n---\n" <>
       "Complete ONLY these remaining unchecked tasks from tasks.md, in this order:\n" <>
       "#{ids}.\n" <>
-      "Mark each task you complete as [X] in tasks.md before finishing.\n" <>
+      "Mark each task as [X] in tasks.md immediately as you complete it — do not\n" <>
+      "batch this to the end of the session.\n" <>
       "Completing exactly these tasks is a successful outcome for this session."
   end
 

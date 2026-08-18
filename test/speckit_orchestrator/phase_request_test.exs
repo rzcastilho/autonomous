@@ -64,7 +64,7 @@ defmodule SpeckitOrchestrator.PhaseRequestTest do
   test "implement: max_turns + scoped write permissions" do
     r = PhaseRequest.build(feature(), :implement)
     assert r.prompt == "/speckit.implement"
-    assert r.max_turns == 80
+    assert r.max_turns == 200
     assert r.permission_mode == :accept_edits
     assert "Write" in r.allowed_tools
     assert "Bash" in r.allowed_tools
@@ -162,7 +162,8 @@ defmodule SpeckitOrchestrator.PhaseRequestTest do
       assert r.prompt =~
                "Do NOT start, plan, or edit files for tasks belonging to any other phase."
 
-      assert r.prompt =~ "Mark each task you complete as [X] in tasks.md before finishing."
+      assert r.prompt =~ "Mark each task as [X] in tasks.md immediately as you complete it"
+      assert r.prompt =~ "do not\nbatch this to the end of the session."
       assert r.prompt =~ "completing this phase alone is a"
       assert r.prompt =~ "successful outcome"
     end
@@ -181,7 +182,8 @@ defmodule SpeckitOrchestrator.PhaseRequestTest do
                "Complete ONLY these remaining unchecked tasks from tasks.md, in this order:"
 
       assert r.prompt =~ "T007, T012"
-      assert r.prompt =~ "Mark each task you complete as [X] in tasks.md before finishing."
+      assert r.prompt =~ "Mark each task as [X] in tasks.md immediately as you complete it"
+      assert r.prompt =~ "do not\nbatch this to the end of the session."
 
       assert r.prompt =~
                "Completing exactly these tasks is a successful outcome for this session."

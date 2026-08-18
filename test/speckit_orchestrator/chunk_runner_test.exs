@@ -400,7 +400,8 @@ defmodule SpeckitOrchestrator.ChunkRunnerTest do
 
     agent = ChunkRunner.run(ctx(%{pid: pid, feature: feature, worktree: worktree}))
 
-    assert {:failed, {:stuck_task_phase, ref, 2}} = agent.state.terminal_reason
+    limit = SpeckitOrchestrator.Config.implement_no_progress_limit()
+    assert {:failed, {:stuck_task_phase, ref, ^limit}} = agent.state.terminal_reason
     assert ref.number == "1"
     assert agent.state.last_outcome == :error
   end

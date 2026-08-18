@@ -115,14 +115,19 @@ config :speckit_orchestrator,
   # mid-run over the 7-feature LedgerLite backlog (plan §7.2 trap 3). Raise for a
   # non-drill run that should complete all 7 (>~$104).
   budget_usd: 74.0,
-  # Turn cap for the long-running implement phase.
-  implement_max_turns: 80,
+  # Turn cap for the long-running implement phase. 80 was sized before chunking
+  # (015); a single foundational task-phase in a real target can be 30+ tasks
+  # with tests, which exhausts 80 turns every time and reports `:exhausted`
+  # rather than finishing.
+  implement_max_turns: 200,
   # Retries for a phase that fails transiently (server/API drop, incomplete
   # stream) before the feature is failed. Real errors are never retried.
   phase_max_retries: 1,
   # Consecutive no-progress attempts on one task-phase before it is judged
-  # stuck (FR-013). Feature 015 — implement phase chunking.
-  implement_no_progress_limit: 2,
+  # stuck (FR-013). Feature 015 — implement phase chunking. 3, not 2: progress
+  # is only visible as checked tasks in tasks.md, so one session that dies at
+  # the turn cap mid-task looks identical to one that achieved nothing.
+  implement_no_progress_limit: 3,
   # Session-ceiling formula (FR-013a): per_task_phase * task_phase_count +
   # headroom, frozen at implement-step start. Feature 015.
   implement_sessions_per_task_phase: 2,

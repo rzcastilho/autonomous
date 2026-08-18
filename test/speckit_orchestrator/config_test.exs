@@ -8,7 +8,8 @@ defmodule SpeckitOrchestrator.ConfigTest do
     assert Config.breakdown_dir() == "docs/breakdown"
     assert Config.worktree_root() == "../.speckit-worktrees"
     assert Config.budget_usd() == 74.0
-    assert Config.implement_max_turns() == 80
+    assert Config.implement_max_turns() == 200
+    assert Config.implement_no_progress_limit() == 3
 
     # Empty by default: plan derives the stack from the target's own
     # constitution/manifest. Set per-target via SPECKIT_PLAN_STACK — a stack that
