@@ -23,6 +23,7 @@ defmodule SpeckitOrchestrator.ChunkRunnerTest do
         {:no_progress, n} -> exhausted_no_progress(cwd, prompt, n)
         {:exhaust_then_succeed, n} -> exhaust_then_succeed(cwd, prompt, n)
         {:always_exhaust, n} -> always_exhaust(cwd, prompt, n)
+        :checkpoint_only -> checkpoint_only(cwd, prompt)
         :terminal_error -> terminal_error_messages()
         _ -> mark_and_succeed(cwd, prompt)
       end
@@ -31,6 +32,28 @@ defmodule SpeckitOrchestrator.ChunkRunnerTest do
     defp mark_and_succeed(cwd, prompt) do
       check_off_scoped_task(prompt, cwd)
       success_messages()
+    end
+
+    # Ticks the scoped task-phase's task but writes NO source file — a task
+    # phase whose tasks are all manual checkpoints, or a re-run of one whose
+    # code another session already committed. Everything it touches lives under
+    # the excluded `specs/` prefix.
+    defp checkpoint_only(cwd, prompt) do
+      case Regex.run(~r/Implement ONLY the tasks in "Phase (\d+):/, prompt) do
+        [_, n] -> tick_only(cwd, n)
+        nil -> :ok
+      end
+
+      success_messages()
+    end
+
+    defp tick_only(cwd, n) do
+      path = Path.join(cwd, "specs/001-fake/tasks.md")
+
+      content =
+        path |> File.read!() |> String.split("\n") |> Enum.map(&check_line(&1, n)) |> Enum.join("\n")
+
+      File.write!(path, content)
     end
 
     # Always exhausts on the given task-phase number, never checking anything
@@ -237,6 +260,11 @@ defmodule SpeckitOrchestrator.ChunkRunnerTest do
 
     System.cmd("git", ["add", "-A"], cd: root)
     System.cmd("git", ["commit", "-m", "seed"], cd: root)
+    # A real `main` plus a real feature branch forked from it: the roll-up
+    # artifact gate anchors on `merge-base(branch, pr_base)`, so a fictional
+    # branch name would silently exercise only its fallback.
+    System.cmd("git", ["branch", "-M", "main"], cd: root)
+    System.cmd("git", ["checkout", "-q", "-b", "feature/001-fake"], cd: root)
 
     on_exit(fn -> File.rm_rf(root) end)
 
@@ -293,6 +321,8 @@ defmodule SpeckitOrchestrator.ChunkRunnerTest do
 
     System.cmd("git", ["add", "-A"], cd: root)
     System.cmd("git", ["commit", "-m", "seed"], cd: root)
+    System.cmd("git", ["branch", "-M", "main"], cd: root)
+    System.cmd("git", ["checkout", "-q", "-b", "feature/001-fake"], cd: root)
 
     on_exit(fn -> File.rm_rf(root) end)
 
@@ -392,6 +422,47 @@ defmodule SpeckitOrchestrator.ChunkRunnerTest do
     # drain, don't kill: the first task-phase's session still ran to
     # completion before the halt took effect at the next boundary.
     assert length(captured_prompts(prompts_agent)) == 1
+  end
+
+  # The roll-up artifact gate used to anchor on the worktree's HEAD when the
+  # invocation started. That is only the branch's fork point on a feature's
+  # FIRST implement invocation; on a resume every earlier task-phase boundary
+  # commit already sits below it, so the gate judged the feature on the resumed
+  # slice alone. A slice that legitimately writes no code then failed a fully
+  # implemented feature with `missing_artifact: "implementation changes"`,
+  # while its implementation sat committed on the branch one commit down.
+  test "a resumed invocation whose slice writes no code passes on the branch's already-committed implementation",
+       %{feature: feature, worktree: worktree, pid: pid} do
+    # First invocation: every task phase runs and commits real source files.
+    agent = ChunkRunner.run(ctx(%{pid: pid, feature: feature, worktree: worktree}))
+    assert agent.state.last_signals == %{}
+    assert File.exists?(Path.join(worktree.path, "lib/fake_phase_3.ex"))
+
+    # The branch carries the implementation as commits, not as a dirty tree.
+    assert {"", 0} = System.cmd("git", ["status", "--porcelain"], cd: worktree.path)
+
+    # Resume onto task-phase 3 with a session that only ticks tasks.md.
+    Application.put_env(:speckit_orchestrator, :chunk_runner_test_scenario, :checkpoint_only)
+
+    resumed =
+      ChunkRunner.run(
+        ctx(%{pid: pid, feature: feature, worktree: worktree, start_task_phase: 3})
+      )
+
+    assert resumed.state.last_outcome == :ok
+    assert resumed.state.last_signals == %{}
+  end
+
+  test "with an unresolvable fork point the gate falls back to HEAD-at-start rather than failing",
+       %{feature: feature, worktree: worktree, pid: pid} do
+    # A branch `merge-base` cannot resolve against `pr_base` — the fallback
+    # path. A first invocation still sees its own boundary commits.
+    worktree = %{worktree | branch: "feature/999-never-created"}
+
+    agent = ChunkRunner.run(ctx(%{pid: pid, feature: feature, worktree: worktree}))
+
+    assert agent.state.last_outcome == :ok
+    assert agent.state.last_signals == %{}
   end
 
   test "a task-phase stuck in a no-progress loop fails as :stuck_task_phase",

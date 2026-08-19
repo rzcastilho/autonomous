@@ -40,6 +40,41 @@ defmodule SpeckitOrchestrator.WorktreeTest do
     [repo: repo, worktree_root: root]
   end
 
+  describe "fork_point/2" do
+    test "returns the commit the branch diverged from its base at, not the branch tip" do
+      repo = base_repo()
+      opts = with_root(repo)
+      {:ok, wt} = Worktree.create(feature(), opts)
+
+      {:ok, base_at_fork} = git_rev(repo, "main")
+
+      # The branch moves on; main does not. The fork point must not move with it.
+      File.write!(Path.join(wt.path, "impl.txt"), "code\n")
+      git!(wt.path, ["add", "-A"])
+      git!(wt.path, ["commit", "-q", "-m", "work"])
+
+      {:ok, tip} = git_rev(wt.path, "HEAD")
+
+      assert Worktree.fork_point(wt, "main") == {:ok, base_at_fork}
+      refute base_at_fork == tip
+    end
+
+    test "errors when the base ref cannot be resolved, leaving the fallback to the caller" do
+      repo = base_repo()
+      opts = with_root(repo)
+      {:ok, wt} = Worktree.create(feature(), opts)
+
+      assert {:error, {:git_failed, _code, _out}} = Worktree.fork_point(wt, "no/such/ref")
+    end
+  end
+
+  defp git_rev(dir, ref) do
+    case System.cmd("git", ["-C", dir, "rev-parse", ref], stderr_to_stdout: true) do
+      {out, 0} -> {:ok, String.trim(out)}
+      {out, code} -> {:error, {code, out}}
+    end
+  end
+
   test "create/2 adds a worktree on feature/NNN-slug with the scaffold present" do
     repo = base_repo()
     opts = with_root(repo)

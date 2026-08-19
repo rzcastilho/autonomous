@@ -41,7 +41,8 @@ defmodule SpeckitOrchestrator.ChunkRunner do
           required(:step) => pos_integer(),
           required(:ledger) => pid() | nil,
           optional(:start_task_phase) => TaskPhaseRef.t() | pos_integer() | nil,
-          optional(:reset_implement_sessions) => boolean()
+          optional(:reset_implement_sessions) => boolean(),
+          optional(:stack_base) => String.t() | nil
         }
 
   @doc """
@@ -76,7 +77,7 @@ defmodule SpeckitOrchestrator.ChunkRunner do
 
     ctx =
       ctx
-      |> Map.put(:start_ref, git_head(worktree))
+      |> Map.put(:start_ref, base_ref(ctx))
       |> Map.put(:baseline_sessions_used, sessions_used)
 
     loop(ctx, state, %{}, agent)
@@ -353,14 +354,39 @@ defmodule SpeckitOrchestrator.ChunkRunner do
   # Captured once at implement-step start so the roll-up's artifact-gate check
   # can see changes already committed at task-phase boundaries (FR-023a), not
   # just what's still dirty in the tree.
+  # The roll-up artifact gate's anchor: the commit this feature's branch forked
+  # from its stack base — NOT the worktree's HEAD when this invocation started.
+  #
+  # HEAD is only correct the *first* time implement runs. On a resume — or any
+  # re-entry after a per-chunk failure — every earlier task phase's boundary
+  # commit already sits below it, so the gate sees only the slice this
+  # invocation produced. A slice that legitimately writes no code (a re-run of
+  # an already-satisfied task phase, a phase whose tasks are all manual
+  # checkpoints) then failed the whole feature with `missing_artifact:
+  # "implementation changes"` while the implementation sat committed on the
+  # branch one commit down. The fork point is stable across every session,
+  # chunk, retry and resume that contributed to the branch.
+  #
+  # When the fork point can't be resolved (absent/misconfigured base ref,
+  # unrelated histories) fall back to HEAD-at-start — the pre-fix anchor. It is
+  # wrong on a resume, but it is right on a first invocation and it still sees
+  # this invocation's boundary commits, so the fallback is never worse than the
+  # behaviour it replaces.
+  defp base_ref(%{worktree: %Worktree{} = worktree} = ctx) do
+    case Worktree.fork_point(worktree, ctx[:stack_base] || Config.pr_base()) do
+      {:ok, sha} -> sha
+      {:error, _reason} -> git_head(worktree)
+    end
+  end
+
+  defp base_ref(_ctx), do: nil
+
   defp git_head(%Worktree{path: path}) do
     case System.cmd("git", ["-C", path, "rev-parse", "HEAD"], stderr_to_stdout: true) do
       {out, 0} -> String.trim(out)
       _ -> nil
     end
   end
-
-  defp git_head(_worktree), do: nil
 
   defp breaker_tripped?(nil), do: false
   defp breaker_tripped?(ledger), do: Ledger.breaker_tripped?(ledger)
