@@ -328,6 +328,22 @@ defmodule SpeckitOrchestrator.Worktree do
     end
   end
 
+  @doc """
+  The commit this worktree's branch forked from `base` — `git merge-base
+  <branch> <base>`, run in the base repo (works whether or not the worktree
+  still exists).
+
+  This is the anchor for "what did *this feature* change", and it is stable
+  across however many sessions, chunks, retries and resumes produced those
+  changes — unlike the worktree's HEAD, which moves with every boundary commit.
+  `{:error, {:git_failed, ...}}` when git cannot answer (no such base ref,
+  unrelated histories); callers pick their own fallback.
+  """
+  @spec fork_point(t(), String.t()) :: {:ok, String.t()} | {:error, term()}
+  def fork_point(%__MODULE__{repo: repo, branch: branch}, base) when is_binary(base) do
+    git(repo, ["merge-base", branch, base])
+  end
+
   defp git(repo, args) do
     case System.cmd("git", ["-C", repo | args], stderr_to_stdout: true) do
       {out, 0} -> {:ok, String.trim(out)}

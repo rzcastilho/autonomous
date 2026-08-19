@@ -86,10 +86,10 @@ defmodule SpeckitOrchestrator.FeatureRunner do
       against the checkpoint instead.
     * `:stack_base` — the git ref this feature's branch was forked from (the
       stacked workflow's resolved stack base: the previous feature's branch, or
-      `Config.pr_base()`). Used **only** as the reference for the `:done`
-      squash's fork-point lookup. `nil` (default) resolves to
-      `Config.pr_base()` at squash time, which is correct for the bottom of the
-      stack and for ad-hoc features.
+      `Config.pr_base()`). The reference for every fork-point lookup this run
+      makes: the `:done` squash, and `ChunkRunner`'s roll-up artifact gate.
+      `nil` (default) resolves to `Config.pr_base()` at lookup time, which is
+      correct for the bottom of the stack and for ad-hoc features.
     * `:reset_implement_sessions` — `true` clears the carried
       `implement_chunk.sessions_used` to `0` before the chunk loop starts
       (FR-013b — an explicit grant of more session budget). Default `false`
@@ -108,9 +108,9 @@ defmodule SpeckitOrchestrator.FeatureRunner do
     remediation_model = Keyword.get(opts, :remediation_model)
     run_context = Keyword.get(opts, :run_context)
     layout = Keyword.get(opts, :layout)
-    # Resolved lazily at squash time (`merge_base/3`) — a dry run with no
-    # worktree never squashes, and must not pay for a `Config.pr_base()` that
-    # may not be configured at all.
+    # Resolved lazily at each fork-point lookup (`merge_base/2`, `ChunkRunner`)
+    # — a dry run with no worktree never looks one up, and must not pay for a
+    # `Config.pr_base()` that may not be configured at all.
     stack_base = Keyword.get(opts, :stack_base)
     # The store's `{repo_id, run_id}` for this run (018) — `nil` for a caller
     # with no store-backed run (most unit tests calling this module directly),
@@ -121,7 +121,8 @@ defmodule SpeckitOrchestrator.FeatureRunner do
       start_task_phase: Keyword.get(opts, :start_task_phase),
       reset_implement_sessions: Keyword.get(opts, :reset_implement_sessions, false),
       remediation_settings: remediation_settings!(run_context),
-      run_key: run_key
+      run_key: run_key,
+      stack_base: stack_base
     }
 
     with {:ok, pid} <- start_agent(feature, opts) do
@@ -416,7 +417,8 @@ defmodule SpeckitOrchestrator.FeatureRunner do
   # (`run_phase_with_retry/8`) would be meaningless wrapped around a call that
   # already represents N sessions, not one. Every other phase is unchanged.
   defp run_step(pid, feature, :implement, step, timeout, ledger, worktree, layout, step_opts) do
-    chunk_opts = Map.take(step_opts, [:start_task_phase, :reset_implement_sessions, :run_key])
+    chunk_opts =
+      Map.take(step_opts, [:start_task_phase, :reset_implement_sessions, :run_key, :stack_base])
     run_chunked_phase(pid, feature, step, timeout, ledger, worktree, layout, chunk_opts)
   end
 
@@ -605,14 +607,8 @@ defmodule SpeckitOrchestrator.FeatureRunner do
   # discarded on removal. `message` was authored (Claude, PR workflow) or
   # templated by `commit_message_and_pr/4` before the store write, so the git
   # history and the recorded `pr_description` always agree.
-  defp handle_worktree(
-         _feature,
-         :done,
-         %Worktree{repo: repo, branch: branch} = wt,
-         message,
-         stack_base
-       ) do
-    _ = Worktree.squash(wt, merge_base(repo, branch, stack_base), message)
+  defp handle_worktree(_feature, :done, %Worktree{} = wt, message, stack_base) do
+    _ = Worktree.squash(wt, merge_base(wt, stack_base), message)
     Worktree.remove(wt)
   end
 
@@ -634,14 +630,10 @@ defmodule SpeckitOrchestrator.FeatureRunner do
   # conflicts with it file for file.
   #
   # Falls back to "HEAD" (a no-op reset) if the merge-base lookup itself fails.
-  defp merge_base(repo, branch, stack_base) do
-    against = stack_base || Config.pr_base()
-
-    case System.cmd("git", ["-C", repo, "merge-base", branch, against],
-           stderr_to_stdout: true
-         ) do
-      {out, 0} -> String.trim(out)
-      {_, _} -> "HEAD"
+  defp merge_base(%Worktree{} = wt, stack_base) do
+    case Worktree.fork_point(wt, stack_base || Config.pr_base()) do
+      {:ok, sha} -> sha
+      {:error, _reason} -> "HEAD"
     end
   end
 

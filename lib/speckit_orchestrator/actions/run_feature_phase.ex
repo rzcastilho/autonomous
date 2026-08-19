@@ -192,12 +192,19 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhase do
   the roll-up when the per-chunk gate was deferred (`classify/4` above, scope
   present).
 
-  `:since` (a git ref) additionally counts changes already **committed** since
+  `:since` (a git ref) additionally counts changes already **committed** after
   that point — `ChunkRunner` commits at every task-phase boundary (FR-023a),
   so by roll-up time a chunked run's changes are no longer sitting dirty in
   the tree; without `:since` the plain dirty-tree check below would see
   nothing and wrongly report a successful implementation as missing one.
-  Non-chunked callers omit it and get today's dirty-tree-only behavior.
+
+  The ref must be the branch's **fork point from its stack base**
+  (`Worktree.fork_point/2`), not the worktree's HEAD when the invocation
+  started. HEAD only agrees with the fork point on a feature's *first*
+  implement invocation; on a resume, every earlier task phase's commit is
+  already below it, and the gate then judges the feature on the resumed slice
+  alone — failing a fully-implemented feature whose resumed slice happened to
+  write no code. Non-chunked callers omit it and get dirty-tree-only behavior.
   """
   @spec missing_implement_artifact(SpeckitOrchestrator.Worktree.t() | nil, keyword()) ::
           String.t() | nil
