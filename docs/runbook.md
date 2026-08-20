@@ -911,14 +911,41 @@ because an upstream artifact was missing. Without a filesystem check the pipelin
 marches on and opens a PR for an unbuilt feature — every downstream phase
 reporting the problem in prose that nobody reads.
 
-Two deterministic gates close this:
+Three deterministic gates close this:
 
 | Gate | Check | Terminal |
 |------|-------|----------|
-| artifact | after `plan` → some `specs/**/plan.md` exists; after `tasks` → `specs/**/tasks.md`; after `implement` → the worktree has changes **outside** `specs/`, `.specify/`, and the log dirs | `:failed`, reason `{:missing_artifact, phase, what}` |
+| artifact | after `plan` → this feature's `plan.md` exists **and is not the unfilled template**; after `tasks` → `tasks.md`, same; after `implement` → the worktree has changes **outside** `specs/`, `.specify/`, and the log dirs | `:failed`, reason `{:missing_artifact, phase, what}` |
+| incomplete session | the session reported success while tool calls it made never returned — it ended its turn mid-flight | `:failed`, reason `{:incomplete_session, phase}` |
 | converge | converge's last line is `## CONVERGE: NOT READY` | `:failed`, reason `:converge_not_ready` |
 
-Both keep the worktree for post-mortem. `analyze` also escalates on a `high`
+All three keep the worktree for post-mortem.
+
+**`plan.md (unfilled template)` — plan wrote only the scaffolding.** Spec Kit's
+`setup-plan.sh` copies `plan-template.md` into `specs/<feature>/plan.md` *before*
+the model writes anything, so an existence check alone cannot tell real output
+from an untouched template. The artifact gate therefore also reads the file, and
+reports `plan.md (unfilled template)` when it still carries the template's own
+markers (an identical copy, `ACTION REQUIRED` comment blocks, `[FEATURE]` /
+`[###-feature-name]` / `[DATE]` placeholders, a bracketed **Structure Decision**,
+or a Constitution Check with every box unticked). Two independent markers must
+agree before it fires, so a real plan that leaves one stray placeholder still
+passes.
+
+The usual cause is a plan session that dispatched research subagents and then
+ended its turn: headless, ending the turn ends the session, and nothing collects
+the subagents afterwards. That is also what the incomplete-session gate detects
+directly. Both outcomes are retried once (`SPECKIT_PHASE_MAX_RETRIES`, default 1)
+before the feature fails, because a fresh session is the most likely fix and
+neither reproduces deterministically. A *plainly* missing `plan.md` is not
+retried — see the `plan_stack` note below.
+
+To resume such a feature, reset the artifact first: the checkpoint commit holds
+only the template, and `setup-plan.sh` skips its copy when the file already
+exists, so a resume that leaves it in place hands the model a populated-looking
+document. Drop the commit (`git reset --hard <the checkpoint before plan>`) in
+the worktree, then `continue_run(from: :plan, prompt: "...")` — a plain
+`rm plan.md` is undone by the resume, which calls `git reset --hard HEAD`. `analyze` also escalates on a `high`
 finding now (`:escalated`, reason `:high_findings`); `critical` still halts.
 
 **The most common trigger — a contradictory `plan_stack`.** If the stack handed

@@ -2,7 +2,7 @@ defmodule SpeckitOrchestrator.RunPhaseTest do
   # async: false — swaps the global :jido_claude sdk_module.
   use ExUnit.Case, async: false
 
-  alias SpeckitOrchestrator.{Feature, Ledger, PhaseRequest}
+  alias SpeckitOrchestrator.{Feature, Ledger, PhaseRequest, PhaseResult}
   alias SpeckitOrchestrator.Actions.RunPhase
 
   # Fake SDK: exercises the real adapter -> mapper -> harness -> reduce path
@@ -69,7 +69,12 @@ defmodule SpeckitOrchestrator.RunPhaseTest do
   defp restore(app, key, val), do: Application.put_env(app, key, val)
 
   defp feature do
-    %Feature{id: "001", number: 1, slug: "core-ledger", path: "/x/docs/breakdown/001-core-ledger.md"}
+    %Feature{
+      id: "001",
+      number: 1,
+      slug: "core-ledger",
+      path: "/x/docs/breakdown/001-core-ledger.md"
+    }
   end
 
   test "runs a phase end-to-end, records actual cost to the ledger", %{ledger: ledger} do
@@ -136,5 +141,36 @@ defmodule SpeckitOrchestrator.RunPhaseTest do
     assert {:ok, out} = RunPhase.run(%{request: request, phase: :specify, ledger: nil}, %{})
     assert out.phase_result.status in [:ok, :error]
     assert is_binary(out.phase_result.final_text)
+  end
+
+  # The empirical guard for `PhaseResult.outstanding_work?/1`'s only assumption:
+  # that a real session surfaces `:tool_result` events at all. If some transport
+  # mode dropped them, every call would look stranded — the `matched_pairs >= 1`
+  # fail-safe would then silently disable the gate rather than fail every phase,
+  # so this is the test that would notice. It cannot be checked offline: only
+  # `final_text` is persisted, so `tool_events` never survive a run.
+  @tag :integration
+  test "LIVE: a real session that uses tools returns every call it makes (paid, opt-in)" do
+    repo =
+      System.get_env("SPECKIT_FIXTURE_REPO") || flunk("set SPECKIT_FIXTURE_REPO to a repo path")
+
+    request =
+      Jido.Harness.RunRequest.new!(%{
+        prompt: "List the files in the repository root with Bash, then say DONE.",
+        cwd: repo,
+        permission_mode: :accept_edits,
+        allowed_tools: ~w(Read Bash Grep Glob)
+      })
+
+    assert {:ok, out} = RunPhase.run(%{request: request, phase: :describe, ledger: nil}, %{})
+
+    result = out.phase_result
+    assert result.status == :ok
+
+    assert Enum.any?(result.tool_events, &(&1.kind == :call)),
+           "the prompt should force a tool call"
+
+    assert Enum.any?(result.tool_events, &(&1.kind == :result)), "results must reach the fold"
+    refute PhaseResult.outstanding_work?(result)
   end
 end

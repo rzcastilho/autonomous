@@ -31,10 +31,26 @@ defmodule SpeckitOrchestrator.FakeArtifacts do
          true <- under_tmp?(cwd),
          phase when not is_nil(phase) <- phase_of(prompt),
          false <- phase in Keyword.get(opts, :except, []) do
-      do_write(phase, cwd)
+      if phase in Keyword.get(opts, :template_passthrough, []),
+        do: passthrough(phase, cwd),
+        else: do_write(phase, cwd)
     else
       _ -> :ok
     end
+  end
+
+  @doc """
+  Reproduce what `setup-plan.sh` leaves behind when the model then writes
+  nothing: the Spec Kit template on disk, and the phase's artifact as a
+  byte-for-byte copy of it.
+
+  This is the shape that made a plan phase report success over an empty plan —
+  a pure existence gate cannot tell it from real output.
+  """
+  def passthrough(:plan, cwd) do
+    template = File.read!(Path.expand("../fixtures/templates/plan-template.md", __DIR__))
+    write_file(cwd, ".specify/templates/plan-template.md", template)
+    write_file(cwd, "specs/001-fake/plan.md", template)
   end
 
   defp under_tmp?(cwd) do

@@ -107,7 +107,17 @@ dependency, fully unit-testable:
   byte-identical to before 021. Constitution 4.0.0 brings **Critical** under
   that same policy: no threshold can reach it (Critical is the ceiling of the
   severity order), and only an exhausted loop plus an explicit `:proceed`
-  advances past one — every default run still halts. Gate signals are extracted upstream and
+  advances past one — every default run still halts. Two further gates close the
+  "successful transcript, empty tree" class: the **artifact gate** now reads
+  substance, not just existence (`ArtifactSubstance` — `setup-plan.sh` copies
+  `plan-template.md` into place before the model writes anything, so an
+  untouched template used to pass as a plan and the emptiness surfaced a phase
+  later from `tasks`), and the **incomplete-session gate** fails a phase whose
+  session reported success with tool calls still unreturned
+  (`PhaseResult.outstanding_work?/1` — headless, ending the turn ends the
+  session, so a model "waiting on subagents" never finishes). Both are retried
+  once by `PhaseStep` before the feature fails; a plainly missing artifact is
+  not. Gate signals are extracted upstream and
   passed in, keeping this module side-effect free. `Pipeline` still sees
   exactly one `:analyze` outcome per feature run.
 - `Severity` / `Remediation` (feature 017; exhaustion policy, feature 021) — a

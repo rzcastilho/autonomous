@@ -73,13 +73,33 @@ defmodule SpeckitOrchestrator.PhaseRequestTest do
   test "tasks and plan use their slash commands" do
     assert PhaseRequest.build(feature(), :tasks).prompt == "/speckit.tasks"
 
-    # With no configured stack, plan is the bare slash command (config ships a
-    # default plan_stack, so clear it for this assertion — restoring the original
-    # so we don't pollute other tests' view of :plan_stack).
+    # Config ships a default plan_stack, so clear it for the no-stack assertion —
+    # restoring the original so we don't pollute other tests' view of :plan_stack.
     original = Application.get_env(:speckit_orchestrator, :plan_stack)
     Application.put_env(:speckit_orchestrator, :plan_stack, [])
     on_exit(fn -> Application.put_env(:speckit_orchestrator, :plan_stack, original) end)
-    assert PhaseRequest.build(feature(), :plan).prompt == "/speckit.plan"
+
+    bare = PhaseRequest.build(feature(), :plan).prompt
+    assert String.starts_with?(bare, "/speckit.plan\n\n")
+
+    Application.put_env(:speckit_orchestrator, :plan_stack, ["Elixir", "Phoenix"])
+    stacked = PhaseRequest.build(feature(), :plan).prompt
+    assert String.starts_with?(stacked, "/speckit.plan Preferred stack: Elixir, Phoenix. ")
+    assert stacked =~ "Feature 001 (core-ledger)"
+
+    # Both carry the completion contract the plan gates check for.
+    for prompt <- [bare, stacked] do
+      assert prompt =~ "placeholder"
+      assert prompt =~ "subagents"
+      assert prompt =~ "unfilled"
+
+      # `FakeArtifacts` routes offline e2e fixtures by slash-command substring,
+      # testing `specify` before `plan` — any other phase's token in this prompt
+      # would silently misroute every one of them.
+      refute prompt =~ "/speckit.specify"
+      refute prompt =~ "/speckit.tasks"
+      refute prompt =~ "/speckit.implement"
+    end
   end
 
   test "converge uses the prompt pack" do

@@ -383,6 +383,38 @@ defmodule SpeckitOrchestrator.PipelineTest do
       assert Pipeline.next(:plan, :ok, %{missing_artifact: "specs/**/plan.md"}) ==
                {:failed, {:missing_artifact, :plan, "specs/**/plan.md"}}
     end
+
+    # Existence was never the question: `setup-plan.sh` puts the template on
+    # disk before the model writes a word, so the gate has to be able to say
+    # "this file is scaffolding" as well as "this file is absent".
+    test "an artifact left as the untouched template fails the same way" do
+      assert Pipeline.next(:plan, :ok, %{
+               missing_artifact: "plan.md (unfilled template)",
+               unfilled_artifact?: true
+             }) == {:failed, {:missing_artifact, :plan, "plan.md (unfilled template)"}}
+    end
+  end
+
+  describe "incomplete-session gate" do
+    test "outstanding work fails the phase that stranded it, by name" do
+      for phase <- Pipeline.phases() do
+        assert Pipeline.next(phase, :error, %{outstanding_work?: true}) ==
+                 {:failed, {:incomplete_session, phase}}
+      end
+    end
+
+    test "a plain error is unchanged" do
+      assert Pipeline.next(:plan, :error, %{}) == {:failed, {:plan, :error}}
+
+      assert Pipeline.next(:plan, :error, %{outstanding_work?: false}) ==
+               {:failed, {:plan, :error}}
+    end
+
+    # The signal only ever arrives with an :error outcome, but pin that a stray
+    # one on an :ok outcome cannot divert a phase that actually succeeded.
+    test "the signal does not divert a successful phase" do
+      assert Pipeline.next(:plan, :ok, %{outstanding_work?: true}) == {:cont, :tasks}
+    end
   end
 
   describe "converge gate" do

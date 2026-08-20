@@ -154,4 +154,100 @@ defmodule SpeckitOrchestrator.PhaseResultTest do
       refute PhaseResult.exhausted?(nil)
     end
   end
+
+  describe "outstanding_work?/1" do
+    defp session(tool_events, opts \\ []) do
+      completed =
+        ev(
+          :session_completed,
+          %{
+            "result" => "done",
+            "num_turns" => 2,
+            "is_error" => Keyword.get(opts, :is_error, false)
+          },
+          "s"
+        )
+
+      terminal = Keyword.get(opts, :terminal, completed)
+      PhaseResult.reduce(tool_events ++ [terminal])
+    end
+
+    defp call(id, name \\ "Task"),
+      do: ev(:tool_call, %{"name" => name, "input" => %{}, "call_id" => id}, "s")
+
+    defp result(id),
+      do: ev(:tool_result, %{"output" => "ok", "call_id" => id, "is_error" => false}, "s")
+
+    test "flags an :ok session that stranded calls, and names them" do
+      r =
+        session([
+          call("a", "Read"),
+          result("a"),
+          call("b", "Grep"),
+          result("b"),
+          call("c", "Read"),
+          result("c"),
+          call("d", "Task"),
+          call("e", "Agent")
+        ])
+
+      assert PhaseResult.outstanding_work?(r)
+      assert PhaseResult.outstanding_calls(r) == ["Task", "Agent"]
+    end
+
+    test "does not flag a session whose calls all returned" do
+      r = session([call("a"), result("a"), call("b"), result("b")])
+
+      refute PhaseResult.outstanding_work?(r)
+      assert PhaseResult.outstanding_calls(r) == []
+    end
+
+    test "does not flag when no result ever arrived — the transport guard" do
+      r = session([call("a"), call("b"), call("c")])
+
+      refute PhaseResult.outstanding_work?(r)
+    end
+
+    test "does not flag a session with no tool events at all" do
+      refute PhaseResult.outstanding_work?(session([]))
+    end
+
+    test "does not flag a non-:ok session, leaving exhaustion and transience distinct" do
+      stranded = [call("a"), result("a"), call("b")]
+
+      failed =
+        session(stranded,
+          terminal: ev(:session_failed, %{"error" => "boom", "subtype" => "error_max_turns"}, "s")
+        )
+
+      assert failed.status == :error
+      assert PhaseResult.exhausted?(failed)
+      refute PhaseResult.outstanding_work?(failed)
+
+      errored = session(stranded, is_error: true)
+      assert errored.status == :error
+      refute PhaseResult.outstanding_work?(errored)
+
+      incomplete = PhaseResult.reduce(stranded)
+      assert incomplete.status == :incomplete
+      assert PhaseResult.transient?(incomplete)
+      refute PhaseResult.outstanding_work?(incomplete)
+    end
+
+    test "ignores events carrying no call_id rather than counting them stranded" do
+      r =
+        session([
+          call("a"),
+          result("a"),
+          ev(:tool_call, %{"name" => "Bash", "input" => %{}}, "s")
+        ])
+
+      refute PhaseResult.outstanding_work?(r)
+    end
+
+    test "nil is never outstanding" do
+      refute PhaseResult.outstanding_work?(nil)
+      assert PhaseResult.outstanding_calls(nil) == []
+    end
+  end
 end

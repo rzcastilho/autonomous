@@ -118,6 +118,78 @@ defmodule SpeckitOrchestrator.PhaseResult do
   def exhausted?(_), do: false
 
   @doc """
+  True when an **`:ok`** session ended with tool calls that never returned a
+  result — the mechanical signature of "the model ended its turn while work was
+  still in flight".
+
+  This exists because the harness gives us no direct signal for it:
+  `:session_completed` carries only `result / num_turns / duration_ms /
+  is_error`, so a session that dispatched background subagents and then ended
+  its turn is indistinguishable, at the event level, from one that finished its
+  job — both fold to `status: :ok`. In a headless one-shot, ending the turn
+  *is* ending the session, and nothing collects the outstanding work later.
+
+  Derived instead from `tool_events`: `:tool_call` carries a `"call_id"` and the
+  matching `:tool_result` echoes it, so a call id with no result is a stranded
+  call. Three properties are load-bearing:
+
+    * **Name-agnostic** — any unreturned call counts, not just the subagent
+      tool. The tool has been named both `Task` and `Agent` across CLI
+      versions; a name allowlist would fail open on the next rename.
+    * **At least one matched pair is required.** If some transport never
+      surfaced `:tool_result` events, every call would look stranded and every
+      phase would fail. Demanding proof that results *do* arrive on this
+      session puts the false-positive direction at "do not flag" — the same
+      posture as the artifact gate's broken-probe handling.
+    * **`:ok` only.** A max-turns kill or a cut stream also strands calls;
+      those stay classified by `exhausted?/1` / `transient?/1`.
+  """
+  @spec outstanding_work?(t() | nil) :: boolean()
+  def outstanding_work?(%__MODULE__{status: :ok} = r) do
+    {calls, results} = call_ids(r)
+
+    MapSet.size(MapSet.intersection(calls, results)) >= 1 and
+      not MapSet.equal?(MapSet.difference(calls, results), MapSet.new())
+  end
+
+  def outstanding_work?(_), do: false
+
+  @doc """
+  The tool names of the calls `outstanding_work?/1` found stranded, in call
+  order, for logging. `[]` whenever `outstanding_work?/1` is false.
+  """
+  @spec outstanding_calls(t() | nil) :: [String.t()]
+  def outstanding_calls(%__MODULE__{} = r) do
+    if outstanding_work?(r) do
+      {calls, results} = call_ids(r)
+      stranded = MapSet.difference(calls, results)
+
+      for %{kind: :call, payload: p} <- r.tool_events,
+          MapSet.member?(stranded, p["call_id"]),
+          do: p["name"] || "(unnamed)"
+    else
+      []
+    end
+  end
+
+  def outstanding_calls(_), do: []
+
+  # Call ids seen on each side. A call with no `"call_id"` is unmatchable in
+  # either direction, so it is dropped rather than counted as stranded.
+  defp call_ids(%__MODULE__{tool_events: events}) do
+    Enum.reduce(events, {MapSet.new(), MapSet.new()}, fn
+      %{kind: kind, payload: %{"call_id" => id}}, {calls, results} when is_binary(id) ->
+        case kind do
+          :call -> {MapSet.put(calls, id), results}
+          :result -> {calls, MapSet.put(results, id)}
+        end
+
+      _event, acc ->
+        acc
+    end)
+  end
+
+  @doc """
   Fold an enumerable of `%Jido.Harness.Event{}` into a `%PhaseResult{}`.
 
   `final_text` prefers the terminal `:session_completed` result string; if the

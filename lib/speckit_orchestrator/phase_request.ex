@@ -129,13 +129,19 @@ defmodule SpeckitOrchestrator.PhaseRequest do
       "(#{breakdown_ref(feature, layout)})."
   end
 
+  # The slash command alone is not a contract. `setup-plan.sh` puts the template
+  # on disk before the model does anything, so a session that ends its turn
+  # early — classically, having dispatched background subagents — leaves a file
+  # that looks like output and contains no plan. `priv/prompts/plan.md` states
+  # the completion conditions and names the gates that will check them.
   defp prompt(feature, :plan, _layout) do
     case Config.plan_stack() do
       [] ->
-        @slash.plan
+        "#{@slash.plan}\n\n" <> Prompts.load("plan")
 
       stack ->
-        "#{@slash.plan} Preferred stack: #{Enum.join(stack, ", ")}. " <> feature_tag(feature)
+        "#{@slash.plan} Preferred stack: #{Enum.join(stack, ", ")}. " <>
+          feature_tag(feature) <> "\n\n" <> Prompts.load("plan")
     end
   end
 

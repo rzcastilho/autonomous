@@ -460,6 +460,36 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
     assert File.dir?(wt.path)
   end
 
+  # The live failure this closes: `setup-plan.sh` copies `plan-template.md` into
+  # place before the model writes anything, so a plan session that ends its turn
+  # early — classically, having dispatched background subagents — leaves a file
+  # that satisfies a pure existence check and contains no plan. The run then
+  # marched on and the emptiness surfaced from the *tasks* phase refusing to
+  # work from it: a true message naming the wrong phase.
+  test "plan that leaves the untouched template fails at :plan, never reaching :tasks" do
+    scenario = fn prompt, opts ->
+      SpeckitOrchestrator.FakeArtifacts.write(prompt, opts, template_passthrough: [:plan])
+    end
+
+    Application.put_env(:speckit_orchestrator, :test_artifact_hook, scenario)
+    on_exit(fn -> Application.delete_env(:speckit_orchestrator, :test_artifact_hook) end)
+
+    wt = scaffolded_worktree()
+
+    result = FeatureRunner.run(feature(), worktree: wt, notify: self())
+
+    assert result.status == :failed
+    assert result.reason == {:missing_artifact, :plan, "plan.md (unfilled template)"}
+
+    # The chain stops at the phase that broke it: the fake writes tasks.md
+    # whenever the tasks phase runs, and there is none.
+    assert File.regular?(Path.join(wt.path, "specs/001-fake/plan.md"))
+    refute File.exists?(Path.join(wt.path, "specs/001-fake/tasks.md"))
+
+    # kept for post-mortem, never removed
+    assert File.dir?(wt.path)
+  end
+
   test "tasks that writes no tasks.md fails the feature" do
     fake_writing_all_but([:tasks])
     wt = scaffolded_worktree()

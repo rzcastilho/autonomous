@@ -33,13 +33,18 @@ defmodule SpeckitOrchestrator.Pipeline do
     recorded `:proceed` on an exhausted loop advances past it — annotated on
     the run's report, the console, and the PR body, never as a new status.
   * **artifact gate** — a phase returned a successful transcript but wrote none
-    of the files it exists to produce. `signals.missing_artifact` at `:plan`,
-    `:tasks`, or `:implement` → `:failed`.
+    of the files it exists to produce, or left the Spec Kit template where its
+    output belongs. `signals.missing_artifact` at `:plan`, `:tasks`, or
+    `:implement` → `:failed`.
+  * **incomplete-session gate** — a session reported success while tool calls it
+    made were still unreturned, which in a headless one-shot means work that
+    will never finish. `signals.outstanding_work? == true` → `:failed` with
+    `{:incomplete_session, phase}`.
   * **converge gate** — converge itself reported the branch is not ready for
     human review. `signals.not_ready? == true` at `:converge` → `:failed`.
 
-  The artifact and converge gates close a **false-green** class found in a live
-  run: a phase can refuse, ask an unanswerable question, or no-op because an
+  The artifact, incomplete-session, and converge gates close a **false-green**
+  class found in a live run: a phase can refuse, ask an unanswerable question, or no-op because an
   earlier artifact is missing, and still return a perfectly successful
   transcript. Every downstream phase then reports the problem in prose while the
   pipeline marches to `:done` and opens a PR for an unbuilt feature. Only a
@@ -69,7 +74,9 @@ defmodule SpeckitOrchestrator.Pipeline do
           optional(:exhausted?) => boolean(),
           optional(:exhaustion_policy) => :escalate | :proceed,
           optional(:not_ready?) => boolean(),
-          optional(:missing_artifact) => String.t()
+          optional(:missing_artifact) => String.t(),
+          optional(:unfilled_artifact?) => boolean(),
+          optional(:outstanding_work?) => boolean()
         }
 
   @typedoc "Result of a transition."
@@ -122,6 +129,15 @@ defmodule SpeckitOrchestrator.Pipeline do
   """
   @spec next(phase(), outcome(), signals()) :: transition()
   def next(phase, outcome, signals \\ %{})
+
+  # Incomplete-session gate — ahead of the generic error clause so the reason
+  # names what actually happened. The upstream classifier reports this when a
+  # session that *claimed* success ended with tool calls still unreturned: in a
+  # headless one-shot, ending the turn ends the session, so work left in flight
+  # is work that will never be finished or collected.
+  def next(phase, :error, %{outstanding_work?: true}) when phase in @ordered do
+    {:failed, {:incomplete_session, phase}}
+  end
 
   def next(phase, :error, _signals) when phase in @ordered do
     {:failed, {phase, :error}}
