@@ -7,6 +7,7 @@ defmodule SpeckitOrchestrator.PromptsTest do
     assert Prompts.load("clarify") =~ "NEEDS HUMAN"
     assert Prompts.load("analyze") =~ "findings"
     assert Prompts.load("converge") =~ "ready for human PR review"
+    assert Prompts.load("plan") =~ "no template scaffolding"
   end
 
   test "raises on an unknown pack" do

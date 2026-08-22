@@ -37,20 +37,53 @@ defmodule SpeckitOrchestrator.PhaseStep do
   end
 
   # Re-run a phase that failed transiently (a server/API drop, not a real
-  # error) up to `retries` times before giving up. Real errors and the gate
+  # error) up to `retries` times before giving up. Real errors and most gate
   # outcomes (signals, not `:error`) fall straight through.
   defp run_with_retry(pid, feature, phase, step, timeout, span_meta, retries) do
     agent = run_once(pid, feature, phase, step, timeout, span_meta)
     st = agent.state
 
-    if retries > 0 and st.last_outcome == :error and PhaseResult.transient?(st.last_result) do
-      Logger.warning(
-        "feature #{feature.id} phase #{phase} failed transiently — retrying (#{retries} left)"
-      )
+    case retries > 0 and retry_reason(st) do
+      false ->
+        agent
 
-      run_with_retry(pid, feature, phase, step, timeout, span_meta, retries - 1)
-    else
-      agent
+      nil ->
+        agent
+
+      reason ->
+        Logger.warning(
+          "feature #{feature.id} phase #{phase} #{reason} — retrying (#{retries} left)"
+        )
+
+        run_with_retry(pid, feature, phase, step, timeout, span_meta, retries - 1)
+    end
+  end
+
+  # Why this attempt is worth repeating, or `nil` to accept it as final.
+  #
+  # Beyond the original transient case, two outcomes are retried because both
+  # are evidence the model *started* and stopped rather than deliberately
+  # refusing, and neither reproduces deterministically — a fresh session is the
+  # single most likely thing to fix them:
+  #
+  #   * `outstanding_work?` — the session reported success with tool calls still
+  #     unreturned, i.e. it ended its turn mid-flight.
+  #   * `unfilled_artifact?` — the artifact exists but is the untouched Spec Kit
+  #     template.
+  #
+  # A *plain* missing artifact is deliberately NOT retried: a phase that wrote
+  # nothing at all usually refused for a deterministic reason (a contradictory
+  # `plan_stack` being the common one), so a second session burns the same
+  # model for the same refusal.
+  defp retry_reason(st) do
+    signals = st.last_signals || %{}
+
+    cond do
+      st.last_outcome != :error and not Map.get(signals, :unfilled_artifact?, false) -> nil
+      PhaseResult.transient?(st.last_result) and st.last_outcome == :error -> "failed transiently"
+      Map.get(signals, :outstanding_work?, false) -> "ended with work outstanding"
+      Map.get(signals, :unfilled_artifact?, false) -> "left its artifact as an unfilled template"
+      true -> nil
     end
   end
 

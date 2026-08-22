@@ -33,6 +33,66 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhaseTest do
     end
   end
 
+  # Fake SDK whose session reports success while one tool call never returns —
+  # the event-level signature of a model that ended its turn mid-flight.
+  defmodule StrandingSDK do
+    alias ClaudeAgentSDK.Message
+
+    def query(_prompt, _opts) do
+      [
+        tool_use("call-1", "Read"),
+        tool_result("call-1"),
+        tool_use("call-2", "Task"),
+        %Message{
+          type: :result,
+          subtype: :success,
+          data: %{
+            session_id: "sess-strand",
+            result: "Waiting on agents before filling plan.md.",
+            num_turns: 2,
+            duration_ms: 1,
+            is_error: false,
+            total_cost_usd: 0.0,
+            usage: %{input_tokens: 0, output_tokens: 0},
+            model: "m"
+          },
+          raw: %{}
+        }
+      ]
+    end
+
+    defp tool_use(id, name) do
+      %Message{
+        type: :assistant,
+        data: %{
+          message: %{
+            "content" => [%{"type" => "tool_use", "id" => id, "name" => name, "input" => %{}}]
+          }
+        },
+        raw: %{}
+      }
+    end
+
+    defp tool_result(id) do
+      %Message{
+        type: :user,
+        data: %{
+          message: %{
+            "content" => [
+              %{
+                "type" => "tool_result",
+                "tool_use_id" => id,
+                "content" => "ok",
+                "is_error" => false
+              }
+            ]
+          }
+        },
+        raw: %{}
+      }
+    end
+  end
+
   defp context(state_overrides \\ %{}) do
     base = %{
       feature: %Feature{id: "001", number: 1, slug: "s", path: "p.md"},
@@ -246,5 +306,121 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhaseTest do
     assert update.last_outcome == :error
     assert update.last_result == nil
     assert [%{phase: :specify, outcome: :error}] = update.history
+  end
+
+  describe "the plan gate reads substance, not just existence" do
+    defp planned_worktree(plan_body, template_body) do
+      tmp = Path.join(System.tmp_dir!(), "rfp_subst_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(Path.join(tmp, "specs/001-s"))
+      File.mkdir_p!(Path.join(tmp, ".specify/templates"))
+      System.cmd("git", ["init"], cd: tmp)
+      on_exit(fn -> File.rm_rf(tmp) end)
+
+      File.write!(Path.join(tmp, ".specify/templates/plan-template.md"), template_body)
+      if plan_body, do: File.write!(Path.join(tmp, "specs/001-s/plan.md"), plan_body)
+      tmp
+    end
+
+    @template File.read!(Path.expand("../fixtures/templates/plan-template.md", __DIR__))
+
+    test "an untouched template copy fails the gate as an unfilled artifact" do
+      original = Application.get_env(:jido_claude, :sdk_module)
+      Application.put_env(:jido_claude, :sdk_module, CapturingSDK)
+      on_exit(fn -> restore(:jido_claude, :sdk_module, original) end)
+
+      tmp = planned_worktree(@template, @template)
+      ctx = context(%{worktree: %{path: tmp}})
+
+      assert {:ok, update} = RunFeaturePhase.run(%{phase: :plan}, ctx)
+
+      assert update.last_signals == %{
+               missing_artifact: "plan.md (unfilled template)",
+               unfilled_artifact?: true
+             }
+    end
+
+    test "a real plan still passes, template on disk or not" do
+      original = Application.get_env(:jido_claude, :sdk_module)
+      Application.put_env(:jido_claude, :sdk_module, CapturingSDK)
+      on_exit(fn -> restore(:jido_claude, :sdk_module, original) end)
+
+      tmp = planned_worktree("# Plan: real\n\nWe will use Elixir.\n", @template)
+      ctx = context(%{worktree: %{path: tmp}})
+
+      assert {:ok, update} = RunFeaturePhase.run(%{phase: :plan}, ctx)
+      assert update.last_signals == %{}
+    end
+  end
+
+  describe "the incomplete-session gate" do
+    defp with_stranding_sdk do
+      original = Application.get_env(:jido_claude, :sdk_module)
+      Application.put_env(:jido_claude, :sdk_module, StrandingSDK)
+      on_exit(fn -> restore(:jido_claude, :sdk_module, original) end)
+    end
+
+    test "an ungated phase that ends with work outstanding is an error" do
+      with_stranding_sdk()
+
+      assert {:ok, update} = RunFeaturePhase.run(%{phase: :clarify}, context())
+      assert update.last_outcome == :error
+      assert update.last_signals == %{outstanding_work?: true}
+    end
+
+    test "a gated phase whose artifact is filled in is left alone" do
+      with_stranding_sdk()
+
+      tmp = Path.join(System.tmp_dir!(), "rfp_strand_ok_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(Path.join(tmp, "specs/001-s"))
+      System.cmd("git", ["init"], cd: tmp)
+      on_exit(fn -> File.rm_rf(tmp) end)
+      File.write!(Path.join(tmp, "specs/001-s/plan.md"), "# Plan: real\n\nElixir.\n")
+
+      assert {:ok, update} =
+               RunFeaturePhase.run(%{phase: :plan}, context(%{worktree: %{path: tmp}}))
+
+      assert update.last_outcome == :ok
+      assert update.last_signals == %{}
+    end
+
+    test "a gated phase whose artifact is missing reports the incomplete session" do
+      with_stranding_sdk()
+
+      tmp = Path.join(System.tmp_dir!(), "rfp_strand_bad_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(Path.join(tmp, "specs/001-s"))
+      System.cmd("git", ["init"], cd: tmp)
+      on_exit(fn -> File.rm_rf(tmp) end)
+
+      assert {:ok, update} =
+               RunFeaturePhase.run(%{phase: :plan}, context(%{worktree: %{path: tmp}}))
+
+      assert update.last_outcome == :error
+      assert update.last_signals == %{outstanding_work?: true}
+    end
+
+    test "a scoped implement chunk is never pre-empted — the roll-up owns that gate" do
+      with_stranding_sdk()
+
+      tmp = Path.join(System.tmp_dir!(), "rfp_strand_chunk_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(tmp)
+      System.cmd("git", ["init"], cd: tmp)
+      on_exit(fn -> File.rm_rf(tmp) end)
+
+      tp = %SpeckitOrchestrator.TaskPlan.TaskPhase{
+        ordinal: 1,
+        number: "1",
+        title: "Setup",
+        tasks: []
+      }
+
+      assert {:ok, update} =
+               RunFeaturePhase.run(
+                 %{phase: :implement, scope: {:task_phase, tp}},
+                 context(%{worktree: %{path: tmp}})
+               )
+
+      assert update.last_outcome == :ok
+      assert update.last_signals == %{}
+    end
   end
 end
