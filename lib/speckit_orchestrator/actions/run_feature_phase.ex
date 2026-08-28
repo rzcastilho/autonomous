@@ -25,7 +25,10 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhase do
     returned a successful transcript but produced none of the files it exists to
     write. A phase can refuse, ask an unanswerable question, or no-op on a
     missing upstream artifact and still look perfectly successful — only the
-    filesystem tells the truth.
+    filesystem tells the truth. For `:plan` / `:tasks` the file *existing* is
+    not enough: `setup-plan.sh` copies the plan template into place before the
+    agent runs, so the gate reads the content and reports the artifact missing
+    while it still carries the template's placeholders.
   * `:converge` → `not_ready?` from the `## CONVERGE: NOT READY` marker.
   """
 
@@ -181,6 +184,28 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhase do
   # dir, which is what the glob was really buying.
   @phase_artifacts %{plan: "plan.md", tasks: "tasks.md"}
 
+  # Existence is not evidence for these two. `setup-plan.sh` copies the plan
+  # template into place *before* the phase's agent runs, so the file is there
+  # whether or not the phase did anything. A plan phase that fanned out to
+  # subagents and then ended its turn on a progress update ("scouts still
+  # running … plan writing starts when they report") leaves that pristine
+  # template behind and still exits 0 — the gate passes, the checkpoint commits
+  # the template, and `tasks` is the one that finally notices.
+  #
+  # So read the content. These markers survive only in a template the phase
+  # never filled in; they are absent from every plan.md and tasks.md a
+  # completed feature has written, which is what keeps a real artifact from
+  # tripping the gate. A partially-filled artifact trips it too, deliberately —
+  # `tasks` cannot place file paths from a plan whose Structure Decision is
+  # still a bracketed instruction.
+  @template_placeholders [
+    "[FEATURE]",
+    "[###-feature-name]",
+    "[###-feature]",
+    "[DATE]",
+    "ACTION REQUIRED"
+  ]
+
   # Paths that exist even when nothing was implemented — spec/plan/task docs, the
   # single-spec seed, and the orchestrator's own logs.
   @non_implementation_prefixes ~w(specs/ docs/breakdown/ .speckit_logs/ .speckit-transcripts/ .specify/)
@@ -233,7 +258,19 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhase do
   defp scoped_artifact(worktree_path, leaf, feature) do
     case SpecDir.file(worktree_path, feature, leaf) do
       nil -> leaf
-      _found -> nil
+      found -> if filled?(found), do: nil, else: leaf
+    end
+  end
+
+  # Whether the artifact carries real content rather than the template the setup
+  # script laid down (`@template_placeholders`). An unreadable file reports
+  # unfilled, the same direction `scoped_artifact/3` takes on an unresolvable
+  # spec dir: this gate exists to fail loud, and "I could not read the file the
+  # phase was supposed to write" is not evidence that it wrote one.
+  defp filled?(path) do
+    case File.read(path) do
+      {:ok, content} -> not Enum.any?(@template_placeholders, &String.contains?(content, &1))
+      {:error, _} -> false
     end
   end
 

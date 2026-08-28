@@ -71,7 +71,7 @@ defmodule SpeckitOrchestrator.PhaseRequestTest do
   end
 
   test "tasks and plan use their slash commands" do
-    assert PhaseRequest.build(feature(), :tasks).prompt == "/speckit.tasks"
+    assert PhaseRequest.build(feature(), :tasks).prompt =~ ~r{\A/speckit\.tasks\b}
 
     # With no configured stack, plan is the bare slash command (config ships a
     # default plan_stack, so clear it for this assertion — restoring the original
@@ -79,7 +79,18 @@ defmodule SpeckitOrchestrator.PhaseRequestTest do
     original = Application.get_env(:speckit_orchestrator, :plan_stack)
     Application.put_env(:speckit_orchestrator, :plan_stack, [])
     on_exit(fn -> Application.put_env(:speckit_orchestrator, :plan_stack, original) end)
-    assert PhaseRequest.build(feature(), :plan).prompt == "/speckit.plan"
+    assert PhaseRequest.build(feature(), :plan).prompt =~ ~r{\A/speckit\.plan\b}
+  end
+
+  # A plan session that ends its turn mid-fan-out leaves the template
+  # `setup-plan.sh` copied in and still exits 0. The artifact gate catches that
+  # after the fact; the prompt is what keeps it from happening.
+  test "plan and tasks are told to finish the artifact before yielding" do
+    for phase <- [:plan, :tasks] do
+      prompt = PhaseRequest.build(feature(), phase).prompt
+      assert prompt =~ "Do not end your turn until the artifact is fully written to disk"
+      assert prompt =~ "a progress update is not a result"
+    end
   end
 
   test "converge uses the prompt pack" do

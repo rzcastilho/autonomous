@@ -216,6 +216,109 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhaseTest do
       assert update.last_signals == %{missing_artifact: "tasks.md"}
     end
 
+    # `setup-plan.sh` copies the plan template into place before the phase's
+    # agent runs. A plan phase that ended its turn without writing anything
+    # leaves exactly this file behind, and an existence-only gate passed it:
+    # the checkpoint committed the template and `tasks` was left to discover,
+    # a phase later, that there was no plan.
+    test "the plan gate is not satisfied by the unfilled plan template" do
+      with_capturing_sdk()
+      tmp = stacked_worktree(own_files: [{"plan.md", plan_template()}])
+
+      assert {:ok, update} = RunFeaturePhase.run(%{phase: :plan}, feature_002_ctx(tmp))
+
+      assert File.regular?(Path.join(tmp, "specs/002-next/plan.md"))
+      assert update.last_signals == %{missing_artifact: "plan.md"}
+    end
+
+    test "the plan gate is not satisfied by a partially filled plan" do
+      with_capturing_sdk()
+
+      # Header and Technical Context written, Structure Decision still the
+      # bracketed instruction — `tasks` cannot place file paths from this.
+      partial = """
+      # Implementation Plan: Settings and input remapping
+
+      **Branch**: `002-next` | **Date**: 2026-08-27 | **Spec**: [spec.md](./spec.md)
+
+      **Language/Version**: TypeScript 5.x on Node 22 LTS, landing in `packages/shell`.
+
+      **Structure Decision**: [Document the selected structure and reference the real
+      directories captured above]
+
+      <!--
+        ACTION REQUIRED: Replace the placeholder tree below with the concrete layout
+      -->
+      """
+
+      tmp = stacked_worktree(own_files: [{"plan.md", partial}])
+
+      assert {:ok, update} = RunFeaturePhase.run(%{phase: :plan}, feature_002_ctx(tmp))
+      assert update.last_signals == %{missing_artifact: "plan.md"}
+    end
+
+    test "the tasks gate is not satisfied by the unfilled tasks template" do
+      with_capturing_sdk()
+
+      tasks_template = """
+      # Tasks: [FEATURE]
+
+      **Input**: Design documents from `/specs/[###-feature-name]/`
+      """
+
+      tmp = stacked_worktree(own_files: [{"tasks.md", tasks_template}])
+
+      assert {:ok, update} = RunFeaturePhase.run(%{phase: :tasks}, feature_002_ctx(tmp))
+      assert update.last_signals == %{missing_artifact: "tasks.md"}
+    end
+
+    # The guard above must not fire on a real artifact. This is the shape a
+    # completed feature's plan.md actually has — prose, real paths, filled
+    # tables, and none of the template's bracketed instructions.
+    test "the plan gate passes on a filled plan that quotes bracketed prose" do
+      with_capturing_sdk()
+
+      filled = """
+      # Implementation Plan: Settings and input remapping
+
+      **Branch**: `002-next` | **Date**: 2026-08-27 | **Spec**: [spec.md](./spec.md)
+
+      **Structure Decision**: `packages/shell` owns the prefs store; `packages/render`
+      consumes the resolved UI scale. See [the constitution](../../.specify/memory/constitution.md).
+
+      | Violation | Why Needed | Simpler Alternative Rejected Because |
+      |-----------|------------|-------------------------------------|
+      | None      | —          | —                                    |
+      """
+
+      tmp = stacked_worktree(own_files: [{"plan.md", filled}])
+
+      assert {:ok, update} = RunFeaturePhase.run(%{phase: :plan}, feature_002_ctx(tmp))
+      assert update.last_signals == %{}
+    end
+
+    # Trimmed from `.specify/templates/plan-template.md` — enough of the real
+    # thing to carry every marker the gate keys on.
+    defp plan_template do
+      """
+      # Implementation Plan: [FEATURE]
+
+      **Branch**: `[###-feature-name]` | **Date**: [DATE] | **Spec**: [link]
+
+      **Input**: Feature specification from `/specs/[###-feature-name]/spec.md`
+
+      ## Technical Context
+
+      <!--
+        ACTION REQUIRED: Replace the content in this section with the technical details
+        for the project.
+      -->
+
+      **Structure Decision**: [Document the selected structure and reference the real
+      directories captured above]
+      """
+    end
+
     test "the clarify gate does not escalate on a marker left in another feature's spec" do
       with_capturing_sdk()
       tmp = stacked_worktree(own_files: [{"spec.md", "# 002\n\nall clear\n"}])

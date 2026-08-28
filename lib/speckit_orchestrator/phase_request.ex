@@ -129,17 +129,30 @@ defmodule SpeckitOrchestrator.PhaseRequest do
       "(#{breakdown_ref(feature, layout)})."
   end
 
+  # The completion clause is load-bearing, not style. `setup-plan.sh` copies the
+  # plan template into place before this session starts, so a session that ends
+  # its turn before writing leaves a file that *looks* like an artifact. That is
+  # exactly how a plan phase once ended on "scouts still running … plan writing
+  # starts when they report": subagents dispatched, turn over, template
+  # committed, and `tasks` left to discover a phase later that there was no
+  # plan. The artifact gate now catches it either way — this clause is what
+  # stops it happening.
+  @finish_before_yielding "Do not end your turn until the artifact is fully written to disk. " <>
+                            "If you dispatch subagents, wait for them and write the file yourself " <>
+                            "before yielding — a progress update is not a result."
+
   defp prompt(feature, :plan, _layout) do
     case Config.plan_stack() do
       [] ->
-        @slash.plan
+        "#{@slash.plan} #{@finish_before_yielding}"
 
       stack ->
-        "#{@slash.plan} Preferred stack: #{Enum.join(stack, ", ")}. " <> feature_tag(feature)
+        "#{@slash.plan} Preferred stack: #{Enum.join(stack, ", ")}. " <>
+          feature_tag(feature) <> " " <> @finish_before_yielding
     end
   end
 
-  defp prompt(_feature, :tasks, _layout), do: @slash.tasks
+  defp prompt(_feature, :tasks, _layout), do: "#{@slash.tasks} #{@finish_before_yielding}"
 
   defp prompt(_feature, :analyze, _layout), do: "#{@slash.analyze}\n\n" <> Prompts.load("analyze")
 
