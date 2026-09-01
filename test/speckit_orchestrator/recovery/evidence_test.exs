@@ -173,6 +173,39 @@ defmodule SpeckitOrchestrator.Recovery.EvidenceTest do
       assert evidence.final_marker? == true
     end
 
+    # A describe failure leaves `pr_description` nil while the PR is opened
+    # from the template and its URL recorded — so `pr_url` alone must
+    # corroborate `:done`. Reading only `pr_description` reported a published
+    # feature as `{:conflict, :done_without_artifacts}`, which dropped it out
+    # of the run's stack chain and stacked its successor on its predecessor.
+    test "a recorded pr_url alone proves pr_record?, and corroborates :done for a breakdown run" do
+      run_key = open_run()
+      attempt = converge_phase_attempt(run_key, "001", converge_ready())
+
+      feature_record = %{
+        pr_description: nil,
+        pr_url: "https://github.com/acme/target/pull/17",
+        phase_attempts: [attempt]
+      }
+
+      evidence =
+        Evidence.collect(feature(), feature_record,
+          git: fake_git(%{branch_committed?: true, last_boundary_phase: :converge})
+        )
+
+      assert evidence.pr_record? == true
+      assert Reconcile.status(:done, evidence, {:breakdown, "core-ledger"}) == :done
+    end
+
+    test "an empty pr_url is no PR record at all" do
+      evidence =
+        Evidence.collect(feature(), %{pr_description: nil, pr_url: "", phase_attempts: []},
+          git: fake_git(%{branch_committed?: true, last_boundary_phase: :converge})
+        )
+
+      assert evidence.pr_record? == false
+    end
+
     test "absent checkpoint degrades checkpoint to nil, others unaffected, never raises" do
       run_key = open_run()
       attempt = converge_phase_attempt(run_key, "001", converge_ready())

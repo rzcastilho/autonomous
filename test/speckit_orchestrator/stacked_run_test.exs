@@ -109,6 +109,46 @@ defmodule SpeckitOrchestrator.StackedRunTest do
     refute_received {:pr, "001", _}
   end
 
+  test "a resumed run stacks on an uncorroborated (:blocked) predecessor, not past it" do
+    me = self()
+
+    executor = fn feature, base, notify ->
+      send(me, {:built, feature.id, base})
+      notify.(feature.id, :done, nil)
+      :ok
+    end
+
+    publisher = fn feature, base ->
+      send(me, {:pr, feature.id, base})
+      {:ok, "https://example/pr/#{feature.id}"}
+    end
+
+    features = [feat("001", "core"), feat("002", "vote"), feat("003", "results")]
+
+    # 002 finished and published, but reconciliation could not corroborate it
+    # (`Recovery.persisted_status/1` renders a `{:conflict, _}` as `:blocked`)
+    # — e.g. its `Describe.run/3` failed, so the store holds a `pr_url` with
+    # no `pr_description`. Its branch is still there and still unmerged, so it
+    # is still the base 003 belongs on. Selecting the chain on `:done` skipped
+    # it and handed 003 `feature/001-core`, whose squash then swallowed 002's
+    # entire diff into 003's PR.
+    {:ok, pid} =
+      SpeckitOrchestrator.run(
+        features: features,
+        statuses: %{"001" => :done, "002" => :blocked, "003" => :pending},
+        executor: executor,
+        publisher: publisher,
+        owner: me
+      )
+
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    assert_receive {:built, "003", "feature/002-vote"}, 2_000
+    assert_receive {:pr, "003", "feature/002-vote"}, 2_000
+
+    refute_received {:built, "002", _}
+  end
+
   test "a merged branch is skipped as a base — the next feature stacks on pr_base instead" do
     me = self()
 

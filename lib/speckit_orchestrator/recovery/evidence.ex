@@ -160,6 +160,15 @@ defmodule SpeckitOrchestrator.Recovery.Evidence do
 
   # ---- store-sourced signals (018) -------------------------------------------
 
+  # Either half of the store's PR record proves the `:done` publish path ran.
+  # `pr_url` is the stronger of the two — it is written only after `gh pr
+  # create` actually returned a URL — while `pr_description` is merely the
+  # Claude-authored text `Describe.run/3` produced *before* publishing, and is
+  # `nil` whenever describe failed and the templated PR body was used instead.
+  # Reading only `pr_description` therefore reported a genuinely published
+  # feature as `{:conflict, :done_without_artifacts}`, which dropped it out of
+  # `stack_seed/1` and silently stacked the next feature on its predecessor.
+  defp pr_recorded?(%{pr_url: url}) when is_binary(url) and url != "", do: true
   defp pr_recorded?(%{pr_description: %{} = _pr}), do: true
   defp pr_recorded?(_feature_record), do: false
 

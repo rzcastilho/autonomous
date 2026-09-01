@@ -2020,17 +2020,29 @@ defmodule SpeckitOrchestrator do
   # builds on — a chain of stacked PRs silently flattened into parallel ones
   # against the trunk, each carrying its predecessors' commits.
   #
-  # The seed is therefore the branch of the last `:done` backlog feature in
-  # `Release.order/1` — which is exactly what `set_top/2` would have left there
-  # had this run built them itself. Absent any (a genuinely fresh run, or one
-  # whose statuses were not restored), `pr_base`.
+  # The seed is therefore every backlog feature `Release.order/1` puts *before*
+  # the one about to run — which is exactly what `set_top/2` would have left
+  # there had this run built them itself. Absent any (a genuinely fresh run, or
+  # one whose statuses were not restored), `pr_base`.
+  #
+  # Membership is the ordered prefix that is no longer awaiting release, not
+  # the set of `:done` features, and the difference matters: reconciliation
+  # renders a `:done` feature it cannot corroborate as `:blocked`
+  # (`Recovery.persisted_status/1`). Selecting on `:done` dropped such a
+  # feature out of the chain entirely, so `resolve_base/3` fell through to its
+  # *predecessor* — the next feature branched from the wrong ref, its squash
+  # anchored at the wrong fork point, and its PR re-proposed the skipped
+  # feature's whole diff. Whether a link is still a legitimate base is
+  # `resolve_base/3`'s question and it asks git, not the status map: a merged
+  # or deleted branch is skipped there, an unmerged one is stacked on.
   defp stack_seed(opts) do
     statuses = Keyword.get(opts, :statuses) || %{}
     features = Keyword.get(opts, :features) || []
 
     features
     |> Release.order()
-    |> Enum.filter(&(&1.group == :backlog and Map.get(statuses, &1.id) == :done))
+    |> Enum.filter(&(&1.group == :backlog))
+    |> Enum.take_while(&(Map.get(statuses, &1.id, &1.status) not in [:pending, :running]))
     |> Enum.reverse()
     |> Enum.map(&"feature/#{&1.id}-#{&1.slug}")
   end
