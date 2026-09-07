@@ -69,6 +69,11 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhase do
     state = context[:agent].state
     scope = Map.get(params, :scope)
 
+    # Probed before the harness request is issued — the only moment "absent
+    # at start" is observable (net two, research R5). Independent of the
+    # artifact gate by construction: different map, different moment.
+    artifact_absent? = artifact_absent_at_start?(phase, state)
+
     # Each Spec Kit phase is a fresh `claude -p` session — phase state persists in
     # repo files, not the session. We capture the session id into agent state for
     # observability/cancellation, but never resume it into the next phase's
@@ -86,6 +91,7 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhase do
       {:ok, stream} ->
         result = PhaseResult.reduce(stream)
         {outcome, signals} = classify(phase, result, state, scope)
+        signals = put_artifact_absent_at_start(signals, artifact_absent?)
         {amount, _source} = Cost.for_phase(phase, result)
         record_cost(state.ledger, amount)
 
@@ -231,6 +237,27 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhase do
   end
 
   defp classify_gate(_phase, %PhaseResult{} = r, _state, _scope), do: {outcome_of(r), %{}}
+
+  # ---- empty-checkpoint net (net two) --------------------------------------
+
+  # Deliberately not `@phase_artifacts` — `:specify` is armed for the
+  # empty-checkpoint net only and gains no artifact gate of its own
+  # (research R6; contracts/empty-checkpoint.md §2).
+  @checkpoint_artifacts %{specify: "spec.md", plan: "plan.md", tasks: "tasks.md"}
+
+  # `nil` when unarmed or when there is no worktree — the signal is then
+  # simply not emitted, and `Checkpoint.verdict/3` reads a missing key as
+  # `false`, matching today's behaviour byte-for-byte.
+  defp artifact_absent_at_start?(phase, state) do
+    case {Map.get(@checkpoint_artifacts, phase), state.worktree} do
+      {nil, _} -> nil
+      {_leaf, nil} -> nil
+      {leaf, %{path: path}} -> is_nil(SpecDir.file(path, state.feature, leaf))
+    end
+  end
+
+  defp put_artifact_absent_at_start(signals, nil), do: signals
+  defp put_artifact_absent_at_start(signals, absent?), do: Map.put(signals, :artifact_absent_at_start?, absent?)
 
   # ---- artifact gate ------------------------------------------------------
 

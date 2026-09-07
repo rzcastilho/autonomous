@@ -18,6 +18,8 @@ defmodule SpeckitOrchestrator.Store do
   @callback record_feature_terminal(run_key(), binary(), atom(), term(), keyword()) ::
               :ok | {:error, term()}
   @callback record_pr_url(run_key(), binary(), binary()) :: :ok | {:error, term()}
+  @callback record_spec_number(run_key(), binary(), pos_integer()) :: :ok | {:error, term()}
+  @callback spec_number(run_key() | nil, binary()) :: pos_integer() | nil
   @callback record_escalation(run_key(), map()) :: :ok | {:error, term()}
   @callback resolve_escalation(tuple(), map()) :: :ok | {:error, term()}
   @callback record_settings_amendment(run_key(), map(), term()) :: :ok | {:error, term()}
@@ -64,6 +66,26 @@ defmodule SpeckitOrchestrator.Store do
   @doc "See `Store.Writer.record_pr_url/3`."
   @spec record_pr_url(run_key(), binary(), binary()) :: :ok | {:error, term()}
   def record_pr_url(run_key, feature_id, url), do: Writer.record_pr_url(run_key, feature_id, url)
+
+  @doc "See `Store.Writer.record_spec_number/3`."
+  @spec record_spec_number(run_key(), binary(), pos_integer()) :: :ok | {:error, term()}
+  def record_spec_number(run_key, feature_id, n),
+    do: Writer.record_spec_number(run_key, feature_id, n)
+
+  @doc """
+  A feature's allocated spec number, or `nil` for an unallocated feature, an
+  absent row, or a run with no store (`run_key == nil`) — callers distinguish
+  "not allocated" from "no store" by context (contracts/store-schema-v5.md §5).
+  """
+  @spec spec_number(run_key() | nil, binary()) :: pos_integer() | nil
+  def spec_number(nil, _feature_id), do: nil
+
+  def spec_number(run_key, feature_id) do
+    case Query.spec_number(run_key, feature_id) do
+      {:ok, n} -> n
+      _ -> nil
+    end
+  end
 
   @doc "See `Store.Writer.record_escalation/2`."
   @spec record_escalation(run_key(), map()) :: :ok | {:error, term()}

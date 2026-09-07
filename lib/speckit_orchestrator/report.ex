@@ -12,16 +12,17 @@ defmodule SpeckitOrchestrator.Report do
       |> Map.get(:per_feature, %{})
       |> Enum.sort_by(fn {id, _} -> id end)
       |> Enum.map(fn {id, info} ->
-        [id, to_string(info.status), elapsed(info.elapsed_ms)]
+        [id, spec_number(Map.get(info, :spec_number)), to_string(info.status), elapsed(info.elapsed_ms)]
       end)
 
     [
-      table([["FEATURE", "STATUS", "ELAPSED"] | rows]),
+      table([["FEATURE", "SPEC", "STATUS", "ELAPSED"] | rows]),
       "",
       "totals: #{format_totals(Map.get(snapshot, :totals, %{}))}",
       "spend:  $#{fmt_spend(Map.get(snapshot, :spend, 0.0))}" <>
         breaker(Map.get(snapshot, :breaker_tripped, false)),
       advanced_line(snapshot),
+      stopped_line(snapshot),
       run_state(snapshot)
     ]
     |> Enum.reject(&is_nil/1)
@@ -29,6 +30,14 @@ defmodule SpeckitOrchestrator.Report do
   end
 
   # ---- helpers ------------------------------------------------------------
+
+  # `number` (the FEATURE column) and `spec_number` are distinct fields
+  # (022) — the wave-local identity and the repo-monotonic spec directory
+  # number — rendered under their own labels, "not allocated" before the
+  # feature has started (Constitution Principle VII: machine values, no
+  # borrowed number).
+  defp spec_number(n) when is_integer(n), do: String.pad_leading(Integer.to_string(n), 3, "0")
+  defp spec_number(_), do: "not allocated"
 
   defp elapsed(nil), do: "-"
   defp elapsed(ms) when ms < 1000, do: "#{ms}ms"
@@ -59,6 +68,25 @@ defmodule SpeckitOrchestrator.Report do
         nil
     end
   end
+
+  # FR-017: names the feature that broke the chain and why, when the run
+  # parked rather than drained clean.
+  defp stopped_line(snapshot) do
+    case Map.get(snapshot, :report) do
+      %{stopped_by: %{feature_id: id, status: status, reason: reason}} ->
+        "stopped: #{id} (#{status}) — #{format_reason(reason)}"
+
+      _ ->
+        nil
+    end
+  end
+
+  # `{:empty_checkpoint, phase}` (net two) reads distinctly from
+  # `{:missing_artifact, phase, artifact}` — same phase, different failure:
+  # the phase committed no change at all, vs. it wrote something that isn't
+  # the named artifact. Every other reason renders as before (FR-013).
+  defp format_reason({:empty_checkpoint, phase}), do: "#{phase} committed no change"
+  defp format_reason(reason), do: inspect(reason)
 
   defp run_state(%{finished?: true}), do: "state:  finished"
   defp run_state(_), do: "state:  running"

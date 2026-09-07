@@ -231,6 +231,39 @@ defmodule SpeckitOrchestrator.Store.QueryTest do
       {repo, run_id} = open(@repo, ["001"])
       assert {:ok, %{run: %{run_id: ^run_id}}} = Query.run({repo, run_id})
     end
+
+    test "each feature's detail carries spec_number — nil until allocated, then the recorded value" do
+      {repo, run_id} = open(@repo, ["001"])
+      run_key = {repo, run_id}
+
+      {:ok, detail} = Query.run(run_key)
+      assert [%{feature_id: "001", spec_number: nil}] = detail.features
+
+      :ok = Writer.record_spec_number(run_key, "001", 9)
+
+      {:ok, detail} = Query.run(run_key)
+      assert [%{feature_id: "001", spec_number: 9}] = detail.features
+    end
+  end
+
+  describe "spec_number/2" do
+    test "nil for an unallocated feature" do
+      {repo, run_id} = open(@repo, ["001"])
+      assert Query.spec_number({repo, run_id}, "001") == {:ok, nil}
+    end
+
+    test "the recorded value once allocated" do
+      {repo, run_id} = open(@repo, ["001"])
+      run_key = {repo, run_id}
+
+      :ok = Writer.record_spec_number(run_key, "001", 12)
+      assert Query.spec_number(run_key, "001") == {:ok, 12}
+    end
+
+    test "absent feature returns {:error, :absent}" do
+      {repo, run_id} = open(@repo, ["001"])
+      assert Query.spec_number({repo, run_id}, "nope") == {:error, :absent}
+    end
   end
 
   describe "checkpoint/2" do

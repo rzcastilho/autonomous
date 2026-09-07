@@ -125,7 +125,8 @@ defmodule SpeckitOrchestrator.Store.Records do
       :pr_url,
       :started_at,
       :ended_at,
-      :advanced_with_findings
+      :advanced_with_findings,
+      :spec_number
     ]
 
     @type t :: %__MODULE__{
@@ -153,7 +154,8 @@ defmodule SpeckitOrchestrator.Store.Records do
             pr_url: binary() | nil,
             started_at: DateTime.t() | nil,
             ended_at: DateTime.t() | nil,
-            advanced_with_findings: map() | nil
+            advanced_with_findings: map() | nil,
+            spec_number: pos_integer() | nil
           }
   end
 

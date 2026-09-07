@@ -252,6 +252,28 @@ defmodule SpeckitOrchestrator.RecoveryTest do
     assert resume_phases["001"] == :tasks
   end
 
+  test "plan_run/2 rebuild carries a recorded spec_number through to the returned %Feature{}" do
+    {layout, run_key} = seed_mid_run_state()
+    on_exit(fn -> File.rm_rf(layout.worktree_root) end)
+
+    :ok = Writer.record_spec_number(run_key, "001", 42)
+
+    {:ok, detail} = Store.run(run_key)
+    assert {:ok, %{features: features}} = Recovery.plan_run(detail)
+
+    assert [%Feature{id: "001", spec_number: 42}] = features
+  end
+
+  test "plan_run/2 rebuild carries spec_number: nil for an unallocated feature" do
+    {layout, run_key} = seed_mid_run_state()
+    on_exit(fn -> File.rm_rf(layout.worktree_root) end)
+
+    {:ok, detail} = Store.run(run_key)
+    assert {:ok, %{features: features}} = Recovery.plan_run(detail)
+
+    assert [%Feature{id: "001", spec_number: nil}] = features
+  end
+
   # ---- US3 (T018): whole-run status coverage ---------------------------------
   #
   # One run exercising every status class (running/pending/escalated/

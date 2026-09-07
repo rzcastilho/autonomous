@@ -13,6 +13,9 @@ defmodule SpeckitOrchestrator.Feature do
   * `created_at` — set only for `:ad_hoc` features; `nil` for `:backlog`.
   * `status` — lifecycle state (see `t:status/0`). Fresh features load as
     `:pending`.
+  * `spec_number` — repo-monotonic spec number, distinct from `id`/`number`.
+    `nil` until allocated. Governs the spec directory, the branch name, and
+    artifact resolution — nothing else (see `spec_id/1`, `spec_label/1`).
   """
 
   @enforce_keys [:id, :number, :slug, :path]
@@ -22,7 +25,8 @@ defmodule SpeckitOrchestrator.Feature do
             path: nil,
             group: :backlog,
             created_at: nil,
-            status: :pending
+            status: :pending,
+            spec_number: nil
 
   @type status ::
           :pending
@@ -39,7 +43,8 @@ defmodule SpeckitOrchestrator.Feature do
           path: String.t(),
           group: :backlog | :ad_hoc,
           created_at: DateTime.t() | nil,
-          status: status()
+          status: status(),
+          spec_number: pos_integer() | nil
         }
 
   @terminal_statuses [:done, :escalated, :halted, :failed]
@@ -52,4 +57,23 @@ defmodule SpeckitOrchestrator.Feature do
   @spec terminal?(t() | status()) :: boolean()
   def terminal?(%__MODULE__{status: status}), do: terminal?(status)
   def terminal?(status) when is_atom(status), do: status in @terminal_statuses
+
+  @doc """
+  Zero-padded spec number for path and branch composition. Falls back to `id`
+  when `spec_number` is `nil` (dry runs, the pure unit suite, and wave 1 where
+  the two coincide anyway) — see plan.md Complexity Tracking.
+  """
+  @spec spec_id(t()) :: String.t()
+  def spec_id(%__MODULE__{spec_number: nil, id: id}), do: id
+  def spec_id(%__MODULE__{spec_number: n}), do: pad(n)
+
+  @doc """
+  Zero-padded spec number for operator surfaces. `nil` when unallocated, so a
+  surface reports "not allocated" instead of borrowing the wave number.
+  """
+  @spec spec_label(t()) :: String.t() | nil
+  def spec_label(%__MODULE__{spec_number: nil}), do: nil
+  def spec_label(%__MODULE__{spec_number: n}), do: pad(n)
+
+  defp pad(n), do: String.pad_leading(Integer.to_string(n), 3, "0")
 end

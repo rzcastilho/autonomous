@@ -179,7 +179,8 @@ defmodule SpeckitOrchestrator.Recovery do
       slug: f.slug,
       path: f.path,
       group: Map.get(f, :group, :backlog),
-      created_at: Map.get(f, :created_at)
+      created_at: Map.get(f, :created_at),
+      spec_number: Map.get(f, :spec_number)
     }
 
   # Maps a `Reconcile.result()` onto the `Feature.status()` persisted to the

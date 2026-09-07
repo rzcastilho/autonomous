@@ -67,6 +67,27 @@ defmodule SpeckitOrchestrator.Store.Query do
     |> unwrap()
   end
 
+  @doc "One feature's allocated spec number, `nil` if unallocated (contracts/store-schema-v5.md §5)."
+  @spec spec_number({binary(), binary()}, binary()) ::
+          {:ok, pos_integer() | nil} | {:error, :absent} | {:error, {:damaged, term(), term()}}
+  def spec_number({repo_id, run_id}, feature_id) do
+    key = Ids.feature_key(repo_id, run_id, feature_id)
+
+    Mnesia.transaction(fn ->
+      case Mnesia.read(:speckit_feature_run, key) do
+        [] ->
+          {:error, :absent}
+
+        [tuple] ->
+          case Records.decode(:speckit_feature_run, tuple) do
+            {:ok, feature} -> {:ok, feature.spec_number}
+            {:error, _} = damaged -> damaged
+          end
+      end
+    end)
+    |> unwrap()
+  end
+
   @doc "On-demand retrieval of one phase attempt's transcript, verbatim (FR-029)."
   @spec transcript(tuple()) ::
           {:ok, map()} | {:error, :absent} | {:error, {:damaged, term(), term()}}
@@ -287,6 +308,7 @@ defmodule SpeckitOrchestrator.Store.Query do
       started_at: f.started_at,
       ended_at: f.ended_at,
       advanced_with_findings: f.advanced_with_findings,
+      spec_number: f.spec_number,
       phase_attempts:
         :speckit_phase_attempt
         |> Mnesia.index_read(f.key, :feature_key)

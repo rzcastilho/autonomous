@@ -179,10 +179,12 @@ defmodule SpeckitOrchestrator.Web.RunDetailLive do
 
         <div :for={f <- @detail.features} class="escalation-card" data-feature={f.feature_id}>
           <div class="escalation-card-head">
-            <span class="escalation-title">{f.feature_id} · {f.slug}</span>
+            <span class="escalation-title">
+              {f.feature_id} · {f.slug} · spec {spec_label(f.spec_number)}
+            </span>
             <.status_pill status={f.status} />
             <span :if={f.terminal_reason} class="escalation-reason">
-              reason: {inspect(f.terminal_reason)}
+              reason: {format_reason(f.terminal_reason)}
             </span>
           </div>
 
@@ -392,4 +394,18 @@ defmodule SpeckitOrchestrator.Web.RunDetailLive do
 
   defp format_datetime(nil), do: "—"
   defp format_datetime(%DateTime{} = dt), do: Calendar.strftime(dt, "%Y-%m-%d %H:%M:%S")
+
+  # Same zero-padding as `Feature.spec_label/1` — this feature row comes from
+  # a store query (a plain map), not a `%Feature{}` struct, so the accessor
+  # itself doesn't apply here. "not allocated" before the feature has run its
+  # first phase (022).
+  defp spec_label(nil), do: "not allocated"
+  defp spec_label(n) when is_integer(n), do: String.pad_leading(Integer.to_string(n), 3, "0")
+
+  # `{:empty_checkpoint, phase}` (net two) reads distinctly from
+  # `{:missing_artifact, phase, artifact}` — same phase, different failure:
+  # the phase committed no change at all, vs. it wrote something that isn't
+  # the named artifact. Every other reason renders as before (FR-013).
+  defp format_reason({:empty_checkpoint, phase}), do: "#{phase} committed no change"
+  defp format_reason(reason), do: inspect(reason)
 end

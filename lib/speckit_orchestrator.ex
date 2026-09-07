@@ -25,6 +25,7 @@ defmodule SpeckitOrchestrator do
     RepoIdentity,
     RunContext,
     SingleSpec,
+    SpecNumber,
     StackTracker,
     Store,
     TargetPack,
@@ -1547,7 +1548,7 @@ defmodule SpeckitOrchestrator do
             )
 
           {:error, reason} ->
-            notify.(feature.id, :failed, {:worktree, reason})
+            notify.(feature.id, :failed, reason)
         end
 
       {:error, reason} ->
@@ -1556,23 +1557,29 @@ defmodule SpeckitOrchestrator do
   end
 
   defp run_fresh(feature, base, notify, run_context, layout, run_key) do
-    create_opts = if base, do: [base: base], else: []
-    create_opts = create_opts ++ worktree_create_opts(layout)
+    case ensure_spec_number(feature, run_key, base) do
+      {:ok, feature} ->
+        create_opts = if base, do: [base: base], else: []
+        create_opts = create_opts ++ worktree_create_opts(layout)
 
-    case Worktree.create(feature, create_opts) do
-      {:ok, worktree} ->
-        FeatureRunner.run(feature,
-          worktree: worktree,
-          ledger: Ledger,
-          notify: notify,
-          run_context: run_context,
-          layout: layout,
-          stack_base: base || Config.pr_base(),
-          run_key: run_key
-        )
+        case Worktree.create(feature, create_opts) do
+          {:ok, worktree} ->
+            FeatureRunner.run(feature,
+              worktree: worktree,
+              ledger: Ledger,
+              notify: notify,
+              run_context: run_context,
+              layout: layout,
+              stack_base: base || Config.pr_base(),
+              run_key: run_key
+            )
+
+          {:error, reason} ->
+            notify.(feature.id, :failed, {:worktree, reason})
+        end
 
       {:error, reason} ->
-        notify.(feature.id, :failed, {:worktree, reason})
+        notify.(feature.id, :failed, {:spec_number, reason})
     end
   end
 
@@ -1687,7 +1694,7 @@ defmodule SpeckitOrchestrator do
             )
 
           {:error, reason} ->
-            notify.(feature.id, :failed, {:worktree, reason})
+            notify.(feature.id, :failed, reason)
         end
       end)
 
@@ -1699,23 +1706,33 @@ defmodule SpeckitOrchestrator do
   # interrupted phase (FR-003) — discards any uncommitted partial output a
   # crash left behind. A harmless no-op on a freshly created worktree.
   defp resume_worktree(feature, layout) do
-    worktree = Worktree.locate(feature, worktree_create_opts(layout))
+    case ensure_spec_number(feature, current_run_key(), nil) do
+      {:ok, feature} ->
+        worktree = Worktree.locate(feature, worktree_create_opts(layout))
 
-    result =
-      cond do
-        File.dir?(worktree.path) ->
-          {:ok, worktree}
+        result =
+          cond do
+            File.dir?(worktree.path) ->
+              {:ok, worktree}
 
-        branch_exists?(worktree.repo, worktree.branch) ->
-          Worktree.create(feature, worktree_create_opts(layout))
+            branch_exists?(worktree.repo, worktree.branch) ->
+              Worktree.create(feature, worktree_create_opts(layout))
 
-        true ->
-          {:error, :branch_missing}
-      end
+            true ->
+              {:error, :branch_missing}
+          end
 
-    with {:ok, wt} <- result do
-      _ = Worktree.restore(wt)
-      {:ok, wt}
+        case result do
+          {:ok, wt} ->
+            _ = Worktree.restore(wt)
+            {:ok, wt}
+
+          {:error, reason} ->
+            {:error, {:worktree, reason}}
+        end
+
+      {:error, reason} ->
+        {:error, {:spec_number, reason}}
     end
   end
 
@@ -1840,6 +1857,46 @@ defmodule SpeckitOrchestrator do
   defp worktree_create_opts(nil), do: []
   defp worktree_create_opts(%Layout{worktree_root: root}), do: [worktree_root: root]
 
+  # ---- spec number allocation (022) ----------------------------------------
+  #
+  # Runs once per feature, before `Worktree.create/2`, in the runner task
+  # (contracts/spec-number-allocation.md §3): reuse `Store.spec_number/2`
+  # when a number is already recorded — no existence check, an existing
+  # directory there is the expected case for a resume/retry/restart (FR-004)
+  # — else allocate fresh from the base ref's `specs/` listing and record it
+  # durably before any worktree exists. A run with no store (`run_key ==
+  # nil`) allocates in memory only and still refuses on FR-003a.
+  defp ensure_spec_number(%Feature{spec_number: n} = feature, _run_key, _base)
+       when is_integer(n),
+       do: {:ok, feature}
+
+  defp ensure_spec_number(feature, run_key, base) do
+    case Store.spec_number(run_key, feature.id) do
+      n when is_integer(n) ->
+        {:ok, %{feature | spec_number: n}}
+
+      nil ->
+        allocate_spec_number(feature, run_key, base)
+    end
+  end
+
+  defp allocate_spec_number(feature, run_key, base) do
+    with {:ok, entries} <- Worktree.spec_dirs(Config.repo(), base || "HEAD"),
+         {:ok, n} <- SpecNumber.allocate(entries, feature.slug),
+         :ok <- record_spec_number(run_key, feature.id, n) do
+      {:ok, %{feature | spec_number: n}}
+    end
+  end
+
+  defp record_spec_number(nil, _feature_id, _n), do: :ok
+
+  defp record_spec_number(run_key, feature_id, n) do
+    case Writer.record_spec_number(run_key, feature_id, n) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:not_recorded, reason}}
+    end
+  end
+
   # ---- single-spec run (specs/001-single-spec-run) -------------------------
   #
   # `run/1` already accepts an explicit `:features` list; single-spec mode
@@ -1926,12 +1983,18 @@ defmodule SpeckitOrchestrator do
   defp seed_executor(description, run_context, layout) do
     fn feature, base, notify ->
       Task.Supervisor.start_child(SpeckitOrchestrator.RunnerSup, fn ->
-        case Worktree.create(feature, [base: base] ++ worktree_create_opts(layout)) do
-          {:ok, worktree} ->
-            run_seeded(feature, worktree, base, description, notify, run_context, layout)
+        case ensure_spec_number(feature, current_run_key(), base) do
+          {:ok, feature} ->
+            case Worktree.create(feature, [base: base] ++ worktree_create_opts(layout)) do
+              {:ok, worktree} ->
+                run_seeded(feature, worktree, base, description, notify, run_context, layout)
+
+              {:error, reason} ->
+                notify.(feature.id, :failed, {:worktree, reason})
+            end
 
           {:error, reason} ->
-            notify.(feature.id, :failed, {:worktree, reason})
+            notify.(feature.id, :failed, {:spec_number, reason})
         end
       end)
 
@@ -2162,20 +2225,26 @@ defmodule SpeckitOrchestrator do
 
   defp default_executor(feature, base, notify, run_context, layout) do
     Task.Supervisor.start_child(SpeckitOrchestrator.RunnerSup, fn ->
-      case Worktree.create(feature, [base: base] ++ worktree_create_opts(layout)) do
-        {:ok, worktree} ->
-          FeatureRunner.run(feature,
-            worktree: worktree,
-            ledger: Ledger,
-            notify: notify,
-            run_context: run_context,
-            layout: layout,
-            stack_base: base,
-            run_key: current_run_key()
-          )
+      case ensure_spec_number(feature, current_run_key(), base) do
+        {:ok, feature} ->
+          case Worktree.create(feature, [base: base] ++ worktree_create_opts(layout)) do
+            {:ok, worktree} ->
+              FeatureRunner.run(feature,
+                worktree: worktree,
+                ledger: Ledger,
+                notify: notify,
+                run_context: run_context,
+                layout: layout,
+                stack_base: base,
+                run_key: current_run_key()
+              )
+
+            {:error, reason} ->
+              notify.(feature.id, :failed, {:worktree, reason})
+          end
 
         {:error, reason} ->
-          notify.(feature.id, :failed, {:worktree, reason})
+          notify.(feature.id, :failed, {:spec_number, reason})
       end
     end)
 
@@ -2205,7 +2274,20 @@ defmodule SpeckitOrchestrator do
       _ ->
         {"feat(#{feature.id}-#{feature.slug}): autonomous build",
          "Autonomous build of feature #{feature.id} (#{feature.slug}) by " <>
-           "speckit_orchestrator.\n\nStacked on `#{base}`." <> note}
+           "speckit_orchestrator.\n\nnumber: #{feature.id}\nspec_number: #{spec_number_label(feature)}\n\n" <>
+           "Stacked on `#{base}`." <> note}
+    end
+  end
+
+  # Read from the store, not `feature.spec_number` — the closure `publish_feature/3`
+  # runs from (`stacked_runner/4`'s `feature` var) is the pre-allocation
+  # struct; allocation happens on a separate copy inside the executor's Task
+  # and never flows back here. Machine value, real field name, "not
+  # allocated" when nil (Constitution Principle VII).
+  defp spec_number_label(feature) do
+    case Store.spec_number(current_run_key(), feature.id) do
+      n when is_integer(n) -> String.pad_leading(Integer.to_string(n), 3, "0")
+      nil -> "not allocated"
     end
   end
 

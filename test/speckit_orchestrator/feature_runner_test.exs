@@ -510,6 +510,91 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
     assert result.reason == {:missing_artifact, :implement, "implementation changes"}
   end
 
+  # ---- empty-checkpoint net (022, US2) --------------------------------------
+  #
+  # `:specify` has no artifact gate of its own (`@phase_artifacts` names only
+  # `:plan`/`:tasks`/`:implement`) — pre-022, a `:specify` phase that reported
+  # success while writing nothing silently advanced to `:clarify` with no
+  # spec.md anywhere. This is the net's clearest, most direct boundary case:
+  # armed, absent at start, and nothing committed.
+  test "specify that reports success but writes nothing fails at :specify, never reaches :clarify" do
+    fake_writing_all_but([:specify])
+    wt = scaffolded_worktree()
+    run_key = open_store_run()
+
+    result = FeatureRunner.run(feature(), worktree: wt, notify: self(), run_key: run_key)
+
+    assert result.status == :failed
+    assert result.reason == {:empty_checkpoint, :specify}
+    assert File.dir?(wt.path)
+
+    {:ok, detail} = SpeckitOrchestrator.Store.run(run_key)
+    phases = detail.features |> hd() |> Map.fetch!(:phase_attempts) |> Enum.map(& &1.phase)
+    assert :specify in phases
+    refute :clarify in phases
+  end
+
+  # FR-014a: a resumed `:tasks` re-running over output that already existed
+  # may legitimately confirm it and write nothing — its own artifact gate,
+  # not this net, is what judges substance. Seeded as part of the worktree's
+  # initial commit, so it is genuinely present before `:tasks` starts.
+  test "FR-014a: tasks.md already present at start, unchanged tree, still advances past :tasks" do
+    Application.put_env(:speckit_orchestrator, :test_fake_scenario, :halt)
+    fake_writing_all_but([:tasks])
+    wt = scaffolded_worktree()
+
+    File.mkdir_p!(Path.join(wt.path, "specs/001-fake"))
+    File.write!(Path.join(wt.path, "specs/001-fake/tasks.md"), "# Tasks\n\n- [ ] T001 Do the thing\n")
+    git!(wt.path, ["add", "-A"])
+    git!(wt.path, ["-c", "user.name=t", "-c", "user.email=t@e.com", "commit", "-q", "-m", "seed tasks.md"])
+
+    run_key = open_store_run()
+
+    result =
+      FeatureRunner.run(feature(),
+        start_phase: :tasks,
+        worktree: wt,
+        notify: self(),
+        run_context: loop_off(),
+        run_key: run_key
+      )
+
+    # Halts at :analyze (the fixture's own scenario), not failed at :tasks —
+    # proof :tasks advanced rather than being caught by the empty-checkpoint net.
+    assert result.status == :halted
+
+    {:ok, detail} = SpeckitOrchestrator.Store.run(run_key)
+    phases = detail.features |> hd() |> Map.fetch!(:phase_attempts) |> Enum.map(& &1.phase)
+    assert :tasks in phases
+    assert :analyze in phases
+  end
+
+  # FR-015: the net names exactly :specify/:plan/:tasks. :clarify carries no
+  # artifact requirement at all and never has — an unchanged tree there is
+  # unremarkable, not evidence of anything.
+  test "FR-015: an unarmed phase (:clarify) with an unchanged tree always advances" do
+    Application.put_env(:speckit_orchestrator, :test_fake_scenario, :halt)
+    wt = scaffolded_worktree()
+    run_key = open_store_run()
+
+    result =
+      FeatureRunner.run(feature(),
+        start_phase: :clarify,
+        worktree: wt,
+        notify: self(),
+        run_context: loop_off(),
+        run_key: run_key
+      )
+
+    assert result.status == :halted
+    refute result.reason == {:empty_checkpoint, :clarify}
+
+    {:ok, detail} = SpeckitOrchestrator.Store.run(run_key)
+    phases = detail.features |> hd() |> Map.fetch!(:phase_attempts) |> Enum.map(& &1.phase)
+    assert :clarify in phases
+    assert :analyze in phases
+  end
+
   test "converge reporting NOT READY fails the feature instead of reaching :done" do
     Application.put_env(:speckit_orchestrator, :test_fake_scenario, :converge_not_ready)
     wt = scaffolded_worktree()

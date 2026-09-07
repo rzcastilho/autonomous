@@ -587,6 +587,47 @@ defmodule SpeckitOrchestrator.Store.WriterTest do
     end
   end
 
+  describe "record_spec_number/3" do
+    test "writes once against an unallocated feature" do
+      {repo, run_id} = open()
+      run_key = {repo, run_id}
+
+      assert :ok = Writer.record_spec_number(run_key, "001", 15)
+      assert read_feature({repo, run_id, "001"}).spec_number == 15
+    end
+
+    test "reuse on resume needs no existence check — a second write for the same value is a no-op path callers never take, but the read side (Store.spec_number/2) just returns what was recorded" do
+      {repo, run_id} = open()
+      run_key = {repo, run_id}
+
+      assert :ok = Writer.record_spec_number(run_key, "001", 3)
+      assert Store.spec_number(run_key, "001") == 3
+    end
+
+    test "a second allocation for the same feature aborts {:already_allocated, feature_id, n}" do
+      {repo, run_id} = open()
+      run_key = {repo, run_id}
+
+      assert :ok = Writer.record_spec_number(run_key, "001", 3)
+
+      assert {:error, {:already_allocated, "001", 3}} =
+               Writer.record_spec_number(run_key, "001", 4)
+
+      # The original allocation is untouched.
+      assert read_feature({repo, run_id, "001"}).spec_number == 3
+    end
+
+    test "an unknown feature aborts the transaction" do
+      {repo, run_id} = open()
+      refute Health.failed?()
+
+      assert {:error, {:absent, _}} = Writer.record_spec_number({repo, run_id}, "nope", 1)
+
+      assert Health.failed?()
+      Health.clear()
+    end
+  end
+
   describe "record_escalation/2 + resolve_escalation/2" do
     test "escalations for the same feature get sequential ordinals" do
       {repo, run_id} = open()

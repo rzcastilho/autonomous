@@ -75,7 +75,8 @@ defmodule SpeckitOrchestrator.Backlog do
       path: path,
       group: :backlog,
       created_at: nil,
-      status: :pending
+      status: :pending,
+      spec_number: nil
     }
   end
 

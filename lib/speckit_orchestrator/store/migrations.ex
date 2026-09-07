@@ -21,6 +21,13 @@ defmodule SpeckitOrchestrator.Store.Migrations do
   would otherwise have escalated. Structurally identical to version 3: a plain
   append, every v3 row gets `nil` (the fact did not exist when those rows were
   written).
+
+  Version 5 (feature 022, contracts/store-schema-v5.md) appends
+  `feature_run.spec_number` — the repo-monotonic spec number, distinct from
+  the wave-local `:number`. A **transform**, not a refusal: every v4 feature
+  was built in a directory named for its wave number, so this backfills
+  `spec_number` from the row's own `:number` rather than inventing data
+  (FR-007).
   """
 
   alias SpeckitOrchestrator.Store.{Mnesia, Schema}
@@ -50,9 +57,32 @@ defmodule SpeckitOrchestrator.Store.Migrations do
     :pr_url
   ]
 
+  @feature_run_v4_attributes [
+    :key,
+    :run_key,
+    :feature_id,
+    :slug,
+    :path,
+    :number,
+    :group,
+    :created_at,
+    :status,
+    :terminal_reason,
+    :worktree_path,
+    :branch,
+    :pr_description,
+    :started_at,
+    :ended_at,
+    :pr_url,
+    :advanced_with_findings
+  ]
+
+  # Position of :number in a v4 tuple: +1 for the record tag at element 0.
+  @number_index Enum.find_index(@feature_run_v4_attributes, &(&1 == :number)) + 1
+
   @doc "The schema version this build of the orchestrator understands."
   @spec current_version() :: pos_integer()
-  def current_version, do: 4
+  def current_version, do: 5
 
   @doc "Every migration, ascending by version."
   @spec all() :: [migration()]
@@ -61,7 +91,8 @@ defmodule SpeckitOrchestrator.Store.Migrations do
       {2, "019 clean break — pre-019 records are not readable",
        fn -> {:error, {:incompatible_record, 1}} end},
       {3, "append feature_run.pr_url", &add_pr_url/0},
-      {4, "append feature_run.advanced_with_findings", &add_advanced_with_findings/0}
+      {4, "append feature_run.advanced_with_findings", &add_advanced_with_findings/0},
+      {5, "append feature_run.spec_number (backfilled from :number)", &add_spec_number/0}
     ]
   end
 
@@ -75,12 +106,23 @@ defmodule SpeckitOrchestrator.Store.Migrations do
     )
   end
 
-  # `:advanced_with_findings` is the last attribute in the current table
-  # shape, so this is likewise a plain append.
+  # `:advanced_with_findings` is the last attribute in the v4 table shape, so
+  # this is likewise a plain append.
   defp add_advanced_with_findings do
     transform_table(
       :speckit_feature_run,
       &Tuple.insert_at(&1, tuple_size(&1), nil),
+      @feature_run_v4_attributes
+    )
+  end
+
+  # `:spec_number` is the last attribute in the current table shape.
+  # Backfilled from the row's own `:number` (FR-007), not `nil` — a plain
+  # append with a derived value, not an invented one.
+  defp add_spec_number do
+    transform_table(
+      :speckit_feature_run,
+      &Tuple.insert_at(&1, tuple_size(&1), elem(&1, @number_index)),
       Schema.table(:speckit_feature_run).attributes
     )
   end

@@ -250,6 +250,76 @@ defmodule SpeckitOrchestrator.WorktreeTest do
     assert String.trim(remote_ref) == String.trim(local_ref)
   end
 
+  describe "spec_dirs/2" do
+    test "reads specs/ entries off the base ref, not the base repo's working tree" do
+      repo = base_repo()
+      git!(repo, ["checkout", "-q", "-b", "side"])
+      File.mkdir_p!(Path.join(repo, "specs/003-on-side"))
+      File.write!(Path.join(repo, "specs/003-on-side/spec.md"), "x\n")
+      git!(repo, ["add", "-A"])
+      git!(repo, ["commit", "-q", "-m", "side spec"])
+      git!(repo, ["checkout", "-q", "main"])
+
+      # The base repo's working tree (main, checked out) has no specs/ at
+      # all; the ref "side" does.
+      assert {:ok, []} = Worktree.spec_dirs(repo, "main")
+      assert {:ok, ["003-on-side"]} = Worktree.spec_dirs(repo, "side")
+    end
+
+    test "{:ok, []} when specs/ is absent on the ref" do
+      repo = base_repo()
+      assert {:ok, []} = Worktree.spec_dirs(repo, "main")
+    end
+
+    test "only a git invocation failure returns {:error, _}" do
+      repo = base_repo()
+      assert {:error, _} = Worktree.spec_dirs(repo, "no-such-ref")
+    end
+
+    test "strips the specs/ prefix and any trailing slash, deduped" do
+      repo = base_repo()
+      File.mkdir_p!(Path.join(repo, "specs/001-a"))
+      File.write!(Path.join(repo, "specs/001-a/spec.md"), "x\n")
+      File.mkdir_p!(Path.join(repo, "specs/002-b"))
+      File.write!(Path.join(repo, "specs/002-b/spec.md"), "x\n")
+      git!(repo, ["add", "-A"])
+      git!(repo, ["commit", "-q", "-m", "specs"])
+
+      assert {:ok, entries} = Worktree.spec_dirs(repo, "main")
+      assert Enum.sort(entries) == ["001-a", "002-b"]
+      refute Enum.any?(entries, &String.contains?(&1, "specs/"))
+      refute Enum.any?(entries, &String.ends_with?(&1, "/"))
+    end
+  end
+
+  describe "locate/2 naming" do
+    test "composes :path and :branch from spec_id, keeps feature_id: feature.id" do
+      repo = base_repo()
+      feature = %Feature{
+        id: "001",
+        number: 1,
+        slug: "core-ledger",
+        path: "001-core-ledger.md",
+        spec_number: 15
+      }
+
+      wt = Worktree.locate(feature, with_root(repo))
+
+      assert wt.feature_id == "001"
+      assert String.ends_with?(wt.path, "015-core-ledger")
+      assert wt.branch == "feature/015-core-ledger"
+    end
+
+    test "falls back to id when spec_number is nil" do
+      repo = base_repo()
+      wt = Worktree.locate(feature(), with_root(repo))
+
+      assert wt.feature_id == "001"
+      assert String.ends_with?(wt.path, "001-core-ledger")
+      assert wt.branch == "feature/001-core-ledger"
+    end
+  end
+
   describe "merged?/4 — is this branch still a legitimate base?" do
     test "false for an unmerged branch, true once it lands in the base" do
       repo = base_repo()

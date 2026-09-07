@@ -21,6 +21,7 @@ defmodule SpeckitOrchestrator.FeatureRunner do
 
   alias SpeckitOrchestrator.{
     AnalyzeRunner,
+    Checkpoint,
     ChunkRunner,
     Config,
     Cost,
@@ -283,6 +284,34 @@ defmodule SpeckitOrchestrator.FeatureRunner do
     # `mark || …` means once set it survives every later phase unchanged.
     mark = mark || exhaustion_mark(phase, gate_sigs, st)
 
+    # Net two (empty-checkpoint): the boundary commit runs before the
+    # transition is finalized, so a `:cont` reached with the phase's artifact
+    # absent at start *and* nothing committed is turned into `{:failed,
+    # {:empty_checkpoint, phase}}` right here — before `record_attempt/9`, so
+    # the checkpoint it writes reflects the *failed* phase, not one that
+    # claims the run advanced (research R7). Every other transition
+    # (`:done`/`:escalated`/`:halted`/`:failed` from `Pipeline.next/3` or the
+    # terminal override) is untouched — the per-phase boundary commit has
+    # never applied to those; `handle_worktree/5` commits the final state
+    # once the loop returns.
+    decorated =
+      case decorated do
+        {:cont, next} ->
+          commit_result =
+            if worktree,
+              do: Worktree.commit(worktree, "speckit: #{feature.id} checkpoint after #{phase}")
+
+          absent? = Map.get(gate_sigs, :artifact_absent_at_start?, false)
+
+          case Checkpoint.verdict(phase, absent?, commit_result || :ok) do
+            :advance -> {:cont, next}
+            {:failed, reason} -> {:failed, reason}
+          end
+
+        other ->
+          other
+      end
+
     # One store transaction per phase-attempt boundary (FR-006, R7): the
     # attempt, its cost, the checkpoint this boundary leaves (or the
     # diverted-terminal one), and the transcript — before recursing, not
@@ -302,9 +331,6 @@ defmodule SpeckitOrchestrator.FeatureRunner do
 
     case decorated do
       {:cont, next} ->
-        if worktree,
-          do: Worktree.commit(worktree, "speckit: #{feature.id} checkpoint after #{phase}")
-
         # Drain-don't-kill: the current phase finished; if the breaker has since
         # tripped, halt before starting the next phase rather than mid-phase.
         # A persistence failure drains the same way, at the same point
