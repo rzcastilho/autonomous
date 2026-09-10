@@ -82,8 +82,14 @@ dependency, fully unit-testable:
   terminal `:done | :escalated | :halted | :failed`, plus `:never_started` for
   a feature still `:pending` when a run ends). No `prereqs` field. Carries
   `number` (parsed from the `NNN` filename prefix, compared numerically — `002`
-  and `0002` collide), `group` (`:backlog | :ad_hoc`), and `created_at`
-  (non-nil only for `:ad_hoc`).
+  and `0002` collide), `group` (`:backlog | :ad_hoc`), `created_at`
+  (non-nil only for `:ad_hoc`), and `spec_number` (feature 022) — a
+  repo-monotonic id distinct from `number`, `nil` until allocated. `number`
+  keeps every job it already had (store key, operator label, breakdown
+  filename, release ordering); `spec_number`, via `spec_id/1` (falls back to
+  `number`'s `id` string when unallocated) and `spec_label/1` (`nil` when
+  unallocated, for operator surfaces), governs only the spec directory, the
+  branch name, and artifact resolution.
 - `Config` — typed accessors over `config :speckit_orchestrator`. Model routing
   uses **CLI aliases** (`opus`/`sonnet`) — the pinned ClaudeAgentSDK catalog
   rejects full strings like `claude-opus-4-8`; pin reproducibility via

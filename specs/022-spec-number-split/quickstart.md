@@ -76,10 +76,14 @@ returns no plan, so the chunk loop dispatches instead of skipping (US3
 scenario 3).
 
 **Net two alone** — `checkpoint_test.exs` walks every cell of the decision
-table; `feature_runner_test.exs` drives a `:tasks` phase that reports `:ok`,
-leaves the tree unchanged, and started with `tasks.md` absent. Expected: the
-feature is `:failed` with reason `{:empty_checkpoint, :tasks}`, and `:analyze`,
-`:implement`, `:converge` never run (US2 scenarios 1–3).
+table; `feature_runner_test.exs` drives a `:specify` phase that reports `:ok`,
+leaves the tree unchanged, and started with `spec.md` absent — `:specify` is
+the net's clearest real-world case, since it has no artifact-existence gate of
+its own (unlike `:plan`/`:tasks`, where the pre-022 `missing_artifact` gate
+already catches a plainly-absent file first; `{:empty_checkpoint, phase}` is
+those two phases' *reordering* proof, not their only route to failure).
+Expected: the feature is `:failed` with reason `{:empty_checkpoint, :specify}`,
+never reaching `:clarify` (US2 scenarios 1–3).
 
 **FR-014a** — the same runner test with `tasks.md` present at phase start and an
 unchanged tree: the feature advances normally (US2 scenario 5).
@@ -112,7 +116,11 @@ Expected:
 
 - the feature is allocated a fresh spec number and builds under
   `specs/<new>-<slug>/`
-- it fails at `:tasks` with `{:empty_checkpoint, :tasks}`
+- it fails at `:tasks`, named — in practice via the pre-022 `missing_artifact`
+  gate (`{:missing_artifact, :tasks, "tasks.md"}`), since that gate already
+  catches a plainly-absent artifact ahead of the empty-checkpoint net; FR-017
+  only requires the phase to be named and the run to stop there, not which of
+  the two independent nets fires
 - no later phase runs
 - `specs/001-<other>/tasks.md` is never read
 
@@ -132,18 +140,28 @@ literal, and both numbers render in the mono family.
 
 ## 9. Manual smoke against a scratch repo
 
+**Run this under `MIX_ENV=test`.** Plain `iex -S mix`/`mix run` boots the
+**dev** environment, which points at your real, machine-global
+`~/.autonomous` store (`config/config.exs` only redirects `autonomous_root` to
+a disposable tmp dir `if config_env() == :test`) — booting dev here runs every
+pending schema migration against your actual orchestrator data for no reason.
+`MIX_ENV=test` gets the hermetic tmp store instead.
+
 ```bash
 tmp=$(mktemp -d); cd "$tmp"
 git init -q . && mkdir -p specs/001-alpha specs/autonomous && \
-  touch specs/001-alpha/tasks.md README.md && \
+  touch specs/001-alpha/tasks.md specs/autonomous/.gitkeep README.md && \
   git add -A && git -c user.email=t@t -c user.name=t commit -qm init
 
-mise exec -- iex -S mix
+MIX_ENV=test mise exec -- iex -S mix
 ```
 
 ```elixir
 {:ok, entries} = SpeckitOrchestrator.Worktree.spec_dirs("#{tmp}", "HEAD")
 # => {:ok, ["001-alpha", "autonomous"]}   # "autonomous" is ignored, not fatal
+# (git tracks no empty directory — the .gitkeep above is only so "autonomous"
+# is present in the tree at all, to prove SpecNumber.parse/1 skips it rather
+# than raising on a non-conforming entry.)
 SpeckitOrchestrator.SpecNumber.allocate(entries, "billing")
 # => {:ok, 2}
 ```

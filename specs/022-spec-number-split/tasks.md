@@ -121,15 +121,15 @@ Single Elixir/OTP project. `lib/speckit_orchestrator/`, `test/speckit_orchestrat
 
 ### Tests for User Story 3
 
-- [ ] T041 [US3] `SpecDir.resolve/2` / `file/3` candidate tests: exact `spec_id` match; `.specify/feature.json` accepted only when its basename's numeric prefix equals `spec_id`; `specs/<spec_id>-*` accepted only on exactly one match; two directories sharing a numeric prefix → `nil` (FR-009, FR-010), in `test/speckit_orchestrator/spec_dir_test.exs`
-- [ ] T042 [P] [US3] Unresolved artifact reads as missing to `missing_artifact/3` and `spec_has_needs_human?/2` in `test/speckit_orchestrator/run_feature_phase_test.exs`
-- [ ] T043 [P] [US3] Unresolved task list makes `TaskPlan.load/2`/`ChunkRunner` fall back to the unstructured plan and dispatch, rather than adopting another feature's completed list, in `test/speckit_orchestrator/chunk_runner_test.exs`
+- [X] T041 [US3] `SpecDir.resolve/2` / `file/3` candidate tests: exact `spec_id` match; `.specify/feature.json` accepted only when its basename's numeric prefix equals `spec_id`; `specs/<spec_id>-*` accepted only on exactly one match; two directories sharing a numeric prefix → `nil` (FR-009, FR-010), in `test/speckit_orchestrator/spec_dir_test.exs`
+- [X] T042 [P] [US3] Unresolved artifact reads as missing to `missing_artifact/3` and `spec_has_needs_human?/2` in `test/speckit_orchestrator/run_feature_phase_test.exs`
+- [X] T043 [P] [US3] Unresolved task list makes `TaskPlan.load/2`/`ChunkRunner` fall back to the unstructured plan and dispatch, rather than adopting another feature's completed list, in `test/speckit_orchestrator/chunk_runner_test.exs`
 
 ### Implementation for User Story 3
 
-- [ ] T044 [US3] Compose `SpecDir` candidate 1 (`<worktree>/specs/<spec_id>-<slug>`) from `spec_id` instead of `id` in `lib/speckit_orchestrator/spec_dir.ex` (depends on T002)
-- [ ] T045 [US3] Constrain candidate 2 (`.specify/feature.json`'s `feature_directory`) to `Path.basename/1`'s numeric prefix `== spec_id`, closing the stacked-worktree leak of the previous feature's directory, in `lib/speckit_orchestrator/spec_dir.ex` (depends on T044)
-- [ ] T046 [US3] Constrain candidate 3 (`specs/<spec_id>-*`) to exactly one wildcard match; two or more ⇒ unresolved, never settled by ordering (FR-010), in `lib/speckit_orchestrator/spec_dir.ex` (depends on T044)
+- [X] T044 [US3] Compose `SpecDir` candidate 1 (`<worktree>/specs/<spec_id>-<slug>`) from `spec_id` instead of `id` in `lib/speckit_orchestrator/spec_dir.ex` (depends on T002)
+- [X] T045 [US3] Constrain candidate 2 (`.specify/feature.json`'s `feature_directory`) to `Path.basename/1`'s numeric prefix `== spec_id`, closing the stacked-worktree leak of the previous feature's directory, in `lib/speckit_orchestrator/spec_dir.ex` (depends on T044)
+- [X] T046 [US3] Constrain candidate 3 (`specs/<spec_id>-*`) to exactly one wildcard match; two or more ⇒ unresolved, never settled by ordering (FR-010), in `lib/speckit_orchestrator/spec_dir.ex` (depends on T044)
 
 **Checkpoint**: All three user stories are independently functional.
 
@@ -139,11 +139,11 @@ Single Elixir/OTP project. `lib/speckit_orchestrator/`, `test/speckit_orchestrat
 
 **Purpose**: prove the three pieces catch the real production failure together, and bring documentation up to date.
 
-- [ ] T047 Regression test reproducing the observed failure — a feature whose wave number collides with an existing spec directory, whose `:tasks` phase reports success while writing nothing, fails at `:tasks` naming it, never reaches a later phase, and never reads the colliding feature's files (FR-017) — in `test/speckit_orchestrator/spec_number_split_regression_test.exs` (depends on T029, T039, T044, T045, T046)
-- [ ] T048 [P] Update `docs/runbook.md` — reading both numbers on the console/report, the new FR-003a refusal
-- [ ] T049 [P] Update `docs/workflow.md` — the two independent nets in the phase loop
-- [ ] T050 [P] Update root `CLAUDE.md` — `Feature`, `SpecDir`, and schema-version descriptions (`spec_number`, schema v5, `SpecNumber`, `Checkpoint`)
-- [ ] T051 Run full quickstart validation (`quickstart.md` §1–9): `mise exec -- mix test`, `mise exec -- mix test --cover` (`SpecNumber`/`Checkpoint` at 100%, pure core >90%), the migration integration test, and the manual scratch-repo smoke
+- [X] T047 Regression test reproducing the observed failure — a feature whose wave number collides with an existing spec directory, whose `:tasks` phase reports success while writing nothing, fails at `:tasks` naming it, never reaches a later phase, and never reads the colliding feature's files (FR-017) — in `test/speckit_orchestrator/spec_number_split_regression_test.exs` (depends on T029, T039, T044, T045, T046)
+- [X] T048 [P] Update `docs/runbook.md` — reading both numbers on the console/report, the new FR-003a refusal
+- [X] T049 [P] Update `docs/workflow.md` — the two independent nets in the phase loop
+- [X] T050 [P] Update root `CLAUDE.md` — `Feature`, `SpecDir`, and schema-version descriptions (`spec_number`, schema v5, `SpecNumber`, `Checkpoint`)
+- [X] T051 Run full quickstart validation (`quickstart.md` §1–9): `mise exec -- mix test`, `mise exec -- mix test --cover` (`SpecNumber`/`Checkpoint` at 100%, pure core >90%), the migration integration test, and the manual scratch-repo smoke
 
 ---
 

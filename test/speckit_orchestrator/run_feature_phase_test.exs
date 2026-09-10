@@ -297,6 +297,61 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhaseTest do
     end
   end
 
+  # Feature 022 net one (FR-009/FR-010/FR-011): an ambiguous own-prefix match
+  # is unresolved, exactly like a wholly missing directory — it must never
+  # settle on either candidate, even when one of them is a real, otherwise
+  # legitimate-looking directory for this feature's own numeric prefix.
+  describe "an ambiguous own-prefix match reads as unresolved (feature 022 net one)" do
+    defp ambiguous_worktree(opts) do
+      tmp = Path.join(System.tmp_dir!(), "rfp_ambiguous_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(tmp)
+      System.cmd("git", ["init"], cd: tmp)
+      on_exit(fn -> File.rm_rf(tmp) end)
+
+      # Two directories sharing the feature's "002-" prefix, neither the exact
+      # `002-<slug>` name — candidate 1 never matches, candidate 3 sees two.
+      File.mkdir_p!(Path.join(tmp, "specs/002-next"))
+      File.mkdir_p!(Path.join(tmp, "specs/002-next-alt"))
+
+      Enum.each(Keyword.get(opts, :files, []), fn {dir, leaf, body} ->
+        File.write!(Path.join([tmp, "specs/#{dir}", leaf]), body)
+      end)
+
+      tmp
+    end
+
+    defp feature_orphan_ctx(tmp) do
+      context(%{
+        worktree: %{path: tmp},
+        feature: %Feature{id: "002", number: 2, slug: "orphan", path: "002.md"}
+      })
+    end
+
+    test "the plan gate treats it as missing, not as either candidate's file" do
+      with_capturing_sdk()
+      tmp = ambiguous_worktree(files: [{"002-next", "plan.md", "# plan\n"}])
+
+      assert {:ok, update} = RunFeaturePhase.run(%{phase: :plan}, feature_orphan_ctx(tmp))
+
+      assert File.regular?(Path.join(tmp, "specs/002-next/plan.md"))
+      assert update.last_signals == %{missing_artifact: "plan.md", artifact_absent_at_start?: true}
+    end
+
+    test "the clarify gate does not escalate on a marker in either ambiguous candidate" do
+      with_capturing_sdk()
+
+      tmp =
+        ambiguous_worktree(
+          files: [{"002-next-alt", "spec.md", "# spec\n\n## NEEDS HUMAN\n\nwhich one?\n"}]
+        )
+
+      assert {:ok, update} = RunFeaturePhase.run(%{phase: :clarify}, feature_orphan_ctx(tmp))
+
+      assert File.read!(Path.join(tmp, "specs/002-next-alt/spec.md")) =~ "## NEEDS HUMAN"
+      assert update.last_signals == %{needs_human?: false}
+    end
+  end
+
   test "a harness error is folded into an :error outcome (no crash, no cost)" do
     original = Application.get_env(:jido_harness, :providers)
     Application.put_env(:jido_harness, :providers, %{})

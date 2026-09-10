@@ -554,6 +554,70 @@ defmodule SpeckitOrchestrator.ChunkRunnerTest do
     assert agent.state.last_outcome == :error
   end
 
+  # T043 (feature 022, net one / US3): a stacked worktree carrying two
+  # directories that share this feature's numeric prefix is FR-010's
+  # ambiguous case — `SpecDir.file/3` must resolve `nil`, never settle on
+  # either one. Silently adopting `specs/001-alpha`'s *already-complete* list
+  # would make the chunk loop skip every task-phase and dispatch nothing; the
+  # correct outcome is the FR-004 unstructured fallback, which dispatches the
+  # whole (empty-on-disk) list as a single `:whole_list` session instead.
+  test "an ambiguous spec dir falls back to the unstructured plan, never an inherited completed list",
+       %{prompts_agent: prompts_agent} do
+    root = Path.join(System.tmp_dir!(), "chunk_runner_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(root)
+    System.cmd("git", ["init"], cd: root)
+    System.cmd("git", ["config", "user.email", "t@t"], cd: root)
+    System.cmd("git", ["config", "user.name", "t"], cd: root)
+
+    # Two directories sharing the "001-" numeric prefix, neither an exact
+    # match for this feature's own slug ("orphan") — FR-010 ambiguity.
+    alpha = Path.join(root, "specs/001-alpha")
+    File.mkdir_p!(alpha)
+    File.write!(Path.join(alpha, "tasks.md"), "# Tasks\n\n## Phase 1: Done\n\n- [X] T001 done\n")
+    File.mkdir_p!(Path.join(root, "specs/001-beta"))
+
+    System.cmd("git", ["add", "-A"], cd: root)
+    System.cmd("git", ["commit", "-m", "seed"], cd: root)
+    System.cmd("git", ["branch", "-M", "main"], cd: root)
+    System.cmd("git", ["checkout", "-q", "-b", "feature/001-orphan"], cd: root)
+
+    on_exit(fn -> File.rm_rf(root) end)
+
+    feature = %Feature{id: "001", number: 1, slug: "orphan", path: "specs/001-orphan/spec.md"}
+    worktree = %Worktree{path: root, branch: "feature/001-orphan", repo: root, feature_id: "001"}
+
+    {:ok, pid} =
+      AgentServer.start_link(
+        agent: FeatureAgent,
+        id: "chunkrunner-test-#{System.unique_integer([:positive])}",
+        register_global: false
+      )
+
+    {:ok, _} =
+      AgentServer.call(
+        pid,
+        Signal.new!("feature.init", %{
+          feature: feature,
+          worktree: worktree,
+          ledger: nil,
+          layout: nil,
+          phase: :implement,
+          resume_prompt: nil,
+          remediation_prompt: nil,
+          remediation_model: nil
+        }),
+        5_000
+      )
+
+    agent = ChunkRunner.run(ctx(%{pid: pid, feature: feature, worktree: worktree}))
+
+    # One `:whole_list` session dispatched, not zero — proof the loop never
+    # saw `specs/001-alpha/tasks.md` as its own, already-satisfied list.
+    assert length(captured_prompts(prompts_agent)) == 1
+    assert agent.state.last_outcome == :ok
+    assert agent.state.terminal_reason == nil
+  end
+
   @tag :integration
   test "LIVE: runs one real chunked implement session against a fixture target repo (paid, opt-in)",
        %{prompts_agent: _prompts_agent} do

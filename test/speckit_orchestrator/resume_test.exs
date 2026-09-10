@@ -1229,7 +1229,12 @@ defmodule SpeckitOrchestrator.ResumeTest do
     # seeded incomplete.
     defp chunked_repo(id, phases, complete) do
       repo = base_repo()
-      spec_dir = Path.join(repo, "specs/#{id}-resume-facade")
+      # `Feature.spec_id/1` semantics (022): `feature(id)` carries a numeric
+      # `spec_number` equal to `id`, so the real path/branch composition
+      # zero-pads it — `SpecDir`'s own candidates are built from that same
+      # `spec_id`, not the raw wave-local `id`, so this fixture's directory
+      # must match it exactly.
+      spec_dir = Path.join(repo, "specs/#{Feature.spec_id(feature(id))}-resume-facade")
       File.mkdir_p!(spec_dir)
 
       body =
