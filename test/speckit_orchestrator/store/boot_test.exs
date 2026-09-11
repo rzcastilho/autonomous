@@ -33,7 +33,7 @@ defmodule SpeckitOrchestrator.Store.BootTest do
     assert output =~ "BOOT_OK"
     assert output =~ "TABLES_OK true"
     assert output =~ "PROBE_OK true"
-    assert output =~ "VERSION [{:speckit_meta, :schema_version, 4}]"
+    assert output =~ "VERSION [{:speckit_meta, :schema_version, 5}]"
   end
 
   @tag :boot_subprocess
@@ -91,7 +91,7 @@ defmodule SpeckitOrchestrator.Store.BootTest do
       """)
 
     assert output =~ "BOOT_OK"
-    assert output =~ "SECOND_BOOT_ERROR {:schema_version_ahead, 5, 4}"
+    assert output =~ "SECOND_BOOT_ERROR {:schema_version_ahead, 6, 5}"
   end
 
   @tag :boot_subprocess
@@ -123,15 +123,21 @@ defmodule SpeckitOrchestrator.Store.BootTest do
   end
 
   @tag :boot_subprocess
-  test "a recorded v2 schema migrates in place — feature_run rows survive and gain pr_url: nil and advanced_with_findings: nil" do
+  test "a recorded v2 schema migrates in place — feature_run rows survive and gain pr_url: nil, advanced_with_findings: nil, and spec_number: nil" do
     dir = tmp_dir("v2_migrated")
 
     output =
       boot_script(dir, """
-      alias SpeckitOrchestrator.Store.{Mnesia, Records, Schema}
+      alias SpeckitOrchestrator.Store.{Mnesia, Records}
 
-      v4 = Schema.table(:speckit_feature_run).attributes
-      v2 = v4 -- [:pr_url, :advanced_with_findings]
+      # Pinned literal v2 shape — NOT derived from the live (current) schema,
+      # which has moved on since. Deriving "the previous version" from
+      # `Schema.table/1` breaks the moment the schema grows past it again.
+      v2 = [
+        :key, :run_key, :feature_id, :slug, :path, :number, :group,
+        :created_at, :status, :terminal_reason, :worktree_path, :branch,
+        :pr_description, :started_at, :ended_at
+      ]
 
       # Reshape the live table back into the v2 record it would have on disk,
       # then write a row through that older shape.
@@ -165,27 +171,33 @@ defmodule SpeckitOrchestrator.Store.BootTest do
         Mnesia.read(:speckit_feature_run, {"o:repo", "r000001", "001"})
       end)
       {:ok, feature} = Records.decode(:speckit_feature_run, tuple)
-      IO.puts("MIGRATED " <> inspect({feature.feature_id, feature.status, feature.pr_url, feature.advanced_with_findings}))
+      IO.puts("MIGRATED " <> inspect({feature.feature_id, feature.status, feature.pr_url, feature.advanced_with_findings, feature.spec_number}))
       """)
 
     assert output =~ "BOOT_OK"
     assert output =~ "SECOND_BOOT_OK"
-    assert output =~ "VERSION_AFTER [{:speckit_meta, :schema_version, 4}]"
-    # The row is still readable through the current decode, with both appended
-    # fields defaulted — a migration, not a reset.
-    assert output =~ ~s(MIGRATED {"001", :done, nil, nil})
+    assert output =~ "VERSION_AFTER [{:speckit_meta, :schema_version, 5}]"
+    # The row is still readable through the current decode, with every
+    # appended field defaulted/backfilled — a migration, not a reset.
+    # spec_number backfills from :number, which this synthetic row left nil.
+    assert output =~ ~s(MIGRATED {"001", :done, nil, nil, nil})
   end
 
   @tag :boot_subprocess
-  test "a recorded v3 schema migrates in place — feature_run rows survive and gain advanced_with_findings: nil (feature 021)" do
+  test "a recorded v3 schema migrates in place — feature_run rows survive and gain advanced_with_findings: nil (feature 021) and spec_number backfilled" do
     dir = tmp_dir("v3_migrated")
 
     output =
       boot_script(dir, """
-      alias SpeckitOrchestrator.Store.{Mnesia, Records, Schema}
+      alias SpeckitOrchestrator.Store.{Mnesia, Records}
 
-      v4 = Schema.table(:speckit_feature_run).attributes
-      v3 = List.delete(v4, :advanced_with_findings)
+      # Pinned literal v3 shape — see the v2 test above for why this must not
+      # be derived from the live schema.
+      v3 = [
+        :key, :run_key, :feature_id, :slug, :path, :number, :group,
+        :created_at, :status, :terminal_reason, :worktree_path, :branch,
+        :pr_description, :started_at, :ended_at, :pr_url
+      ]
 
       # Reshape the live table back into the v3 record it would have on disk,
       # then write a row through that older shape.
@@ -196,6 +208,7 @@ defmodule SpeckitOrchestrator.Store.BootTest do
         :run_key -> {"o:repo", "r000001"}
         :feature_id -> "001"
         :slug -> "core-ledger"
+        :number -> 1
         :status -> :done
         :pr_url -> "https://github.com/o/repo/pull/1"
         _ -> nil
@@ -220,15 +233,15 @@ defmodule SpeckitOrchestrator.Store.BootTest do
         Mnesia.read(:speckit_feature_run, {"o:repo", "r000001", "001"})
       end)
       {:ok, feature} = Records.decode(:speckit_feature_run, tuple)
-      IO.puts("MIGRATED " <> inspect({feature.feature_id, feature.pr_url, feature.advanced_with_findings}))
+      IO.puts("MIGRATED " <> inspect({feature.feature_id, feature.pr_url, feature.advanced_with_findings, feature.spec_number}))
       """)
 
     assert output =~ "BOOT_OK"
     assert output =~ "SECOND_BOOT_OK"
-    assert output =~ "VERSION_AFTER [{:speckit_meta, :schema_version, 4}]"
-    # pr_url survives untouched; the newly appended field is nil — a migration,
-    # not a reset (contracts/advanced-record.md §2.2).
-    assert output =~ ~s(MIGRATED {"001", "https://github.com/o/repo/pull/1", nil})
+    assert output =~ "VERSION_AFTER [{:speckit_meta, :schema_version, 5}]"
+    # pr_url survives untouched; advanced_with_findings is nil (appended);
+    # spec_number backfills from this row's own :number (1) — feature 022.
+    assert output =~ ~s(MIGRATED {"001", "https://github.com/o/repo/pull/1", nil, 1})
   end
 
   # ---- helpers ----------------------------------------------------------

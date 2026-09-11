@@ -43,6 +43,25 @@ defmodule SpeckitOrchestrator.ReportTest do
     assert out =~ "200ms"
   end
 
+  test "format_status/1 shows number and spec_number under distinct labels" do
+    snapshot = %{
+      per_feature: %{
+        "002" => %{status: :done, elapsed_ms: 100, spec_number: 15},
+        "001" => %{status: :running, elapsed_ms: 200, spec_number: nil}
+      },
+      totals: %{running: 1, done: 1},
+      spend: 0.0,
+      breaker_tripped: false,
+      finished?: false
+    }
+
+    out = Report.format_status(snapshot)
+
+    assert out =~ "SPEC"
+    assert out =~ "015"
+    assert out =~ "not allocated"
+  end
+
   test "format_status/1 handles an empty run" do
     out =
       Report.format_status(%{

@@ -210,13 +210,26 @@ defmodule SpeckitOrchestrator.ResumeTest do
   # the id via `String.to_integer/1` when no recorded `number` is available.
   defp unique_id, do: "#{System.unique_integer([:positive, :monotonic])}"
 
+  # spec_number mirrors production's invariant (022): `run_fresh/6` always
+  # records a feature's spec_number before its worktree exists, so a resumed
+  # feature's store row is never genuinely unallocated. Parsed from `id` when
+  # numeric (every real id); left `nil` for a synthetic non-numeric id (e.g.
+  # `"other-#{unique_id()}"`), which never gets a real worktree.
   defp feature(id),
     do: %Feature{
       id: id,
       number: System.unique_integer([:positive, :monotonic]),
       slug: "resume-facade",
-      path: "#{id}-resume-facade.md"
+      path: "#{id}-resume-facade.md",
+      spec_number: numeric_spec_number(id)
     }
+
+  defp numeric_spec_number(id) do
+    case Integer.parse(id) do
+      {n, ""} -> n
+      _ -> nil
+    end
+  end
 
   defp capturing_runner(test_pid) do
     fn feat, notify ->
@@ -338,7 +351,13 @@ defmodule SpeckitOrchestrator.ResumeTest do
         layout: layout
       })
 
-    {repo_id, run_id}
+    run_key = {repo_id, run_id}
+
+    for %{spec_number: n} = f <- features, is_integer(n) do
+      :ok = Writer.record_spec_number(run_key, f.id, n)
+    end
+
+    run_key
   end
 
   defp minimal_attempt(feature_id, phase) do
@@ -1210,7 +1229,12 @@ defmodule SpeckitOrchestrator.ResumeTest do
     # seeded incomplete.
     defp chunked_repo(id, phases, complete) do
       repo = base_repo()
-      spec_dir = Path.join(repo, "specs/#{id}-resume-facade")
+      # `Feature.spec_id/1` semantics (022): `feature(id)` carries a numeric
+      # `spec_number` equal to `id`, so the real path/branch composition
+      # zero-pads it — `SpecDir`'s own candidates are built from that same
+      # `spec_id`, not the raw wave-local `id`, so this fixture's directory
+      # must match it exactly.
+      spec_dir = Path.join(repo, "specs/#{Feature.spec_id(feature(id))}-resume-facade")
       File.mkdir_p!(spec_dir)
 
       body =

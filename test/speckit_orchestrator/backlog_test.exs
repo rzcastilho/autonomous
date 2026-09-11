@@ -42,6 +42,34 @@ defmodule SpeckitOrchestrator.BacklogTest do
     assert_raise Backlog.ParseError, fn -> Backlog.load!(Path.join(@dir, "nope")) end
   end
 
+  # FR-016 confirmation (022): the per-wave numeric-uniqueness guard is scoped
+  # to one package's own `load!/1` call — two independent packages that each
+  # happen to number a feature "002" are not a conflict, because
+  # `Backlog.load!/1` never sees the other package's listing. Ordering has
+  # exactly one input, the filename's `NNN`, scoped to the directory scanned.
+  test "the same number recurring across independent packages is not a conflict (FR-016)" do
+    pkg_a =
+      Path.join(System.tmp_dir!(), "speckit_backlog_pkg_a_#{System.unique_integer([:positive])}")
+
+    pkg_b =
+      Path.join(System.tmp_dir!(), "speckit_backlog_pkg_b_#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(pkg_a)
+    File.mkdir_p!(pkg_b)
+    on_exit(fn -> File.rm_rf!(pkg_a); File.rm_rf!(pkg_b) end)
+
+    File.write!(Path.join(pkg_a, "002-billing.md"), "# 002 — Billing\n")
+    File.write!(Path.join(pkg_b, "002-inventory.md"), "# 002 — Inventory\n")
+
+    features_a = Backlog.load!(pkg_a)
+    features_b = Backlog.load!(pkg_b)
+
+    assert Enum.map(features_a, & &1.id) == ["002"]
+    assert Enum.map(features_b, & &1.id) == ["002"]
+    assert hd(features_a).slug == "billing"
+    assert hd(features_b).slug == "inventory"
+  end
+
   test "gapped numbering is legal — no error, sorted ascending" do
     tmp =
       Path.join(System.tmp_dir!(), "speckit_backlog_gapped_#{System.unique_integer([:positive])}")

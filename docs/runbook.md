@@ -301,6 +301,13 @@ state:  running
   Transcripts view (`/transcripts`) — never by reading a file.
 - Rough cost: a full 7-phase feature build runs **~$10–12** (`clarify` and
   `implement` dominate). `config :budget_usd` (default 74.0) is the breaker cap.
+- **Two numbers, not one (022).** `print_status`, the console, and a feature's
+  PR body all show `number` (the wave-local id — record key, operator label,
+  breakdown filename) *and* `spec_number` (repo-monotonic — governs only the
+  spec directory, the branch name, and artifact resolution). They coincide for
+  a run's first wave and diverge from wave 2 on; `spec_number` reads "not
+  allocated" until the feature's first phase runs. See the next section for
+  why the split exists.
 
 ---
 
@@ -961,3 +968,57 @@ export SPECKIT_PLAN_STACK="Python 3 (standard library only: argparse, unittest)"
 
 Read the feature's `plan` transcript (`transcript/1`, or `/runs/:run_id` in the
 console) to see exactly what plan said.
+
+---
+
+## Spec numbers, wave collisions, and the empty-checkpoint net (022)
+
+Wave numbering restarts at `001` for every wave, so a wave 2+ feature's `number`
+is very likely already used by an earlier wave's finished feature in the same
+target repository. Two independent fixes make that safe:
+
+**Spec number allocation (FR-001–FR-003a).** Before a feature's first phase —
+before its worktree even exists — the orchestrator allocates a repo-monotonic
+`spec_number`: one past the highest conforming `specs/NNN-slug/` directory on
+the base ref. That number, not `number`, composes the spec directory
+(`specs/<spec_number>-<slug>/`) and the branch (`feature/<spec_number>-<slug>`).
+`number` keeps every other job — store key, operator label, breakdown filename,
+release ordering — so a resume, retry, or console lookup by wave number is
+unaffected. A resumed/retried feature reuses its recorded `spec_number` with no
+existence check; only a **fresh** allocation whose directory already exists is a
+bug (the base moved, or numbering is damaged) and refuses loud, before any
+worktree is created:
+
+```
+feature "001" failed: {:spec_number, {:spec_dir_exists, "specs/015-billing"}}
+```
+
+There is nothing to resume here in the usual sense — fix the base repository's
+`specs/` numbering (or the stale directory) and re-run the feature fresh.
+
+**Artifact resolution stays inside the feature's own directory.** A stacked
+worktree carries every earlier feature's `specs/` directory as well as its own.
+Every gate that reads a file (`SpecDir`) is constrained to *this* feature's own
+`spec_number`/`id` — an ambiguous or cross-feature match resolves as "not
+found", never another feature's file. If you see a feature apparently reading a
+finished sibling's `plan.md`/`tasks.md`, that is the bug this closes; it should
+not reproduce on a current build.
+
+**The empty-checkpoint net (FR-012–FR-015).** Independent of both of the above:
+a `specify`, `plan`, or `tasks` phase — the three phases whose contract is to
+produce a named file — that reports success while leaving the working tree
+**unchanged**, and whose artifact was **absent when the phase started**, fails
+right there:
+
+```
+feature "001" failed: {:empty_checkpoint, :tasks}
+```
+
+This is deliberately distinct from `{:missing_artifact, phase, artifact}` (the
+existing artifact gate, above) — both name "this phase produced nothing", but
+`empty_checkpoint` is the one net that also covers `specify`, which has no
+artifact-existence gate of its own. Neither net retries; the worktree is kept
+for post-mortem exactly as any other `:failed` feature's is. A phase that
+legitimately commits nothing — `clarify`/`analyze`/`implement`/`converge`, or a
+`specify`/`plan`/`tasks` re-run over output that already existed (an ordinary
+resume) — is never failed by this check.

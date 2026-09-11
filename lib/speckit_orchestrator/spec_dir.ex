@@ -16,13 +16,21 @@ defmodule SpeckitOrchestrator.SpecDir do
     * the clarify `## NEEDS HUMAN` scan — a marker left in a prior feature's
       `spec.md` escalates a feature that is perfectly clean
 
-  Resolution order, most authoritative first:
+  Resolution order, most authoritative first — every candidate is constrained
+  to this feature's own **spec id** (`Feature.spec_id/1` semantics: the
+  allocated `spec_number` once one exists, else the wave-local `id`):
 
-    1. `specs/<id>-<slug>` — `PhaseRequest` pins `SPECIFY_FEATURE_DIRECTORY` to
-       exactly this, matching the `feature/<id>-<slug>` branch name.
+    1. `specs/<spec_id>-<slug>` — `PhaseRequest` pins `SPECIFY_FEATURE_DIRECTORY`
+       to exactly this, matching the `feature/<spec_id>-<slug>` branch name.
     2. `.specify/feature.json`'s `feature_directory` — what the Spec Kit CLI
-       itself recorded, which covers a run whose slug drifted from the branch.
-    3. `specs/<id>-*` — the numeric id prefix is the stable part of the name.
+       itself recorded, accepted only when its basename's numeric prefix
+       equals `spec_id`. Unconstrained, this is a live leak: the file is
+       committed, so a stacked worktree carries the *previous* feature's
+       `feature_directory`, and a plain relative path with no `..` used to be
+       accepted regardless of whose feature it named.
+    3. `specs/<spec_id>-*` — the numeric prefix is the stable part of the
+       name, accepted only on **exactly one** match. Two or more is FR-010
+       ambiguity and contributes nothing — never settled by ordering.
 
   Callers decide what an unresolvable directory means, because the safe
   direction differs: for an artifact gate it is "missing" (fail loud), for the
@@ -77,33 +85,58 @@ defmodule SpeckitOrchestrator.SpecDir do
 
   def file(_worktree_path, _feature, _leaf), do: nil
 
-  defp candidates(worktree_path, %{id: id} = feature) do
+  defp candidates(worktree_path, %{} = feature) do
+    spec_id = spec_id(feature)
     slug = Map.get(feature, :slug)
 
     [
-      slug && Path.join([worktree_path, "specs", "#{id}-#{slug}"]),
-      recorded(worktree_path)
+      slug && Path.join([worktree_path, "specs", "#{spec_id}-#{slug}"]),
+      recorded(worktree_path, spec_id)
     ]
     |> Enum.reject(&is_nil/1)
-    |> Kernel.++(prefix_matches(worktree_path, id))
+    |> Kernel.++(prefix_matches(worktree_path, spec_id))
     |> Enum.uniq()
   end
+
+  # `Feature.spec_id/1` semantics, restated for a plain map: the allocated
+  # `spec_number` once one exists, else the wave-local `id`. Kept local
+  # (rather than delegating to `Feature`) because every caller here — plan
+  # fixtures included — passes a plain map, not always a `%Feature{}`.
+  defp spec_id(%{spec_number: n}) when is_integer(n), do: String.pad_leading("#{n}", 3, "0")
+  defp spec_id(%{id: id}), do: id
 
   # The spec dir the Spec Kit CLI recorded for this worktree. Only a plain
   # relative path is honoured — an absolute one, or one climbing out with `..`,
   # resolves outside this worktree and is exactly the cross-feature leak this
-  # module exists to stop.
-  defp recorded(worktree_path) do
+  # module exists to stop. Beyond that, the basename's own numeric prefix must
+  # equal this feature's `spec_id` — otherwise a stacked worktree's committed
+  # `.specify/feature.json` carries the *previous* feature's directory into
+  # this one's candidate list.
+  defp recorded(worktree_path, spec_id) do
     with {:ok, raw} <- File.read(Path.join(worktree_path, ".specify/feature.json")),
          {:ok, %{"feature_directory" => dir}} when is_binary(dir) <- JSON.decode(raw),
          :relative <- Path.type(dir),
-         false <- ".." in Path.split(dir) do
+         false <- ".." in Path.split(dir),
+         true <- numeric_prefix(Path.basename(dir)) == spec_id do
       Path.join(worktree_path, dir)
     else
       _ -> nil
     end
   end
 
-  defp prefix_matches(worktree_path, id),
-    do: worktree_path |> Path.join("specs/#{id}-*") |> Path.wildcard()
+  defp numeric_prefix(basename) do
+    case Regex.run(~r/^(\d+)-/, basename) do
+      [_, prefix] -> prefix
+      nil -> nil
+    end
+  end
+
+  # Exactly one match only (FR-010) — two or more is ambiguity, contributing
+  # nothing rather than being settled by wildcard/sort ordering.
+  defp prefix_matches(worktree_path, spec_id) do
+    case worktree_path |> Path.join("specs/#{spec_id}-*") |> Path.wildcard() do
+      [single] -> [single]
+      _ -> []
+    end
+  end
 end

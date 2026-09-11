@@ -95,7 +95,8 @@ defmodule SpeckitOrchestrator.Store.Writer do
             branch: nil,
             pr_description: nil,
             started_at: nil,
-            ended_at: nil
+            ended_at: nil,
+            spec_number: nil
           })
         )
       end)
@@ -144,7 +145,8 @@ defmodule SpeckitOrchestrator.Store.Writer do
                 branch: nil,
                 pr_description: nil,
                 started_at: nil,
-                ended_at: nil
+                ended_at: nil,
+                spec_number: nil
               })
             )
 
@@ -402,6 +404,37 @@ defmodule SpeckitOrchestrator.Store.Writer do
             {:ok, feature} ->
               Mnesia.write(Records.encode(%{feature | pr_url: url}))
               :ok
+
+            {:error, damaged} ->
+              Mnesia.abort(damaged)
+          end
+
+        [] ->
+          Mnesia.abort({:absent, feature_key})
+      end
+    end)
+  end
+
+  @doc """
+  Record a feature's allocated spec number (FR-004), one transaction, once —
+  before its worktree exists. `{:error, {:absent, key}}` when the row does not
+  exist; `{:error, {:already_allocated, feature_id, n}}` when `spec_number` is
+  already non-nil, since a second allocation is an abort, never an overwrite.
+  """
+  @spec record_spec_number(run_key(), binary(), pos_integer()) :: :ok | {:error, term()}
+  def record_spec_number({repo_id, run_id}, feature_id, n) when is_integer(n) and n > 0 do
+    run_transaction(fn ->
+      feature_key = Ids.feature_key(repo_id, run_id, feature_id)
+
+      case Mnesia.read(:speckit_feature_run, feature_key, :write) do
+        [tuple] ->
+          case Records.decode(:speckit_feature_run, tuple) do
+            {:ok, %Records.FeatureRun{spec_number: nil} = feature} ->
+              Mnesia.write(Records.encode(%{feature | spec_number: n}))
+              :ok
+
+            {:ok, %Records.FeatureRun{spec_number: existing}} ->
+              Mnesia.abort({:already_allocated, feature_id, existing})
 
             {:error, damaged} ->
               Mnesia.abort(damaged)

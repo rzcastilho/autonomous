@@ -113,9 +113,12 @@ defmodule SpeckitOrchestrator.CleanBreakTest do
     refute Code.ensure_loaded?(SpeckitOrchestrator.RunManifest)
   end
 
-  test "Checkpoint no longer exists" do
-    refute Code.ensure_loaded?(SpeckitOrchestrator.Checkpoint)
-  end
+  # 022 reintroduces the bare name `SpeckitOrchestrator.Checkpoint` for an
+  # unrelated pure decision table (the empty-checkpoint net,
+  # contracts/empty-checkpoint.md) — not a resurrection of the pre-018
+  # file-based checkpoint this test originally guarded against. That mechanism
+  # (RunManifest, the file-based Checkpoint's `record_attempt`/manifest write,
+  # Transcripts) is still gone; only the module name is reused.
 
   test "Transcripts no longer exists" do
     refute Code.ensure_loaded?(SpeckitOrchestrator.Transcripts)

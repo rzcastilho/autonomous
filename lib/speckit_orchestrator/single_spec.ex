@@ -42,7 +42,8 @@ defmodule SpeckitOrchestrator.SingleSpec do
            path: Path.join(breakdown_dir, "#{id}-#{slug}.md"),
            group: :ad_hoc,
            created_at: DateTime.utc_now(),
-           status: :pending
+           status: :pending,
+           spec_number: nil
          }}
     end
   end

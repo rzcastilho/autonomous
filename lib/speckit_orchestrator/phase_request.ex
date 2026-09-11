@@ -119,7 +119,7 @@ defmodule SpeckitOrchestrator.PhaseRequest do
   # specs/001-single-spec-run — manual validation caught this in production).
   defp prompt(feature, :specify, layout) do
     "#{@slash.specify} Implement the feature specified in #{breakdown_ref(feature, layout)} " <>
-      "(id #{feature.id}, #{feature.slug}). Use SPECIFY_FEATURE_DIRECTORY=specs/#{feature.id}-#{feature.slug}. " <>
+      "(id #{feature.id}, #{feature.slug}). Use SPECIFY_FEATURE_DIRECTORY=specs/#{Feature.spec_id(feature)}-#{feature.slug}. " <>
       "Follow the constitution."
   end
 

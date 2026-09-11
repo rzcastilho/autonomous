@@ -41,6 +41,11 @@ defmodule SpeckitOrchestrator.SpecDirTest do
 
   defp feat(id \\ "002", slug \\ "categories"), do: %{id: id, slug: slug}
 
+  # A feature whose wave-local `id` and repo-monotonic `spec_number` differ —
+  # every candidate must be composed from `spec_number`, never `id`, once one
+  # is allocated (feature 022, `Feature.spec_id/1` semantics).
+  defp feat_spec(id, slug, spec_number), do: %{id: id, slug: slug, spec_number: spec_number}
+
   describe "resolve/2" do
     test "prefers specs/<id>-<slug> over anything else present" do
       dir = worktree(recorded: "specs/001-core-ledger")
@@ -89,8 +94,12 @@ defmodule SpeckitOrchestrator.SpecDirTest do
     end
 
     test "skips a candidate dir that exists but lacks the file" do
-      # specs/002-categories exists and is empty; the recorded dir has the file.
-      dir = worktree(dirs: ["specs/002-categories"], files: [])
+      # specs/002-categories exists and is empty; the CLI recorded the dir
+      # that actually holds the file. (Feature 022 net one: a *second*
+      # candidate reached only via the prefix wildcard, with no recorded
+      # pointer, is FR-010 ambiguity — see the "candidates constrained to
+      # spec_id" describe block below — so this case goes through candidate 2.)
+      dir = worktree(dirs: ["specs/002-categories"], files: [], recorded: "specs/002-alt")
       File.mkdir_p!(Path.join(dir, "specs/002-alt"))
       File.write!(Path.join(dir, "specs/002-alt/tasks.md"), "- [ ] T001\n")
 
@@ -110,6 +119,64 @@ defmodule SpeckitOrchestrator.SpecDirTest do
 
       assert SpecDir.file(dir, feat("001", "core-ledger"), "plan.md") ==
                Path.join(dir, "specs/001-core-ledger/plan.md")
+    end
+  end
+
+  # Feature 022 net one (FR-009/FR-010, contracts/spec-dir-resolution.md §2-3):
+  # every candidate is constrained to the feature's own `spec_id` — `id` when
+  # unallocated, `spec_number` (zero-padded) once one is. These reproduce the
+  # contract's §3 behaviour table directly, on a worktree carrying a completed
+  # `specs/001-core-ledger/` (from a wave numbered `001`) plus this feature's
+  # own directory named by its *allocated* spec number `015`.
+  describe "candidates constrained to spec_id (feature 022 net one)" do
+    test "candidate 1 is composed from spec_number, not the wave-local id" do
+      dir = worktree(dirs: ["specs/015-billing"])
+
+      assert SpecDir.file(dir, feat_spec("001", "billing", 15), "tasks.md") ==
+               Path.join(dir, "specs/015-billing/tasks.md")
+    end
+
+    test "candidate 2 (recorded dir) is accepted when its numeric prefix equals spec_id" do
+      # specs/015-billing exists but is empty; the CLI recorded a differently
+      # slugged directory that also starts with the allocated spec number.
+      dir = worktree(dirs: ["specs/015-billing"], files: [], recorded: "specs/015-billing-2")
+      File.mkdir_p!(Path.join(dir, "specs/015-billing-2"))
+      File.write!(Path.join(dir, "specs/015-billing-2/tasks.md"), "# tasks\n")
+
+      assert SpecDir.file(dir, feat_spec("001", "billing", 15), "tasks.md") ==
+               Path.join(dir, "specs/015-billing-2/tasks.md")
+    end
+
+    test "candidate 2 is rejected when its numeric prefix does not equal spec_id" do
+      # The recorded dir is the inherited feature's own — a stacked worktree's
+      # live leak this feature exists to close (contract §2, "closes a live
+      # leak").
+      dir = worktree(dirs: [], recorded: "specs/001-core-ledger")
+
+      assert SpecDir.file(dir, feat_spec("001", "billing", 15), "tasks.md") == nil
+    end
+
+    test "candidate 3 requires exactly one prefix match — two contribute nothing" do
+      # Neither directory is the exact spec_id-slug name, so candidate 1
+      # never matches; both share the "015-" prefix, so candidate 3 is
+      # ambiguous per FR-010 and must not be settled by ordering.
+      dir = worktree(dirs: ["specs/015-billing", "specs/015-billing-alt"], files: ["tasks.md"])
+
+      assert SpecDir.file(dir, feat_spec("001", "notbilling", 15), "tasks.md") == nil
+    end
+
+    test "candidate 3 resolves on a single unambiguous prefix match" do
+      dir = worktree(dirs: ["specs/015-something-else"])
+
+      assert SpecDir.file(dir, feat_spec("001", "billing", 15), "tasks.md") ==
+               Path.join(dir, "specs/015-something-else/tasks.md")
+    end
+
+    test "never falls through to the inherited feature's directory across a spec_id mismatch" do
+      dir = worktree(dirs: [])
+
+      assert SpecDir.file(dir, feat_spec("001", "billing", 15), "plan.md") == nil
+      assert File.regular?(Path.join(dir, "specs/001-core-ledger/plan.md"))
     end
   end
 end

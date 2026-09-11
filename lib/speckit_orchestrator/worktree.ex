@@ -58,13 +58,14 @@ defmodule SpeckitOrchestrator.Worktree do
   `resolve/1` to find a previously-kept worktree.
   """
   @spec locate(Feature.t(), keyword()) :: t()
-  def locate(%Feature{id: id, slug: slug}, opts \\ []) do
+  def locate(%Feature{id: id, slug: slug} = feature, opts \\ []) do
     repo = Keyword.get(opts, :repo, Config.repo())
     root = Keyword.get(opts, :worktree_root, Config.worktree_root())
+    spec_id = Feature.spec_id(feature)
 
     %__MODULE__{
-      path: Path.join(root, "#{id}-#{slug}"),
-      branch: "feature/#{id}-#{slug}",
+      path: Path.join(root, "#{spec_id}-#{slug}"),
+      branch: "feature/#{spec_id}-#{slug}",
       repo: repo,
       feature_id: id
     }
@@ -280,6 +281,37 @@ defmodule SpeckitOrchestrator.Worktree do
     case git(repo, ["rev-parse", "--verify", "--quiet", remote_ref]) do
       {:ok, _} -> remote_ref
       {:error, _} -> into
+    end
+  end
+
+  @doc """
+  Bare `specs/` entry names present on `base` (a git ref — `"HEAD"`, `"main"`,
+  a branch, a sha), read via `git -C <repo> ls-tree --name-only <base> specs/`.
+  Reads the **ref**, not the base repo's working tree (research R1) — correct
+  for a stacked run whose base is the previous feature's branch, not whatever
+  the base repo happens to have checked out.
+
+  `{:ok, []}` when `specs/` does not exist on the ref (git exits 0 with no
+  output). Only a git invocation failure returns `{:error, _}`.
+  """
+  @spec spec_dirs(Path.t(), String.t()) :: {:ok, [String.t()]} | {:error, term()}
+  def spec_dirs(repo, base) when is_binary(repo) and is_binary(base) do
+    case git(repo, ["ls-tree", "--name-only", base, "specs/"]) do
+      {:ok, out} ->
+        entries =
+          out
+          |> String.split("\n", trim: true)
+          |> Enum.map(fn line ->
+            line
+            |> String.trim_leading("specs/")
+            |> String.trim_trailing("/")
+          end)
+          |> Enum.uniq()
+
+        {:ok, entries}
+
+      {:error, _} = err ->
+        err
     end
   end
 

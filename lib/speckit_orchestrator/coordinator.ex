@@ -52,7 +52,7 @@ defmodule SpeckitOrchestrator.Coordinator do
 
   use GenServer
 
-  alias SpeckitOrchestrator.{Feature, Ledger, Release}
+  alias SpeckitOrchestrator.{Feature, Ledger, Release, Store}
   alias SpeckitOrchestrator.Store.{Health, Writer}
 
   @type status :: Feature.status()
@@ -327,7 +327,8 @@ defmodule SpeckitOrchestrator.Coordinator do
          %{
            status: status,
            elapsed_ms: elapsed_ms(state, id),
-           slug: feature && feature.slug
+           slug: feature && feature.slug,
+           spec_number: spec_number_for(state, id)
          }}
       end)
 
@@ -353,6 +354,13 @@ defmodule SpeckitOrchestrator.Coordinator do
   end
 
   defp now_ms, do: System.monotonic_time(:millisecond)
+
+  # Live read, not in-memory: `state.features[id]` is the pre-allocation
+  # struct from the backlog/seed and never gains its `spec_number` (022's
+  # allocation happens inside the runner task, on its own copy). The store
+  # row is the durable record of what was actually allocated.
+  defp spec_number_for(%__MODULE__{run_key: nil}, _id), do: nil
+  defp spec_number_for(%__MODULE__{run_key: run_key}, id), do: Store.spec_number(run_key, id)
 
   defp feature_list(state), do: Map.values(state.features)
 

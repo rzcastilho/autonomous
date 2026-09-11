@@ -106,6 +106,45 @@ defmodule SpeckitOrchestrator.Web.RunDetailLiveTest do
     assert html =~ "sonnet"
   end
 
+  test "renders both the wave number and the spec number, mono, not allocated when nil", %{
+    conn: conn,
+    repo_id: repo_id
+  } do
+    run_id = open(repo_id, ["001", "002"])
+    :ok = Writer.record_spec_number({repo_id, run_id}, "001", 15)
+
+    {:ok, _view, html} = live(conn, "/runs/#{run_id}")
+
+    assert html =~ "001 · f-001 · spec 015"
+    assert html =~ "002 · f-002 · spec not allocated"
+  end
+
+  test "renders {:empty_checkpoint, phase} distinctly from {:missing_artifact, phase, artifact}",
+       %{conn: conn, repo_id: repo_id} do
+    run_id = open(repo_id, ["001", "002"])
+
+    :ok =
+      Writer.record_feature_terminal(
+        {repo_id, run_id},
+        "001",
+        :failed,
+        {:empty_checkpoint, :tasks}
+      )
+
+    :ok =
+      Writer.record_feature_terminal(
+        {repo_id, run_id},
+        "002",
+        :failed,
+        {:missing_artifact, :tasks, "tasks.md"}
+      )
+
+    {:ok, _view, html} = live(conn, "/runs/#{run_id}")
+
+    assert html =~ "reason: tasks committed no change"
+    assert html =~ "reason: {:missing_artifact, :tasks, &quot;tasks.md&quot;}"
+  end
+
   test "on-demand transcript fetch renders the body verbatim only after the click", %{
     conn: conn,
     repo_id: repo_id

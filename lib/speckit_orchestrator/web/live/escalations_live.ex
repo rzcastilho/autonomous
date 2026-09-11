@@ -199,7 +199,8 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
       slug: slug,
       path: feature_detail.path || "",
       group: Map.get(feature_detail, :group, :backlog),
-      created_at: Map.get(feature_detail, :created_at)
+      created_at: Map.get(feature_detail, :created_at),
+      spec_number: Map.get(feature_detail, :spec_number)
     }
   end
 
@@ -460,6 +461,7 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
           <span class="escalation-dot" data-status={status_class(e.feature.status)}></span>
           <span class="escalation-title">
             {e.id} <span :if={e.feature.slug}>· {e.feature.slug}</span>
+            · spec {Feature.spec_label(e.identity) || "not allocated"}
           </span>
           <.status_pill status={e.feature.status} />
           <span :if={e.divert_reason} class="escalation-reason" data-divert-reason>

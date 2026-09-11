@@ -319,7 +319,14 @@ defmodule SpeckitOrchestrator.PhaseStepTest do
 
       agent = PhaseStep.run(pid, feature(), :plan, step: 1, timeout: 5_000, retries: 1)
 
-      assert agent.state.last_signals == %{missing_artifact: "plan.md"}
+      # artifact_absent_at_start? (022, FR-014) fires independently of this
+      # gate's own missing_artifact verdict — plan.md was absent when the
+      # phase started, same as it is missing after.
+      assert agent.state.last_signals == %{
+               missing_artifact: "plan.md",
+               artifact_absent_at_start?: true
+             }
+
       assert length(agent.state.history) == 1
     end
   end

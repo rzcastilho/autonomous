@@ -24,16 +24,18 @@ flowchart TB
     REL -->|release one at a time| RUN[FeatureRunner<br/>Task under RunnerSup]
   end
 
-  RUN -->|git worktree add<br/>feature/NNN-slug<br/>assert scaffold| WT[[Isolated worktree]]
+  RUN -->|allocate/reuse spec_number<br/>022: highest-plus-one on base ref<br/>refuses loud on a fresh collision| ALLOC{spec dir<br/>already exists?}
+  ALLOC -->|yes, fresh allocation| SNFAIL(((failed · spec_number)))
+  ALLOC -->|no, or reused on resume| WT[[git worktree add<br/>feature/spec_number-slug<br/>assert scaffold]]
   WT --> PIPE
 
   subgraph PIPE[Data plane · per-feature pipeline · claude CLI via jido_harness]
     direction TB
-    SP[specify<br/>create-new-feature.sh → spec.md] --> CL[clarify<br/>Opus reviewer]
+    SP[specify<br/>create-new-feature.sh → spec.md<br/>022: empty-checkpoint net armed] --> CL[clarify<br/>Opus reviewer]
     CL -->|emits NEEDS HUMAN| GESC{material<br/>ambiguity?}
     GESC -->|yes| ESC(((escalated)))
-    GESC -->|no · defaults applied| PL[plan<br/>setup-plan.sh + plan_stack → plan.md]
-    PL --> TK[tasks<br/>→ tasks.md]
+    GESC -->|no · defaults applied| PL[plan<br/>setup-plan.sh + plan_stack → plan.md<br/>022: empty-checkpoint net armed]
+    PL --> TK[tasks<br/>→ tasks.md<br/>022: empty-checkpoint net armed]
     TK --> AN[analyze<br/>vs constitution MUSTs]
     AN -->|Critical finding| GHALT{halt?}
     GHALT -->|yes| HALT(((halted)))
@@ -56,6 +58,7 @@ flowchart TB
   ESC -->|nothing left in flight| PARK[[Run parked<br/>stopped_by = feature, status, reason]]
   HALT --> PARK
   FAIL --> PARK
+  SNFAIL -->|no worktree ever created| PARK
   PARK -->|new run/1, run_spec/2 refused<br/>for this repo until resolved| PARK
   PARK -->|operator decides| DEC{continue<br/>or end?}
   DEC -->|:continue| CO
@@ -67,13 +70,14 @@ flowchart TB
   ESC --> REP
   HALT --> REP
   ENDR --> REP
+  SNFAIL --> REP
 
   classDef term fill:#1f6feb,stroke:#0b3d91,color:#fff;
   classDef gate fill:#b45309,stroke:#7c2d12,color:#fff;
   classDef sink fill:#166534,stroke:#052e16,color:#fff;
   classDef park fill:#7c3aed,stroke:#4c1d95,color:#fff;
-  class ESC,HALT,DONE,FAIL term;
-  class GESC,GHALT,DEC gate;
+  class ESC,HALT,DONE,FAIL,SNFAIL term;
+  class GESC,GHALT,DEC,ALLOC gate;
   class BR,REP sink;
   class PARK,ENDR park;
 ```
@@ -107,6 +111,30 @@ flowchart TB
   only an exhausted loop plus an explicit `:proceed` advances past one — the
   default (`:escalate`), a loop that is off, and a loop with attempts left all
   still halt.
+- **Spec number allocation, before the worktree exists (022).** Wave numbering
+  restarts at `001` per wave, so a later wave's feature almost certainly shares
+  its `number` with an earlier wave's finished feature. Before the worktree is
+  created, the run allocates (or, on resume, reuses) a repo-monotonic
+  `spec_number` — one past the highest conforming `specs/NNN-slug/` directory
+  on the base ref — and composes the spec directory and branch from *that*,
+  never the wave-local `number`. A fresh allocation that collides with an
+  existing directory refuses loud, before any phase runs: the base moved, or
+  the numbering is damaged, and nothing legitimately fixes that but the
+  operator.
+- **Two independent nets against a phase that reports success and does
+  nothing (022).** Neither knows the other exists, by design (SC-007: each
+  catches the observed failure alone). *Net one* — every artifact lookup
+  (`SpecDir`) inside `specify`/`plan`/`tasks`/`clarify`/`implement` is
+  constrained to **this** feature's own spec id; a stacked worktree carries
+  every earlier feature's `specs/` directory too, and an ambiguous or
+  cross-feature match now resolves "not found," never another feature's file.
+  *Net two* — the empty-checkpoint check: `specify`, `plan`, and `tasks` (the
+  three phases whose whole contract is "produce a named file") fail right
+  there, named, if the phase's artifact was absent when it started **and**
+  the boundary commit is a no-op — before `analyze`/`implement` ever run on
+  nothing. A phase re-running over output that already exists (an ordinary
+  resume) is exempt; `clarify`/`analyze`/`implement`/`converge` are never
+  checked by this net at all.
 - **Terminals commit before teardown.** `:done` commits the generated branch,
   pushes it, and opens a PR against the previous feature's branch (or
   `pr_base` for the first), then removes the worktree; `escalated`/`halted`/

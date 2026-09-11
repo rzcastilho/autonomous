@@ -178,6 +178,36 @@ defmodule SpeckitOrchestrator.Web.EscalationsLiveTest do
     assert html =~ "implementation changes"
   end
 
+  test "the hand-built %Feature{} carries and renders spec_number", %{conn: conn} do
+    reason = "needs human"
+
+    run_key =
+      seed_store_run([{feat("e21", "slug-e21"), :clarify, :escalated, reason: reason}])
+
+    :ok = Writer.record_spec_number(run_key, "e21", 15)
+
+    pid = start_coordinator([feat("e21", "slug-e21")], %{"e21" => {:escalated, reason}})
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    {:ok, _view, html} = live(conn, "/escalations")
+
+    assert html =~ ~s(data-escalation="e21")
+    assert html =~ "spec 015"
+  end
+
+  test "renders not allocated when the feature's spec_number is nil", %{conn: conn} do
+    reason = "needs human"
+    seed_store_run([{feat("e22", "slug-e22"), :clarify, :escalated, reason: reason}])
+
+    pid = start_coordinator([feat("e22", "slug-e22")], %{"e22" => {:escalated, reason}})
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    {:ok, _view, html} = live(conn, "/escalations")
+
+    assert html =~ ~s(data-escalation="e22")
+    assert html =~ "spec not allocated"
+  end
+
   # Regression (019): the escalation that leaves nothing in flight *parks* its
   # own run, and `SpeckitOrchestrator.current_run_id/0` only ever finds an
   # `:in_flight` one. Sourcing this page's `run_detail/1` from it alone meant

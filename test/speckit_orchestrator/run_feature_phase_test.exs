@@ -257,7 +257,7 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhaseTest do
 
       # 001's plan.md exists and would have satisfied a specs/**/plan.md glob.
       assert File.regular?(Path.join(tmp, "specs/001-core/plan.md"))
-      assert update.last_signals == %{missing_artifact: "plan.md"}
+      assert update.last_signals == %{missing_artifact: "plan.md", artifact_absent_at_start?: true}
     end
 
     test "the plan gate passes on the feature's own plan.md" do
@@ -265,7 +265,7 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhaseTest do
       tmp = stacked_worktree(own_files: [{"plan.md", "# 002 plan\n"}])
 
       assert {:ok, update} = RunFeaturePhase.run(%{phase: :plan}, feature_002_ctx(tmp))
-      assert update.last_signals == %{}
+      assert update.last_signals == %{artifact_absent_at_start?: false}
     end
 
     test "the tasks gate is not satisfied by an inherited feature's tasks.md" do
@@ -273,7 +273,7 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhaseTest do
       tmp = stacked_worktree(own_files: [])
 
       assert {:ok, update} = RunFeaturePhase.run(%{phase: :tasks}, feature_002_ctx(tmp))
-      assert update.last_signals == %{missing_artifact: "tasks.md"}
+      assert update.last_signals == %{missing_artifact: "tasks.md", artifact_absent_at_start?: true}
     end
 
     test "the clarify gate does not escalate on a marker left in another feature's spec" do
@@ -294,6 +294,61 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhaseTest do
 
       assert {:ok, update} = RunFeaturePhase.run(%{phase: :clarify}, feature_002_ctx(tmp))
       assert update.last_signals == %{needs_human?: true}
+    end
+  end
+
+  # Feature 022 net one (FR-009/FR-010/FR-011): an ambiguous own-prefix match
+  # is unresolved, exactly like a wholly missing directory — it must never
+  # settle on either candidate, even when one of them is a real, otherwise
+  # legitimate-looking directory for this feature's own numeric prefix.
+  describe "an ambiguous own-prefix match reads as unresolved (feature 022 net one)" do
+    defp ambiguous_worktree(opts) do
+      tmp = Path.join(System.tmp_dir!(), "rfp_ambiguous_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(tmp)
+      System.cmd("git", ["init"], cd: tmp)
+      on_exit(fn -> File.rm_rf(tmp) end)
+
+      # Two directories sharing the feature's "002-" prefix, neither the exact
+      # `002-<slug>` name — candidate 1 never matches, candidate 3 sees two.
+      File.mkdir_p!(Path.join(tmp, "specs/002-next"))
+      File.mkdir_p!(Path.join(tmp, "specs/002-next-alt"))
+
+      Enum.each(Keyword.get(opts, :files, []), fn {dir, leaf, body} ->
+        File.write!(Path.join([tmp, "specs/#{dir}", leaf]), body)
+      end)
+
+      tmp
+    end
+
+    defp feature_orphan_ctx(tmp) do
+      context(%{
+        worktree: %{path: tmp},
+        feature: %Feature{id: "002", number: 2, slug: "orphan", path: "002.md"}
+      })
+    end
+
+    test "the plan gate treats it as missing, not as either candidate's file" do
+      with_capturing_sdk()
+      tmp = ambiguous_worktree(files: [{"002-next", "plan.md", "# plan\n"}])
+
+      assert {:ok, update} = RunFeaturePhase.run(%{phase: :plan}, feature_orphan_ctx(tmp))
+
+      assert File.regular?(Path.join(tmp, "specs/002-next/plan.md"))
+      assert update.last_signals == %{missing_artifact: "plan.md", artifact_absent_at_start?: true}
+    end
+
+    test "the clarify gate does not escalate on a marker in either ambiguous candidate" do
+      with_capturing_sdk()
+
+      tmp =
+        ambiguous_worktree(
+          files: [{"002-next-alt", "spec.md", "# spec\n\n## NEEDS HUMAN\n\nwhich one?\n"}]
+        )
+
+      assert {:ok, update} = RunFeaturePhase.run(%{phase: :clarify}, feature_orphan_ctx(tmp))
+
+      assert File.read!(Path.join(tmp, "specs/002-next-alt/spec.md")) =~ "## NEEDS HUMAN"
+      assert update.last_signals == %{needs_human?: false}
     end
   end
 
@@ -335,7 +390,8 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhaseTest do
 
       assert update.last_signals == %{
                missing_artifact: "plan.md (unfilled template)",
-               unfilled_artifact?: true
+               unfilled_artifact?: true,
+               artifact_absent_at_start?: false
              }
     end
 
@@ -348,7 +404,7 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhaseTest do
       ctx = context(%{worktree: %{path: tmp}})
 
       assert {:ok, update} = RunFeaturePhase.run(%{phase: :plan}, ctx)
-      assert update.last_signals == %{}
+      assert update.last_signals == %{artifact_absent_at_start?: false}
     end
   end
 
@@ -380,7 +436,7 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhaseTest do
                RunFeaturePhase.run(%{phase: :plan}, context(%{worktree: %{path: tmp}}))
 
       assert update.last_outcome == :ok
-      assert update.last_signals == %{}
+      assert update.last_signals == %{artifact_absent_at_start?: false}
     end
 
     test "a gated phase whose artifact is missing reports the incomplete session" do
@@ -395,7 +451,7 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhaseTest do
                RunFeaturePhase.run(%{phase: :plan}, context(%{worktree: %{path: tmp}}))
 
       assert update.last_outcome == :error
-      assert update.last_signals == %{outstanding_work?: true}
+      assert update.last_signals == %{outstanding_work?: true, artifact_absent_at_start?: true}
     end
 
     test "a scoped implement chunk is never pre-empted — the roll-up owns that gate" do
@@ -421,6 +477,79 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhaseTest do
 
       assert update.last_outcome == :ok
       assert update.last_signals == %{}
+    end
+  end
+
+  describe "artifact_absent_at_start? probe (net two arming signal)" do
+    setup do
+      original = Application.get_env(:jido_claude, :sdk_module)
+      Application.put_env(:jido_claude, :sdk_module, CapturingSDK)
+      on_exit(fn -> restore(:jido_claude, :sdk_module, original) end)
+      :ok
+    end
+
+    for phase <- [:specify, :plan, :tasks] do
+      test "set for armed phase #{phase} when the worktree exists and the artifact is absent" do
+        tmp = Path.join(System.tmp_dir!(), "rfp_probe_#{System.unique_integer([:positive])}")
+        File.mkdir_p!(tmp)
+        System.cmd("git", ["init"], cd: tmp)
+        on_exit(fn -> File.rm_rf(tmp) end)
+
+        assert {:ok, update} =
+                 RunFeaturePhase.run(%{phase: unquote(phase)}, context(%{worktree: %{path: tmp}}))
+
+        assert update.last_signals.artifact_absent_at_start? == true
+      end
+    end
+
+    for {phase, leaf} <- [specify: "spec.md", plan: "plan.md", tasks: "tasks.md"] do
+      test "clear for armed phase #{phase} when the artifact is already present at start" do
+        tmp = Path.join(System.tmp_dir!(), "rfp_probe_#{System.unique_integer([:positive])}")
+        File.mkdir_p!(Path.join(tmp, "specs/001-s"))
+        System.cmd("git", ["init"], cd: tmp)
+        on_exit(fn -> File.rm_rf(tmp) end)
+        File.write!(Path.join(tmp, "specs/001-s/#{unquote(leaf)}"), "content\n")
+
+        assert {:ok, update} =
+                 RunFeaturePhase.run(%{phase: unquote(phase)}, context(%{worktree: %{path: tmp}}))
+
+        assert update.last_signals.artifact_absent_at_start? == false
+      end
+    end
+
+    for phase <- [:clarify, :analyze, :implement, :converge] do
+      test "never set for unarmed phase #{phase}, worktree or not" do
+        tmp = Path.join(System.tmp_dir!(), "rfp_probe_#{System.unique_integer([:positive])}")
+        File.mkdir_p!(tmp)
+        System.cmd("git", ["init"], cd: tmp)
+        on_exit(fn -> File.rm_rf(tmp) end)
+
+        assert {:ok, with_wt} =
+                 RunFeaturePhase.run(%{phase: unquote(phase)}, context(%{worktree: %{path: tmp}}))
+
+        refute Map.has_key?(with_wt.last_signals, :artifact_absent_at_start?)
+
+        assert {:ok, without_wt} = RunFeaturePhase.run(%{phase: unquote(phase)}, context())
+        refute Map.has_key?(without_wt.last_signals, :artifact_absent_at_start?)
+      end
+    end
+
+    test "not set for an armed phase when there is no worktree (dry run)" do
+      assert {:ok, update} = RunFeaturePhase.run(%{phase: :plan}, context())
+      refute Map.has_key?(update.last_signals, :artifact_absent_at_start?)
+    end
+
+    test "unaffected by the artifact gate's own verdict — set even when the gate fails" do
+      tmp = Path.join(System.tmp_dir!(), "rfp_probe_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(tmp)
+      System.cmd("git", ["init"], cd: tmp)
+      on_exit(fn -> File.rm_rf(tmp) end)
+
+      assert {:ok, update} =
+               RunFeaturePhase.run(%{phase: :tasks}, context(%{worktree: %{path: tmp}}))
+
+      assert update.last_signals.missing_artifact == "tasks.md"
+      assert update.last_signals.artifact_absent_at_start? == true
     end
   end
 end
