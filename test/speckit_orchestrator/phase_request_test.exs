@@ -57,7 +57,7 @@ defmodule SpeckitOrchestrator.PhaseRequestTest do
     assert r.prompt =~ "findings"
     assert r.permission_mode == :plan
     assert r.allowed_tools == ~w(Read Grep Glob)
-    assert r.disallowed_tools == ~w(Write Edit)
+    assert r.disallowed_tools == ~w(Write Edit Agent Task ScheduleWakeup)
     assert r.model == "opus"
   end
 
