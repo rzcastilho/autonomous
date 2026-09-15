@@ -34,6 +34,14 @@ defmodule SpeckitOrchestrator.PhaseRequest do
   # files (plan.md/tasks.md), silently no-opping everything downstream.
   @write_bash_tools ~w(Read Write Edit Bash Grep Glob)
 
+  # Tools every headless phase must never reach, regardless of `allowed_tools`
+  # (which only pre-approves; it does not hide). `Agent`/`Task` background work
+  # into a subagent and let the model end its turn "waiting on results" —
+  # headless, ending the turn ends the session and the subagent dies with it
+  # (the incomplete-session gate then fails the phase). `ScheduleWakeup` is the
+  # interactive `/loop` scheduler, meaningless in a one-shot session.
+  @headless_disallowed ~w(Agent Task ScheduleWakeup)
+
   @doc """
   Build the RunRequest for `feature` at `phase`.
 
@@ -95,7 +103,8 @@ defmodule SpeckitOrchestrator.PhaseRequest do
       cwd: Keyword.get(opts, :cwd, Config.repo()),
       model: model,
       permission_mode: :accept_edits,
-      allowed_tools: @write_bash_tools
+      allowed_tools: @write_bash_tools,
+      disallowed_tools: @headless_disallowed
     }
     |> RunRequest.new!()
   end
@@ -243,12 +252,16 @@ defmodule SpeckitOrchestrator.PhaseRequest do
     %{
       permission_mode: :plan,
       allowed_tools: ~w(Read Grep Glob),
-      disallowed_tools: ~w(Write Edit)
+      disallowed_tools: ~w(Write Edit) ++ @headless_disallowed
     }
   end
 
   defp permissions(:clarify) do
-    %{permission_mode: :accept_edits, allowed_tools: ~w(Read Write Edit Grep Glob)}
+    %{
+      permission_mode: :accept_edits,
+      allowed_tools: ~w(Read Write Edit Grep Glob),
+      disallowed_tools: @headless_disallowed
+    }
   end
 
   # describe is read-only but needs Bash to inspect the diff (git diff/log/status).
@@ -256,12 +269,16 @@ defmodule SpeckitOrchestrator.PhaseRequest do
     %{
       permission_mode: :plan,
       allowed_tools: ~w(Read Grep Glob Bash),
-      disallowed_tools: ~w(Write Edit)
+      disallowed_tools: ~w(Write Edit) ++ @headless_disallowed
     }
   end
 
   defp permissions(phase) when phase in [:specify, :plan, :tasks, :implement, :converge] do
-    %{permission_mode: :accept_edits, allowed_tools: @write_bash_tools}
+    %{
+      permission_mode: :accept_edits,
+      allowed_tools: @write_bash_tools,
+      disallowed_tools: @headless_disallowed
+    }
   end
 
   defp permissions(_phase), do: %{}

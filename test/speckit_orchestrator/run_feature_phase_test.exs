@@ -133,6 +133,31 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhaseTest do
     assert prompt1 == prompt2
   end
 
+  # A chunked implement resume: guidance lands on the first dispatched
+  # task-phase and on the sweep (the session that owns the leftovers an
+  # operator is usually resuming for), never on the task-phases in between.
+  test "resume_prompt reaches the first chunk and the sweep, not middle task-phases" do
+    original = Application.get_env(:jido_claude, :sdk_module)
+    Application.put_env(:jido_claude, :sdk_module, CapturingSDK)
+    on_exit(fn -> restore(:jido_claude, :sdk_module, original) end)
+
+    ctx = context(%{resume_phase: :implement, resume_prompt: "T105: defer M3/M4/M7"})
+    tp = %SpeckitOrchestrator.TaskPlan.TaskPhase{ordinal: 1, number: "1", title: "Setup", tasks: []}
+    task = %SpeckitOrchestrator.TaskPlan.Task{id: "T105", text: "manual scenarios", line: 1}
+
+    calls = [
+      {%{phase: :implement, scope: {:task_phase, tp}, first_chunk: true}, true},
+      {%{phase: :implement, scope: {:task_phase, tp}}, false},
+      {%{phase: :implement, scope: {:sweep, [task]}}, true}
+    ]
+
+    for {params, expected?} <- calls do
+      assert {:ok, _} = RunFeaturePhase.run(params, ctx)
+      assert_received {:captured_prompt, prompt}
+      assert (prompt =~ "Operator guidance (resume): T105: defer M3/M4/M7") == expected?
+    end
+  end
+
   defp restore(app, key, nil), do: Application.delete_env(app, key)
   defp restore(app, key, val), do: Application.put_env(app, key, val)
 

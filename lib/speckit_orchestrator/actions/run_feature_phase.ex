@@ -129,11 +129,19 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhase do
   # scoped (`scope != nil`) call gets none, matching "guidance reaches the
   # first dispatched task-phase session, matching existing whole-step resume
   # behaviour" without touching the non-chunked path's retry semantics at all.
+  #
+  # The one exception is the sweep: it is the session that owns whatever the
+  # task-phases left unchecked, and an operator resuming a feature that
+  # failed `{:unchecked_tasks, _}` is almost always talking about exactly
+  # those tasks. Without this the guidance lands on a task-phase that is
+  # already complete and the sweep — the only session that could act on it —
+  # never sees a word of it (observed live: 002/T105, mod-player).
   defp resume_prompt_for(state, phase, params) do
     cond do
       phase != state.resume_phase -> nil
       is_nil(Map.get(params, :scope)) -> state.resume_prompt
       Map.get(params, :first_chunk, false) -> state.resume_prompt
+      match?({:sweep, _}, Map.get(params, :scope)) -> state.resume_prompt
       true -> nil
     end
   end
