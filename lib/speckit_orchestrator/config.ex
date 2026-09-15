@@ -124,6 +124,24 @@ defmodule SpeckitOrchestrator.Config do
   @spec budget_usd() :: number()
   def budget_usd, do: get(:budget_usd, 25.0)
 
+  @doc """
+  Wall-clock deadline (ms) for one harness session — a whole phase, or one
+  implement chunk — enforced inside the action by `PhaseSession`. The outer
+  `AgentServer.call` timeout is always derived from it
+  (`PhaseSession.call_timeout/1`), so the deadline is the governing guard and
+  the call can never fire first.
+  """
+  @spec phase_timeout() :: pos_integer()
+  def phase_timeout, do: get(:phase_timeout, :timer.minutes(50))
+
+  @doc """
+  Per-task deadline extension (ms) for an implement chunk — see
+  `Chunking.deadline_ms/2`: `max(phase_timeout(), per_task * task_count)`.
+  """
+  @spec implement_chunk_timeout_per_task() :: pos_integer()
+  def implement_chunk_timeout_per_task,
+    do: get(:implement_chunk_timeout_per_task, :timer.minutes(4))
+
   @doc "Turn cap for the long-running implement phase."
   @spec implement_max_turns() :: pos_integer()
   def implement_max_turns, do: get(:implement_max_turns, 200)

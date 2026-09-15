@@ -29,6 +29,7 @@ defmodule SpeckitOrchestrator.AnalyzeRunner do
     Cost,
     Ledger,
     PhaseResult,
+    PhaseSession,
     PhaseStep,
     Prompts,
     Remediation,
@@ -247,7 +248,10 @@ defmodule SpeckitOrchestrator.AnalyzeRunner do
           source: "/analyze_runner"
         )
 
-      {:ok, agent} = AgentServer.call(ctx.pid, signal, ctx.timeout)
+      # `ctx.timeout` is the session deadline `RunAutoRemediation` enforces
+      # through `PhaseSession` (as `Config.phase_timeout/0`); the call waits
+      # strictly longer so that deadline, not this call, ends a runaway session.
+      {:ok, agent} = AgentServer.call(ctx.pid, signal, PhaseSession.call_timeout(ctx.timeout))
       entry = List.first(agent.state.history) || %{}
       outcome = Map.get(entry, :outcome, agent.state.last_outcome)
       cost = Map.get(entry, :cost, 0.0)

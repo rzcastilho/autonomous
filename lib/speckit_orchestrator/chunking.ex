@@ -196,6 +196,29 @@ defmodule SpeckitOrchestrator.Chunking do
   end
 
   @doc """
+  Wall-clock deadline (ms) for one session over `scope`:
+  `max(Config.phase_timeout(), Config.implement_chunk_timeout_per_task() * n)`
+  where `n` is the number of tasks the session is handed — the task-phase's
+  tasks, the sweep's leftovers, or, for the unstructured `:whole_list`
+  fallback, every task still unchecked in `plan`.
+
+  A flat per-phase ceiling failed live (mod-player 003): a 6-task setup phase
+  finished in 10 min, the 23-task foundational phase that followed needed 51
+  and was cut at 50 — one minute short of its last task. The floor keeps
+  small scopes generous; the per-task term lets a dense scope earn the time
+  it needs instead of being judged by the flat number.
+  """
+  @spec deadline_ms(SpeckitOrchestrator.ChunkScope.t(), TaskPlan.t()) :: pos_integer()
+  def deadline_ms(scope, %TaskPlan{} = plan) do
+    n = scope_task_count(scope, plan)
+    max(Config.phase_timeout(), Config.implement_chunk_timeout_per_task() * n)
+  end
+
+  defp scope_task_count({:task_phase, %TaskPhase{tasks: tasks}}, _plan), do: length(tasks)
+  defp scope_task_count({:sweep, tasks}, _plan), do: length(tasks)
+  defp scope_task_count(:whole_list, plan), do: length(TaskPlan.incomplete(plan))
+
+  @doc """
   Operator-facing sentence for a terminal failure `reason()` (SC-002,
   contracts/chunking.md §3). The four reasons are exhaustive by construction —
   `reason()`'s union has no other member, so there is no catch-all clause here

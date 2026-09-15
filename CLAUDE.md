@@ -35,12 +35,27 @@ orchestrator drove the whole 7-feature backlog end-to-end:
   spend stayed within budget + one reservation — §7.2 trap 3.
 
 Driving these runs surfaced **seven orchestrator fixes** (all on `origin`): action
-timeout; clarify materiality test; clarify gate marker line-anchored; clarify
+timeout (since superseded — see below); clarify materiality test; clarify gate marker line-anchored; clarify
 gate scans `spec.md` for unresolved `## NEEDS HUMAN`; commit worktree before
 teardown; plan/tasks non-interactive Bash + `plan_stack`; durable transcripts;
 and analyze parser salvages truncated findings JSON. Ops guide: `docs/runbook.md`;
 workflow diagram: `docs/workflow.md`; validation protocol:
 `docs/phase7-ledgerlite-runbook.md`.
+
+**Session deadlines (mod-player 003 post-mortem).** The wall clock for a
+harness session lives in `PhaseSession.reduce/2`, *inside* the action: it is
+the only place a runaway `claude` subprocess can be shut down cleanly (the
+SDK transport is linked, not exit-trapping — an outside kill orphans the CLI).
+Phases get `Config.phase_timeout/0`; implement chunks scale up per task
+(`Chunking.deadline_ms/2`). Every `AgentServer.call` that drives a session
+waits `PhaseSession.call_timeout/1` (deadline + grace) so the deadline always
+fires first. `config :jido_action` `default_timeout`/`default_max_retries` are
+**both 0 on purpose** — the library timeout orphaned the CLI and its retry
+silently re-ran a whole phase, then `AgentServer.call` returned `{:ok, agent}`
+with stale state; `PhaseStep.ensure_recorded/3` now fails a phase whose call
+came back without a new `history` entry. Each implement chunk session is its
+own `:implement_chunk` phase-attempt row (no cost entry — the `:implement`
+roll-up carries the step's actual summed cost).
 
 ## Toolchain — read first
 

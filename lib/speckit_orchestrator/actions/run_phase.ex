@@ -22,13 +22,13 @@ defmodule SpeckitOrchestrator.Actions.RunPhase do
       ledger: [type: :any, default: nil]
     ]
 
-  alias SpeckitOrchestrator.{Cost, Ledger, PhaseResult}
+  alias SpeckitOrchestrator.{Config, Cost, Ledger, PhaseSession}
 
   @impl true
   def run(%{request: request, phase: phase} = params, _context) do
     case Jido.Harness.run_request(:claude, request, []) do
       {:ok, stream} ->
-        result = PhaseResult.reduce(stream)
+        result = PhaseSession.reduce(stream, Config.phase_timeout())
         {amount, source} = Cost.for_phase(phase, result)
         record_cost(Map.get(params, :ledger), amount)
 

@@ -900,9 +900,22 @@ the console's `/runs/:run_id`), fix the cause, and re-run (`resolve/1` first
 if a worktree/branch is in the way).
 
 Common `:failed` / no-output causes seen in practice:
-- **Phase action timed out.** Long phases (implement) need headroom;
-  `config :jido_action, default_timeout` governs the action, kept below
-  `FeatureRunner`'s outer call timeout.
+- **A session hit its deadline.** Every harness session (a phase, or one
+  implement chunk) runs under a wall-clock deadline enforced *inside* the
+  action by `PhaseSession`: `config :phase_timeout` (default 50 min) for a
+  phase; for an implement chunk `max(phase_timeout,
+  implement_chunk_timeout_per_task × tasks in the chunk)` (default 4 min/task,
+  so a 23-task task-phase gets ~92 min). On expiry the CLI subprocess is shut
+  down cleanly and the session folds to `error: {:deadline_exceeded, ms}` —
+  for a chunk that counts as exhaustion (progress so far stands, the same
+  task-phase is re-dispatched or judged stuck), for any other phase the
+  feature fails with that reason. Each chunk session is its own
+  `implement_chunk` row in the run's phase attempts, so the one that ran out
+  of time is visible by name. `config :jido_action` guards are deliberately
+  off (`default_timeout: 0, default_max_retries: 0`) — the library timeout
+  orphaned the CLI and silently re-ran the whole phase; see the comment in
+  `config/config.exs`. If a dense task-phase legitimately needs longer,
+  raise `implement_chunk_timeout_per_task`.
 - **Bash script denied.** The Spec Kit phase scripts run under Bash; the target
   pack's `settings.json` must allow `Bash`, and the phase must pre-approve it
   (specify/plan/tasks/implement/converge do — analyze is read-only by design).

@@ -23,8 +23,11 @@ defmodule SpeckitOrchestrator.ChunkRunner do
   alias SpeckitOrchestrator.{
     Chunking,
     Config,
+    Cost,
     Ledger,
     PhaseResult,
+    PhaseSession,
+    PhaseStep,
     Store,
     TaskPhaseRef,
     TaskPlan,
@@ -32,11 +35,17 @@ defmodule SpeckitOrchestrator.ChunkRunner do
     Worktree
   }
 
+  alias SpeckitOrchestrator.Store.Writer
+
   @type opts :: %{
           required(:pid) => pid(),
           required(:feature) => SpeckitOrchestrator.Feature.t(),
           required(:worktree) => Worktree.t() | nil,
           required(:layout) => SpeckitOrchestrator.Layout.t() | nil,
+          # The per-session deadline floor (`Config.phase_timeout/0` unless the
+          # operator overrode `:phase_timeout`); each chunk's own deadline is
+          # `Chunking.deadline_ms/2`, and the `AgentServer.call` timeout is
+          # derived from that (`PhaseSession.call_timeout/1`) — never this value.
           required(:timeout) => timeout(),
           required(:step) => pos_integer(),
           required(:ledger) => pid() | nil,
@@ -79,6 +88,7 @@ defmodule SpeckitOrchestrator.ChunkRunner do
       ctx
       |> Map.put(:start_ref, base_ref(ctx))
       |> Map.put(:baseline_sessions_used, sessions_used)
+      |> Map.put(:cost_at_start, agent.state.cost_total || 0.0)
 
     loop(ctx, state, %{}, agent)
   end
@@ -160,7 +170,7 @@ defmodule SpeckitOrchestrator.ChunkRunner do
   defp loop(ctx, state, signals, agent) do
     case Chunking.next(state, signals) do
       {:dispatch, scope, state1} ->
-        {agent1, next_signals} = dispatch(ctx, state1, scope)
+        {agent1, next_signals} = dispatch(ctx, state1, scope, agent)
         loop(ctx, state1, next_signals, agent1)
 
       {:skip, _tp, state1} ->
@@ -179,21 +189,27 @@ defmodule SpeckitOrchestrator.ChunkRunner do
 
   # ---- one chunk session ------------------------------------------------------
 
-  defp dispatch(ctx, state1, scope) do
+  defp dispatch(ctx, state1, scope, agent0) do
     before_count = TaskPlan.completed_tasks(state1.plan)
     first_chunk? = state1.sessions_used == ctx.baseline_sessions_used + 1
     meta = chunk_meta(ctx, state1, scope)
+    # Sized per scope (Chunking.deadline_ms/2), never the flat `ctx.timeout`
+    # — the operator's `:phase_timeout` override still lifts the floor
+    # through `Config.phase_timeout/0`'s caller, so honour it as a minimum.
+    deadline_ms = max(Chunking.deadline_ms(scope, state1.plan), ctx.timeout)
+    started_at = DateTime.utc_now()
 
     Telemetry.chunk_span()
     |> :telemetry.span(meta, fn ->
       signal =
         Signal.new!(
           "phase.run",
-          %{phase: :implement, scope: scope, first_chunk: first_chunk?},
+          %{phase: :implement, scope: scope, first_chunk: first_chunk?, deadline_ms: deadline_ms},
           source: "/chunk_runner"
         )
 
-      {:ok, agent1} = AgentServer.call(ctx.pid, signal, ctx.timeout)
+      {:ok, agent1} = AgentServer.call(ctx.pid, signal, PhaseSession.call_timeout(deadline_ms))
+      agent1 = PhaseStep.ensure_recorded(agent0, agent1, :implement)
       result = agent1.state.last_result
 
       {outcome, transient?} = classify_outcome(result)
@@ -202,6 +218,7 @@ defmodule SpeckitOrchestrator.ChunkRunner do
       progress? = after_count > before_count
 
       maybe_commit_boundary(ctx, scope, outcome, after_plan)
+      record_chunk_attempt(ctx, state1, scope, outcome, started_at, agent1)
 
       signals = %{
         outcome: outcome,
@@ -267,6 +284,64 @@ defmodule SpeckitOrchestrator.ChunkRunner do
     end
   end
 
+  # ---- per-chunk store record --------------------------------------------------
+
+  # One `phase_attempt` row per dispatched chunk session (`phase:
+  # :implement_chunk`, ordinal = the run-wide `sessions_used`, which is unique
+  # per feature run and survives resumes), so a chunk that fails, times out or
+  # stalls is visible post-mortem — the roll-up alone told an operator nothing
+  # about *which* session of a 7-chunk implement went wrong (mod-player 003:
+  # no implement row at all until the whole step failed). Deliberately writes
+  # no `cost_entry`: the roll-up carries the step's actual summed cost (see
+  # `rollup/4`) and is the one row that feeds the run's spend, so per-chunk
+  # entries would double-count. The chunk's own cost sits on its row, and its
+  # transcript is stored under its `attempt_id`, for inspection only.
+  defp record_chunk_attempt(%{run_key: run_key} = ctx, state1, scope, outcome, started_at, agent)
+       when not is_nil(run_key) do
+    result = agent.state.last_result
+    ended_at = DateTime.utc_now()
+    {cost_amount, cost_kind} = Cost.for_phase(:implement, result || %PhaseResult{})
+    {scope_atom, ordinal, total, number, title, remaining} = scope_fields(scope, state1.plan)
+
+    _ =
+      Writer.record_phase_attempt(run_key, %{
+        attempt: %{
+          feature_id: ctx.feature.id,
+          phase: :implement_chunk,
+          ordinal: state1.sessions_used,
+          step: ctx.step,
+          label: chunk_label(scope_atom, ordinal, total, title),
+          substep: %{
+            scope: scope_atom,
+            ordinal: ordinal,
+            total: total,
+            number: number,
+            title: title,
+            remaining: remaining,
+            attempt: state1.attempt
+          },
+          started_at: started_at,
+          ended_at: ended_at,
+          duration_ms: DateTime.diff(ended_at, started_at, :millisecond),
+          outcome: outcome,
+          model: Config.model_for(:implement),
+          cost_usd: cost_amount,
+          cost_kind: cost_kind,
+          session_id: agent.state.session_id,
+          error: result && result.error
+        },
+        transcript: result && result.final_text
+      })
+
+    :ok
+  end
+
+  defp record_chunk_attempt(_ctx, _state1, _scope, _outcome, _started_at, _agent), do: :ok
+
+  defp chunk_label(:task_phase, ordinal, total, title), do: "chunk #{ordinal}/#{total} #{title}"
+  defp chunk_label(:sweep, _ordinal, _total, _title), do: "chunk sweep"
+  defp chunk_label(:whole_list, _ordinal, _total, _title), do: "chunk whole-list"
+
   # ---- per-task-phase boundary commit (FR-023a) ------------------------------
 
   defp maybe_commit_boundary(%{worktree: nil}, _scope, _outcome, _after_plan), do: :ok
@@ -289,7 +364,7 @@ defmodule SpeckitOrchestrator.ChunkRunner do
       RunFeaturePhase.missing_implement_artifact(ctx.worktree, since: ctx[:start_ref])
 
     signals = if artifact, do: %{missing_artifact: artifact}, else: %{}
-    result = rollup(:ok, signals, nil)
+    result = rollup(:ok, signals, nil, step_cost(ctx, agent))
 
     patch(agent,
       last_outcome: :ok,
@@ -304,8 +379,8 @@ defmodule SpeckitOrchestrator.ChunkRunner do
   # existing `FeatureAgent` field the runner reads to short-circuit straight
   # to the specific SC-002 reason (or the breaker halt) instead of the
   # generic `{:implement, :error}` `Pipeline.next/3` would otherwise produce.
-  defp halt(_ctx, agent) do
-    result = rollup(:halted, %{}, :breaker)
+  defp halt(ctx, agent) do
+    result = rollup(:halted, %{}, :breaker, step_cost(ctx, agent))
 
     patch(agent,
       last_outcome: :error,
@@ -314,8 +389,8 @@ defmodule SpeckitOrchestrator.ChunkRunner do
     )
   end
 
-  defp fail(_ctx, agent, reason) do
-    result = rollup(:error, %{}, reason)
+  defp fail(ctx, agent, reason) do
+    result = rollup(:error, %{}, reason, step_cost(ctx, agent))
 
     patch(agent,
       last_outcome: :error,
@@ -328,11 +403,28 @@ defmodule SpeckitOrchestrator.ChunkRunner do
 
   # The roll-up becomes this feature run's durable `:implement` phase attempt
   # (018) — the caller (`FeatureRunner`) persists `agent.state.last_result`
-  # via `Store.Writer.record_phase_attempt/2`. Each intermediate chunk's own
-  # result is not separately persisted (018 — only the roll-up matters to the
-  # pipeline; per-chunk transcripts were a pre-018 worktree-only convenience).
-  defp rollup(status, signals, reason) do
-    %PhaseResult{status: status, final_text: rollup_text(status, signals, reason), error: reason}
+  # via `Store.Writer.record_phase_attempt/2`. It carries the step's **actual**
+  # summed cost (every chunk's `Cost.for_phase/2` amount, as accumulated on
+  # the agent's `cost_total`), so `Cost.for_phase(:implement, rollup)` records
+  # it as `:actual` instead of falling back to the flat per-phase estimate —
+  # an implement that ran 7 sessions used to be booked at the price of one.
+  # Each chunk's own row is `record_chunk_attempt/6`, without a cost entry.
+  defp rollup(status, signals, reason, cost_usd) do
+    %PhaseResult{
+      status: status,
+      final_text: rollup_text(status, signals, reason),
+      error: reason,
+      cost_usd: cost_usd
+    }
+  end
+
+  # `nil` (not `0.0`) when nothing was spent, so `Cost.for_phase/2` keeps its
+  # estimate fallback for a step that never dispatched a session.
+  defp step_cost(ctx, agent) do
+    case (agent.state.cost_total || 0.0) - Map.get(ctx, :cost_at_start, 0.0) do
+      spent when spent > 0 -> spent
+      _ -> nil
+    end
   end
 
   defp rollup_text(:ok, %{missing_artifact: artifact}, _reason),

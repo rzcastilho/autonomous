@@ -330,4 +330,39 @@ defmodule SpeckitOrchestrator.PhaseStepTest do
       assert length(agent.state.history) == 1
     end
   end
+
+  describe "ensure_recorded/3 — the swallowed-failure guard" do
+    alias SpeckitOrchestrator.PhaseResult
+
+    defp agent_with(history, extra \\ %{}) do
+      %{state: Map.merge(%{history: history, last_outcome: :ok, last_result: nil}, extra)}
+    end
+
+    test "an agent whose history grew is returned untouched" do
+      before = agent_with([])
+      after_agent = agent_with([%{phase: :plan, outcome: :ok}], %{last_outcome: :ok})
+
+      assert PhaseStep.ensure_recorded(before, after_agent, :plan) == after_agent
+    end
+
+    test "an unchanged history is patched to a loud, non-transient error instead of stale :ok" do
+      # `AgentServer.call` returns `{:ok, agent}` even when the action never
+      # ran to completion (probed: a timed-out action leaves the previous
+      # phase's `:ok` in place). Trusting it would advance past a phase that
+      # never happened.
+      stale =
+        agent_with([%{phase: :specify, outcome: :ok}], %{last_outcome: :ok, phase: :specify})
+
+      patched = PhaseStep.ensure_recorded(stale, stale, :plan)
+
+      assert patched.state.last_outcome == :error
+      assert patched.state.phase == :plan
+
+      assert %PhaseResult{status: :error, error: {:no_phase_result, :plan}} =
+               patched.state.last_result
+
+      refute PhaseResult.transient?(patched.state.last_result)
+      assert [%{phase: :plan, outcome: :error} | _] = patched.state.history
+    end
+  end
 end
