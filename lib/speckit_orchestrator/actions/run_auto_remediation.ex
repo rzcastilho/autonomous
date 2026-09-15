@@ -26,7 +26,7 @@ defmodule SpeckitOrchestrator.Actions.RunAutoRemediation do
       attempt: [type: :pos_integer, required: true]
     ]
 
-  alias SpeckitOrchestrator.{Config, Cost, Ledger, PhaseRequest, PhaseResult}
+  alias SpeckitOrchestrator.{Config, Cost, Ledger, PhaseRequest, PhaseResult, PhaseSession}
 
   @impl true
   def run(%{prompt: prompt, model: model, attempt: attempt}, context) do
@@ -41,7 +41,7 @@ defmodule SpeckitOrchestrator.Actions.RunAutoRemediation do
 
     case Jido.Harness.run_request(:claude, request, []) do
       {:ok, stream} ->
-        result = PhaseResult.reduce(stream)
+        result = PhaseSession.reduce(stream, Config.phase_timeout())
         outcome = outcome_of(result)
         {amount, _source} = Cost.for_phase(:auto_remediation, result)
         record_cost(state.ledger, amount)

@@ -36,6 +36,11 @@ defmodule SpeckitOrchestrator.PhaseResult do
 
   @type tool_event :: %{kind: :call | :result, payload: map()}
 
+  # `subtype` of a session the orchestrator cut at its own deadline
+  # (`deadline_exceeded/2`) — namespaced so it can never collide with a subtype
+  # the harness itself emits (`error_max_turns`, …).
+  @deadline_subtype "orchestrator_deadline"
+
   @type t :: %__MODULE__{
           final_text: String.t(),
           session_id: String.t() | nil,
@@ -115,7 +120,44 @@ defmodule SpeckitOrchestrator.PhaseResult do
   """
   @spec exhausted?(t() | nil) :: boolean()
   def exhausted?(%__MODULE__{subtype: "error_max_turns"}), do: true
+  def exhausted?(%__MODULE__{subtype: @deadline_subtype}), do: true
   def exhausted?(_), do: false
+
+  @doc """
+  True when the session was cut by the orchestrator's own wall-clock deadline
+  (`PhaseSession.reduce/2`) rather than by anything the harness reported.
+  Classified `exhausted?/1` too — a session that ran out of *time* is, to the
+  chunk loop, the same shape as one that ran out of *turns*: progress made so
+  far stands, and the scope is re-dispatched (or judged stuck) by the same
+  no-progress rule, never retried as a server drop.
+  """
+  @spec deadline_exceeded?(t() | nil) :: boolean()
+  def deadline_exceeded?(%__MODULE__{subtype: @deadline_subtype}), do: true
+  def deadline_exceeded?(_), do: false
+
+  @doc """
+  Fold `partial` (whatever the cut stream had produced — `nil` when nothing
+  could be salvaged) into a deadline result: `status: :error`, the
+  orchestrator's own `subtype`, and `error: {:deadline_exceeded, ms}`. Cost,
+  session id, tool events and text seen before the cut are preserved so the
+  Ledger and the transcript still account for the partial session.
+  """
+  @spec deadline_exceeded(t() | nil, pos_integer()) :: t()
+  def deadline_exceeded(partial, deadline_ms) do
+    base = partial || %__MODULE__{}
+
+    %{
+      base
+      | status: :error,
+        subtype: @deadline_subtype,
+        error: {:deadline_exceeded, deadline_ms},
+        final_text:
+          String.trim(
+            (base.final_text || "") <>
+              "\n\n[orchestrator] session cut at its #{div(deadline_ms, 60_000)} min deadline"
+          )
+    }
+  end
 
   @doc """
   True when an **`:ok`** session ended with tool calls that never returned a

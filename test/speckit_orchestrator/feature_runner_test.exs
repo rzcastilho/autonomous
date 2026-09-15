@@ -32,6 +32,13 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
       scenario = Application.get_env(:speckit_orchestrator, :test_fake_scenario, :happy)
 
       cond do
+        # A session that never finishes: emits nothing and, like the SDK's
+        # `receive_next`, only halts once its (linked) transport is gone. The
+        # transport pid is reported to the test so it can assert the deadline
+        # cut shut it down through `terminate/2`.
+        scenario == :stuck_session ->
+          stuck_session_stream(Application.get_env(:speckit_orchestrator, :test_stuck_notify))
+
         scenario == :transient_once and first_call?() ->
           transient_drop_messages()
 
@@ -94,6 +101,23 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
             }
           ]
       end
+    end
+
+    defp stuck_session_stream(notify) do
+      Stream.resource(
+        fn ->
+          {:ok, transport} = Agent.start_link(fn -> :transport end)
+          send(notify, {:fake_transport, transport})
+          transport
+        end,
+        fn transport ->
+          receive do
+          after
+            20 -> if Process.alive?(transport), do: {[], transport}, else: {:halt, transport}
+          end
+        end,
+        fn _ -> :ok end
+      )
     end
 
     defp remediation_prompt?(prompt), do: String.contains?(prompt, "Remediation for feature")
@@ -544,9 +568,24 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
     wt = scaffolded_worktree()
 
     File.mkdir_p!(Path.join(wt.path, "specs/001-fake"))
-    File.write!(Path.join(wt.path, "specs/001-fake/tasks.md"), "# Tasks\n\n- [ ] T001 Do the thing\n")
+
+    File.write!(
+      Path.join(wt.path, "specs/001-fake/tasks.md"),
+      "# Tasks\n\n- [ ] T001 Do the thing\n"
+    )
+
     git!(wt.path, ["add", "-A"])
-    git!(wt.path, ["-c", "user.name=t", "-c", "user.email=t@e.com", "commit", "-q", "-m", "seed tasks.md"])
+
+    git!(wt.path, [
+      "-c",
+      "user.name=t",
+      "-c",
+      "user.email=t@e.com",
+      "commit",
+      "-q",
+      "-m",
+      "seed tasks.md"
+    ])
 
     run_key = open_store_run()
 
@@ -1272,11 +1311,21 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
     assert_received {:tele, [:speckit, :phase, :stop], %{phase: :plan, step: 3}}
   end
 
-  test "a phase call timeout marks the feature :failed" do
-    # 1ms timeout forces the call to die; the runner catches and fails the feature.
-    result = FeatureRunner.run(feature(), phase_timeout: 1, notify: self())
+  test "a session past its deadline is cut cleanly and marks the feature :failed" do
+    # Regression for mod-player 003: the old guard was an outer call timeout
+    # that abandoned the session — the CLI ran on as an orphan for an hour.
+    # The deadline now lives inside the action (`PhaseSession`), shuts the
+    # transport down through `terminate/2`, and folds to a visible reason.
+    Application.put_env(:speckit_orchestrator, :test_fake_scenario, :stuck_session)
+    Application.put_env(:speckit_orchestrator, :test_stuck_notify, self())
+    on_exit(fn -> Application.delete_env(:speckit_orchestrator, :test_stuck_notify) end)
+
+    result = FeatureRunner.run(feature(), phase_timeout: 200, notify: self())
+
     assert result.status == :failed
     assert_received {:feature_finished, "001", :failed, _}
+    assert_received {:fake_transport, transport}
+    refute Process.alive?(transport)
   end
 
   test "resume_phase stays fixed at the anchor phase as phase advances" do

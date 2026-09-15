@@ -20,7 +20,7 @@ defmodule SpeckitOrchestrator.Actions.RunRemediation do
     description: "Run the pre-phase remediation step and record the result into agent state",
     schema: []
 
-  alias SpeckitOrchestrator.{Config, Cost, Ledger, PhaseRequest, PhaseResult}
+  alias SpeckitOrchestrator.{Config, Cost, Ledger, PhaseRequest, PhaseResult, PhaseSession}
 
   @impl true
   def run(_params, context) do
@@ -42,7 +42,7 @@ defmodule SpeckitOrchestrator.Actions.RunRemediation do
 
     case Jido.Harness.run_request(:claude, request, []) do
       {:ok, stream} ->
-        result = PhaseResult.reduce(stream)
+        result = PhaseSession.reduce(stream, Config.phase_timeout())
         outcome = outcome_of(result)
         {amount, _source} = Cost.for_phase(:remediation, result)
         record_cost(state.ledger, amount)

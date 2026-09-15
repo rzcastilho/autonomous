@@ -535,4 +535,40 @@ defmodule SpeckitOrchestrator.ChunkingTest do
                {:failed, {:unchecked_tasks, ["T102"]}, %{state2 | plan: plan_partial}}
     end
   end
+
+  describe "deadline_ms/2" do
+    test "a small scope gets the flat phase-timeout floor" do
+      plan = make_plan([make_task_phase(1, 1)])
+      {:task_phase, tp} = {:task_phase, hd(plan.task_phases)}
+
+      assert Chunking.deadline_ms({:task_phase, tp}, plan) == Config.phase_timeout()
+    end
+
+    test "a dense task-phase earns per-task time above the floor" do
+      # Sized from the live failure: 23 tasks under a flat 50-min ceiling were
+      # cut one minute short of the last task.
+      plan = make_plan([make_task_phase(1, 23)])
+      tp = hd(plan.task_phases)
+
+      assert Chunking.deadline_ms({:task_phase, tp}, plan) ==
+               23 * Config.implement_chunk_timeout_per_task()
+
+      assert Chunking.deadline_ms({:task_phase, tp}, plan) > Config.phase_timeout()
+    end
+
+    test "the sweep is sized by its leftovers, the unstructured fallback by every unchecked task" do
+      plan = make_plan([make_task_phase(1, 30), make_task_phase(2, 2, true)], false)
+      leftovers = TaskPlan.incomplete(plan)
+      assert length(leftovers) == 30
+
+      assert Chunking.deadline_ms({:sweep, leftovers}, plan) ==
+               30 * Config.implement_chunk_timeout_per_task()
+
+      assert Chunking.deadline_ms(:whole_list, plan) ==
+               30 * Config.implement_chunk_timeout_per_task()
+
+      assert Chunking.deadline_ms({:sweep, Enum.take(leftovers, 1)}, plan) ==
+               Config.phase_timeout()
+    end
+  end
 end

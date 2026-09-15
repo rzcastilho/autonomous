@@ -35,7 +35,11 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhase do
     schema: [
       phase: [type: :atom, required: true],
       scope: [type: :any, required: false, default: nil],
-      first_chunk: [type: :boolean, required: false, default: false]
+      first_chunk: [type: :boolean, required: false, default: false],
+      # Wall-clock deadline for this one session (ms), enforced by
+      # `PhaseSession.reduce/2`; the caller sizes it (`Chunking.deadline_ms/2`
+      # for a chunk, the phase timeout otherwise). `nil` = `Config.phase_timeout/0`.
+      deadline_ms: [type: {:or, [nil, :pos_integer]}, required: false, default: nil]
     ]
 
   require Logger
@@ -43,10 +47,12 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhase do
   alias SpeckitOrchestrator.{
     AnalyzeResult,
     ArtifactSubstance,
+    Config,
     Cost,
     Ledger,
     PhaseRequest,
     PhaseResult,
+    PhaseSession,
     SpecDir
   }
 
@@ -89,7 +95,9 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhase do
 
     case Jido.Harness.run_request(:claude, request, []) do
       {:ok, stream} ->
-        result = PhaseResult.reduce(stream)
+        result =
+          PhaseSession.reduce(stream, Map.get(params, :deadline_ms) || Config.phase_timeout())
+
         {outcome, signals} = classify(phase, result, state, scope)
         signals = put_artifact_absent_at_start(signals, artifact_absent?)
         {amount, _source} = Cost.for_phase(phase, result)
@@ -265,7 +273,9 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhase do
   end
 
   defp put_artifact_absent_at_start(signals, nil), do: signals
-  defp put_artifact_absent_at_start(signals, absent?), do: Map.put(signals, :artifact_absent_at_start?, absent?)
+
+  defp put_artifact_absent_at_start(signals, absent?),
+    do: Map.put(signals, :artifact_absent_at_start?, absent?)
 
   # ---- artifact gate ------------------------------------------------------
 

@@ -28,6 +28,7 @@ defmodule SpeckitOrchestrator.FeatureRunner do
     Describe,
     FeatureAgent,
     PhaseResult,
+    PhaseSession,
     PhaseStep,
     Pipeline,
     Remediation,
@@ -38,11 +39,12 @@ defmodule SpeckitOrchestrator.FeatureRunner do
   alias SpeckitOrchestrator.Remediation.Settings
   alias SpeckitOrchestrator.Store.Writer
 
-  # Kept strictly larger than the jido_action `:default_timeout` (config.exs, 45
-  # min) so the *action* execution timeout is the governing guard, not this outer
-  # AgentServer.call — otherwise the call fires first and the phase is marked
-  # :failed while the action is still legitimately running.
-  @default_phase_timeout :timer.minutes(50)
+  # The per-session wall-clock deadline (`Config.phase_timeout/0`), enforced
+  # *inside* each phase action by `PhaseSession` — which is the only place a
+  # runaway CLI can be shut down cleanly. Every `AgentServer.call` below waits
+  # `PhaseSession.call_timeout/1` (deadline + grace), so the deadline is the
+  # governing guard and the call never fires first. Implement chunks scale
+  # their own deadline from this floor (`Chunking.deadline_ms/2`).
 
   @type terminal :: :done | :escalated | :halted | :failed
   @type result :: %{
@@ -60,7 +62,8 @@ defmodule SpeckitOrchestrator.FeatureRunner do
     * `:ledger` — `Ledger` server for cost recording.
     * `:notify` — an arity-3 fun `(id, status, reason)` or a pid (sent
       `{:feature_finished, id, status, reason}`).
-    * `:phase_timeout` — per-phase `call` timeout (default 45 min).
+    * `:phase_timeout` — per-session deadline in ms (default
+      `Config.phase_timeout/0`, 50 min); implement chunks scale up from it.
     * `:agent_id` — override the agent id.
     * `:start_phase` — phase to begin the loop at (default `Pipeline.first()`),
       for resuming a halted/escalated feature at its stopped phase.
@@ -101,7 +104,7 @@ defmodule SpeckitOrchestrator.FeatureRunner do
   def run(feature, opts \\ []) do
     worktree = Keyword.get(opts, :worktree)
     ledger = Keyword.get(opts, :ledger)
-    timeout = Keyword.get(opts, :phase_timeout, @default_phase_timeout)
+    timeout = Keyword.get(opts, :phase_timeout, Config.phase_timeout())
     notify = Keyword.get(opts, :notify)
     start_phase = Keyword.get(opts, :start_phase, Pipeline.first())
     resume_prompt = Keyword.get(opts, :resume_prompt)
@@ -240,7 +243,9 @@ defmodule SpeckitOrchestrator.FeatureRunner do
     started_at = DateTime.utc_now()
 
     :telemetry.span([:speckit, :phase], meta, fn ->
-      {:ok, agent} = call(pid, "remediation.run", %{}, timeout)
+      {:ok, %{agent: before}} = AgentServer.state(pid)
+      {:ok, agent} = call(pid, "remediation.run", %{}, PhaseSession.call_timeout(timeout))
+      agent = PhaseStep.ensure_recorded(before, agent, :remediation)
       entry = List.first(agent.state.history) || %{}
       record_attempt(run_key, feature, :remediation, 0, 1, started_at, agent, nil, nil)
 
@@ -445,6 +450,7 @@ defmodule SpeckitOrchestrator.FeatureRunner do
   defp run_step(pid, feature, :implement, step, timeout, ledger, worktree, layout, step_opts) do
     chunk_opts =
       Map.take(step_opts, [:start_task_phase, :reset_implement_sessions, :run_key, :stack_base])
+
     run_chunked_phase(pid, feature, step, timeout, ledger, worktree, layout, chunk_opts)
   end
 

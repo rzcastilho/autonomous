@@ -14,14 +14,16 @@ defmodule SpeckitOrchestrator.PhaseStep do
 
   alias Jido.{AgentServer, Signal}
 
-  alias SpeckitOrchestrator.{Config, Feature, PhaseResult, Pipeline}
+  alias SpeckitOrchestrator.{Config, Feature, PhaseResult, PhaseSession, Pipeline}
 
   @doc """
   Run `phase` for `feature` via the agent at `pid`, retrying transient
   failures. Options:
 
     * `:step` (required) — the pipeline step number, for the span meta.
-    * `:timeout` (required) — the `AgentServer.call/3` timeout.
+    * `:timeout` (required) — the session's wall-clock **deadline** (ms),
+      enforced inside the action by `PhaseSession`; the `AgentServer.call/3`
+      timeout is derived from it (`PhaseSession.call_timeout/1`).
     * `:retries` — transient-retry budget (default `Config.phase_max_retries/0`).
     * `:span_meta` — extra keys merged into the `[:speckit, :phase]` span
       meta (e.g. `%{attempt:, limit:}`).
@@ -93,7 +95,17 @@ defmodule SpeckitOrchestrator.PhaseStep do
       |> Map.merge(span_meta)
 
     :telemetry.span([:speckit, :phase], meta, fn ->
-      {:ok, agent} = call(pid, "phase.run", %{phase: phase}, timeout)
+      {:ok, %{agent: before}} = AgentServer.state(pid)
+
+      {:ok, agent} =
+        call(
+          pid,
+          "phase.run",
+          %{phase: phase, deadline_ms: timeout},
+          PhaseSession.call_timeout(timeout)
+        )
+
+      agent = ensure_recorded(before, agent, phase)
       entry = List.first(agent.state.history) || %{}
       Logger.info("feature #{feature.id} phase #{phase} -> #{inspect(Map.get(entry, :outcome))}")
 
@@ -104,5 +116,50 @@ defmodule SpeckitOrchestrator.PhaseStep do
 
   defp call(pid, type, data, timeout) do
     AgentServer.call(pid, Signal.new!(type, data, source: "/runner"), timeout)
+  end
+
+  @doc """
+  Guard against a phase call that returned without recording anything.
+
+  `Jido.AgentServer.call/3` replies `{:ok, agent}` even when the routed
+  action never produced a state update — an action that raised, or that
+  jido_action's executor turned into an error, surfaces only as a logged
+  `Directive.Error`, and the agent comes back with the **previous** phase's
+  `last_outcome`/`last_result` still in place. Read naively, a stale `:ok`
+  would advance the pipeline past a phase that never ran (probed live: a
+  timed-out-then-retried action returns exactly this shape).
+
+  Every phase action appends one `history` entry on every path (success,
+  harness error, gate divert), so "history did not grow" is the mechanical
+  signature of a swallowed failure. When it fires the agent is patched to an
+  unambiguous error result — `{:no_phase_result, phase}`, non-transient — so
+  the caller fails the phase loudly instead of trusting the stale state.
+  """
+  @spec ensure_recorded(struct(), struct(), atom()) :: struct()
+  def ensure_recorded(%{state: before}, %{state: after_state} = agent, phase) do
+    if length(after_state.history || []) > length(before.history || []) do
+      agent
+    else
+      Logger.error(
+        "phase #{phase} call returned without recording a result — " <>
+          "the action did not run to completion; failing the phase rather than trusting stale state"
+      )
+
+      result = %PhaseResult{status: :error, error: {:no_phase_result, phase}}
+
+      %{
+        agent
+        | state:
+            Map.merge(after_state, %{
+              phase: phase,
+              last_outcome: :error,
+              last_signals: %{},
+              last_result: result,
+              history: [
+                %{phase: phase, outcome: :error, error: result.error} | after_state.history || []
+              ]
+            })
+      }
+    end
   end
 end

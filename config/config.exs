@@ -54,14 +54,30 @@ config :jido_harness,
   default_provider: :claude
 
 # ---------------------------------------------------------------------------
-# jido_action execution timeout. The default is 30s (jido_action Exec), which
-# kills a phase action mid-CLI-run — Spec Kit phases take minutes (implement
-# runs up to `implement_max_turns` turns). Raise the ceiling to cover the
-# longest phase; the outer `FeatureRunner` AgentServer.call timeout is kept
-# strictly larger so the action timeout is the governing guard, not the call.
-# Per-phase timeouts are a future tuning knob (runbook §6).
+# jido_action execution guards — BOTH deliberately disabled.
+#
+# The phase deadline lives in `SpeckitOrchestrator.PhaseSession`, inside the
+# action, where it can be sized per scope (a 23-task implement chunk is not a
+# 6-task one) and where it can shut the CLI subprocess down cleanly. jido_action's
+# own guards fight that:
+#
+#   * `default_timeout` (was 45 min) killed the action's Task from outside,
+#     which orphaned the `claude` OS process — the SDK transport is linked, not
+#     exit-trapping, so its `terminate/2` (the thing that kills the subprocess)
+#     never ran. Observed live on mod-player 003: a CLI kept editing the
+#     worktree for an hour after the phase was marked failed.
+#   * `default_max_retries` (was jido_action's default, 1) treats that
+#     `TimeoutError` as retryable and silently re-ran the WHOLE phase — a second
+#     CLI session in the same worktree — and, when the retry failed too,
+#     `AgentServer.call` still returned `{:ok, agent}` with the previous phase's
+#     state in place. Transient retries are an orchestrator decision
+#     (`phase_max_retries`, `PhaseStep`), never a library default.
+#
+# `default_timeout: 0` runs the action inline (no extra Task); the outer
+# `AgentServer.call` timeout — always deadline + grace, see
+# `PhaseSession.call_timeout/1` — remains the last-resort guard.
 # ---------------------------------------------------------------------------
-config :jido_action, default_timeout: :timer.minutes(45)
+config :jido_action, default_timeout: 0, default_max_retries: 0
 
 # ---------------------------------------------------------------------------
 # speckit_orchestrator — orchestrator configuration (Phase 1 consumes these
@@ -115,6 +131,18 @@ config :speckit_orchestrator,
   # mid-run over the 7-feature LedgerLite backlog (plan §7.2 trap 3). Raise for a
   # non-drill run that should complete all 7 (>~$104).
   budget_usd: 74.0,
+  # Wall-clock deadline for one harness session (a phase, or one implement
+  # chunk), enforced inside the action by `PhaseSession` — on expiry the CLI
+  # subprocess is shut down cleanly and the session folds to a deadline result
+  # (`PhaseResult.exhausted?/1`). The outer `AgentServer.call` timeout is
+  # derived from it (`PhaseSession.call_timeout/1`), never configured apart.
+  phase_timeout: :timer.minutes(50),
+  # Per-task extension for an implement chunk: a chunk's deadline is
+  # `max(phase_timeout, implement_chunk_timeout_per_task * task_count)`, so a
+  # 23-task foundational task-phase gets ~92 min while a 6-task setup phase
+  # keeps the floor. Sized from mod-player 003: ~2.2 min/task observed for
+  # dense Rust tasks with tests; 4 leaves headroom for `cargo test` runs.
+  implement_chunk_timeout_per_task: :timer.minutes(4),
   # Turn cap for the long-running implement phase. 80 was sized before chunking
   # (015); a single foundational task-phase in a real target can be 30+ tasks
   # with tests, which exhausts 80 turns every time and reports `:exhausted`

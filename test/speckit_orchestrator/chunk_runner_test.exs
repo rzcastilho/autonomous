@@ -51,7 +51,11 @@ defmodule SpeckitOrchestrator.ChunkRunnerTest do
       path = Path.join(cwd, "specs/001-fake/tasks.md")
 
       content =
-        path |> File.read!() |> String.split("\n") |> Enum.map(&check_line(&1, n)) |> Enum.join("\n")
+        path
+        |> File.read!()
+        |> String.split("\n")
+        |> Enum.map(&check_line(&1, n))
+        |> Enum.join("\n")
 
       File.write!(path, content)
     end
@@ -406,6 +410,74 @@ defmodule SpeckitOrchestrator.ChunkRunnerTest do
     refute Enum.any?(subjects, &Regex.match?(~r/^speckit: \S+ checkpoint after \w+$/, &1))
   end
 
+  test "each chunk session is recorded in the store, without double-counting its cost",
+       %{feature: feature, worktree: worktree, pid: pid} do
+    # Regression for mod-player 003: a 7-chunk implement left NO trace in the
+    # store until the whole step failed — the operator could not tell which
+    # session went wrong. Now every dispatched chunk is its own
+    # `:implement_chunk` phase_attempt (ordinal = run-wide sessions_used) with
+    # its transcript, while the run's spend still comes from the roll-up
+    # alone (the chunk rows write no cost_entry).
+    repo_id = "o:chunk-runner-test-#{System.unique_integer([:positive])}"
+
+    {:ok, run_id} =
+      SpeckitOrchestrator.Store.Writer.open_run(repo_id, %{
+        features: [
+          %{
+            feature_id: "001",
+            slug: "fake",
+            path: "specs/001-fake",
+            number: 1,
+            group: :backlog,
+            created_at: nil
+          }
+        ],
+        settings: %{},
+        scope: :ad_hoc,
+        layout: %{}
+      })
+
+    run_key = {repo_id, run_id}
+
+    agent =
+      ChunkRunner.run(ctx(%{pid: pid, feature: feature, worktree: worktree, run_key: run_key}))
+
+    assert agent.state.last_outcome == :ok
+
+    {:ok, detail} = SpeckitOrchestrator.Store.run(run_key)
+    attempts = detail.features |> hd() |> Map.fetch!(:phase_attempts)
+    chunks = Enum.filter(attempts, &(&1.phase == :implement_chunk))
+
+    assert Enum.map(chunks, & &1.ordinal) == [1, 2, 3]
+
+    assert Enum.map(chunks, & &1.label) == [
+             "chunk 1/3 Setup",
+             "chunk 2/3 Core",
+             "chunk 3/3 Polish"
+           ]
+
+    assert Enum.all?(chunks, &(&1.outcome == :ok and &1.step == 6))
+
+    assert %{scope: :task_phase, ordinal: 2, total: 3, number: "2", title: "Core", attempt: 1} =
+             Enum.at(chunks, 1).substep
+
+    assert {:ok, %{body: body}} =
+             SpeckitOrchestrator.Store.transcript(Enum.at(chunks, 1).attempt_id)
+
+    assert is_binary(body)
+
+    # No per-chunk cost entries — the roll-up (recorded by FeatureRunner) is
+    # the single row that feeds the run's spend.
+    assert detail.cost_entries == []
+
+    # The roll-up carries the step's actual summed cost (3 sessions x $0.10 in
+    # this fake), so it is booked as :actual rather than the flat estimate.
+    assert {cost, :actual} =
+             SpeckitOrchestrator.Cost.for_phase(:implement, agent.state.last_result)
+
+    assert_in_delta cost, 0.30, 0.001
+  end
+
   test "a breaker tripped between task-phases halts the run (drain, don't kill)",
        %{feature: feature, worktree: worktree, pid: pid, prompts_agent: prompts_agent} do
     {:ok, ledger} =
@@ -445,9 +517,7 @@ defmodule SpeckitOrchestrator.ChunkRunnerTest do
     Application.put_env(:speckit_orchestrator, :chunk_runner_test_scenario, :checkpoint_only)
 
     resumed =
-      ChunkRunner.run(
-        ctx(%{pid: pid, feature: feature, worktree: worktree, start_task_phase: 3})
-      )
+      ChunkRunner.run(ctx(%{pid: pid, feature: feature, worktree: worktree, start_task_phase: 3}))
 
     assert resumed.state.last_outcome == :ok
     assert resumed.state.last_signals == %{}
@@ -631,7 +701,13 @@ defmodule SpeckitOrchestrator.ChunkRunnerTest do
     # the module-wide sdk_module override for just this test.
     Application.delete_env(:jido_claude, :sdk_module)
 
-    feature = %Feature{id: "001", number: 1, slug: "smoke", path: Path.join(repo, "specs/001-smoke/spec.md")}
+    feature = %Feature{
+      id: "001",
+      number: 1,
+      slug: "smoke",
+      path: Path.join(repo, "specs/001-smoke/spec.md")
+    }
+
     worktree = %Worktree{path: repo, branch: "main", repo: repo, feature_id: "001"}
     timeout = :timer.minutes(50)
 
