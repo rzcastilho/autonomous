@@ -158,6 +158,29 @@ defmodule SpeckitOrchestrator.ConsoleHydrationTest do
              }
     end
 
+    test "a diverted feature's recorded attempt list includes the diverting phase's window — mark_diverted never touches windows (US3-1)" do
+      attempts = [
+        attempt("f4c", :specify, cost_usd: 1.0,
+          started_at: ~U[2026-01-01 00:00:00Z], ended_at: ~U[2026-01-01 00:05:00Z]),
+        attempt("f4c", :analyze, cost_usd: 2.5, model: "opus",
+          started_at: ~U[2026-01-01 01:00:00Z], ended_at: ~U[2026-01-01 01:10:00Z])
+      ]
+
+      cost_entries = Enum.map(attempts, &cost_entry(&1.attempt_id, &1.cost_usd))
+
+      f =
+        feature("f4c",
+          status: :halted,
+          phase_attempts: attempts,
+          checkpoint: %{last_completed_phase: :analyze}
+        )
+
+      slice = ConsoleHydration.from_record(f, cost_entries, @now)
+
+      assert slice.phases[:analyze].outcome == :halted
+      assert slice.elapsed_ms == 5 * 60_000 + 10 * 60_000
+    end
+
     test "a diverted feature with no attempt at its checkpoint phase degrades to cost: nil, model: nil (FR-004, US3-1)" do
       f =
         feature("f4b",
@@ -354,7 +377,7 @@ defmodule SpeckitOrchestrator.ConsoleHydrationTest do
     end
   end
 
-  describe "apply_update/2 (contracts/console-hydration.md §3-4)" do
+  describe "apply_update/3 (contracts/console-hydration.md §3-4, contracts/execution-time.md §5.3)" do
     defp row do
       %{
         status: :running,
@@ -367,6 +390,7 @@ defmodule SpeckitOrchestrator.ConsoleHydrationTest do
           tasks: %{state: :active, outcome: nil, cost: nil, model: "sonnet"}
         },
         spend: 3.0,
+        windows: [%{key: {:attempt, :specify, 1}, from: 0, to: 10_000}],
         elapsed_ms: 10_000,
         chunk: nil,
         remediation: nil,
@@ -375,7 +399,7 @@ defmodule SpeckitOrchestrator.ConsoleHydrationTest do
     end
 
     test "update == nil returns row unchanged" do
-      assert ConsoleHydration.apply_update(row(), nil) == row()
+      assert ConsoleHydration.apply_update(row(), nil, @now) == row()
     end
 
     test "a missing row starts from the documented default shape" do
@@ -384,7 +408,7 @@ defmodule SpeckitOrchestrator.ConsoleHydrationTest do
         phases: %{specify: %{state: :active, outcome: nil, cost: nil, model: nil}}
       }
 
-      result = ConsoleHydration.apply_update(nil, update)
+      result = ConsoleHydration.apply_update(nil, update, @now)
 
       assert result.status == :running
       assert result.slug == nil
@@ -393,14 +417,14 @@ defmodule SpeckitOrchestrator.ConsoleHydrationTest do
     end
 
     test "spend never decreases" do
-      assert ConsoleHydration.apply_update(row(), %{spend: 1.0}).spend == 3.0
-      assert ConsoleHydration.apply_update(row(), %{spend: 9.0}).spend == 9.0
+      assert ConsoleHydration.apply_update(row(), %{spend: 1.0}, @now).spend == 3.0
+      assert ConsoleHydration.apply_update(row(), %{spend: 9.0}, @now).spend == 9.0
     end
 
     test "no blanking: an untouched pre-restart completed cell survives an update that only carries a later phase" do
       update = %{phases: %{analyze: %{state: :active, outcome: nil, cost: nil, model: "opus"}}}
 
-      result = ConsoleHydration.apply_update(row(), update)
+      result = ConsoleHydration.apply_update(row(), update, @now)
 
       assert result.phases[:specify] == row().phases.specify
       assert result.phases[:clarify] == row().phases.clarify
@@ -414,7 +438,7 @@ defmodule SpeckitOrchestrator.ConsoleHydrationTest do
         phases: %{tasks: %{state: :active, outcome: :error, cost: 2.0, model: "opus"}}
       }
 
-      result = ConsoleHydration.apply_update(row(), update)
+      result = ConsoleHydration.apply_update(row(), update, @now)
 
       assert result.phases[:tasks] == update.phases.tasks
     end
@@ -422,7 +446,7 @@ defmodule SpeckitOrchestrator.ConsoleHydrationTest do
     test "an update whose active phase is earlier than a recorded cell renders the later recorded cells pending (resume from an earlier phase)" do
       update = %{phases: %{clarify: %{state: :active, outcome: nil, cost: nil, model: "sonnet"}}}
 
-      result = ConsoleHydration.apply_update(row(), update)
+      result = ConsoleHydration.apply_update(row(), update, @now)
 
       assert result.phases[:specify] == row().phases.specify
       assert result.phases[:clarify] == update.phases.clarify
@@ -431,27 +455,76 @@ defmodule SpeckitOrchestrator.ConsoleHydrationTest do
     end
 
     test "a known pr_url survives an update carrying pr_url: nil" do
-      assert ConsoleHydration.apply_update(row(), %{pr_url: nil}).pr_url == row().pr_url
+      assert ConsoleHydration.apply_update(row(), %{pr_url: nil}, @now).pr_url == row().pr_url
     end
 
     test "chunk/remediation/current_phase are replaced by the update, including nil to clear" do
       result =
-        ConsoleHydration.apply_update(row(), %{chunk: %{ordinal: 1}, current_phase: :analyze})
+        ConsoleHydration.apply_update(
+          row(),
+          %{chunk: %{ordinal: 1}, current_phase: :analyze},
+          @now
+        )
 
       assert result.chunk == %{ordinal: 1}
       assert result.current_phase == :analyze
 
-      cleared = ConsoleHydration.apply_update(result, %{chunk: nil})
+      cleared = ConsoleHydration.apply_update(result, %{chunk: nil}, @now)
       assert cleared.chunk == nil
     end
 
-    test "is idempotent: reapplying an already-reflected update yields the same row" do
+    test "is idempotent: reapplying an already-reflected update at a fixed now yields the same row" do
       update = %{phases: %{analyze: %{state: :active, outcome: nil, cost: nil, model: "opus"}}}
 
-      once = ConsoleHydration.apply_update(row(), update)
-      twice = ConsoleHydration.apply_update(once, update)
+      once = ConsoleHydration.apply_update(row(), update, @now)
+      twice = ConsoleHydration.apply_update(once, update, @now)
 
       assert twice == once
+    end
+
+    test "max_nil keeps the row's own elapsed_ms when the freshly-computed union is nil" do
+      row = %{row() | windows: [], elapsed_ms: 10_000}
+
+      result = ConsoleHydration.apply_update(row, %{}, @now)
+
+      assert result.elapsed_ms == 10_000
+    end
+
+    test "elapsed_ms is the union of the row's and update's windows (US2-1)" do
+      update = %{windows: [%{key: {:phase, :tasks}, from: 10_000, to: 25_000}]}
+
+      result = ConsoleHydration.apply_update(row(), update, @now)
+
+      assert result.elapsed_ms == 25_000
+    end
+
+    test "elapsed_ms never lowers, even under a now earlier than the row's own value (FR-011)" do
+      earlier_now = ~U[2026-01-01 00:00:00Z]
+
+      result = ConsoleHydration.apply_update(row(), %{}, earlier_now)
+
+      assert result.elapsed_ms == row().elapsed_ms
+    end
+
+    test "a closed live window contained in the row's recorded window leaves elapsed_ms unchanged (FR-004)" do
+      update = %{windows: [%{key: {:phase, :specify}, from: 2_000, to: 8_000}]}
+
+      result = ConsoleHydration.apply_update(row(), update, @now)
+
+      assert result.elapsed_ms == row().elapsed_ms
+    end
+
+    test "an open live window advances elapsed_ms between two nows" do
+      base = %{row() | windows: []}
+      update = %{windows: [%{key: {:phase, :tasks}, from: 0, to: nil}]}
+
+      t1 = ~U[2026-09-15 00:00:01Z]
+      t2 = ~U[2026-09-15 00:00:05Z]
+
+      e1 = ConsoleHydration.apply_update(base, update, t1).elapsed_ms
+      e2 = ConsoleHydration.apply_update(base, update, t2).elapsed_ms
+
+      assert e2 > e1
     end
   end
 end

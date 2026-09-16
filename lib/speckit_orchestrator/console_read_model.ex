@@ -11,7 +11,7 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
   reconcile.
   """
 
-  alias SpeckitOrchestrator.ConsoleHydration
+  alias SpeckitOrchestrator.{ConsoleHydration, ExecutionTime}
 
   @feed_limit 200
 
@@ -54,6 +54,7 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
           current_phase: atom() | nil,
           phases: %{atom() => phase_cell()},
           spend: number(),
+          windows: [ExecutionTime.window()],
           chunk: chunk_cell() | nil,
           remediation: remediation_cell() | nil,
           pr_url: String.t() | nil
@@ -83,15 +84,16 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
   def apply_event(
         model,
         [:speckit, :phase, :start],
-        _measurements,
+        measurements,
         %{feature_id: id, phase: phase} = meta
       ) do
     feature = feature_slice(model, id)
 
     cell = %{state: :active, outcome: nil, cost: nil, model: meta[:model]}
     phases = Map.update(feature.phases, phase, cell, &%{&1 | state: :active, model: meta[:model]})
+    windows = open_window(feature.windows, {:phase, phase}, measurements[:system_time])
 
-    feature = %{feature | current_phase: phase, phases: phases}
+    feature = %{feature | current_phase: phase, phases: phases, windows: windows}
 
     model
     |> put_feature(id, feature)
@@ -101,7 +103,7 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
   def apply_event(
         model,
         [:speckit, :phase, :stop],
-        _measurements,
+        measurements,
         %{feature_id: id, phase: phase} = meta
       ) do
     feature = feature_slice(model, id)
@@ -111,8 +113,9 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
 
     cell = %{state: :completed, outcome: outcome, cost: raw_cost, model: meta[:model]}
     phases = Map.put(feature.phases, phase, cell)
+    windows = close_window(feature.windows, {:phase, phase}, measurements[:duration])
 
-    feature = %{feature | phases: phases, spend: feature.spend + cost}
+    feature = %{feature | phases: phases, spend: feature.spend + cost, windows: windows}
 
     model
     |> put_feature(id, feature)
@@ -124,15 +127,16 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
   def apply_event(
         model,
         [:speckit, :phase, :exception],
-        _measurements,
+        measurements,
         %{feature_id: id, phase: phase} = meta
       ) do
     feature = feature_slice(model, id)
 
     default_cell = %{state: :active, outcome: :error, cost: nil, model: meta[:model]}
     phases = Map.update(feature.phases, phase, default_cell, &%{&1 | outcome: :error})
+    windows = close_window(feature.windows, {:phase, phase}, measurements[:duration])
 
-    feature = %{feature | phases: phases}
+    feature = %{feature | phases: phases, windows: windows}
 
     model
     |> put_feature(id, feature)
@@ -147,7 +151,15 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
       ) do
     feature = feature_slice(model, id)
     cost_total = measurements[:cost_total] || 0.0
-    feature = %{feature | spend: max(feature.spend, cost_total), chunk: nil, remediation: nil}
+    windows = close_all_windows(feature.windows, measurements[:system_time])
+
+    feature = %{
+      feature
+      | spend: max(feature.spend, cost_total),
+        chunk: nil,
+        remediation: nil,
+        windows: windows
+    }
 
     model
     |> put_feature(id, feature)
@@ -169,12 +181,13 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
   def apply_event(
         model,
         [:speckit, :chunk, :start],
-        _measurements,
+        measurements,
         %{feature_id: id} = meta
       ) do
     feature = feature_slice(model, id)
     previous = feature.chunk
-    feature = %{feature | chunk: chunk_from_start_meta(meta)}
+    windows = open_window(feature.windows, {:chunk, meta[:phase]}, measurements[:system_time])
+    feature = %{feature | chunk: chunk_from_start_meta(meta), windows: windows}
 
     model
     |> put_feature(id, feature)
@@ -184,16 +197,18 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
   def apply_event(
         model,
         [:speckit, :chunk, :stop],
-        _measurements,
+        measurements,
         %{feature_id: id, outcome: outcome} = meta
       ) do
     feature = feature_slice(model, id)
     cost = meta[:cost] || 0.0
+    windows = close_window(feature.windows, {:chunk, meta[:phase]}, measurements[:duration])
 
     feature = %{
       feature
       | spend: feature.spend + cost,
-        chunk_cost_seen: feature.chunk_cost_seen + cost
+        chunk_cost_seen: feature.chunk_cost_seen + cost,
+        windows: windows
     }
 
     model
@@ -204,12 +219,13 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
   def apply_event(
         model,
         [:speckit, :chunk, :exception],
-        _measurements,
+        measurements,
         %{feature_id: id} = meta
       ) do
     feature = feature_slice(model, id)
     chunk = feature.chunk && Map.put(feature.chunk, :outcome, :error)
-    feature = %{feature | chunk: chunk}
+    windows = close_window(feature.windows, {:chunk, meta[:phase]}, measurements[:duration])
+    feature = %{feature | chunk: chunk, windows: windows}
 
     model
     |> put_feature(id, feature)
@@ -242,11 +258,12 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
   def apply_event(
         model,
         [:speckit, :remediation, :start],
-        _measurements,
+        measurements,
         %{feature_id: id} = meta
       ) do
     feature = feature_slice(model, id)
-    feature = %{feature | remediation: remediation_from_start_meta(meta)}
+    windows = open_window(feature.windows, {:remediation, meta[:phase]}, measurements[:system_time])
+    feature = %{feature | remediation: remediation_from_start_meta(meta), windows: windows}
 
     text =
       "auto-remediation attempt #{meta[:attempt]}/#{meta[:limit]} — " <>
@@ -260,15 +277,16 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
   def apply_event(
         model,
         [:speckit, :remediation, :stop],
-        _measurements,
+        measurements,
         %{feature_id: id} = meta
       ) do
     feature = feature_slice(model, id)
     outcome = meta[:outcome]
     cost = meta[:cost] || 0.0
+    windows = close_window(feature.windows, {:remediation, meta[:phase]}, measurements[:duration])
 
     remediation = feature.remediation && Map.put(feature.remediation, :outcome, outcome)
-    feature = %{feature | spend: feature.spend + cost, remediation: remediation}
+    feature = %{feature | spend: feature.spend + cost, remediation: remediation, windows: windows}
 
     text = "auto-remediation attempt #{meta[:attempt]}/#{meta[:limit]} → #{outcome}"
 
@@ -280,12 +298,13 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
   def apply_event(
         model,
         [:speckit, :remediation, :exception],
-        _measurements,
+        measurements,
         %{feature_id: id} = meta
       ) do
     feature = feature_slice(model, id)
     remediation = feature.remediation && Map.put(feature.remediation, :outcome, :error)
-    feature = %{feature | remediation: remediation}
+    windows = close_window(feature.windows, {:remediation, meta[:phase]}, measurements[:duration])
+    feature = %{feature | remediation: remediation, windows: windows}
 
     model
     |> put_feature(id, feature)
@@ -515,6 +534,7 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
           current_phase: nil,
           phases: %{},
           spend: 0.0,
+          windows: [],
           chunk: nil,
           remediation: nil,
           pr_url: nil
@@ -537,11 +557,35 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
         current_phase: nil,
         phases: %{},
         spend: 0.0,
+        windows: [],
         chunk: nil,
         chunk_cost_seen: 0.0,
         remediation: nil,
         pr_url: nil
       })
+
+  # Windows track [:speckit, :phase | :remediation | :chunk] spans
+  # (contracts/execution-time.md §3). The measurement is absent or
+  # non-integer whenever the emitting call site predates this feature or a
+  # test exercises another concern — left unchanged rather than raising.
+  defp open_window(windows, key, system_time) when is_integer(system_time),
+    do: ExecutionTime.open(windows, key, ExecutionTime.native_to_ms(system_time))
+
+  defp open_window(windows, _key, _system_time), do: windows
+
+  defp close_window(windows, key, duration) when is_integer(duration) do
+    case Enum.find(windows, &(&1.key == key and is_nil(&1.to))) do
+      nil -> windows
+      %{from: from} -> ExecutionTime.close(windows, key, from + ExecutionTime.native_to_ms(duration))
+    end
+  end
+
+  defp close_window(windows, _key, _duration), do: windows
+
+  defp close_all_windows(windows, system_time) when is_integer(system_time),
+    do: ExecutionTime.close_all(windows, ExecutionTime.native_to_ms(system_time))
+
+  defp close_all_windows(windows, _system_time), do: windows
 
   defp put_feature(model, id, feature),
     do: %{model | features: Map.put(model.features, id, feature)}

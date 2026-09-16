@@ -656,6 +656,117 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLiveTest do
     assert drawer_elapsed(drawer) == mc_elapsed
   end
 
+  defp drawer_elapsed_seconds(drawer) do
+    [minutes_str, seconds_str] =
+      Regex.run(~r/(\d+)m (\d+)s/, drawer_elapsed(drawer), capture: :all_but_first)
+
+    String.to_integer(minutes_str) * 60 + String.to_integer(seconds_str)
+  end
+
+  # Both tests below use an id ("902"/"903") outside the fixture backlog
+  # (rendered in the ad-hoc lane) on purpose: the real telemetry events they
+  # emit fold into the node-global `ConsoleProjection` for the rest of the
+  # suite's lifetime — reusing "001" here would leak an open :clarify window
+  # into every later test that asserts on that id's phase strip.
+  test "a live phase's window grows the drawer's ELAPSED on the next reconcile tick, same as Mission Control (US2)",
+       %{conn: conn} do
+    repo = real_repo_with_backlog()
+    point_backlog_at(repo)
+
+    run_key = open_store_run(repo, [feat("902")])
+
+    :ok =
+      Writer.record_phase_attempt(run_key, %{
+        attempt: attempt_at("902", :specify, 1, ~U[2026-01-01 00:00:00Z], 10_000),
+        cost: %{amount_usd: 2.0, kind: :actual}
+      })
+
+    {:ok, pid} =
+      Coordinator.start_link(
+        name: Coordinator,
+        features: [feat("902")],
+        runner: fn _feature, _notify -> :ok end,
+        owner: self()
+      )
+
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    :telemetry.execute(
+      [:speckit, :phase, :start],
+      %{system_time: System.system_time()},
+      %{feature_id: "902", phase: :clarify, model: "sonnet", step: 2}
+    )
+
+    {:ok, view, _html} = live(conn, "/dag")
+    dag_html = render_click(view, "select_feature", %{"id" => "902"})
+    [drawer_once] = Regex.run(~r/<aside class="feature-drawer".*?<\/aside>/s, dag_html)
+    elapsed_once = drawer_elapsed_seconds(drawer_once)
+    assert elapsed_once >= 10
+
+    Process.sleep(1_200)
+
+    Phoenix.PubSub.broadcast(
+      SpeckitOrchestrator.PubSub,
+      SpeckitOrchestrator.ConsoleProjection.topic(),
+      {:console, :reconciled, %{coordinator: Coordinator.status(pid), ledger: nil}}
+    )
+
+    html_later = render(view)
+    [drawer_later] = Regex.run(~r/<aside class="feature-drawer".*?<\/aside>/s, html_later)
+    elapsed_later = drawer_elapsed_seconds(drawer_later)
+
+    assert elapsed_later >= elapsed_once
+    assert elapsed_later <= elapsed_once + 5
+  end
+
+  test "once a live phase stops, the drawer's ELAPSED stays the same across further reconcile ticks, same as Mission Control (US2-3)",
+       %{conn: conn} do
+    repo = real_repo_with_backlog()
+    point_backlog_at(repo)
+
+    {:ok, pid} =
+      Coordinator.start_link(
+        name: Coordinator,
+        features: [feat("903")],
+        runner: fn _feature, _notify -> :ok end,
+        owner: self()
+      )
+
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    :telemetry.execute(
+      [:speckit, :phase, :start],
+      %{system_time: 0},
+      %{feature_id: "903", phase: :specify, model: "sonnet", step: 1}
+    )
+
+    :telemetry.execute(
+      [:speckit, :phase, :stop],
+      %{duration: System.convert_time_unit(5_000, :millisecond, :native)},
+      %{feature_id: "903", phase: :specify, model: "sonnet", step: 1, outcome: :ok, cost: 0.5}
+    )
+
+    {:ok, view, _html} = live(conn, "/dag")
+    dag_html = render_click(view, "select_feature", %{"id" => "903"})
+    [drawer_once] = Regex.run(~r/<aside class="feature-drawer".*?<\/aside>/s, dag_html)
+    elapsed_once = drawer_elapsed_seconds(drawer_once)
+    assert elapsed_once == 5
+
+    Process.sleep(1_100)
+
+    Phoenix.PubSub.broadcast(
+      SpeckitOrchestrator.PubSub,
+      SpeckitOrchestrator.ConsoleProjection.topic(),
+      {:console, :reconciled, %{coordinator: Coordinator.status(pid), ledger: nil}}
+    )
+
+    html_later = render(view)
+    [drawer_later] = Regex.run(~r/<aside class="feature-drawer".*?<\/aside>/s, html_later)
+    elapsed_later = drawer_elapsed_seconds(drawer_later)
+
+    assert elapsed_later == elapsed_once
+  end
+
   test "a nonexistent breakdown dir (single-spec-only project) renders as an empty backlog, not an error",
        %{conn: conn} do
     point_backlog_at(Path.join(System.tmp_dir!(), "no_breakdown_here_#{System.unique_integer()}"))

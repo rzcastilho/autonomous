@@ -145,8 +145,6 @@ defmodule SpeckitOrchestrator.ExecutionTime do
   defp close_at(nil, from, now), do: max(now, from)
   defp close_at(to, _from, _now), do: to
 
-  defp merge_intervals([]), do: []
-
   defp merge_intervals([first | rest]) do
     Enum.reduce(rest, [first], fn {from, to}, [{cur_from, cur_to} | acc_rest] ->
       if from <= cur_to do

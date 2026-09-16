@@ -215,23 +215,32 @@ defmodule SpeckitOrchestrator.ConsoleHydration do
   Applies a `:feature_updated` live slice to an already-hydrated row, per the
   update column of contracts/console-hydration.md §3-4. `update == nil`
   returns `row` unchanged; a `nil` row (a feature id not seen yet) starts
-  from the documented default shape.
+  from the documented default shape. `windows` is the normalized union of
+  the row's and update's windows; `elapsed_ms` never drops below the row's
+  own value (`max_nil/2`, contracts/execution-time.md §5.3, FR-011).
   """
-  @spec apply_update(row() | nil, map() | nil) :: row()
-  def apply_update(row, nil), do: row
+  @spec apply_update(row() | nil, map() | nil, DateTime.t()) :: row()
+  def apply_update(row, nil, _now), do: row
 
-  def apply_update(nil, update), do: apply_update(@default_row, update)
+  def apply_update(nil, update, now), do: apply_update(@default_row, update, now)
 
-  def apply_update(row, update) do
+  def apply_update(row, update, now) do
     update_phases = Map.get(update, :phases) || %{}
     row_phases = Map.get(row, :phases) || %{}
     merged_phases = trim_after_active(Map.merge(row_phases, update_phases), update_phases)
+
+    windows =
+      ExecutionTime.normalize((Map.get(row, :windows) || []) ++ (Map.get(update, :windows) || []))
+
+    elapsed_ms = max_nil(Map.get(row, :elapsed_ms), ExecutionTime.elapsed_ms(windows, now))
 
     Map.merge(row, %{
       status: Map.get(update, :status, Map.get(row, :status)),
       phases: merged_phases,
       current_phase: pick_present(update, :current_phase, row),
       spend: max(Map.get(row, :spend) || 0.0, Map.get(update, :spend) || 0.0),
+      windows: windows,
+      elapsed_ms: elapsed_ms,
       pr_url: not_nil_or(Map.get(update, :pr_url), Map.get(row, :pr_url)),
       chunk: pick_present(update, :chunk, row),
       remediation: pick_present(update, :remediation, row)
@@ -246,6 +255,10 @@ defmodule SpeckitOrchestrator.ConsoleHydration do
 
   defp not_nil_or(nil, fallback), do: fallback
   defp not_nil_or(value, _fallback), do: value
+
+  defp max_nil(nil, x), do: x
+  defp max_nil(x, nil), do: x
+  defp max_nil(a, b), do: max(a, b)
 
   defp trim_after_active(phases, source_phases) do
     case active_phase_in(source_phases) do

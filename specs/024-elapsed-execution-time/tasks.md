@@ -80,18 +80,18 @@ Single Elixir/OTP application, existing layout: `lib/speckit_orchestrator/`, `te
 
 ### Tests for User Story 2
 
-- [ ] T014 [P] [US2] Extend `test/speckit_orchestrator/console_read_model_test.exs`: `[:speckit, :phase | :remediation | :chunk, :start]` opens a window from `native_to_ms(system_time)`; `:stop`/`:exception` closes it at `from + native_to_ms(duration)`; a `:stop`/`:exception` with no open window, or a `:start` missing `system_time`, leaves `windows` unchanged; `[:speckit, :feature, :terminal]` with `system_time` closes every open window, without it leaves them (quickstart.md §3, contracts/execution-time.md §3) (sequence after T007)
-- [ ] T015 [P] [US2] Extend `test/speckit_orchestrator/console_hydration_test.exs`: `apply_update/3` is idempotent for a fixed `now`, never lowers `elapsed_ms`, and an update whose closed live window is contained in the row's recorded window leaves the value unchanged (FR-004) (quickstart.md §2, contracts/execution-time.md §5.4) (sequence after T006)
-- [ ] T016 [US2] Extend `test/speckit_orchestrator/web/mission_control_live_test.exs`: US2-1 (four recorded phases + live `:analyze` start reads their union plus time-since-start, grows on the next reconcile tick), US2-2/SC-004 (after the phase's `:stop` and its record landing, value is ≥ last live value and ≤ it + one reconcile interval), US2-3/FR-006 (a feature whose live phase has stopped shows the same elapsed across ticks), US2-4 (a feature resumed from `plan` with stale `tasks`/`analyze` attempts counts those windows too) (contracts/console-views.md §2) (sequence after T008)
-- [ ] T017 [US2] Extend `test/speckit_orchestrator/web/pipeline_dag_live_test.exs`: same live-growth/no-dip parity as Mission Control for the drawer (sequence after T009)
+- [X] T014 [P] [US2] Extend `test/speckit_orchestrator/console_read_model_test.exs`: `[:speckit, :phase | :remediation | :chunk, :start]` opens a window from `native_to_ms(system_time)`; `:stop`/`:exception` closes it at `from + native_to_ms(duration)`; a `:stop`/`:exception` with no open window, or a `:start` missing `system_time`, leaves `windows` unchanged; `[:speckit, :feature, :terminal]` with `system_time` closes every open window, without it leaves them (quickstart.md §3, contracts/execution-time.md §3) (sequence after T007)
+- [X] T015 [P] [US2] Extend `test/speckit_orchestrator/console_hydration_test.exs`: `apply_update/3` is idempotent for a fixed `now`, never lowers `elapsed_ms`, and an update whose closed live window is contained in the row's recorded window leaves the value unchanged (FR-004) (quickstart.md §2, contracts/execution-time.md §5.4) (sequence after T006)
+- [X] T016 [US2] Extend `test/speckit_orchestrator/web/mission_control_live_test.exs`: US2-1 (four recorded phases + live `:analyze` start reads their union plus time-since-start, grows on the next reconcile tick), US2-2/SC-004 (after the phase's `:stop` and its record landing, value is ≥ last live value and ≤ it + one reconcile interval), US2-3/FR-006 (a feature whose live phase has stopped shows the same elapsed across ticks), US2-4 (a feature resumed from `plan` with stale `tasks`/`analyze` attempts counts those windows too) (contracts/console-views.md §2) (sequence after T008)
+- [X] T017 [US2] Extend `test/speckit_orchestrator/web/pipeline_dag_live_test.exs`: same live-growth/no-dip parity as Mission Control for the drawer (sequence after T009)
 
 ### Implementation for User Story 2
 
-- [ ] T018 [US2] `ConsoleReadModel` fold, `lib/speckit_orchestrator/console_read_model.ex`: `feature_slice/2`'s default map and the `feature_slice` type gain `windows: []`; `apply_event/4` clauses for `[:speckit, :phase | :remediation | :chunk, :start]` call `ExecutionTime.open/3` with `ExecutionTime.native_to_ms(measurements.system_time)`; `:stop`/`:exception` clauses call `ExecutionTime.close/3` with `from + ExecutionTime.native_to_ms(measurements.duration)`; the `[:speckit, :feature, :terminal]` clause calls `ExecutionTime.close_all/2` with `ExecutionTime.native_to_ms(measurements.system_time)` when present (depends on T002, T004; contracts/execution-time.md §3)
-- [ ] T019 [US2] `ConsoleHydration.apply_update/2` → `apply_update/3` (adds `now :: DateTime.t()`), `lib/speckit_orchestrator/console_hydration.ex`: `windows = normalize((row.windows || []) ++ (update.windows || []))`; `elapsed_ms = max_nil(row.elapsed_ms, ExecutionTime.elapsed_ms(windows, now))` with `max_nil(nil, x) = x`, `max_nil(x, nil) = x` (depends on T011; contracts/execution-time.md §5.3)
+- [X] T018 [US2] `ConsoleReadModel` fold, `lib/speckit_orchestrator/console_read_model.ex`: `feature_slice/2`'s default map and the `feature_slice` type gain `windows: []`; `apply_event/4` clauses for `[:speckit, :phase | :remediation | :chunk, :start]` call `ExecutionTime.open/3` with `ExecutionTime.native_to_ms(measurements.system_time)`; `:stop`/`:exception` clauses call `ExecutionTime.close/3` with `from + ExecutionTime.native_to_ms(measurements.duration)`; the `[:speckit, :feature, :terminal]` clause calls `ExecutionTime.close_all/2` with `ExecutionTime.native_to_ms(measurements.system_time)` when present (depends on T002, T004; contracts/execution-time.md §3)
+- [X] T019 [US2] `ConsoleHydration.apply_update/2` → `apply_update/3` (adds `now :: DateTime.t()`), `lib/speckit_orchestrator/console_hydration.ex`: `windows = normalize((row.windows || []) ++ (update.windows || []))`; `elapsed_ms = max_nil(row.elapsed_ms, ExecutionTime.elapsed_ms(windows, now))` with `max_nil(nil, x) = x`, `max_nil(x, nil) = x` (depends on T011; contracts/execution-time.md §5.3)
 - [X] T020 [US2] `ConsoleReadModel.overlay_observed/1` → `overlay_observed/2` (threads `now`), `lib/speckit_orchestrator/console_read_model.ex:447-468`: its internal `ConsoleHydration.layer/2` call becomes `layer(recorded, known(slice), now)`; update both `hydrate/3` call sites to pass `overlay_observed(view, now)` (depends on T013, T011; contracts/execution-time.md §6)
-- [ ] T021 [US2] [P] `MissionControlLive.handle_info/2` for `:feature_updated`, `lib/speckit_orchestrator/web/live/mission_control_live.ex:94-96`: `ConsoleHydration.apply_update(Map.get(view.per_feature, id), feature, DateTime.utc_now())` (depends on T019)
-- [ ] T022 [US2] [P] `PipelineDagLive.handle_info/2` for `:feature_updated`, `lib/speckit_orchestrator/web/live/pipeline_dag_live.ex:161-163`: `ConsoleHydration.apply_update(Map.get(view.per_feature, id), feature, DateTime.utc_now())` (depends on T019)
+- [X] T021 [US2] [P] `MissionControlLive.handle_info/2` for `:feature_updated`, `lib/speckit_orchestrator/web/live/mission_control_live.ex:94-96`: `ConsoleHydration.apply_update(Map.get(view.per_feature, id), feature, DateTime.utc_now())` (depends on T019)
+- [X] T022 [US2] [P] `PipelineDagLive.handle_info/2` for `:feature_updated`, `lib/speckit_orchestrator/web/live/pipeline_dag_live.ex:161-163`: `ConsoleHydration.apply_update(Map.get(view.per_feature, id), feature, DateTime.utc_now())` (depends on T019)
 
 **Checkpoint**: a running feature's ELAPSED grows only while a phase is live, survives restart/resume, and reconciles without regressing when the record arrives — User Story 2 is independently testable.
 
@@ -107,8 +107,8 @@ No production change is expected here: `ExecutionTime.from_attempts/1` (T002) al
 
 ### Tests for User Story 3
 
-- [ ] T023 [P] [US3] Extend `test/speckit_orchestrator/web/mission_control_live_test.exs`: US3-1 (halted at `analyze` after four completed phases reads all five recorded attempts' union, cold and live), US3-2 (a feature with no recorded attempt and no live phase reads `—`), US3-3 (a feature whose only activity is a live `:start` reads the seconds since it) (contracts/console-views.md §2) (sequence after T016)
-- [ ] T024 [P] [US3] Extend `test/speckit_orchestrator/console_hydration_test.exs`: a diverted feature's (`:escalated`/`:halted`/`:failed`) recorded attempt list includes the diverting phase's attempt, and `from_record/3`'s `elapsed_ms` includes its window — regression coverage that `mark_diverted/3` never touches `windows` (sequence after T015)
+- [X] T023 [P] [US3] Extend `test/speckit_orchestrator/web/mission_control_live_test.exs`: US3-1 (halted at `analyze` after four completed phases reads all five recorded attempts' union, cold and live), US3-2 (a feature with no recorded attempt and no live phase reads `—`), US3-3 (a feature whose only activity is a live `:start` reads the seconds since it) (contracts/console-views.md §2) (sequence after T016)
+- [X] T024 [P] [US3] Extend `test/speckit_orchestrator/console_hydration_test.exs`: a diverted feature's (`:escalated`/`:halted`/`:failed`) recorded attempt list includes the diverting phase's attempt, and `from_record/3`'s `elapsed_ms` includes its window — regression coverage that `mark_diverted/3` never touches `windows` (sequence after T015)
 
 **Checkpoint**: all three user stories independently pass their acceptance scenarios.
 
@@ -118,10 +118,10 @@ No production change is expected here: `ExecutionTime.from_attempts/1` (T002) al
 
 **Purpose**: Whole-suite and design-guard confirmation (SC-008).
 
-- [ ] T025 [P] Run `mise exec -- mix test` — full suite green, no regressions
-- [ ] T026 [P] Run `mise exec -- mix test test/speckit_orchestrator/design_contract_test.exs` — guard stays clean: no new color/radius/font-size/spacing literal, status value, keyframe, or inline style (Principle VII)
-- [ ] T027 [P] Run `mise exec -- mix test --cover` — `ExecutionTime` at 100% coverage; `ConsoleHydration`/`ConsoleReadModel` not below their 023 level
-- [ ] T028 Walk quickstart.md §1-5 end-to-end (§6 is an optional manual check against a real multi-day run record)
+- [X] T025 [P] Run `mise exec -- mix test` — full suite green, no regressions
+- [X] T026 [P] Run `mise exec -- mix test test/speckit_orchestrator/design_contract_test.exs` — guard stays clean: no new color/radius/font-size/spacing literal, status value, keyframe, or inline style (Principle VII)
+- [X] T027 [P] Run `mise exec -- mix test --cover` — `ExecutionTime` at 100% coverage; `ConsoleHydration`/`ConsoleReadModel` not below their 023 level
+- [X] T028 Walk quickstart.md §1-5 end-to-end (§6 is an optional manual check against a real multi-day run record)
 
 ---
 
