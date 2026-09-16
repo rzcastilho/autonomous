@@ -344,10 +344,12 @@ defmodule SpeckitOrchestrator.ConsoleReadModelTest do
     end
   end
 
-  describe "overlay_last_known_statuses/2 (018, contracts/console-runs.md)" do
+  describe "hydrate/3 (023, contracts/console-hydration.md §5)" do
     defp inactive_view, do: ConsoleReadModel.merge(nil, nil, ConsoleReadModel.new())
+    defp now, do: ~U[2026-09-15 12:00:00Z]
 
-    defp run_detail(features), do: %{features: features}
+    defp run_detail(features, cost_entries \\ []),
+      do: %{features: features, cost_entries: cost_entries}
 
     defp feature_detail(id, status, opts \\ []) do
       %{
@@ -355,30 +357,73 @@ defmodule SpeckitOrchestrator.ConsoleReadModelTest do
         status: status,
         slug: Keyword.get(opts, :slug),
         group: Keyword.get(opts, :group, :backlog),
+        spec_number: Keyword.get(opts, :spec_number),
         checkpoint: Keyword.get(opts, :checkpoint),
-        pr_url: Keyword.get(opts, :pr_url)
+        pr_url: Keyword.get(opts, :pr_url),
+        started_at: Keyword.get(opts, :started_at),
+        ended_at: Keyword.get(opts, :ended_at),
+        phase_attempts: Keyword.get(opts, :phase_attempts, [])
       }
     end
 
-    test "is a no-op when the view is active — live Coordinator state always wins" do
-      active_view =
+    defp checkpoint(last_completed_phase, status),
+      do: %{last_completed_phase: last_completed_phase, status: status, implement_chunk: nil}
+
+    defp attempt(feature_id, phase, opts) do
+      %{
+        attempt_id: {"repo", "run", feature_id, phase, Keyword.get(opts, :ordinal, 1)},
+        phase: phase,
+        outcome: Keyword.get(opts, :outcome, :ok),
+        model: Keyword.get(opts, :model, "sonnet"),
+        cost_usd: Keyword.get(opts, :cost_usd, 1.0)
+      }
+    end
+
+    defp cost_entry(attempt_id, amount), do: %{id: attempt_id, amount_usd: amount}
+
+    defp active_view(per_feature),
+      do:
         ConsoleReadModel.merge(
-          %{per_feature: %{"001" => %{status: :running}}, finished?: false},
+          %{per_feature: per_feature, finished?: false},
           nil,
           ConsoleReadModel.new()
         )
 
-      detail = run_detail([feature_detail("001", :done)])
+    test "live mode fills every coordinator-listed row from the record and ignores a record-only feature (FR-008)" do
+      view = active_view(%{"001" => %{status: :running, elapsed_ms: 1000}})
+      detail = run_detail([feature_detail("001", :running), feature_detail("record-only", :done)])
 
-      assert ConsoleReadModel.overlay_last_known_statuses(active_view, detail) == active_view
+      merged = ConsoleReadModel.hydrate(view, detail, now())
+
+      assert Map.has_key?(merged.per_feature, "001")
+      refute Map.has_key?(merged.per_feature, "record-only")
     end
 
-    test "is a no-op when there is no run detail" do
-      view = inactive_view()
-      assert ConsoleReadModel.overlay_last_known_statuses(view, nil) == view
+    test "live mode layers the record's wall-clock elapsed/spend under the live row" do
+      attempts = [attempt("001", :specify, cost_usd: 3.0)]
+      cost_entries = [cost_entry(hd(attempts).attempt_id, 3.0)]
+
+      detail =
+        run_detail(
+          [
+            feature_detail("001", :running,
+              started_at: ~U[2026-09-15 11:00:00Z],
+              phase_attempts: attempts
+            )
+          ],
+          cost_entries
+        )
+
+      view = active_view(%{"001" => %{status: :running, elapsed_ms: 42}})
+
+      merged = ConsoleReadModel.hydrate(view, detail, now())
+      entry = merged.per_feature["001"]
+
+      assert entry.elapsed_ms == 3_600_000
+      assert entry.spend == 3.0
     end
 
-    test "populates per_feature from the run's last-known statuses" do
+    test "cold mode populates per_feature from the run's record" do
       detail =
         run_detail([
           feature_detail("001", :halted),
@@ -386,18 +431,18 @@ defmodule SpeckitOrchestrator.ConsoleReadModelTest do
           feature_detail("003", :running)
         ])
 
-      merged = ConsoleReadModel.overlay_last_known_statuses(inactive_view(), detail)
+      merged = ConsoleReadModel.hydrate(inactive_view(), detail, now())
 
       assert merged.per_feature["001"].status == :halted
       assert merged.per_feature["002"].status == :pending
       assert merged.per_feature["003"].status == :running
     end
 
-    test "populated entries carry the full per-feature slice shape (no missing-key crash downstream)" do
+    test "cold-mode entries carry the full per-feature row shape (no missing-key crash downstream)" do
       detail =
         run_detail([feature_detail("001", :halted, slug: "core-ledger", group: :ad_hoc)])
 
-      merged = ConsoleReadModel.overlay_last_known_statuses(inactive_view(), detail)
+      merged = ConsoleReadModel.hydrate(inactive_view(), detail, now())
 
       entry = merged.per_feature["001"]
       assert entry.status == :halted
@@ -414,86 +459,156 @@ defmodule SpeckitOrchestrator.ConsoleReadModelTest do
       url = "https://github.com/acme/ledgerlite/pull/9"
       detail = run_detail([feature_detail("001", :done, pr_url: url)])
 
-      merged = ConsoleReadModel.overlay_last_known_statuses(inactive_view(), detail)
+      merged = ConsoleReadModel.hydrate(inactive_view(), detail, now())
 
       assert merged.per_feature["001"].pr_url == url
     end
 
-    test "tolerates a run detail whose features predate the pr_url field" do
+    test "tolerates a run detail whose features predate the pr_url/phase_attempts fields" do
       detail =
         run_detail([
           %{feature_id: "001", status: :done, slug: "x", group: :backlog, checkpoint: nil}
         ])
 
-      merged = ConsoleReadModel.overlay_last_known_statuses(inactive_view(), detail)
+      merged = ConsoleReadModel.hydrate(inactive_view(), detail, now())
 
       assert merged.per_feature["001"].pr_url == nil
+      assert merged.per_feature["001"].phases == %{}
     end
 
-    test "never overwrites an existing per_feature entry" do
+    test "never overwrites an existing per_feature entry in cold mode" do
       view = %{inactive_view() | per_feature: %{"001" => %{status: :done}}}
       detail = run_detail([feature_detail("001", :halted)])
 
-      merged = ConsoleReadModel.overlay_last_known_statuses(view, detail)
+      merged = ConsoleReadModel.hydrate(view, detail, now())
 
       assert merged.per_feature["001"] == %{status: :done}
     end
-  end
 
-  describe "overlay_last_known_statuses/2 — phase timeline from checkpoint (018)" do
-    defp checkpoint(last_completed_phase, status),
-      do: %{last_completed_phase: last_completed_phase, status: status, implement_chunk: nil}
+    test "is unchanged (aside from overlay_observed/1) when there is no run detail" do
+      view = inactive_view()
+      assert ConsoleReadModel.hydrate(view, nil, now()) == view
+    end
 
-    test "a halted feature's checkpoint marks every phase before last_completed_phase completed, and that phase active-halted" do
+    test "a feature's checkpoint plus its recorded attempts renders completed cells before it and an active-diverted cell at it" do
+      attempts = [
+        attempt("001", :specify, cost_usd: 1.0),
+        attempt("001", :clarify, cost_usd: 1.0),
+        attempt("001", :plan, cost_usd: 1.0),
+        attempt("001", :tasks, cost_usd: 1.0),
+        attempt("001", :analyze, cost_usd: 2.0, model: "opus")
+      ]
+
       detail =
-        run_detail([feature_detail("001", :halted, checkpoint: checkpoint(:analyze, :halted))])
+        run_detail([
+          feature_detail("001", :halted,
+            checkpoint: checkpoint(:analyze, :halted),
+            phase_attempts: attempts
+          )
+        ])
 
-      merged = ConsoleReadModel.overlay_last_known_statuses(inactive_view(), detail)
+      merged = ConsoleReadModel.hydrate(inactive_view(), detail, now())
       entry = merged.per_feature["001"]
 
       assert entry.current_phase == :analyze
 
       for phase <- [:specify, :clarify, :plan, :tasks] do
-        assert entry.phases[phase] == %{state: :completed, outcome: nil, cost: nil, model: nil}
+        assert entry.phases[phase].state == :completed
       end
 
-      assert entry.phases[:analyze] == %{state: :active, outcome: :halted, cost: nil, model: nil}
+      assert entry.phases[:analyze] == %{
+               state: :active,
+               outcome: :halted,
+               cost: 2.0,
+               model: "opus"
+             }
+
       refute Map.has_key?(entry.phases, :implement)
       refute Map.has_key?(entry.phases, :converge)
     end
 
-    test "an escalated feature's checkpoint colors last_completed_phase active-escalated" do
-      detail =
-        run_detail([
-          feature_detail("001", :escalated, checkpoint: checkpoint(:clarify, :escalated))
-        ])
-
-      merged = ConsoleReadModel.overlay_last_known_statuses(inactive_view(), detail)
-
-      assert merged.per_feature["001"].phases[:clarify] ==
-               %{state: :active, outcome: :escalated, cost: nil, model: nil}
-    end
-
-    test "an in-progress crash checkpoint (feature interrupted, not diverted) marks last_completed_phase completed, not active" do
-      detail =
-        run_detail([feature_detail("001", :running, checkpoint: checkpoint(:plan, :in_progress))])
-
-      merged = ConsoleReadModel.overlay_last_known_statuses(inactive_view(), detail)
-      entry = merged.per_feature["001"]
-
-      assert entry.current_phase == :plan
-      assert entry.phases[:plan] == %{state: :completed, outcome: nil, cost: nil, model: nil}
-      assert entry.phases[:specify] == %{state: :completed, outcome: nil, cost: nil, model: nil}
-      refute Map.has_key?(entry.phases, :tasks)
-    end
-
     test "a feature with no checkpoint (never released) gets an empty phase timeline" do
       detail = run_detail([feature_detail("001", :pending)])
-      merged = ConsoleReadModel.overlay_last_known_statuses(inactive_view(), detail)
+      merged = ConsoleReadModel.hydrate(inactive_view(), detail, now())
       entry = merged.per_feature["001"]
 
       assert entry.current_phase == nil
       assert entry.phases == %{}
+    end
+
+    test "seeds chunk from the checkpoint's implement_chunk when present" do
+      checkpoint = %{
+        last_completed_phase: :implement,
+        status: :halted,
+        implement_chunk: %{
+          ordinal: 3,
+          number: "3",
+          title: "User Story 1",
+          total: 5,
+          sessions_used: 7,
+          ceiling: 14,
+          scope: :task_phase
+        }
+      }
+
+      detail = run_detail([feature_detail("001", :halted, checkpoint: checkpoint)])
+      merged = ConsoleReadModel.hydrate(inactive_view(), detail, now())
+
+      assert merged.per_feature["001"].chunk == %{
+               ordinal: 3,
+               total: 5,
+               title: "User Story 1",
+               attempt: 1,
+               scope: :task_phase,
+               sessions_used: 7,
+               ceiling: 14,
+               remaining: nil,
+               outcome: nil
+             }
+    end
+
+    test "absent implement_chunk seeds chunk: nil (FR-018)" do
+      detail =
+        run_detail([feature_detail("001", :halted, checkpoint: checkpoint(:analyze, :halted))])
+
+      merged = ConsoleReadModel.hydrate(inactive_view(), detail, now())
+
+      assert merged.per_feature["001"].chunk == nil
+    end
+
+    test "overlay_observed/1 still promotes a feature on a live active phase, without blanking its hydrated record cells" do
+      attempts = [attempt("001", :specify, cost_usd: 1.0)]
+
+      detail =
+        run_detail([
+          feature_detail("001", :running,
+            checkpoint: checkpoint(:specify, :in_progress),
+            phase_attempts: attempts
+          )
+        ])
+
+      hydrated = ConsoleReadModel.hydrate(inactive_view(), detail, now())
+
+      observed_view = %{
+        hydrated
+        | observed: %{
+            "001" => %{
+              current_phase: :clarify,
+              phases: %{clarify: %{state: :active, outcome: nil, cost: nil, model: "sonnet"}},
+              spend: 1.0,
+              chunk: nil,
+              remediation: nil,
+              pr_url: nil
+            }
+          }
+      }
+
+      merged = ConsoleReadModel.overlay_observed(observed_view)
+      entry = merged.per_feature["001"]
+
+      assert entry.status == :running
+      assert entry.phases[:specify].state == :completed
+      assert entry.phases[:clarify].state == :active
     end
   end
 
@@ -779,48 +894,6 @@ defmodule SpeckitOrchestrator.ConsoleReadModelTest do
         )
 
       assert model.features["001"].spend == 0.5
-    end
-  end
-
-  describe "overlay_last_known_statuses/2 — implement_chunk seeding (contracts/checkpoint-implement-chunk.md)" do
-    test "seeds chunk from the checkpoint's implement_chunk when present" do
-      checkpoint = %{
-        last_completed_phase: :implement,
-        status: :halted,
-        implement_chunk: %{
-          ordinal: 3,
-          number: "3",
-          title: "User Story 1",
-          total: 5,
-          sessions_used: 7,
-          ceiling: 14,
-          scope: :task_phase
-        }
-      }
-
-      detail = run_detail([feature_detail("001", :halted, checkpoint: checkpoint)])
-      merged = ConsoleReadModel.overlay_last_known_statuses(inactive_view(), detail)
-
-      assert merged.per_feature["001"].chunk == %{
-               ordinal: 3,
-               total: 5,
-               title: "User Story 1",
-               attempt: 1,
-               scope: :task_phase,
-               sessions_used: 7,
-               ceiling: 14,
-               remaining: nil,
-               outcome: nil
-             }
-    end
-
-    test "absent implement_chunk seeds chunk: nil (FR-018)" do
-      detail =
-        run_detail([feature_detail("001", :halted, checkpoint: checkpoint(:analyze, :halted))])
-
-      merged = ConsoleReadModel.overlay_last_known_statuses(inactive_view(), detail)
-
-      assert merged.per_feature["001"].chunk == nil
     end
   end
 

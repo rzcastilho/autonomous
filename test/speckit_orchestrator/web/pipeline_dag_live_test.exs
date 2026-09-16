@@ -68,7 +68,12 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLiveTest do
   end
 
   defp feat(id, number \\ nil),
-    do: %Feature{id: id, number: number || String.to_integer(id), slug: "slug-#{id}", path: "#{id}.md"}
+    do: %Feature{
+      id: id,
+      number: number || String.to_integer(id),
+      slug: "slug-#{id}",
+      path: "#{id}.md"
+    }
 
   defp ad_hoc_feat(id),
     do: %Feature{
@@ -512,6 +517,10 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLiveTest do
 
     run_key = open_store_run(repo, [feat("001")])
 
+    for phase <- [:specify, :clarify, :plan, :tasks] do
+      :ok = Writer.record_phase_attempt(run_key, %{attempt: minimal_attempt("001", phase)})
+    end
+
     :ok =
       Writer.record_phase_attempt(run_key, %{
         attempt: minimal_attempt("001", :analyze),
@@ -544,6 +553,41 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLiveTest do
       [cell] = Regex.run(~r/<span[^>]*data-phase="#{phase}"[^>]*>/, node_001)
       assert cell =~ "phase-cell-pending"
     end
+  end
+
+  # ---- 023 console-restart-hydration (US1: finished features keep their
+  # history across a restart) -------------------------------------------------
+
+  test "a :done pre-restart feature's node carries the same completed phase cells and spend as its Mission Control row (US1-4)",
+       %{conn: conn} do
+    repo = real_repo_with_backlog()
+    point_backlog_at(repo)
+
+    run_key = open_store_run(repo, [feat("001")])
+    :ok = Writer.record_feature_started(run_key, "001")
+
+    for phase <- [:specify, :clarify, :plan, :tasks, :analyze, :implement, :converge] do
+      :ok =
+        Writer.record_phase_attempt(run_key, %{
+          attempt: minimal_attempt("001", phase),
+          cost: %{amount_usd: 2.0, kind: :actual}
+        })
+    end
+
+    :ok = Writer.record_feature_terminal(run_key, "001", :done, nil, [])
+
+    refute Process.whereis(Coordinator)
+
+    {:ok, _view, html} = live(conn, "/dag")
+
+    node_001 = html |> extract_node("001")
+
+    for phase <- ~w(specify clarify plan tasks analyze implement converge) do
+      [cell] = Regex.run(~r/<span[^>]*data-phase="#{phase}"[^>]*>/, node_001)
+      assert cell =~ "phase-cell-completed"
+    end
+
+    assert node_001 =~ "$14.00"
   end
 
   test "a nonexistent breakdown dir (single-spec-only project) renders as an empty backlog, not an error",

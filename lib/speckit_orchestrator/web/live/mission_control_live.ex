@@ -15,7 +15,7 @@ defmodule SpeckitOrchestrator.Web.MissionControlLive do
 
   use SpeckitOrchestrator.Web, :live_view
 
-  alias SpeckitOrchestrator.{ConsoleProjection, ConsoleReadModel, Coordinator, Ledger}
+  alias SpeckitOrchestrator.{ConsoleHydration, ConsoleProjection, ConsoleReadModel, Coordinator, Ledger}
 
   @status_order [:pending, :blocked, :running, :escalated, :halted, :failed, :done]
 
@@ -64,7 +64,7 @@ defmodule SpeckitOrchestrator.Web.MissionControlLive do
   # empty state, including each feature's phase timeline, so the operator can
   # see what actually ran before the crash, not just the terminal status.
   defp overlay_manifest(view) do
-    ConsoleReadModel.overlay_last_known_statuses(view, current_run_detail())
+    ConsoleReadModel.hydrate(view, current_run_detail(), DateTime.utc_now())
   end
 
   defp current_run_detail do
@@ -93,8 +93,7 @@ defmodule SpeckitOrchestrator.Web.MissionControlLive do
   @impl true
   def handle_info({:console, :feature_updated, %{id: id, feature: feature}}, socket) do
     view = socket.assigns.view
-    default = %{status: :pending, elapsed_ms: nil, slug: nil, prereqs: []}
-    merged = Map.merge(Map.get(view.per_feature, id, default), feature || %{})
+    merged = ConsoleHydration.apply_update(Map.get(view.per_feature, id), feature)
     {:noreply, assign(socket, view: %{view | per_feature: Map.put(view.per_feature, id, merged)})}
   end
 
