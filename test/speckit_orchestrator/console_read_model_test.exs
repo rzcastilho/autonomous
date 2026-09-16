@@ -1,7 +1,7 @@
 defmodule SpeckitOrchestrator.ConsoleReadModelTest do
   use ExUnit.Case, async: true
 
-  alias SpeckitOrchestrator.ConsoleReadModel
+  alias SpeckitOrchestrator.{ConsoleReadModel, ExecutionTime}
 
   defp remediation_meta(opts) do
     %{
@@ -221,6 +221,157 @@ defmodule SpeckitOrchestrator.ConsoleReadModelTest do
     end
   end
 
+  describe "apply_event/4 — windows fold (contracts/execution-time.md §3, US2)" do
+    test "[:speckit, :phase, :start] opens a window from native_to_ms(system_time)" do
+      model =
+        ConsoleReadModel.apply_event(
+          ConsoleReadModel.new(),
+          [:speckit, :phase, :start],
+          %{system_time: 1_000_000_000},
+          %{feature_id: "001", phase: :specify, model: "sonnet", step: 1}
+        )
+
+      assert [%{key: {:phase, :specify}, from: from, to: nil}] = model.features["001"].windows
+      assert from == ExecutionTime.native_to_ms(1_000_000_000)
+    end
+
+    test "[:speckit, :phase, :stop] closes the window at from + native_to_ms(duration)" do
+      model =
+        ConsoleReadModel.new()
+        |> ConsoleReadModel.apply_event(
+          [:speckit, :phase, :start],
+          %{system_time: 0},
+          %{feature_id: "001", phase: :specify, model: "sonnet", step: 1}
+        )
+        |> ConsoleReadModel.apply_event(
+          [:speckit, :phase, :stop],
+          %{duration: 5_000_000},
+          %{feature_id: "001", phase: :specify, model: "sonnet", step: 1, outcome: :ok, cost: 0.5}
+        )
+
+      assert [%{key: {:phase, :specify}, from: 0, to: to}] = model.features["001"].windows
+      assert to == ExecutionTime.native_to_ms(5_000_000)
+    end
+
+    test "[:speckit, :phase, :exception] closes the window the same way as :stop" do
+      model =
+        ConsoleReadModel.new()
+        |> ConsoleReadModel.apply_event(
+          [:speckit, :phase, :start],
+          %{system_time: 0},
+          %{feature_id: "001", phase: :analyze, model: "opus", step: 5}
+        )
+        |> ConsoleReadModel.apply_event(
+          [:speckit, :phase, :exception],
+          %{duration: 2_000_000},
+          %{feature_id: "001", phase: :analyze, model: "opus", step: 5, kind: :error, reason: :boom}
+        )
+
+      assert [%{key: {:phase, :analyze}, from: 0, to: to}] = model.features["001"].windows
+      assert to == ExecutionTime.native_to_ms(2_000_000)
+    end
+
+    test "a :stop/:exception with no matching open window leaves windows unchanged" do
+      model =
+        ConsoleReadModel.apply_event(
+          ConsoleReadModel.new(),
+          [:speckit, :phase, :stop],
+          %{duration: 1},
+          %{feature_id: "001", phase: :plan, model: "opus", step: 3, outcome: :ok, cost: 1.2}
+        )
+
+      assert model.features["001"].windows == []
+    end
+
+    test "a :start missing system_time leaves windows unchanged" do
+      model =
+        ConsoleReadModel.apply_event(
+          ConsoleReadModel.new(),
+          [:speckit, :phase, :start],
+          %{},
+          %{feature_id: "001", phase: :specify, model: "sonnet", step: 1}
+        )
+
+      assert model.features["001"].windows == []
+    end
+
+    test "[:speckit, :remediation, :start/:stop] open/close a {:remediation, phase} window" do
+      model =
+        ConsoleReadModel.new()
+        |> ConsoleReadModel.apply_event(
+          [:speckit, :remediation, :start],
+          %{system_time: 0},
+          remediation_meta(attempt: 1)
+        )
+        |> ConsoleReadModel.apply_event(
+          [:speckit, :remediation, :stop],
+          %{duration: 3_000_000},
+          Map.merge(remediation_meta(attempt: 1), %{outcome: :ok, cost: 0.5})
+        )
+
+      assert [%{key: {:remediation, :analyze}, from: 0, to: to}] = model.features["001"].windows
+      assert to == ExecutionTime.native_to_ms(3_000_000)
+    end
+
+    test "[:speckit, :chunk, :start/:stop] open/close a {:chunk, phase} window" do
+      model =
+        ConsoleReadModel.new()
+        |> ConsoleReadModel.apply_event(
+          [:speckit, :chunk, :start],
+          %{system_time: 0},
+          chunk_start_meta(ordinal: 1, total: 3, title: "US1", attempt: 1)
+        )
+        |> ConsoleReadModel.apply_event(
+          [:speckit, :chunk, :stop],
+          %{duration: 4_000_000},
+          Map.merge(chunk_start_meta(ordinal: 1, total: 3, title: "US1", attempt: 1), %{
+            outcome: :ok,
+            cost: 0.5,
+            completed_before: 0,
+            completed_after: 1
+          })
+        )
+
+      assert [%{key: {:chunk, :implement}, from: 0, to: to}] = model.features["001"].windows
+      assert to == ExecutionTime.native_to_ms(4_000_000)
+    end
+
+    test "[:speckit, :feature, :terminal] with system_time closes every open window" do
+      model =
+        ConsoleReadModel.new()
+        |> ConsoleReadModel.apply_event(
+          [:speckit, :phase, :start],
+          %{system_time: 0},
+          %{feature_id: "001", phase: :converge, model: "opus", step: 7}
+        )
+        |> ConsoleReadModel.apply_event(
+          [:speckit, :feature, :terminal],
+          %{cost_total: 1.0, system_time: 6_000_000},
+          %{feature_id: "001", status: :done, reason: nil}
+        )
+
+      assert [%{key: {:phase, :converge}, from: 0, to: to}] = model.features["001"].windows
+      assert to == ExecutionTime.native_to_ms(6_000_000)
+    end
+
+    test "[:speckit, :feature, :terminal] without system_time leaves open windows open" do
+      model =
+        ConsoleReadModel.new()
+        |> ConsoleReadModel.apply_event(
+          [:speckit, :phase, :start],
+          %{system_time: 0},
+          %{feature_id: "001", phase: :converge, model: "opus", step: 7}
+        )
+        |> ConsoleReadModel.apply_event(
+          [:speckit, :feature, :terminal],
+          %{cost_total: 1.0},
+          %{feature_id: "001", status: :done, reason: nil}
+        )
+
+      assert [%{key: {:phase, :converge}, from: 0, to: nil}] = model.features["001"].windows
+    end
+  end
+
   describe "apply_event/4 — [:speckit, :run, :scope_narrowing_refused] (specs/016-resume-backlog-scope)" do
     test "pushes one :warn feed entry with feature_id nil naming the dropped ids, and leaves features untouched" do
       model =
@@ -338,7 +489,7 @@ defmodule SpeckitOrchestrator.ConsoleReadModelTest do
 
       assert merged.active?
       assert merged.per_feature["001"].status == :running
-      assert merged.per_feature["001"].elapsed_ms == 1000
+      refute Map.has_key?(merged.per_feature["001"], :elapsed_ms)
       assert merged.per_feature["001"].current_phase == :specify
       assert merged.ledger == ledger_snapshot
     end
@@ -373,9 +524,12 @@ defmodule SpeckitOrchestrator.ConsoleReadModelTest do
       %{
         attempt_id: {"repo", "run", feature_id, phase, Keyword.get(opts, :ordinal, 1)},
         phase: phase,
+        ordinal: Keyword.get(opts, :ordinal, 1),
         outcome: Keyword.get(opts, :outcome, :ok),
         model: Keyword.get(opts, :model, "sonnet"),
-        cost_usd: Keyword.get(opts, :cost_usd, 1.0)
+        cost_usd: Keyword.get(opts, :cost_usd, 1.0),
+        started_at: Keyword.get(opts, :started_at),
+        ended_at: Keyword.get(opts, :ended_at)
       }
     end
 
@@ -399,8 +553,15 @@ defmodule SpeckitOrchestrator.ConsoleReadModelTest do
       refute Map.has_key?(merged.per_feature, "record-only")
     end
 
-    test "live mode layers the record's wall-clock elapsed/spend under the live row" do
-      attempts = [attempt("001", :specify, cost_usd: 3.0)]
+    test "live mode layers the record's execution-time elapsed/spend under the live row" do
+      attempts = [
+        attempt("001", :specify,
+          cost_usd: 3.0,
+          started_at: ~U[2026-09-15 11:00:00Z],
+          ended_at: ~U[2026-09-15 12:00:00Z]
+        )
+      ]
+
       cost_entries = [cost_entry(hd(attempts).attempt_id, 3.0)]
 
       detail =
@@ -603,7 +764,7 @@ defmodule SpeckitOrchestrator.ConsoleReadModelTest do
           }
       }
 
-      merged = ConsoleReadModel.overlay_observed(observed_view)
+      merged = ConsoleReadModel.overlay_observed(observed_view, now())
       entry = merged.per_feature["001"]
 
       assert entry.status == :running

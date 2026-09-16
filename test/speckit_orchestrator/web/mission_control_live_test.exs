@@ -384,7 +384,7 @@ defmodule SpeckitOrchestrator.Web.MissionControlLiveTest do
     end
   end
 
-  test "a feature that finished in-session shows the same elapsed on every later reconcile tick (US1-3, SC-005)",
+  test "a feature that finished in-session shows the same elapsed on every later reconcile tick (US1-2, SC-005)",
        %{conn: conn} do
     run_key = open_store_run([feat("h6"), feat("h7")])
     record_done_feature(run_key, "h6")
@@ -408,6 +408,203 @@ defmodule SpeckitOrchestrator.Web.MissionControlLiveTest do
     [elapsed_later] = Regex.run(~r/\d+m \d+s/, row_later)
 
     assert elapsed_later == elapsed_once
+  end
+
+  # ---- 024 elapsed-execution-time (US1: elapsed is execution time, not
+  # calendar time) -------------------------------------------------------
+
+  defp attempt_at(feature_id, phase, ordinal, started_at, duration_ms) do
+    %{
+      feature_id: feature_id,
+      phase: phase,
+      ordinal: ordinal,
+      step: 1,
+      label: Atom.to_string(phase),
+      started_at: started_at,
+      ended_at: DateTime.add(started_at, duration_ms, :millisecond),
+      duration_ms: duration_ms,
+      outcome: :ok,
+      model: "sonnet",
+      cost_usd: 2.0,
+      cost_kind: :actual,
+      session_id: "s1",
+      error: nil
+    }
+  end
+
+  # Seven attempts, ~5m43s each (summing to exactly 40m 0s), one per phase,
+  # spread three hours apart — 40 minutes of execution across a 20-hour
+  # calendar span.
+  @seven_attempt_durations_ms [343_000, 343_000, 343_000, 343_000, 343_000, 343_000, 342_000]
+
+  defp record_forty_minutes_over_twenty_hours(run_key, feature_id) do
+    :ok = Writer.record_feature_started(run_key, feature_id)
+    base = ~U[2026-01-01 00:00:00Z]
+
+    @all_phases
+    |> Enum.zip(@seven_attempt_durations_ms)
+    |> Enum.with_index()
+    |> Enum.each(fn {{phase, duration_ms}, i} ->
+      started_at = DateTime.add(base, i * 3 * 60 * 60, :second)
+
+      :ok =
+        Writer.record_phase_attempt(run_key, %{
+          attempt: attempt_at(feature_id, phase, 1, started_at, duration_ms),
+          cost: %{amount_usd: 2.0, kind: :actual}
+        })
+    end)
+
+    :ok = Writer.record_feature_terminal(run_key, feature_id, :done, nil, [])
+  end
+
+  test "a finished feature's seven attempts covering 40 minutes across a 20-hour span read 40m 0s, not 1200m 0s, with no live Coordinator (US1-1)",
+       %{conn: conn} do
+    refute Process.whereis(Coordinator)
+
+    run_key = open_store_run([feat("e1")])
+    record_forty_minutes_over_twenty_hours(run_key, "e1")
+
+    {:ok, _view, html} = live(conn, "/")
+    row = Regex.run(~r/<tr[^>]*data-feature-row="e1".*?<\/tr>/s, html) |> hd()
+
+    assert row =~ "40m 0s"
+    refute row =~ "1200m 0s"
+  end
+
+  test "identically, with a live Coordinator resumed over the same store (US1-1)",
+       %{conn: conn} do
+    run_key = open_store_run([feat("e2"), feat("e2b")])
+    record_forty_minutes_over_twenty_hours(run_key, "e2")
+
+    pid =
+      start_coordinator([feat("e2", 1), feat("e2b", 2)], %{"e2" => :done, "e2b" => :pending})
+
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    {:ok, _view, html} = live(conn, "/")
+    row = Regex.run(~r/<tr[^>]*data-feature-row="e2".*?<\/tr>/s, html) |> hd()
+
+    assert row =~ "40m 0s"
+    refute row =~ "1200m 0s"
+  end
+
+  test "an implement roll-up's chunk attempts add nothing on top of the roll-up's own window (US1-4, SC-006)",
+       %{conn: conn} do
+    refute Process.whereis(Coordinator)
+
+    base = ~U[2026-01-01 00:00:00Z]
+
+    run_key = open_store_run([feat("e3"), feat("e4")])
+
+    :ok = Writer.record_feature_started(run_key, "e3")
+
+    :ok =
+      Writer.record_phase_attempt(run_key, %{
+        attempt: attempt_at("e3", :implement, 1, base, 60_000),
+        cost: %{amount_usd: 2.0, kind: :actual}
+      })
+
+    :ok = Writer.record_feature_terminal(run_key, "e3", :done, nil, [])
+
+    :ok = Writer.record_feature_started(run_key, "e4")
+
+    :ok =
+      Writer.record_phase_attempt(run_key, %{
+        attempt: attempt_at("e4", :implement, 1, base, 60_000),
+        cost: %{amount_usd: 2.0, kind: :actual}
+      })
+
+    for {offset, i} <- Enum.with_index([0, 20_000, 40_000]) do
+      :ok =
+        Writer.record_phase_attempt(run_key, %{
+          attempt: attempt_at("e4", :implement_chunk, i + 1, DateTime.add(base, offset, :millisecond), 20_000)
+        })
+    end
+
+    :ok = Writer.record_feature_terminal(run_key, "e4", :done, nil, [])
+
+    {:ok, _view, html} = live(conn, "/")
+    row_without = Regex.run(~r/<tr[^>]*data-feature-row="e3".*?<\/tr>/s, html) |> hd()
+    row_with = Regex.run(~r/<tr[^>]*data-feature-row="e4".*?<\/tr>/s, html) |> hd()
+
+    [elapsed_without] = Regex.run(~r/\d+m \d+s/, row_without)
+    [elapsed_with] = Regex.run(~r/\d+m \d+s/, row_with)
+
+    assert elapsed_without == elapsed_with
+  end
+
+  test "a final analyze record's superseded runs and corrections add nothing on top of its own window (US1-5, SC-006)",
+       %{conn: conn} do
+    refute Process.whereis(Coordinator)
+
+    base = ~U[2026-01-01 00:00:00Z]
+
+    run_key = open_store_run([feat("e5"), feat("e6")])
+
+    :ok = Writer.record_feature_started(run_key, "e5")
+
+    :ok =
+      Writer.record_phase_attempt(run_key, %{
+        attempt: attempt_at("e5", :analyze, 3, base, 100_000),
+        cost: %{amount_usd: 2.0, kind: :actual}
+      })
+
+    :ok = Writer.record_feature_terminal(run_key, "e5", :done, nil, [])
+
+    :ok = Writer.record_feature_started(run_key, "e6")
+
+    :ok =
+      Writer.record_phase_attempt(run_key, %{
+        attempt: attempt_at("e6", :analyze, 1, base, 20_000)
+      })
+
+    :ok =
+      Writer.record_phase_attempt(run_key, %{
+        attempt: attempt_at("e6", :auto_remediation, 1, DateTime.add(base, 20_000, :millisecond), 20_000)
+      })
+
+    :ok =
+      Writer.record_phase_attempt(run_key, %{
+        attempt: attempt_at("e6", :analyze, 2, DateTime.add(base, 40_000, :millisecond), 20_000)
+      })
+
+    :ok =
+      Writer.record_phase_attempt(run_key, %{
+        attempt: attempt_at("e6", :auto_remediation, 2, DateTime.add(base, 60_000, :millisecond), 20_000)
+      })
+
+    :ok =
+      Writer.record_phase_attempt(run_key, %{
+        attempt: attempt_at("e6", :analyze, 3, base, 100_000),
+        cost: %{amount_usd: 2.0, kind: :actual}
+      })
+
+    :ok = Writer.record_feature_terminal(run_key, "e6", :done, nil, [])
+
+    {:ok, _view, html} = live(conn, "/")
+    row_without = Regex.run(~r/<tr[^>]*data-feature-row="e5".*?<\/tr>/s, html) |> hd()
+    row_with = Regex.run(~r/<tr[^>]*data-feature-row="e6".*?<\/tr>/s, html) |> hd()
+
+    [elapsed_without] = Regex.run(~r/\d+m \d+s/, row_without)
+    [elapsed_with] = Regex.run(~r/\d+m \d+s/, row_with)
+
+    assert elapsed_without == elapsed_with
+  end
+
+  test "a live Coordinator's since-release elapsed_ms never leaks into ELAPSED for a feature with no attempts and no live phase (FR-009)",
+       %{conn: conn} do
+    pid = start_coordinator([feat("e7")])
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    # The no-op runner releases "e7" immediately but never emits phase
+    # telemetry, so the Coordinator's per-feature elapsed_ms (a since-release
+    # monotonic counter) grows while the projection's windows stay empty.
+    assert %{status: :running} = Coordinator.status(pid).per_feature["e7"]
+
+    {:ok, _view, html} = live(conn, "/")
+    row = Regex.run(~r/<tr[^>]*data-feature-row="e7".*?<\/tr>/s, html) |> hd()
+
+    assert row =~ ">—<"
   end
 
   test "other features' live telemetry does not change a finished row (US1-2)",
@@ -850,5 +1047,248 @@ defmodule SpeckitOrchestrator.Web.MissionControlLiveTest do
     {:ok, _view, html} = live(conn, "/")
 
     refute html =~ ~s(data-state="parked")
+  end
+
+  # ---- 024 elapsed-execution-time (US2: a running feature's elapsed grows
+  # only while a phase runs) -----------------------------------------------
+
+  defp elapsed_seconds(row) do
+    [minutes_str, seconds_str] = Regex.run(~r/(\d+)m (\d+)s/, row, capture: :all_but_first)
+    String.to_integer(minutes_str) * 60 + String.to_integer(seconds_str)
+  end
+
+  test "a live phase's window grows the row's elapsed on the next reconcile tick (US2-1, US2-2, SC-004)",
+       %{conn: conn} do
+    base = ~U[2026-01-01 00:00:00Z]
+    run_key = open_store_run([feat("g1")])
+
+    for {phase, i} <- Enum.with_index([:specify, :clarify, :plan, :tasks]) do
+      :ok =
+        Writer.record_phase_attempt(run_key, %{
+          attempt: attempt_at("g1", phase, 1, DateTime.add(base, i * 60, :second), 10_000),
+          cost: %{amount_usd: 1.0, kind: :actual}
+        })
+    end
+
+    pid = start_coordinator([feat("g1", 1)])
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    :telemetry.execute(
+      [:speckit, :phase, :start],
+      %{system_time: System.system_time()},
+      %{feature_id: "g1", phase: :analyze, model: "sonnet", step: 5}
+    )
+
+    {:ok, view, html} = live(conn, "/")
+    row_once = Regex.run(~r/<tr[^>]*data-feature-row="g1".*?<\/tr>/s, html) |> hd()
+    refute row_once =~ ">—<"
+    elapsed_once = elapsed_seconds(row_once)
+    # Four recorded 10s phases already sum to 40s before any live time.
+    assert elapsed_once >= 40
+
+    Process.sleep(1_200)
+
+    Phoenix.PubSub.broadcast(
+      SpeckitOrchestrator.PubSub,
+      ConsoleProjection.topic(),
+      {:console, :reconciled, %{coordinator: Coordinator.status(pid), ledger: nil}}
+    )
+
+    html_later = render(view)
+    row_later = Regex.run(~r/<tr[^>]*data-feature-row="g1".*?<\/tr>/s, html_later) |> hd()
+    elapsed_later = elapsed_seconds(row_later)
+
+    assert elapsed_later >= elapsed_once
+    assert elapsed_later <= elapsed_once + 5
+  end
+
+  test "once a live phase stops, elapsed stays the same across further reconcile ticks (US2-3, FR-006)",
+       %{conn: conn} do
+    _run_key = open_store_run([feat("g2")])
+    pid = start_coordinator([feat("g2", 1)])
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    :telemetry.execute(
+      [:speckit, :phase, :start],
+      %{system_time: 0},
+      %{feature_id: "g2", phase: :specify, model: "sonnet", step: 1}
+    )
+
+    :telemetry.execute(
+      [:speckit, :phase, :stop],
+      %{duration: System.convert_time_unit(5_000, :millisecond, :native)},
+      %{feature_id: "g2", phase: :specify, model: "sonnet", step: 1, outcome: :ok, cost: 0.5}
+    )
+
+    {:ok, view, html} = live(conn, "/")
+    row_once = Regex.run(~r/<tr[^>]*data-feature-row="g2".*?<\/tr>/s, html) |> hd()
+    elapsed_once = elapsed_seconds(row_once)
+    assert elapsed_once == 5
+
+    Process.sleep(1_100)
+
+    Phoenix.PubSub.broadcast(
+      SpeckitOrchestrator.PubSub,
+      ConsoleProjection.topic(),
+      {:console, :reconciled, %{coordinator: Coordinator.status(pid), ledger: nil}}
+    )
+
+    html_later = render(view)
+    row_later = Regex.run(~r/<tr[^>]*data-feature-row="g2".*?<\/tr>/s, html_later) |> hd()
+    elapsed_later = elapsed_seconds(row_later)
+
+    assert elapsed_later == elapsed_once
+  end
+
+  test "a feature resumed from plan with stale tasks/analyze attempts counts those windows too (US2-4)",
+       %{conn: conn} do
+    base = ~U[2026-01-01 00:00:00Z]
+    run_key = open_store_run([feat("g3")])
+    :ok = Writer.record_feature_started(run_key, "g3")
+
+    for {phase, i} <- Enum.with_index([:specify, :clarify]) do
+      :ok =
+        Writer.record_phase_attempt(run_key, %{
+          attempt: attempt_at("g3", phase, 1, DateTime.add(base, i * 60, :second), 10_000),
+          cost: %{amount_usd: 1.0, kind: :actual}
+        })
+    end
+
+    :ok =
+      Writer.record_phase_attempt(run_key, %{
+        attempt: attempt_at("g3", :plan, 1, DateTime.add(base, 120, :second), 10_000),
+        checkpoint: %{
+          phase: :plan,
+          last_completed_phase: :plan,
+          status: :running,
+          reason: nil,
+          session_id: "s1"
+        },
+        cost: %{amount_usd: 1.0, kind: :actual}
+      })
+
+    # Stale attempts from before a resume-from-an-earlier-phase reset — the
+    # checkpoint above already puts current_phase back at :plan, so these
+    # phase cells render pending (US2-5), but their windows still count
+    # toward elapsed.
+    for {phase, i} <- Enum.with_index([:tasks, :analyze]) do
+      :ok =
+        Writer.record_phase_attempt(run_key, %{
+          attempt: attempt_at("g3", phase, 1, DateTime.add(base, 180 + i * 60, :second), 10_000),
+          cost: %{amount_usd: 1.0, kind: :actual}
+        })
+    end
+
+    refute Process.whereis(Coordinator)
+
+    {:ok, _view, html} = live(conn, "/")
+    row = Regex.run(~r/<tr[^>]*data-feature-row="g3".*?<\/tr>/s, html) |> hd()
+
+    [tasks_cell] = Regex.run(~r/<span[^>]*data-phase="tasks"[^>]*>/, row)
+    assert tasks_cell =~ "phase-cell-pending"
+
+    assert elapsed_seconds(row) == 50
+  end
+
+  # ---- 024 elapsed-execution-time (US3: diverted and unstarted features
+  # read correctly) ---------------------------------------------------------
+
+  test "a feature halted at analyze after four completed phases reads all five attempts' union, cold and live (US3-1)",
+       %{conn: conn} do
+    base = ~U[2026-01-01 00:00:00Z]
+    run_key = open_store_run([feat("g4")])
+
+    for {phase, i} <- Enum.with_index([:specify, :clarify, :plan, :tasks]) do
+      :ok =
+        Writer.record_phase_attempt(run_key, %{
+          attempt: attempt_at("g4", phase, 1, DateTime.add(base, i * 60, :second), 10_000),
+          cost: %{amount_usd: 1.0, kind: :actual}
+        })
+    end
+
+    :ok =
+      Writer.record_phase_attempt(run_key, %{
+        attempt: attempt_at("g4", :analyze, 1, DateTime.add(base, 240, :second), 10_000),
+        checkpoint: %{
+          phase: :analyze,
+          last_completed_phase: :analyze,
+          status: :halted,
+          reason: "test fixture",
+          session_id: "s1"
+        },
+        cost: %{amount_usd: 1.0, kind: :actual}
+      })
+
+    :ok = Writer.record_feature_terminal(run_key, "g4", :halted, "test fixture", [])
+
+    refute Process.whereis(Coordinator)
+    {:ok, _view, cold_html} = live(conn, "/")
+    cold_row = Regex.run(~r/<tr[^>]*data-feature-row="g4".*?<\/tr>/s, cold_html) |> hd()
+    assert elapsed_seconds(cold_row) == 50
+
+    # Live: reproduce the same five disjoint 10s phase windows purely
+    # through telemetry on a freshly-live feature (no store record at all,
+    # the diverting :analyze phase closed by its own :exception) — the same
+    # window algebra drives both paths, so it reads the same union (FR-004).
+    pid = start_coordinator([feat("g4live", 1)])
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    for {phase, i} <- Enum.with_index([:specify, :clarify, :plan, :tasks, :analyze]) do
+      start_native = System.convert_time_unit(i * 60_000, :millisecond, :native)
+      duration_native = System.convert_time_unit(10_000, :millisecond, :native)
+
+      :telemetry.execute(
+        [:speckit, :phase, :start],
+        %{system_time: start_native},
+        %{feature_id: "g4live", phase: phase, model: "sonnet", step: 1}
+      )
+
+      if phase == :analyze do
+        :telemetry.execute(
+          [:speckit, :phase, :exception],
+          %{duration: duration_native},
+          %{feature_id: "g4live", phase: phase, model: "sonnet", step: 1, kind: :error, reason: :needs_human}
+        )
+      else
+        :telemetry.execute(
+          [:speckit, :phase, :stop],
+          %{duration: duration_native},
+          %{feature_id: "g4live", phase: phase, model: "sonnet", step: 1, outcome: :ok, cost: 1.0}
+        )
+      end
+    end
+
+    {:ok, _view, live_html} = live(conn, "/")
+    live_row = Regex.run(~r/<tr[^>]*data-feature-row="g4live".*?<\/tr>/s, live_html) |> hd()
+    assert elapsed_seconds(live_row) == 50
+  end
+
+  test "a feature with no recorded attempt and no live phase reads — (US3-2)",
+       %{conn: conn} do
+    pid = start_coordinator([feat("g5")])
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    {:ok, _view, html} = live(conn, "/")
+    row = Regex.run(~r/<tr[^>]*data-feature-row="g5".*?<\/tr>/s, html) |> hd()
+
+    assert row =~ ">—<"
+  end
+
+  test "a feature whose only activity is a live start reads the seconds since it (US3-3)",
+       %{conn: conn} do
+    pid = start_coordinator([feat("g6")])
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    :telemetry.execute(
+      [:speckit, :phase, :start],
+      %{system_time: System.system_time()},
+      %{feature_id: "g6", phase: :specify, model: "sonnet", step: 1}
+    )
+
+    {:ok, _view, html} = live(conn, "/")
+    row = Regex.run(~r/<tr[^>]*data-feature-row="g6".*?<\/tr>/s, html) |> hd()
+
+    refute row =~ ">—<"
+    assert elapsed_seconds(row) >= 0
   end
 end

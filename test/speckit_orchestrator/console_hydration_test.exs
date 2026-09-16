@@ -10,9 +10,12 @@ defmodule SpeckitOrchestrator.ConsoleHydrationTest do
       attempt_id: {"repo", "run", feature_id, phase, Keyword.get(opts, :ordinal, 1)},
       feature_id: feature_id,
       phase: phase,
+      ordinal: Keyword.get(opts, :ordinal, 1),
       outcome: Keyword.get(opts, :outcome, :ok),
       model: Keyword.get(opts, :model, "sonnet"),
-      cost_usd: Keyword.get(opts, :cost_usd, 1.0)
+      cost_usd: Keyword.get(opts, :cost_usd, 1.0),
+      started_at: Keyword.get(opts, :started_at),
+      ended_at: Keyword.get(opts, :ended_at)
     }
   end
 
@@ -34,20 +37,30 @@ defmodule SpeckitOrchestrator.ConsoleHydrationTest do
   end
 
   describe "from_record/3" do
-    test "a :done feature recorded through all seven phases yields seven completed cells, correct spend, and elapsed = ended_at - started_at (US1-1)" do
+    test "a :done feature's elapsed is the union of its attempt windows, not the calendar span between its own started_at/ended_at (US1-1)" do
       phases = Pipeline.phases()
-      attempts = Enum.map(phases, &attempt("f1", &1, cost_usd: 2.0))
-      cost_entries = Enum.map(attempts, &cost_entry(&1.attempt_id, 2.0))
+      # Seven attempts, each 40/7 min ≈ 342.86s, spread with idle gaps across
+      # a 20-hour calendar span — sums to 40 min of execution time.
+      base = ~U[2026-01-01 00:00:00Z]
+      per_attempt_ms = div(2_400_000, 7)
 
-      started_at = ~U[2026-01-01 00:00:00Z]
-      ended_at = ~U[2026-01-01 00:10:00Z]
+      attempts =
+        phases
+        |> Enum.with_index()
+        |> Enum.map(fn {phase, i} ->
+          started_at = DateTime.add(base, i * 3 * 60 * 60, :second)
+          ended_at = DateTime.add(started_at, per_attempt_ms, :millisecond)
+          attempt("f1", phase, cost_usd: 2.0, started_at: started_at, ended_at: ended_at)
+        end)
+
+      cost_entries = Enum.map(attempts, &cost_entry(&1.attempt_id, 2.0))
 
       f =
         feature("f1",
           status: :done,
           phase_attempts: attempts,
-          started_at: started_at,
-          ended_at: ended_at
+          started_at: base,
+          ended_at: DateTime.add(base, 20 * 60 * 60, :second)
         )
 
       slice = ConsoleHydration.from_record(f, cost_entries, @now)
@@ -59,8 +72,25 @@ defmodule SpeckitOrchestrator.ConsoleHydrationTest do
       end
 
       assert slice.spend == 14.0
-      assert slice.elapsed_ms == 600_000
+      assert slice.elapsed_ms == 7 * per_attempt_ms
+      refute slice.elapsed_ms == 72_000_000
       assert slice.current_phase == nil
+    end
+
+    test "the feature's own started_at/ended_at are not read at all" do
+      attempts = [attempt("f1b", :specify, started_at: ~U[2026-01-01 00:00:00Z], ended_at: ~U[2026-01-01 00:05:00Z])]
+
+      f =
+        feature("f1b",
+          status: :done,
+          phase_attempts: attempts,
+          started_at: ~U[2020-01-01 00:00:00Z],
+          ended_at: ~U[2030-01-01 00:00:00Z]
+        )
+
+      slice = ConsoleHydration.from_record(f, [], @now)
+
+      assert slice.elapsed_ms == 300_000
     end
 
     test "non-phase attempts (:remediation, :implement_chunk, :auto_remediation) never produce a cell and add no spend without a matching cost entry (FR-003/FR-005)" do
@@ -128,6 +158,29 @@ defmodule SpeckitOrchestrator.ConsoleHydrationTest do
              }
     end
 
+    test "a diverted feature's recorded attempt list includes the diverting phase's window — mark_diverted never touches windows (US3-1)" do
+      attempts = [
+        attempt("f4c", :specify, cost_usd: 1.0,
+          started_at: ~U[2026-01-01 00:00:00Z], ended_at: ~U[2026-01-01 00:05:00Z]),
+        attempt("f4c", :analyze, cost_usd: 2.5, model: "opus",
+          started_at: ~U[2026-01-01 01:00:00Z], ended_at: ~U[2026-01-01 01:10:00Z])
+      ]
+
+      cost_entries = Enum.map(attempts, &cost_entry(&1.attempt_id, &1.cost_usd))
+
+      f =
+        feature("f4c",
+          status: :halted,
+          phase_attempts: attempts,
+          checkpoint: %{last_completed_phase: :analyze}
+        )
+
+      slice = ConsoleHydration.from_record(f, cost_entries, @now)
+
+      assert slice.phases[:analyze].outcome == :halted
+      assert slice.elapsed_ms == 5 * 60_000 + 10 * 60_000
+    end
+
     test "a diverted feature with no attempt at its checkpoint phase degrades to cost: nil, model: nil (FR-004, US3-1)" do
       f =
         feature("f4b",
@@ -186,7 +239,7 @@ defmodule SpeckitOrchestrator.ConsoleHydrationTest do
 
     test "a record missing phase_attempts/checkpoint/started_at/ended_at/pr_url renders as an empty row with no raise when layered (FR-013, SC-006)" do
       slice = ConsoleHydration.from_record(%{feature_id: "f5b", status: :pending}, nil, @now)
-      row = ConsoleHydration.layer(slice, nil)
+      row = ConsoleHydration.layer(slice, nil, @now)
 
       assert row.phases == %{}
       assert row.elapsed_ms == nil
@@ -197,7 +250,7 @@ defmodule SpeckitOrchestrator.ConsoleHydrationTest do
     end
   end
 
-  describe "layer/2 (contracts/console-hydration.md §2-3)" do
+  describe "layer/3 (contracts/console-hydration.md §2-3, contracts/execution-time.md §5.2)" do
     defp recorded_slice do
       %{
         status: :done,
@@ -210,6 +263,7 @@ defmodule SpeckitOrchestrator.ConsoleHydrationTest do
           clarify: %{state: :completed, outcome: :ok, cost: 1.0, model: "sonnet"}
         },
         spend: 2.0,
+        windows: [%{key: {:attempt, :specify, 1}, from: 0, to: 5_000}],
         elapsed_ms: 5_000,
         chunk: nil,
         remediation: nil,
@@ -217,7 +271,7 @@ defmodule SpeckitOrchestrator.ConsoleHydrationTest do
       }
     end
 
-    test "is idempotent: layer(r, layer(r, l)) == layer(r, l)" do
+    test "is idempotent: layer(r, layer(r, l, t), t) == layer(r, l, t)" do
       r = recorded_slice()
 
       l = %{
@@ -226,8 +280,8 @@ defmodule SpeckitOrchestrator.ConsoleHydrationTest do
         spend: 3.0
       }
 
-      once = ConsoleHydration.layer(r, l)
-      twice = ConsoleHydration.layer(r, once)
+      once = ConsoleHydration.layer(r, l, @now)
+      twice = ConsoleHydration.layer(r, once, @now)
 
       assert twice == once
     end
@@ -236,8 +290,8 @@ defmodule SpeckitOrchestrator.ConsoleHydrationTest do
       r = %{recorded_slice() | spend: 5.0}
       l = %{spend: 2.0}
 
-      assert ConsoleHydration.layer(r, l).spend == 5.0
-      assert ConsoleHydration.layer(%{r | spend: 1.0}, %{spend: 9.0}).spend == 9.0
+      assert ConsoleHydration.layer(r, l, @now).spend == 5.0
+      assert ConsoleHydration.layer(%{r | spend: 1.0}, %{spend: 9.0}, @now).spend == 9.0
     end
 
     test "live wins per phase it observed, and cells after a live active phase are trimmed" do
@@ -258,7 +312,7 @@ defmodule SpeckitOrchestrator.ConsoleHydrationTest do
         }
       }
 
-      row = ConsoleHydration.layer(r, l)
+      row = ConsoleHydration.layer(r, l, @now)
 
       assert row.phases[:plan] == l.phases.plan
       assert row.phases[:specify] == r.phases.specify
@@ -271,19 +325,59 @@ defmodule SpeckitOrchestrator.ConsoleHydrationTest do
       r = recorded_slice()
       l = %{pr_url: nil}
 
-      assert ConsoleHydration.layer(r, l).pr_url == r.pr_url
+      assert ConsoleHydration.layer(r, l, @now).pr_url == r.pr_url
     end
 
     test "handles either argument being nil" do
       r = recorded_slice()
 
-      assert ConsoleHydration.layer(r, nil).pr_url == r.pr_url
-      assert ConsoleHydration.layer(nil, %{status: :running}).status == :running
-      assert ConsoleHydration.layer(nil, nil) == ConsoleHydration.layer(%{}, %{})
+      assert ConsoleHydration.layer(r, nil, @now).pr_url == r.pr_url
+      assert ConsoleHydration.layer(nil, %{status: :running}, @now).status == :running
+      assert ConsoleHydration.layer(nil, nil, @now) == ConsoleHydration.layer(%{}, %{}, @now)
+    end
+
+    test "elapsed_ms is the union of recorded and live windows" do
+      r = recorded_slice()
+      l = %{windows: [%{key: {:phase, :clarify}, from: 5_000, to: 8_000}]}
+
+      row = ConsoleHydration.layer(r, l, @now)
+
+      assert row.elapsed_ms == 8_000
+    end
+
+    test "a live open window advances the value between two nows" do
+      r = %{recorded_slice() | windows: []}
+      l = %{windows: [%{key: {:phase, :specify}, from: 0, to: nil}]}
+
+      t1 = ~U[2026-09-15 00:00:01Z]
+      t2 = ~U[2026-09-15 00:00:05Z]
+
+      e1 = ConsoleHydration.layer(r, l, t1).elapsed_ms
+      e2 = ConsoleHydration.layer(r, l, t2).elapsed_ms
+
+      assert e2 > e1
+    end
+
+    test "cold = live at rest: a live slice with only closed windows layers the same as no live slice at all (FR-007)" do
+      r = recorded_slice()
+      l = %{windows: []}
+
+      cold = ConsoleHydration.layer(r, nil, @now)
+      live_closed = ConsoleHydration.layer(r, l, @now)
+
+      assert cold.elapsed_ms == live_closed.elapsed_ms
+    end
+
+    test "no Coordinator fallback: a live slice carrying only a Coordinator elapsed_ms and no windows layers to nil over an empty record (FR-009, FR-010)" do
+      l = %{elapsed_ms: 1348 * 60_000}
+
+      row = ConsoleHydration.layer(nil, l, @now)
+
+      assert row.elapsed_ms == nil
     end
   end
 
-  describe "apply_update/2 (contracts/console-hydration.md §3-4)" do
+  describe "apply_update/3 (contracts/console-hydration.md §3-4, contracts/execution-time.md §5.3)" do
     defp row do
       %{
         status: :running,
@@ -296,6 +390,7 @@ defmodule SpeckitOrchestrator.ConsoleHydrationTest do
           tasks: %{state: :active, outcome: nil, cost: nil, model: "sonnet"}
         },
         spend: 3.0,
+        windows: [%{key: {:attempt, :specify, 1}, from: 0, to: 10_000}],
         elapsed_ms: 10_000,
         chunk: nil,
         remediation: nil,
@@ -304,7 +399,7 @@ defmodule SpeckitOrchestrator.ConsoleHydrationTest do
     end
 
     test "update == nil returns row unchanged" do
-      assert ConsoleHydration.apply_update(row(), nil) == row()
+      assert ConsoleHydration.apply_update(row(), nil, @now) == row()
     end
 
     test "a missing row starts from the documented default shape" do
@@ -313,7 +408,7 @@ defmodule SpeckitOrchestrator.ConsoleHydrationTest do
         phases: %{specify: %{state: :active, outcome: nil, cost: nil, model: nil}}
       }
 
-      result = ConsoleHydration.apply_update(nil, update)
+      result = ConsoleHydration.apply_update(nil, update, @now)
 
       assert result.status == :running
       assert result.slug == nil
@@ -322,14 +417,14 @@ defmodule SpeckitOrchestrator.ConsoleHydrationTest do
     end
 
     test "spend never decreases" do
-      assert ConsoleHydration.apply_update(row(), %{spend: 1.0}).spend == 3.0
-      assert ConsoleHydration.apply_update(row(), %{spend: 9.0}).spend == 9.0
+      assert ConsoleHydration.apply_update(row(), %{spend: 1.0}, @now).spend == 3.0
+      assert ConsoleHydration.apply_update(row(), %{spend: 9.0}, @now).spend == 9.0
     end
 
     test "no blanking: an untouched pre-restart completed cell survives an update that only carries a later phase" do
       update = %{phases: %{analyze: %{state: :active, outcome: nil, cost: nil, model: "opus"}}}
 
-      result = ConsoleHydration.apply_update(row(), update)
+      result = ConsoleHydration.apply_update(row(), update, @now)
 
       assert result.phases[:specify] == row().phases.specify
       assert result.phases[:clarify] == row().phases.clarify
@@ -343,7 +438,7 @@ defmodule SpeckitOrchestrator.ConsoleHydrationTest do
         phases: %{tasks: %{state: :active, outcome: :error, cost: 2.0, model: "opus"}}
       }
 
-      result = ConsoleHydration.apply_update(row(), update)
+      result = ConsoleHydration.apply_update(row(), update, @now)
 
       assert result.phases[:tasks] == update.phases.tasks
     end
@@ -351,7 +446,7 @@ defmodule SpeckitOrchestrator.ConsoleHydrationTest do
     test "an update whose active phase is earlier than a recorded cell renders the later recorded cells pending (resume from an earlier phase)" do
       update = %{phases: %{clarify: %{state: :active, outcome: nil, cost: nil, model: "sonnet"}}}
 
-      result = ConsoleHydration.apply_update(row(), update)
+      result = ConsoleHydration.apply_update(row(), update, @now)
 
       assert result.phases[:specify] == row().phases.specify
       assert result.phases[:clarify] == update.phases.clarify
@@ -360,27 +455,76 @@ defmodule SpeckitOrchestrator.ConsoleHydrationTest do
     end
 
     test "a known pr_url survives an update carrying pr_url: nil" do
-      assert ConsoleHydration.apply_update(row(), %{pr_url: nil}).pr_url == row().pr_url
+      assert ConsoleHydration.apply_update(row(), %{pr_url: nil}, @now).pr_url == row().pr_url
     end
 
     test "chunk/remediation/current_phase are replaced by the update, including nil to clear" do
       result =
-        ConsoleHydration.apply_update(row(), %{chunk: %{ordinal: 1}, current_phase: :analyze})
+        ConsoleHydration.apply_update(
+          row(),
+          %{chunk: %{ordinal: 1}, current_phase: :analyze},
+          @now
+        )
 
       assert result.chunk == %{ordinal: 1}
       assert result.current_phase == :analyze
 
-      cleared = ConsoleHydration.apply_update(result, %{chunk: nil})
+      cleared = ConsoleHydration.apply_update(result, %{chunk: nil}, @now)
       assert cleared.chunk == nil
     end
 
-    test "is idempotent: reapplying an already-reflected update yields the same row" do
+    test "is idempotent: reapplying an already-reflected update at a fixed now yields the same row" do
       update = %{phases: %{analyze: %{state: :active, outcome: nil, cost: nil, model: "opus"}}}
 
-      once = ConsoleHydration.apply_update(row(), update)
-      twice = ConsoleHydration.apply_update(once, update)
+      once = ConsoleHydration.apply_update(row(), update, @now)
+      twice = ConsoleHydration.apply_update(once, update, @now)
 
       assert twice == once
+    end
+
+    test "max_nil keeps the row's own elapsed_ms when the freshly-computed union is nil" do
+      row = %{row() | windows: [], elapsed_ms: 10_000}
+
+      result = ConsoleHydration.apply_update(row, %{}, @now)
+
+      assert result.elapsed_ms == 10_000
+    end
+
+    test "elapsed_ms is the union of the row's and update's windows (US2-1)" do
+      update = %{windows: [%{key: {:phase, :tasks}, from: 10_000, to: 25_000}]}
+
+      result = ConsoleHydration.apply_update(row(), update, @now)
+
+      assert result.elapsed_ms == 25_000
+    end
+
+    test "elapsed_ms never lowers, even under a now earlier than the row's own value (FR-011)" do
+      earlier_now = ~U[2026-01-01 00:00:00Z]
+
+      result = ConsoleHydration.apply_update(row(), %{}, earlier_now)
+
+      assert result.elapsed_ms == row().elapsed_ms
+    end
+
+    test "a closed live window contained in the row's recorded window leaves elapsed_ms unchanged (FR-004)" do
+      update = %{windows: [%{key: {:phase, :specify}, from: 2_000, to: 8_000}]}
+
+      result = ConsoleHydration.apply_update(row(), update, @now)
+
+      assert result.elapsed_ms == row().elapsed_ms
+    end
+
+    test "an open live window advances elapsed_ms between two nows" do
+      base = %{row() | windows: []}
+      update = %{windows: [%{key: {:phase, :tasks}, from: 0, to: nil}]}
+
+      t1 = ~U[2026-09-15 00:00:01Z]
+      t2 = ~U[2026-09-15 00:00:05Z]
+
+      e1 = ConsoleHydration.apply_update(base, update, t1).elapsed_ms
+      e2 = ConsoleHydration.apply_update(base, update, t2).elapsed_ms
+
+      assert e2 > e1
     end
   end
 end

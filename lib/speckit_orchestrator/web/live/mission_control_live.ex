@@ -93,7 +93,10 @@ defmodule SpeckitOrchestrator.Web.MissionControlLive do
   @impl true
   def handle_info({:console, :feature_updated, %{id: id, feature: feature}}, socket) do
     view = socket.assigns.view
-    merged = ConsoleHydration.apply_update(Map.get(view.per_feature, id), feature)
+
+    merged =
+      ConsoleHydration.apply_update(Map.get(view.per_feature, id), feature, DateTime.utc_now())
+
     {:noreply, assign(socket, view: %{view | per_feature: Map.put(view.per_feature, id, merged)})}
   end
 

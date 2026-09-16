@@ -10,8 +10,8 @@ defmodule SpeckitOrchestrator.Telemetry do
       `%{outcome, cost}`.
     * `[:speckit, :phase, :exception]` — measurements `%{duration}`, metadata
       adds `%{kind, reason}`. (Emitted via `:telemetry.span/3`.)
-    * `[:speckit, :feature, :terminal]` — measurements `%{cost_total}`, metadata
-      `%{feature_id, status, reason}`.
+    * `[:speckit, :feature, :terminal]` — measurements `%{cost_total,
+      system_time}`, metadata `%{feature_id, status, reason}`.
 
   Events (emitted by `ChunkRunner`, one `:implement` step's chunk loop —
   `specs/015-implement-phase-chunking/contracts/telemetry-chunk.md` §1):
