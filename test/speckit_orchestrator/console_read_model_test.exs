@@ -338,7 +338,7 @@ defmodule SpeckitOrchestrator.ConsoleReadModelTest do
 
       assert merged.active?
       assert merged.per_feature["001"].status == :running
-      assert merged.per_feature["001"].elapsed_ms == 1000
+      refute Map.has_key?(merged.per_feature["001"], :elapsed_ms)
       assert merged.per_feature["001"].current_phase == :specify
       assert merged.ledger == ledger_snapshot
     end
@@ -373,9 +373,12 @@ defmodule SpeckitOrchestrator.ConsoleReadModelTest do
       %{
         attempt_id: {"repo", "run", feature_id, phase, Keyword.get(opts, :ordinal, 1)},
         phase: phase,
+        ordinal: Keyword.get(opts, :ordinal, 1),
         outcome: Keyword.get(opts, :outcome, :ok),
         model: Keyword.get(opts, :model, "sonnet"),
-        cost_usd: Keyword.get(opts, :cost_usd, 1.0)
+        cost_usd: Keyword.get(opts, :cost_usd, 1.0),
+        started_at: Keyword.get(opts, :started_at),
+        ended_at: Keyword.get(opts, :ended_at)
       }
     end
 
@@ -399,8 +402,15 @@ defmodule SpeckitOrchestrator.ConsoleReadModelTest do
       refute Map.has_key?(merged.per_feature, "record-only")
     end
 
-    test "live mode layers the record's wall-clock elapsed/spend under the live row" do
-      attempts = [attempt("001", :specify, cost_usd: 3.0)]
+    test "live mode layers the record's execution-time elapsed/spend under the live row" do
+      attempts = [
+        attempt("001", :specify,
+          cost_usd: 3.0,
+          started_at: ~U[2026-09-15 11:00:00Z],
+          ended_at: ~U[2026-09-15 12:00:00Z]
+        )
+      ]
+
       cost_entries = [cost_entry(hd(attempts).attempt_id, 3.0)]
 
       detail =
@@ -603,7 +613,7 @@ defmodule SpeckitOrchestrator.ConsoleReadModelTest do
           }
       }
 
-      merged = ConsoleReadModel.overlay_observed(observed_view)
+      merged = ConsoleReadModel.overlay_observed(observed_view, now())
       entry = merged.per_feature["001"]
 
       assert entry.status == :running

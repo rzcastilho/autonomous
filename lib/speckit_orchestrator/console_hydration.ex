@@ -6,14 +6,17 @@ defmodule SpeckitOrchestrator.ConsoleHydration do
   an injected parameter (Principle I, FR-012).
 
   `from_record/3` turns one recorded feature + the run's cost entries into a
-  `recorded_slice()`; `layer/2` combines that with a live slice (Coordinator
+  `recorded_slice()`; `layer/3` combines that with a live slice (Coordinator
   status ∪ `ConsoleReadModel` projection, or `nil`) under the seed/reconcile
   precedence table (§3); `apply_update/2` applies the same table's update
   column to an already-hydrated row for a `:feature_updated` broadcast — the
-  one that must never blank a hydrated row (FR-011, SC-004).
+  one that must never blank a hydrated row (FR-011, SC-004). `elapsed_ms`
+  is `SpeckitOrchestrator.ExecutionTime.elapsed_ms/2` over the union of
+  recorded and live windows (`specs/024-elapsed-execution-time`); `now` is
+  the one clock read this module needs, injected by every caller.
   """
 
-  alias SpeckitOrchestrator.Pipeline
+  alias SpeckitOrchestrator.{ExecutionTime, Pipeline}
 
   @type phase_cell :: %{
           state: :active | :completed,
@@ -32,6 +35,7 @@ defmodule SpeckitOrchestrator.ConsoleHydration do
           current_phase: atom() | nil,
           phases: %{atom() => phase_cell()},
           spend: float(),
+          windows: [ExecutionTime.window()],
           elapsed_ms: non_neg_integer() | nil,
           chunk: chunk_cell() | nil,
           remediation: nil,
@@ -44,6 +48,7 @@ defmodule SpeckitOrchestrator.ConsoleHydration do
 
   @default_row %{
     status: :pending,
+    windows: [],
     elapsed_ms: nil,
     slug: nil,
     group: nil,
@@ -78,6 +83,8 @@ defmodule SpeckitOrchestrator.ConsoleHydration do
       |> trim_after_phase(current_phase)
       |> mark_diverted(status, current_phase)
 
+    windows = ExecutionTime.from_attempts(phase_attempts)
+
     %{
       status: status,
       slug: Map.get(recorded_feature, :slug),
@@ -86,7 +93,8 @@ defmodule SpeckitOrchestrator.ConsoleHydration do
       current_phase: current_phase,
       phases: phases,
       spend: spend_for(phase_attempts, cost_entries || []),
-      elapsed_ms: elapsed_for(recorded_feature, now),
+      windows: windows,
+      elapsed_ms: ExecutionTime.elapsed_ms(windows, now),
       chunk: checkpoint_chunk(checkpoint),
       remediation: nil,
       pr_url: Map.get(recorded_feature, :pr_url)
@@ -137,17 +145,6 @@ defmodule SpeckitOrchestrator.ConsoleHydration do
     |> Enum.reduce(0.0, &(Map.get(&1, :amount_usd) + &2))
   end
 
-  defp elapsed_for(recorded_feature, now) do
-    case Map.get(recorded_feature, :started_at) do
-      nil ->
-        nil
-
-      started_at ->
-        ended_at = Map.get(recorded_feature, :ended_at) || now
-        DateTime.diff(ended_at, started_at, :millisecond)
-    end
-  end
-
   defp checkpoint_phase(nil), do: nil
   defp checkpoint_phase(checkpoint), do: Map.get(checkpoint, :last_completed_phase)
 
@@ -175,10 +172,14 @@ defmodule SpeckitOrchestrator.ConsoleHydration do
   Layers a live slice (a Coordinator/projection row, or `nil`) over a
   recorded slice (`from_record/3`'s output, or `nil`), per the seed/reconcile
   column of contracts/console-hydration.md §3. At least one argument is
-  expected non-`nil`; either may be `nil` without raising.
+  expected non-`nil`; either may be `nil` without raising. `windows` is the
+  normalized union of both sides' windows; `elapsed_ms` is derived from it
+  (contracts/execution-time.md §5.2) — the Coordinator's own `elapsed_ms`
+  never reaches this function (`ConsoleReadModel.merge_per_feature/2` drops
+  it first, FR-009).
   """
-  @spec layer(recorded_slice() | nil, map() | nil) :: row()
-  def layer(recorded, live) do
+  @spec layer(recorded_slice() | nil, map() | nil, DateTime.t()) :: row()
+  def layer(recorded, live, now) do
     recorded = recorded || %{}
     live = live || %{}
 
@@ -190,6 +191,8 @@ defmodule SpeckitOrchestrator.ConsoleHydration do
       active_phase_in(live_phases) || Map.get(live, :current_phase) ||
         Map.get(recorded, :current_phase)
 
+    windows = ExecutionTime.normalize((Map.get(recorded, :windows) || []) ++ (Map.get(live, :windows) || []))
+
     %{
       status: Map.get(live, :status) || Map.get(recorded, :status),
       slug: not_nil_or(Map.get(live, :slug), Map.get(recorded, :slug)),
@@ -198,7 +201,8 @@ defmodule SpeckitOrchestrator.ConsoleHydration do
       current_phase: current_phase,
       phases: merged_phases,
       spend: max(Map.get(recorded, :spend) || 0.0, Map.get(live, :spend) || 0.0),
-      elapsed_ms: Map.get(recorded, :elapsed_ms) || Map.get(live, :elapsed_ms),
+      windows: windows,
+      elapsed_ms: ExecutionTime.elapsed_ms(windows, now),
       pr_url: not_nil_or(Map.get(live, :pr_url), Map.get(recorded, :pr_url)),
       chunk: not_nil_or(Map.get(live, :chunk), Map.get(recorded, :chunk)),
       remediation: Map.get(live, :remediation)

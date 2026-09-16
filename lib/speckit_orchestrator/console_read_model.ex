@@ -375,11 +375,12 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
   With a live `Coordinator` (`view.active? == true`), only the feature ids
   already in `view.per_feature` are hydrated (a feature present in the record
   but not released by this Coordinator is never added, FR-008); each row is
-  `ConsoleHydration.layer(from_record(...), live_row)`. Without one, rows are
-  built from the record via `Map.put_new` (never overwriting an existing
-  entry) and then still pass through `overlay_observed/1`. `run_detail ==
-  nil`, or a `run_detail` whose `:features` is not a list, leaves the view
-  unchanged (aside from `overlay_observed/1` in the inactive case).
+  `ConsoleHydration.layer(from_record(...), live_row, now)`. Without one,
+  rows are built from the record via `Map.put_new` (never overwriting an
+  existing entry) and then still pass through `overlay_observed/2`.
+  `run_detail == nil`, or a `run_detail` whose `:features` is not a list,
+  leaves the view unchanged (aside from `overlay_observed/2` in the
+  inactive case).
   """
   @spec hydrate(map(), map() | nil, DateTime.t()) :: map()
   def hydrate(view, run_detail, now)
@@ -396,7 +397,7 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
             feature -> ConsoleHydration.from_record(feature, cost_entries, now)
           end
 
-        {id, ConsoleHydration.layer(recorded, live_row)}
+        {id, ConsoleHydration.layer(recorded, live_row, now)}
       end)
 
     %{view | per_feature: per_feature}
@@ -405,18 +406,20 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
   def hydrate(view, run_detail, now) do
     case run_detail_features(run_detail) do
       [] ->
-        overlay_observed(view)
+        overlay_observed(view, now)
 
       features ->
         cost_entries = run_detail_cost_entries(run_detail)
 
         per_feature =
           Enum.reduce(features, view.per_feature, fn f, acc ->
-            row = ConsoleHydration.layer(ConsoleHydration.from_record(f, cost_entries, now), nil)
+            row =
+              ConsoleHydration.layer(ConsoleHydration.from_record(f, cost_entries, now), nil, now)
+
             Map.put_new(acc, f.feature_id, row)
           end)
 
-        overlay_observed(%{view | per_feature: per_feature})
+        overlay_observed(%{view | per_feature: per_feature}, now)
     end
   end
 
@@ -444,17 +447,19 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
   projection knows better than the record (phase timeline, spend, chunk,
   remediation, PR url) is merged over the recorded entry.
   """
-  @spec overlay_observed(map()) :: map()
-  def overlay_observed(%{active?: true} = view), do: view
+  @spec overlay_observed(map(), DateTime.t()) :: map()
+  def overlay_observed(view, now)
 
-  def overlay_observed(%{observed: observed} = view) when is_map(observed) do
+  def overlay_observed(%{active?: true} = view, _now), do: view
+
+  def overlay_observed(%{observed: observed} = view, now) when is_map(observed) do
     per_feature =
       Enum.reduce(observed, view.per_feature, fn {id, slice}, acc ->
         if phase_in_flight?(slice) do
           recorded = Map.get(acc, id, %{})
 
           layered =
-            recorded |> ConsoleHydration.layer(known(slice)) |> Map.put(:status, :running)
+            recorded |> ConsoleHydration.layer(known(slice), now) |> Map.put(:status, :running)
 
           Map.put(acc, id, layered)
         else
@@ -465,7 +470,7 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
     %{view | per_feature: per_feature}
   end
 
-  def overlay_observed(view), do: view
+  def overlay_observed(view, _now), do: view
 
   defp phase_in_flight?(%{phases: phases}) when is_map(phases),
     do: Enum.any?(phases, fn {_phase, cell} -> cell[:state] == :active end)
@@ -514,6 +519,11 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
           remediation: nil,
           pr_url: nil
         })
+
+      # The Coordinator's elapsed_ms is a since-release monotonic counter,
+      # not wall-clock execution time — it must never reach a rendered row
+      # (FR-009, contracts/execution-time.md §4).
+      status_slice = Map.delete(status_slice, :elapsed_ms)
 
       {id, Map.merge(status_slice, projected)}
     end)

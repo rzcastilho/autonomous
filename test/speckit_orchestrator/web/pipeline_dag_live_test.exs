@@ -590,6 +590,72 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLiveTest do
     assert node_001 =~ "$14.00"
   end
 
+  # ---- 024 elapsed-execution-time (US1-3: the node drawer's ELAPSED equals
+  # the Mission Control row's for the same record) ---------------------------
+
+  defp attempt_at(feature_id, phase, ordinal, started_at, duration_ms) do
+    %{
+      feature_id: feature_id,
+      phase: phase,
+      ordinal: ordinal,
+      step: 1,
+      label: Atom.to_string(phase),
+      started_at: started_at,
+      ended_at: DateTime.add(started_at, duration_ms, :millisecond),
+      duration_ms: duration_ms,
+      outcome: :ok,
+      model: "sonnet",
+      cost_usd: 2.0,
+      cost_kind: :actual,
+      session_id: "s1",
+      error: nil
+    }
+  end
+
+  defp drawer_elapsed(drawer) do
+    [_, value] =
+      Regex.run(~r/ELAPSED<\/div>\s*<div class="drawer-stat-value">(.*?)<\/div>/s, drawer)
+
+    value
+  end
+
+  test "a :done feature's node drawer ELAPSED equals the Mission Control row's for the same record (US1-3)",
+       %{conn: conn} do
+    repo = real_repo_with_backlog()
+    point_backlog_at(repo)
+
+    run_key = open_store_run(repo, [feat("001")])
+    :ok = Writer.record_feature_started(run_key, "001")
+
+    base = ~U[2026-01-01 00:00:00Z]
+
+    [:specify, :clarify, :plan, :tasks, :analyze, :implement, :converge]
+    |> Enum.with_index()
+    |> Enum.each(fn {phase, i} ->
+      started_at = DateTime.add(base, i * 3 * 60 * 60, :second)
+
+      :ok =
+        Writer.record_phase_attempt(run_key, %{
+          attempt: attempt_at("001", phase, 1, started_at, 60_000),
+          cost: %{amount_usd: 2.0, kind: :actual}
+        })
+    end)
+
+    :ok = Writer.record_feature_terminal(run_key, "001", :done, nil, [])
+
+    refute Process.whereis(Coordinator)
+
+    {:ok, _mc_view, mc_html} = live(conn, "/")
+    mc_row = Regex.run(~r/<tr[^>]*data-feature-row="001".*?<\/tr>/s, mc_html) |> hd()
+    [mc_elapsed] = Regex.run(~r/\d+m \d+s/, mc_row)
+
+    {:ok, dag_view, _dag_html} = live(conn, "/dag")
+    dag_html = render_click(dag_view, "select_feature", %{"id" => "001"})
+    [drawer] = Regex.run(~r/<aside class="feature-drawer".*?<\/aside>/s, dag_html)
+
+    assert drawer_elapsed(drawer) == mc_elapsed
+  end
+
   test "a nonexistent breakdown dir (single-spec-only project) renders as an empty backlog, not an error",
        %{conn: conn} do
     point_backlog_at(Path.join(System.tmp_dir!(), "no_breakdown_here_#{System.unique_integer()}"))

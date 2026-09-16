@@ -563,7 +563,7 @@ defmodule SpeckitOrchestrator.FeatureRunner do
   defp emit_terminal(feature, status, reason, cost_total) do
     :telemetry.execute(
       [:speckit, :feature, :terminal],
-      %{cost_total: cost_total || 0.0},
+      %{cost_total: cost_total || 0.0, system_time: System.system_time()},
       %{feature_id: feature.id, status: status, reason: reason}
     )
 
