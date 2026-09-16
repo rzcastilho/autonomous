@@ -23,6 +23,7 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
   alias SpeckitOrchestrator.{
     Backlog,
     Config,
+    ConsoleHydration,
     ConsoleProjection,
     ConsoleReadModel,
     Coordinator,
@@ -121,7 +122,7 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
   # looking like nothing happened. `Store.current_run_key/1` is already
   # scoped to this repo, so no cross-repo staleness check is needed.
   defp overlay_manifest(view, run_detail) do
-    ConsoleReadModel.overlay_last_known_statuses(view, run_detail)
+    ConsoleReadModel.hydrate(view, run_detail, DateTime.utc_now())
   end
 
   # Which breakdown package the in-flight run is scoped to — the only wave
@@ -159,8 +160,7 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
   @impl true
   def handle_info({:console, :feature_updated, %{id: id, feature: feature}}, socket) do
     view = socket.assigns.view
-    default = %{status: :pending, elapsed_ms: nil, slug: nil, group: nil}
-    merged = Map.merge(Map.get(view.per_feature, id, default), feature || %{})
+    merged = ConsoleHydration.apply_update(Map.get(view.per_feature, id), feature)
     {:noreply, assign(socket, view: %{view | per_feature: Map.put(view.per_feature, id, merged)})}
   end
 

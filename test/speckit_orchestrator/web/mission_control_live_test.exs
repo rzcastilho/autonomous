@@ -50,6 +50,19 @@ defmodule SpeckitOrchestrator.Web.MissionControlLiveTest do
     pid
   end
 
+  defp start_coordinator(features, statuses) do
+    {:ok, pid} =
+      Coordinator.start_link(
+        name: Coordinator,
+        features: features,
+        statuses: statuses,
+        runner: fn _feature, _notify -> :ok end,
+        owner: self()
+      )
+
+    pid
+  end
+
   test "mount seeds the status-count strip and backlog table from Coordinator.status/0 + ConsoleProjection.read/0",
        %{conn: conn} do
     pid = start_coordinator([feat("mc1"), feat("mc2")])
@@ -209,6 +222,10 @@ defmodule SpeckitOrchestrator.Web.MissionControlLiveTest do
 
     run_key = open_store_run([feat("mc7")])
 
+    for phase <- [:specify, :clarify, :plan, :tasks] do
+      :ok = Writer.record_phase_attempt(run_key, %{attempt: minimal_attempt("mc7", phase)})
+    end
+
     :ok =
       Writer.record_phase_attempt(run_key, %{
         attempt: minimal_attempt("mc7", :analyze),
@@ -296,6 +313,411 @@ defmodule SpeckitOrchestrator.Web.MissionControlLiveTest do
 
     assert drawer =~ ~s(data-action="drawer-no-pr")
     refute drawer =~ ~s(data-action="drawer-view-pr")
+  end
+
+  # ---- 023 console-restart-hydration (US1: finished features keep their
+  # history across a restart) -------------------------------------------------
+
+  @all_phases ~w(specify clarify plan tasks analyze implement converge)a
+
+  defp record_done_feature(run_key, feature_id) do
+    :ok = Writer.record_feature_started(run_key, feature_id)
+
+    for phase <- @all_phases do
+      :ok =
+        Writer.record_phase_attempt(run_key, %{
+          attempt: minimal_attempt(feature_id, phase),
+          cost: %{amount_usd: 2.0, kind: :actual}
+        })
+    end
+
+    :ok = Writer.record_feature_terminal(run_key, feature_id, :done, nil, [])
+  end
+
+  defp assert_full_completed_strip(row) do
+    for phase <- @all_phases do
+      [cell] = Regex.run(~r/<span[^>]*data-phase="#{phase}"[^>]*>/, row)
+      assert cell =~ "phase-cell-completed"
+    end
+  end
+
+  test "with no live Coordinator, a :done feature recorded through all seven phases renders a full completed strip, correct spend, and non-'—' elapsed (US1-5)",
+       %{conn: conn} do
+    refute Process.whereis(Coordinator)
+
+    run_key = open_store_run([feat("h1"), feat("h2")])
+    record_done_feature(run_key, "h1")
+    record_done_feature(run_key, "h2")
+
+    {:ok, _view, html} = live(conn, "/")
+
+    for id <- ["h1", "h2"] do
+      row = Regex.run(~r/<tr[^>]*data-feature-row="#{id}".*?<\/tr>/s, html) |> hd()
+      assert_full_completed_strip(row)
+      assert row =~ "$14.00"
+      refute row =~ ">—<"
+    end
+  end
+
+  test "identically with a live Coordinator resumed over the same store, a :done feature keeps its full completed strip, spend, and elapsed (US1-1)",
+       %{conn: conn} do
+    run_key = open_store_run([feat("h3"), feat("h4"), feat("h5")])
+    record_done_feature(run_key, "h3")
+    record_done_feature(run_key, "h4")
+
+    pid =
+      start_coordinator([feat("h3", 1), feat("h4", 2), feat("h5", 3)], %{
+        "h3" => :done,
+        "h4" => :done,
+        "h5" => :pending
+      })
+
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    {:ok, _view, html} = live(conn, "/")
+
+    for id <- ["h3", "h4"] do
+      row = Regex.run(~r/<tr[^>]*data-feature-row="#{id}".*?<\/tr>/s, html) |> hd()
+      assert_full_completed_strip(row)
+      assert row =~ "$14.00"
+      refute row =~ ">—<"
+    end
+  end
+
+  test "a feature that finished in-session shows the same elapsed on every later reconcile tick (US1-3, SC-005)",
+       %{conn: conn} do
+    run_key = open_store_run([feat("h6"), feat("h7")])
+    record_done_feature(run_key, "h6")
+
+    pid = start_coordinator([feat("h6", 1), feat("h7", 2)], %{"h6" => :done, "h7" => :pending})
+
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    {:ok, view, html} = live(conn, "/")
+    row = Regex.run(~r/<tr[^>]*data-feature-row="h6".*?<\/tr>/s, html) |> hd()
+    [elapsed_once] = Regex.run(~r/\d+m \d+s/, row)
+
+    Phoenix.PubSub.broadcast(
+      SpeckitOrchestrator.PubSub,
+      ConsoleProjection.topic(),
+      {:console, :reconciled, %{coordinator: Coordinator.status(pid), ledger: nil}}
+    )
+
+    html_later = render(view)
+    row_later = Regex.run(~r/<tr[^>]*data-feature-row="h6".*?<\/tr>/s, html_later) |> hd()
+    [elapsed_later] = Regex.run(~r/\d+m \d+s/, row_later)
+
+    assert elapsed_later == elapsed_once
+  end
+
+  test "other features' live telemetry does not change a finished row (US1-2)",
+       %{conn: conn} do
+    run_key = open_store_run([feat("h8"), feat("h9")])
+    record_done_feature(run_key, "h8")
+
+    pid = start_coordinator([feat("h8", 1), feat("h9", 2)], %{"h8" => :done, "h9" => :pending})
+
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    {:ok, view, html} = live(conn, "/")
+    row_before = Regex.run(~r/<tr[^>]*data-feature-row="h8".*?<\/tr>/s, html) |> hd()
+
+    Phoenix.PubSub.broadcast(
+      SpeckitOrchestrator.PubSub,
+      ConsoleProjection.topic(),
+      {:console, :feature_updated,
+       %{
+         id: "h9",
+         feature: %{
+           current_phase: :specify,
+           phases: %{specify: %{state: :active, outcome: nil, cost: nil, model: "sonnet"}},
+           spend: 0.1
+         }
+       }}
+    )
+
+    html_after = render(view)
+    row_after = Regex.run(~r/<tr[^>]*data-feature-row="h8".*?<\/tr>/s, html_after) |> hd()
+
+    assert row_after == row_before
+  end
+
+  # ---- 023 console-restart-hydration (US2: the resumed feature shows its
+  # whole history) -------------------------------------------------------
+
+  defp record_phase(run_key, feature_id, phase, checkpoint \\ nil) do
+    payload = %{
+      attempt: %{minimal_attempt(feature_id, phase) | cost_usd: 2.0},
+      cost: %{amount_usd: 2.0, kind: :actual}
+    }
+
+    payload = if checkpoint, do: Map.put(payload, :checkpoint, checkpoint), else: payload
+    :ok = Writer.record_phase_attempt(run_key, payload)
+  end
+
+  test "a feature resumed at phase five with four pre-restart phases recorded renders cells 1-4 completed, cell 5 active, and elapsed from the recorded start (US2-1)",
+       %{conn: conn} do
+    run_key = open_store_run([feat("u1")])
+    :ok = Writer.record_feature_started(run_key, "u1")
+
+    for phase <- [:specify, :clarify, :plan] do
+      record_phase(run_key, "u1", phase)
+    end
+
+    record_phase(run_key, "u1", :tasks, %{
+      phase: :tasks,
+      last_completed_phase: :tasks,
+      status: :running,
+      reason: nil,
+      session_id: "s1"
+    })
+
+    pid = start_coordinator([feat("u1", 1)])
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    :telemetry.execute(
+      [:speckit, :phase, :start],
+      %{system_time: System.system_time()},
+      %{feature_id: "u1", phase: :analyze, model: "sonnet", step: 5}
+    )
+
+    {:ok, _view, html} = live(conn, "/")
+    row = Regex.run(~r/<tr[^>]*data-feature-row="u1".*?<\/tr>/s, html) |> hd()
+
+    for phase <- ~w(specify clarify plan tasks) do
+      [cell] = Regex.run(~r/<span[^>]*data-phase="#{phase}"[^>]*>/, row)
+      assert cell =~ "phase-cell-completed"
+    end
+
+    [analyze_cell] = Regex.run(~r/<span[^>]*data-phase="analyze"[^>]*>/, row)
+    assert analyze_cell =~ "phase-cell-active"
+    refute row =~ ">—<"
+  end
+
+  test "a feature resumed from plan with tasks/analyze recorded before the restart renders plan active and tasks/analyze pending (US2-5)",
+       %{conn: conn} do
+    run_key = open_store_run([feat("u2")])
+    :ok = Writer.record_feature_started(run_key, "u2")
+
+    for phase <- [:specify, :clarify] do
+      record_phase(run_key, "u2", phase)
+    end
+
+    record_phase(run_key, "u2", :plan, %{
+      phase: :plan,
+      last_completed_phase: :plan,
+      status: :running,
+      reason: nil,
+      session_id: "s1"
+    })
+
+    # Stale attempts from before the resume-from-earlier-phase reset — the
+    # checkpoint above already put current_phase back at :plan.
+    for phase <- [:tasks, :analyze] do
+      record_phase(run_key, "u2", phase)
+    end
+
+    pid = start_coordinator([feat("u2", 1)])
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    :telemetry.execute(
+      [:speckit, :phase, :start],
+      %{system_time: System.system_time()},
+      %{feature_id: "u2", phase: :plan, model: "sonnet", step: 3}
+    )
+
+    {:ok, _view, html} = live(conn, "/")
+    row = Regex.run(~r/<tr[^>]*data-feature-row="u2".*?<\/tr>/s, html) |> hd()
+
+    for phase <- ~w(specify clarify) do
+      [cell] = Regex.run(~r/<span[^>]*data-phase="#{phase}"[^>]*>/, row)
+      assert cell =~ "phase-cell-completed"
+    end
+
+    [plan_cell] = Regex.run(~r/<span[^>]*data-phase="plan"[^>]*>/, row)
+    assert plan_cell =~ "phase-cell-active"
+
+    for phase <- ~w(tasks analyze) do
+      [cell] = Regex.run(~r/<span[^>]*data-phase="#{phase}"[^>]*>/, row)
+      assert cell =~ "phase-cell-pending"
+    end
+  end
+
+  test "a :feature_updated broadcast carrying only since-boot phases leaves pre-restart cells completed and spend non-decreasing (US2-2, SC-004)",
+       %{conn: conn} do
+    refute Process.whereis(Coordinator)
+
+    run_key = open_store_run([feat("u3")])
+    :ok = Writer.record_feature_started(run_key, "u3")
+
+    for phase <- [:specify, :clarify, :plan] do
+      record_phase(run_key, "u3", phase)
+    end
+
+    record_phase(run_key, "u3", :tasks, %{
+      phase: :tasks,
+      last_completed_phase: :tasks,
+      status: :running,
+      reason: nil,
+      session_id: "s1"
+    })
+
+    {:ok, view, html} = live(conn, "/")
+    row_before = Regex.run(~r/<tr[^>]*data-feature-row="u3".*?<\/tr>/s, html) |> hd()
+    assert row_before =~ "$8.00"
+
+    Phoenix.PubSub.broadcast(
+      SpeckitOrchestrator.PubSub,
+      ConsoleProjection.topic(),
+      {:console, :feature_updated,
+       %{
+         id: "u3",
+         feature: %{
+           current_phase: :analyze,
+           phases: %{analyze: %{state: :active, outcome: nil, cost: nil, model: "sonnet"}},
+           spend: 0.0
+         }
+       }}
+    )
+
+    html_after = render(view)
+    row_after = Regex.run(~r/<tr[^>]*data-feature-row="u3".*?<\/tr>/s, html_after) |> hd()
+
+    for phase <- ~w(specify clarify plan tasks) do
+      [cell] = Regex.run(~r/<span[^>]*data-phase="#{phase}"[^>]*>/, row_after)
+      assert cell =~ "phase-cell-completed"
+    end
+
+    [analyze_cell] = Regex.run(~r/<span[^>]*data-phase="analyze"[^>]*>/, row_after)
+    assert analyze_cell =~ "phase-cell-active"
+    assert row_after =~ "$8.00"
+  end
+
+  test "the drawer shows cost and model together for each completed pre-restart phase (US2-4)",
+       %{conn: conn} do
+    refute Process.whereis(Coordinator)
+
+    run_key = open_store_run([feat("u4")])
+    :ok = Writer.record_feature_started(run_key, "u4")
+
+    for phase <- [:specify, :clarify, :plan] do
+      record_phase(run_key, "u4", phase)
+    end
+
+    record_phase(run_key, "u4", :tasks, %{
+      phase: :tasks,
+      last_completed_phase: :tasks,
+      status: :running,
+      reason: nil,
+      session_id: "s1"
+    })
+
+    {:ok, view, _html} = live(conn, "/")
+    html = render_click(view, "select_feature", %{"id" => "u4"})
+
+    for phase <- ~w(specify clarify plan tasks) do
+      [cell] = Regex.run(~r/<li[^>]*data-phase="#{phase}".*?<\/li>/s, html)
+      assert cell =~ "$2.00 · sonnet"
+    end
+  end
+
+  # ---- 023 console-restart-hydration (US3: diverted features keep their
+  # marker and their receipt) ---------------------------------------------
+
+  defp record_halted_feature(run_key, feature_id) do
+    :ok = Writer.record_feature_started(run_key, feature_id)
+
+    for phase <- [:specify, :clarify, :plan, :tasks] do
+      record_phase(run_key, feature_id, phase)
+    end
+
+    record_phase(run_key, feature_id, :analyze, %{
+      phase: :analyze,
+      last_completed_phase: :analyze,
+      status: :halted,
+      reason: :critical_finding,
+      session_id: "s1"
+    })
+
+    :ok = Writer.record_feature_terminal(run_key, feature_id, :halted, :critical_finding, [])
+  end
+
+  defp assert_halted_row(row) do
+    for phase <- ~w(specify clarify plan tasks) do
+      [cell] = Regex.run(~r/<span[^>]*data-phase="#{phase}"[^>]*>/, row)
+      assert cell =~ "phase-cell-completed"
+    end
+
+    [analyze_cell] = Regex.run(~r/<span[^>]*data-phase="analyze"[^>]*>/, row)
+    assert analyze_cell =~ "phase-cell-halted"
+
+    assert row =~ "$10.00"
+    refute row =~ ">—<"
+  end
+
+  test "a feature halted at analyze before the restart renders the halted marker with recorded cost/model, earlier cells completed, and non-empty spend/elapsed, cold (US3-1)",
+       %{conn: conn} do
+    refute Process.whereis(Coordinator)
+
+    run_key = open_store_run([feat("u5")])
+    record_halted_feature(run_key, "u5")
+
+    {:ok, _view, html} = live(conn, "/")
+    row = Regex.run(~r/<tr[^>]*data-feature-row="u5".*?<\/tr>/s, html) |> hd()
+
+    assert_halted_row(row)
+  end
+
+  test "the same halted feature's per-feature hydration is identical with a resumed Coordinator over the same store (US3-2)",
+       %{conn: conn} do
+    run_key = open_store_run([feat("u6")])
+    record_halted_feature(run_key, "u6")
+
+    # Release.next/3 stops the whole chain the instant any feature is a
+    # non-done terminal (rule 2, structural — regardless of order), so a
+    # Coordinator that knows about a halted feature always reports
+    # finished? true and the backlog table (gated on `not finished?`) never
+    # renders. Hydration itself is unaffected by that UI gate — the drawer
+    # reads straight from `@view.per_feature`, so it is where this asserts.
+    pid = start_coordinator([feat("u6", 1)], %{"u6" => :halted})
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    {:ok, view, _html} = live(conn, "/")
+    html = render_click(view, "select_feature", %{"id" => "u6"})
+    [drawer] = Regex.run(~r/<aside class="feature-drawer".*?<\/aside>/s, html)
+
+    assert drawer =~ ~s(data-phase="analyze" data-phase-state="halted")
+
+    for phase <- ~w(specify clarify plan tasks) do
+      [cell] = Regex.run(~r/<li[^>]*data-phase="#{phase}".*?<\/li>/s, drawer)
+      assert cell =~ ~s(data-phase-state="completed")
+    end
+
+    refute drawer =~ "$0.00"
+  end
+
+  test "an escalated feature's recorded pr_url survives a live update whose slice carries pr_url: nil (US3-3, FR-011)",
+       %{conn: conn} do
+    refute Process.whereis(Coordinator)
+
+    run_key = open_store_run([feat("u8")])
+    url = "https://github.com/acme/ledgerlite/pull/8"
+
+    :ok = Writer.record_feature_terminal(run_key, "u8", :escalated, "test fixture", [])
+    :ok = Writer.record_pr_url(run_key, "u8", url)
+
+    {:ok, view, _html} = live(conn, "/")
+
+    Phoenix.PubSub.broadcast(
+      SpeckitOrchestrator.PubSub,
+      ConsoleProjection.topic(),
+      {:console, :feature_updated, %{id: "u8", feature: %{pr_url: nil}}}
+    )
+
+    html = render_click(view, "select_feature", %{"id" => "u8"})
+    [drawer] = Regex.run(~r/<aside class="feature-drawer".*?<\/aside>/s, html)
+
+    assert drawer =~ ~s(href="#{url}")
   end
 
   # ---- 016 T039: resume lists the whole restored run (FR-022) ---------------

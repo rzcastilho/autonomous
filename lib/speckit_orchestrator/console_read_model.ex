@@ -11,7 +11,7 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
   reconcile.
   """
 
-  alias SpeckitOrchestrator.Pipeline
+  alias SpeckitOrchestrator.ConsoleHydration
 
   @feed_limit 200
 
@@ -364,54 +364,67 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
   end
 
   @doc """
-  Overlay a durable run's last-known per-feature statuses (and, where
-  available, each feature's checkpointed phase progress) onto an
-  otherwise-empty `per_feature` (no live `Coordinator` — fresh boot, crash not
-  yet resumed). `ConsoleProjection` never persists (FR-036,
-  `specs/008-control-plane`), so without this a restarted node's Mission
-  Control/Pipeline DAG would default every feature to `:pending`, silently
-  hiding e.g. a feature that halted before the crash — and, even once the
-  status is shown, its phase timeline would render as if nothing had run at
-  all. A no-op when the view is `active?` (a live `Coordinator` always wins)
-  or `run_detail` is `nil` (no in-flight run — `SpeckitOrchestrator.
-  current_run_id/1` found none, or the record is damaged and the caller
-  already logged/handled that).
+  Hydrate `view.per_feature` from a durable run record (023,
+  contracts/console-hydration.md §5) — in **both** modes, replacing the old
+  `overlay_last_known_statuses/2` (which was a no-op the moment a live
+  `Coordinator` existed). `ConsoleProjection` never persists (FR-036,
+  `specs/008-control-plane`), and neither the Coordinator nor the projection
+  remembers a finished feature's full phase history across a restart — only
+  the record does.
 
-  `run_detail` is `SpeckitOrchestrator.run_detail/1`'s result (018,
-  contracts/console-runs.md): each feature's own `:checkpoint`.
-  `last_completed_phase` becomes the boundary between `:completed` cells
-  (every phase before it) and the current one: `:active` colored by the
-  diverted status when the checkpoint's own `:status` is
-  `:escalated`/`:halted`/`:failed` (mirrors `FeatureDrawerComponent`'s/
-  `phase_strip`'s existing status-coloring rule), or `:completed` when the
-  checkpoint is an in-progress crash pointer.
+  With a live `Coordinator` (`view.active? == true`), only the feature ids
+  already in `view.per_feature` are hydrated (a feature present in the record
+  but not released by this Coordinator is never added, FR-008); each row is
+  `ConsoleHydration.layer(from_record(...), live_row)`. Without one, rows are
+  built from the record via `Map.put_new` (never overwriting an existing
+  entry) and then still pass through `overlay_observed/1`. `run_detail ==
+  nil`, or a `run_detail` whose `:features` is not a list, leaves the view
+  unchanged (aside from `overlay_observed/1` in the inactive case).
   """
-  @spec overlay_last_known_statuses(map(), map() | nil) :: map()
-  def overlay_last_known_statuses(view, run_detail)
+  @spec hydrate(map(), map() | nil, DateTime.t()) :: map()
+  def hydrate(view, run_detail, now)
 
-  def overlay_last_known_statuses(%{active?: true} = view, _run_detail), do: view
+  def hydrate(%{active?: true} = view, run_detail, now) do
+    features_by_id = Map.new(run_detail_features(run_detail), &{&1.feature_id, &1})
+    cost_entries = run_detail_cost_entries(run_detail)
 
-  def overlay_last_known_statuses(view, %{features: features}) when is_list(features) do
     per_feature =
-      Enum.reduce(features, view.per_feature, fn f, acc ->
-        Map.put_new(acc, f.feature_id, %{
-          status: f.status,
-          elapsed_ms: nil,
-          slug: f.slug,
-          group: f.group,
-          current_phase: checkpoint_phase(f.checkpoint),
-          phases: checkpoint_phases(f.checkpoint, f.status),
-          spend: 0.0,
-          chunk: checkpoint_chunk(f.checkpoint),
-          remediation: nil,
-          pr_url: Map.get(f, :pr_url)
-        })
+      Map.new(view.per_feature, fn {id, live_row} ->
+        recorded =
+          case Map.get(features_by_id, id) do
+            nil -> nil
+            feature -> ConsoleHydration.from_record(feature, cost_entries, now)
+          end
+
+        {id, ConsoleHydration.layer(recorded, live_row)}
       end)
 
-    overlay_observed(%{view | per_feature: per_feature})
+    %{view | per_feature: per_feature}
   end
 
-  def overlay_last_known_statuses(view, _run_detail), do: overlay_observed(view)
+  def hydrate(view, run_detail, now) do
+    case run_detail_features(run_detail) do
+      [] ->
+        overlay_observed(view)
+
+      features ->
+        cost_entries = run_detail_cost_entries(run_detail)
+
+        per_feature =
+          Enum.reduce(features, view.per_feature, fn f, acc ->
+            row = ConsoleHydration.layer(ConsoleHydration.from_record(f, cost_entries, now), nil)
+            Map.put_new(acc, f.feature_id, row)
+          end)
+
+        overlay_observed(%{view | per_feature: per_feature})
+    end
+  end
+
+  defp run_detail_features(%{features: features}) when is_list(features), do: features
+  defp run_detail_features(_run_detail), do: []
+
+  defp run_detail_cost_entries(%{cost_entries: entries}) when is_list(entries), do: entries
+  defp run_detail_cost_entries(_run_detail), do: []
 
   @doc """
   Let live telemetry outrank a stale recorded status when there is no
@@ -439,7 +452,11 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
       Enum.reduce(observed, view.per_feature, fn {id, slice}, acc ->
         if phase_in_flight?(slice) do
           recorded = Map.get(acc, id, %{})
-          Map.put(acc, id, recorded |> Map.merge(known(slice)) |> Map.put(:status, :running))
+
+          layered =
+            recorded |> ConsoleHydration.layer(known(slice)) |> Map.put(:status, :running)
+
+          Map.put(acc, id, layered)
         else
           acc
         end
@@ -485,49 +502,6 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
   def run_state(%{run: run}) do
     %{state: run.state, stopped_by: run.stopped_by, stopped_reason: run.stopped_reason}
   end
-
-  defp checkpoint_phase(nil), do: nil
-  defp checkpoint_phase(%{last_completed_phase: phase}), do: phase
-
-  defp checkpoint_phases(checkpoint, status) do
-    case checkpoint_phase(checkpoint) do
-      nil ->
-        %{}
-
-      last_phase ->
-        {before, [_ | _after]} = Enum.split_while(Pipeline.phases(), &(&1 != last_phase))
-
-        completed =
-          Map.new(before, &{&1, %{state: :completed, outcome: nil, cost: nil, model: nil}})
-
-        Map.put(completed, last_phase, last_phase_cell(status))
-    end
-  end
-
-  # Seeds `chunk` for an inactive run's implement cell from the checkpoint's
-  # `implement_chunk` (contracts/checkpoint-implement-chunk.md). `attempt`
-  # isn't part of that durable record (it's meaningless at rest between
-  # sessions), so it's fixed at `1` — no "(attempt N)" suffix on a dead run.
-  defp checkpoint_chunk(%{implement_chunk: %{} = chunk}) do
-    %{
-      ordinal: Map.get(chunk, :ordinal),
-      total: Map.get(chunk, :total),
-      title: Map.get(chunk, :title),
-      attempt: 1,
-      scope: Map.get(chunk, :scope),
-      sessions_used: Map.get(chunk, :sessions_used),
-      ceiling: Map.get(chunk, :ceiling),
-      remaining: nil,
-      outcome: nil
-    }
-  end
-
-  defp checkpoint_chunk(_checkpoint), do: nil
-
-  defp last_phase_cell(status) when status in [:escalated, :halted, :failed],
-    do: %{state: :active, outcome: status, cost: nil, model: nil}
-
-  defp last_phase_cell(_status), do: %{state: :completed, outcome: nil, cost: nil, model: nil}
 
   defp merge_per_feature(coordinator_per_feature, projection_features) do
     Map.new(coordinator_per_feature, fn {id, status_slice} ->

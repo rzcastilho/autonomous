@@ -180,8 +180,17 @@ defmodule SpeckitOrchestrator.Web.FeatureDrawerComponent do
 
   defp timeline_meta(nil), do: ""
 
-  defp timeline_meta(%{cost: cost}) when is_number(cost) and cost > 0,
-    do: "$#{format_money(cost)}"
+  defp timeline_meta(%{cost: cost, model: model} = cell) do
+    has_cost = is_number(cost) and cost > 0
+    has_model = is_binary(model) and model != ""
+
+    cond do
+      has_cost and has_model -> "$#{format_money(cost)} · #{model}"
+      has_cost -> "$#{format_money(cost)}"
+      has_model -> model
+      true -> to_string(Map.get(cell, :state))
+    end
+  end
 
   defp timeline_meta(%{state: state}), do: to_string(state)
 
