@@ -114,9 +114,9 @@ All commands run through `mise exec --` (repo toolchain rule); `warnings_as_erro
 
 **Purpose**: Tolerance guarantees and final regression sign-off across all stories.
 
-- [ ] T024 [P] Add a `console_hydration_test.exs` case: a record whose feature lacks `phase_attempts`, `checkpoint`, `started_at`/`ended_at`, or `pr_url`, and a `run_detail` lacking `cost_entries`, all render via `from_record/3`/`layer/2` as empty cells / `nil` elapsed / `0.0` spend with no raise (FR-013, SC-006) in `test/speckit_orchestrator/console_hydration_test.exs`
-- [ ] T025 Run `mise exec -- mix test` (full suite, including `design_contract_test.exs`) and confirm no regressions and no new color/radius/font-size/spacing literal or status value (Principle VII gate, SC-007)
-- [ ] T026 Walk through `specs/023-console-restart-hydration/quickstart.md` steps 1–4 end-to-end and confirm each expected result
+- [X] T024 [P] Add a `console_hydration_test.exs` case: a record whose feature lacks `phase_attempts`, `checkpoint`, `started_at`/`ended_at`, or `pr_url`, and a `run_detail` lacking `cost_entries`, all render via `from_record/3`/`layer/2` as empty cells / `nil` elapsed / `0.0` spend with no raise (FR-013, SC-006) in `test/speckit_orchestrator/console_hydration_test.exs`
+- [X] T025 Run `mise exec -- mix test` (full suite, including `design_contract_test.exs`) and confirm no regressions and no new color/radius/font-size/spacing literal or status value (Principle VII gate, SC-007)
+- [X] T026 Walk through `specs/023-console-restart-hydration/quickstart.md` steps 1–4 end-to-end and confirm each expected result
 
 ---
 

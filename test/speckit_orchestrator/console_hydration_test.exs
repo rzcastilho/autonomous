@@ -183,6 +183,18 @@ defmodule SpeckitOrchestrator.ConsoleHydrationTest do
       assert slice.current_phase == nil
       assert slice.chunk == nil
     end
+
+    test "a record missing phase_attempts/checkpoint/started_at/ended_at/pr_url renders as an empty row with no raise when layered (FR-013, SC-006)" do
+      slice = ConsoleHydration.from_record(%{feature_id: "f5b", status: :pending}, nil, @now)
+      row = ConsoleHydration.layer(slice, nil)
+
+      assert row.phases == %{}
+      assert row.elapsed_ms == nil
+      assert row.spend == 0.0
+      assert row.pr_url == nil
+      assert row.chunk == nil
+      assert row.current_phase == nil
+    end
   end
 
   describe "layer/2 (contracts/console-hydration.md §2-3)" do
