@@ -5,6 +5,16 @@ defmodule SpeckitOrchestrator.Web.ReconcileTest do
   SC-005), a tripped breaker never depicts a mid-phase kill (SC-007,
   Constitution IV), and every coherent-empty-state requirement (SC-006) holds
   across views.
+
+  025 Phase 6 (T019): no byte-identical checkpoint-first regression case is
+  added here — every test in this file drives `Coordinator` directly
+  in-memory and never goes through `Recovery`/`Reconcile`, and
+  `lib/speckit_orchestrator/web/` renders no conflict reason today
+  (`contracts/report-discrepancy.md` §6: `grep -rn conflict
+  lib/speckit_orchestrator/web/` is empty) — there is nothing in this view
+  layer for 025's checkpoint-first clause or widened conflict reason to
+  regress. The regression coverage lives in `recovery_quickpoll_test.exs`
+  and `record_recovery_test.exs`, which do exercise `Reconcile.status/3`.
   """
   # Starts the real named Coordinator and mutates the app-supervised default
   # Ledger's budget / global repo+breakdown_dir app env — must not run

@@ -27,7 +27,7 @@ defmodule SpeckitOrchestrator.Recovery.Report do
         }
 
   @typedoc "A feature held gate-like for human resolution, with its reason."
-  @type conflict_row :: %{id: String.t(), reason: atom()}
+  @type conflict_row :: %{id: String.t(), reason: Reconcile.conflict_reason()}
 
   @typedoc "016 US3 — a rebuild proposal row this report could not silently reconcile."
   @type discrepancy_row :: %{kind: atom(), id: String.t(), detail: term()}
@@ -83,7 +83,7 @@ defmodule SpeckitOrchestrator.Recovery.Report do
   defp reconciled_label(:halted), do: "halted"
   defp reconciled_label(:failed), do: "failed"
   defp reconciled_label({:resume, phase}), do: "running (resume: #{phase})"
-  defp reconciled_label({:conflict, reason}), do: "conflict:#{reason}"
+  defp reconciled_label({:conflict, reason}), do: "conflict:#{reason_label(reason)}"
   # A 016 US3 "absent from backlog" row carries its raw recorded status
   # through unreconciled (e.g. `:running`) — not a shape `Reconcile.result/0`
   # ever produces, so it falls through here.
@@ -92,7 +92,7 @@ defmodule SpeckitOrchestrator.Recovery.Report do
   defp note(%{id: id} = row, next_runnable, conflict_reasons, discrepancy_notes) do
     cond do
       Map.has_key?(conflict_reasons, id) ->
-        "CONFLICT — #{Map.fetch!(conflict_reasons, id)}; human resolve"
+        "CONFLICT — #{reason_label(Map.fetch!(conflict_reasons, id))}; human resolve"
 
       row.reconciled in [:escalated, :halted] ->
         "held (human gate)"
@@ -133,6 +133,28 @@ defmodule SpeckitOrchestrator.Recovery.Report do
     line = Enum.map_join(discrepancies, ", ", &"#{&1.id} #{&1.kind}")
     "Discrepancies: #{line}"
   end
+
+  @doc """
+  Operator-facing label for a conflict reason (025 FR-005/006/012). A bare
+  atom renders exactly as `to_string/1` does today — no existing output
+  changes (FR-014/SC-004). A `{tag, detail}` renders as `"<tag> (k: v, k:
+  v)"`, keys in the small literal map's own iteration order (its insertion
+  order — every `detail` map upstream in `Reconcile` is a small literal),
+  values via `to_string/1` for atoms/phases and `inspect/1` for anything else
+  — a garbled string stays quoted and visibly not-a-phase (Principle II). The
+  label is the real atom, never a friendlier synonym (Principle VII).
+  """
+  @spec reason_label(Reconcile.conflict_reason()) :: String.t()
+  def reason_label(reason) when is_atom(reason), do: to_string(reason)
+
+  def reason_label({tag, detail}) when is_map(detail) do
+    pairs = Enum.map_join(detail, ", ", fn {k, v} -> "#{k}: #{label_value(v)}" end)
+    "#{tag} (#{pairs})"
+  end
+
+  defp label_value(nil), do: "nil"
+  defp label_value(v) when is_atom(v), do: to_string(v)
+  defp label_value(v), do: inspect(v)
 
   defp fmt_spend(n) when is_float(n), do: :erlang.float_to_binary(n, decimals: 2)
   defp fmt_spend(n), do: to_string(n)

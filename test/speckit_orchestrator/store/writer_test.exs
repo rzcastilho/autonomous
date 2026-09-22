@@ -224,6 +224,70 @@ defmodule SpeckitOrchestrator.Store.WriterTest do
       assert checkpoint.last_completed_phase == :clarify
     end
 
+    # 025 (contracts/implement-chunk-checkpoint-write.md §3): `implement_chunk`
+    # is an existing checkpoint column with no writer change of its own — this
+    # proves the column round-trips a `ChunkRunner.chunk_checkpoint/4`-shaped
+    # map through the same transaction untouched.
+    test "implement_chunk round-trips through the checkpoint write" do
+      {repo, run_id} = open()
+      run_key = {repo, run_id}
+      feature_key = {repo, run_id, "001"}
+
+      base_attempt = %{
+        feature_id: "001",
+        phase: :implement_chunk,
+        ordinal: 3,
+        step: 6,
+        label: "chunk 3/5 Widgets",
+        started_at: DateTime.utc_now(),
+        ended_at: DateTime.utc_now(),
+        duration_ms: 100,
+        outcome: :ok,
+        model: "sonnet",
+        cost_usd: 0.1,
+        cost_kind: :actual
+      }
+
+      :ok =
+        Writer.record_phase_attempt(run_key, %{
+          attempt: base_attempt,
+          checkpoint: %{
+            phase: :implement,
+            last_completed_phase: :analyze,
+            status: :in_progress,
+            reason: nil,
+            session_id: "s1",
+            analyze_remediation: %{attempts_used: 1, limit: 2},
+            implement_chunk: %{
+              ordinal: 3,
+              number: "3",
+              title: "Widgets",
+              total: 5,
+              sessions_used: 3,
+              ceiling: 14,
+              scope: :task_phase
+            }
+          }
+        })
+
+      {:ok, [tuple]} = Mnesia.transaction(fn -> Mnesia.read(:speckit_checkpoint, feature_key) end)
+      {:ok, checkpoint} = Records.decode(:speckit_checkpoint, tuple)
+
+      assert checkpoint.phase == :implement
+      assert checkpoint.last_completed_phase == :analyze
+      assert checkpoint.analyze_remediation == %{attempts_used: 1, limit: 2}
+
+      assert checkpoint.implement_chunk == %{
+               ordinal: 3,
+               number: "3",
+               title: "Widgets",
+               total: 5,
+               sessions_used: 3,
+               ceiling: 14,
+               scope: :task_phase
+             }
+    end
+
     # Feature 021, contracts/advanced-record.md §2.3.
     test "advanced_with_findings lands in the same transaction as the analyze phase attempt" do
       {repo, run_id} = open()

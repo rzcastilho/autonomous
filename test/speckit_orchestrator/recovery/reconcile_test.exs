@@ -247,6 +247,162 @@ defmodule SpeckitOrchestrator.Recovery.ReconcileTest do
     end
   end
 
+  # ---- 025 US1: checkpoint-first resume position -----------------------------
+  # contracts/reconcile-checkpoint-first.md §4 worked cases.
+
+  describe "resume_position/2 — worked cases" do
+    test "case 1 (the defect): checkpoint ahead of the trail by two phases resumes at the checkpoint" do
+      checkpoint = %{phase: :implement, last_completed_phase: :analyze}
+      assert Reconcile.resume_position(checkpoint, :tasks) == {:resume, :implement}
+    end
+
+    test "case 2: checkpoint and trail agree — unchanged" do
+      checkpoint = %{phase: :analyze, last_completed_phase: :tasks}
+      assert Reconcile.resume_position(checkpoint, :tasks) == {:resume, :analyze}
+    end
+
+    test "case 6: checkpoint names :converge as the next phase (implement just finished)" do
+      checkpoint = %{phase: :converge, last_completed_phase: :implement}
+      assert Reconcile.resume_position(checkpoint, :tasks) == {:resume, :converge}
+    end
+
+    test "nil checkpoint hands the decision to the caller's trail fallback" do
+      assert Reconcile.resume_position(nil, :tasks) == :no_position
+    end
+
+    test "an unrecognised phase alongside a recognised last_completed_phase derives the resume position from Pipeline.next/3, not damaged" do
+      checkpoint = %{phase: "bogus", last_completed_phase: :tasks}
+      assert Reconcile.resume_position(checkpoint, nil) == {:resume, :analyze}
+    end
+
+    test "a fresh checkpoint with no completed phase yet derives completed_through via predecessor/1 (§2.4)" do
+      checkpoint = %{phase: :specify, last_completed_phase: nil}
+      assert Reconcile.resume_position(checkpoint, nil) == {:resume, :specify}
+    end
+  end
+
+  # ---- 025 US2 (T011): case 3 — the checkpoint-less fallback is unchanged ----
+
+  describe "status/3 clause 5 — checkpoint-less fallback (worked case 3)" do
+    test "case 3: checkpoint nil, trail :tasks -> {:resume, :analyze}, byte-identical to 014" do
+      ev = evidence(%{branch_committed?: true, last_boundary_phase: :tasks, checkpoint: nil})
+      assert Reconcile.status(:running, ev, {:breakdown, "core-ledger"}) == {:resume, :analyze}
+    end
+
+    test "a record with neither checkpoint nor any artifact -> :pending (FR-002, FR-009)" do
+      ev = evidence(%{checkpoint: nil})
+      assert Reconcile.status(:pending, ev, {:breakdown, "core-ledger"}) == :pending
+      assert Reconcile.status(:running, ev, :ad_hoc) == :pending
+    end
+  end
+
+  describe "status/3 clause 4b — checkpoint-first resume position (025)" do
+    test "case 1 (the defect): a checkpoint two phases ahead of the trail resumes at implement, not the trail's next phase" do
+      ev =
+        evidence(%{
+          branch_committed?: true,
+          last_boundary_phase: :tasks,
+          checkpoint: %{phase: :implement, last_completed_phase: :analyze}
+        })
+
+      assert Reconcile.status(:running, ev, {:breakdown, "core-ledger"}) == {:resume, :implement}
+    end
+
+    test "case 2: an agreeing checkpoint/trail is unchanged" do
+      ev =
+        evidence(%{
+          branch_committed?: true,
+          last_boundary_phase: :tasks,
+          checkpoint: %{phase: :analyze, last_completed_phase: :tasks}
+        })
+
+      assert Reconcile.status(:running, ev, {:breakdown, "core-ledger"}) == {:resume, :analyze}
+    end
+
+    test "the checkpoint wins for :pending too — no recorded == :running guard (contract §3.1)" do
+      ev =
+        evidence(%{
+          branch_committed?: true,
+          last_boundary_phase: :tasks,
+          checkpoint: %{phase: :implement, last_completed_phase: :analyze}
+        })
+
+      assert Reconcile.status(:pending, ev, {:breakdown, "core-ledger"}) == {:resume, :implement}
+    end
+  end
+
+  # ---- 025 US3 (T015): contracts/reconcile-checkpoint-first.md §4 worked cases 4, 7, 8, 9 ----
+
+  describe "resume_position/2 — worked cases (US3, contradictions)" do
+    test "case 4: checkpoint behind the trail -> {:conflict, {:checkpoint_behind_trail, %{...}}}" do
+      checkpoint = %{phase: :plan, last_completed_phase: :clarify}
+
+      assert Reconcile.resume_position(checkpoint, :analyze) ==
+               {:conflict, {:checkpoint_behind_trail, %{checkpoint: :plan, trail: :analyze}}}
+    end
+
+    test "case 7: last_completed_phase :converge falls through to :no_position (FR-010)" do
+      checkpoint = %{phase: :converge, last_completed_phase: :converge}
+      assert Reconcile.resume_position(checkpoint, :tasks) == :no_position
+    end
+
+    test "case 8: an unrecognised phase alongside a nil last_completed_phase is damaged" do
+      checkpoint = %{phase: "implemnt", last_completed_phase: nil}
+
+      assert Reconcile.resume_position(checkpoint, :tasks) ==
+               {:conflict, {:damaged_checkpoint, %{phase: "implemnt", last_completed_phase: nil}}}
+    end
+  end
+
+  describe "status/3 clause 4b/6b — contradictions (US3)" do
+    test "case 4: a checkpoint behind the trail blocks the feature, never guessed" do
+      ev =
+        evidence(%{
+          branch_committed?: true,
+          last_boundary_phase: :analyze,
+          checkpoint: %{phase: :plan, last_completed_phase: :clarify}
+        })
+
+      assert Reconcile.status(:running, ev, {:breakdown, "core-ledger"}) ==
+               {:conflict, {:checkpoint_behind_trail, %{checkpoint: :plan, trail: :analyze}}}
+    end
+
+    test "case 8: a damaged checkpoint reports the raw values verbatim, never coerced" do
+      ev =
+        evidence(%{
+          branch_committed?: true,
+          last_boundary_phase: :tasks,
+          checkpoint: %{phase: "implemnt", last_completed_phase: nil}
+        })
+
+      assert Reconcile.status(:running, ev, {:breakdown, "core-ledger"}) ==
+               {:conflict, {:damaged_checkpoint, %{phase: "implemnt", last_completed_phase: nil}}}
+    end
+
+    test "case 7: a checkpoint completed-through :converge falls through clause 4b to the trail fallback (FR-010)" do
+      ev =
+        evidence(%{
+          branch_committed?: true,
+          last_boundary_phase: :tasks,
+          checkpoint: %{phase: :converge, last_completed_phase: :converge}
+        })
+
+      assert Reconcile.status(:running, ev, {:breakdown, "core-ledger"}) == {:resume, :analyze}
+    end
+
+    test "case 9: a checkpoint with no committed branch blocks rather than resuming (FR-009a)" do
+      ev =
+        evidence(%{
+          branch_committed?: false,
+          last_boundary_phase: nil,
+          checkpoint: %{phase: :implement, last_completed_phase: :analyze}
+        })
+
+      assert Reconcile.status(:running, ev, {:breakdown, "core-ledger"}) ==
+               {:conflict, :checkpoint_without_branch}
+    end
+  end
+
   # ---- US3 (T017): purity ----------------------------------------------------
 
   describe "status/3 purity" do

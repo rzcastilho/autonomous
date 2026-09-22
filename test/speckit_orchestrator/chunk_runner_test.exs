@@ -688,6 +688,152 @@ defmodule SpeckitOrchestrator.ChunkRunnerTest do
     assert agent.state.terminal_reason == nil
   end
 
+  # 025 (contracts/implement-chunk-checkpoint-write.md §3): each successfully
+  # completed task-phase writes a full `implement_chunk` checkpoint —
+  # previously no producer ever set this column (research R4).
+  test "each successful task-phase boundary writes a full implement_chunk checkpoint",
+       %{feature: feature, worktree: worktree, pid: pid} do
+    repo_id = "o:chunk-runner-checkpoint-#{System.unique_integer([:positive])}"
+
+    {:ok, run_id} =
+      SpeckitOrchestrator.Store.Writer.open_run(repo_id, %{
+        features: [
+          %{
+            feature_id: "001",
+            slug: "fake",
+            path: "specs/001-fake",
+            number: 1,
+            group: :backlog,
+            created_at: nil
+          }
+        ],
+        settings: %{},
+        scope: :ad_hoc,
+        layout: %{}
+      })
+
+    run_key = {repo_id, run_id}
+
+    agent =
+      ChunkRunner.run(ctx(%{pid: pid, feature: feature, worktree: worktree, run_key: run_key}))
+
+    assert agent.state.last_outcome == :ok
+
+    # The final checkpoint reflects the last task-phase written (before
+    # `FeatureRunner`'s own end-of-phase checkpoint would supersede it in the
+    # real pipeline, which this direct `ChunkRunner.run/1` call never reaches).
+    assert {:ok, checkpoint} = SpeckitOrchestrator.Store.checkpoint(run_key, "001")
+    assert checkpoint.phase == :implement
+    assert checkpoint.last_completed_phase == :analyze
+    assert checkpoint.status == :in_progress
+
+    ceiling =
+      SpeckitOrchestrator.Config.implement_sessions_per_task_phase() * 3 +
+        SpeckitOrchestrator.Config.implement_sessions_headroom()
+
+    assert checkpoint.implement_chunk == %{
+             ordinal: 3,
+             number: "3",
+             title: "Polish",
+             total: 3,
+             sessions_used: 3,
+             ceiling: ceiling,
+             scope: :task_phase
+           }
+  end
+
+  # A `:sweep`/`:whole_list` boundary, or a non-`:ok` outcome, has no
+  # task-phase identity to record — the checkpoint write is a no-op, leaving
+  # whatever row already existed (`write_checkpoint/3`'s `nil` clause).
+  test "a non-task-phase boundary writes no checkpoint (nil is a no-op, prior row intact)",
+       %{feature: feature, worktree: worktree, pid: pid} do
+    repo_id = "o:chunk-runner-checkpoint-noop-#{System.unique_integer([:positive])}"
+
+    {:ok, run_id} =
+      SpeckitOrchestrator.Store.Writer.open_run(repo_id, %{
+        features: [
+          %{
+            feature_id: "001",
+            slug: "fake",
+            path: "specs/001-fake",
+            number: 1,
+            group: :backlog,
+            created_at: nil
+          }
+        ],
+        settings: %{},
+        scope: :ad_hoc,
+        layout: %{}
+      })
+
+    run_key = {repo_id, run_id}
+
+    # Seed a prior checkpoint row directly — a `nil` write must leave it
+    # untouched rather than clearing it.
+    :ok =
+      SpeckitOrchestrator.Store.Writer.record_checkpoint(run_key, "001", %{
+        phase: :tasks,
+        last_completed_phase: :plan,
+        status: :in_progress
+      })
+
+    Application.put_env(:speckit_orchestrator, :chunk_runner_test_scenario, :terminal_error)
+
+    agent =
+      ChunkRunner.run(ctx(%{pid: pid, feature: feature, worktree: worktree, run_key: run_key}))
+
+    assert {:failed, {:session_error, _reason}} = agent.state.terminal_reason
+
+    assert {:ok, checkpoint} = SpeckitOrchestrator.Store.checkpoint(run_key, "001")
+    assert checkpoint.phase == :tasks
+    assert checkpoint.last_completed_phase == :plan
+    assert checkpoint.implement_chunk == nil
+  end
+
+  # `analyze_remediation` must survive a mid-implement checkpoint write — it
+  # is read back by `resume/2`'s context restore (contracts/
+  # implement-chunk-checkpoint-write.md §3.1) — carried from the checkpoint
+  # row `run/1` already loaded, never dropped by a chunk write.
+  test "analyze_remediation survives a mid-implement chunk checkpoint write",
+       %{feature: feature, worktree: worktree, pid: pid} do
+    repo_id = "o:chunk-runner-checkpoint-remediation-#{System.unique_integer([:positive])}"
+
+    {:ok, run_id} =
+      SpeckitOrchestrator.Store.Writer.open_run(repo_id, %{
+        features: [
+          %{
+            feature_id: "001",
+            slug: "fake",
+            path: "specs/001-fake",
+            number: 1,
+            group: :backlog,
+            created_at: nil
+          }
+        ],
+        settings: %{},
+        scope: :ad_hoc,
+        layout: %{}
+      })
+
+    run_key = {repo_id, run_id}
+
+    :ok =
+      SpeckitOrchestrator.Store.Writer.record_checkpoint(run_key, "001", %{
+        phase: :implement,
+        last_completed_phase: :analyze,
+        status: :in_progress,
+        analyze_remediation: %{attempts_used: 1, limit: 2}
+      })
+
+    agent =
+      ChunkRunner.run(ctx(%{pid: pid, feature: feature, worktree: worktree, run_key: run_key}))
+
+    assert agent.state.last_outcome == :ok
+
+    assert {:ok, checkpoint} = SpeckitOrchestrator.Store.checkpoint(run_key, "001")
+    assert checkpoint.analyze_remediation == %{attempts_used: 1, limit: 2}
+  end
+
   @tag :integration
   test "LIVE: runs one real chunked implement session against a fixture target repo (paid, opt-in)",
        %{prompts_agent: _prompts_agent} do

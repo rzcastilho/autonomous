@@ -3,7 +3,15 @@ defmodule SpeckitOrchestrator.ResumeRunTest do
   # env, plus the shared store (StoreCase clears tables per test).
   use SpeckitOrchestrator.StoreCase, async: false
 
-  alias SpeckitOrchestrator.{Coordinator, Feature, Layout, Ledger, RepoIdentity, RunContext}
+  alias SpeckitOrchestrator.{
+    Coordinator,
+    Feature,
+    Layout,
+    Ledger,
+    RepoIdentity,
+    RunContext,
+    Worktree
+  }
 
   @coordinator SpeckitOrchestrator.Coordinator
 
@@ -38,7 +46,12 @@ defmodule SpeckitOrchestrator.ResumeRunTest do
   end
 
   defp feat(id, number \\ nil),
-    do: %Feature{id: id, number: number || String.to_integer(id), slug: "f#{id}", path: "#{id}.md"}
+    do: %Feature{
+      id: id,
+      number: number || String.to_integer(id),
+      slug: "f#{id}",
+      path: "#{id}.md"
+    }
 
   defp capturing_runner(test_pid) do
     fn feature, notify -> send(test_pid, {:started, feature.id, notify}) end
@@ -393,6 +406,264 @@ defmodule SpeckitOrchestrator.ResumeRunTest do
     n1.("001", :done, nil)
     assert_receive {:run_complete, report}, 1_000
     assert report.done == ["001"]
+  end
+
+  # ---- 025 US1: whole-run resume dispatches at the checkpoint, not the trail
+
+  # Reports a critical finding for `/speckit.analyze` (so an illegitimate
+  # rewind to `:analyze` is loudly distinguishable from the correct resume at
+  # `:implement` — `:escalated` vs `:done`), and otherwise drives the chunked
+  # `:implement` loop like `chunk_runner_test.exs`'s FakeSDK: checks off the
+  # scoped task-phase's own task and writes a real source file so the
+  # artifact gate sees genuine implementation changes. Dispatching an
+  # already-complete task-phase is a hard bug, reported as a terminal
+  # (non-transient) session error rather than silently succeeding.
+  defmodule CheckpointFirstFakeSDK do
+    alias ClaudeAgentSDK.Message
+
+    def query(prompt, options) do
+      cond do
+        String.contains?(prompt, "/speckit.analyze") ->
+          critical_finding()
+
+        true ->
+          case Regex.run(~r/Implement ONLY the tasks in "Phase (\d+):/, prompt) do
+            [_, n] ->
+              if n in illegal_phases() do
+                error_messages("illegal redispatch of already-complete task-phase #{n}")
+              else
+                check_off_and_succeed(Map.get(options, :cwd), n)
+              end
+
+            nil ->
+              success_messages()
+          end
+      end
+    end
+
+    defp illegal_phases,
+      do: Application.get_env(:speckit_orchestrator, :checkpoint_first_illegal_phases, [])
+
+    defp check_off_and_succeed(cwd, n) when is_binary(cwd) do
+      case cwd |> Path.join("specs/**/tasks.md") |> Path.wildcard() |> List.first() do
+        nil -> :ok
+        path -> check_off(path, cwd, n)
+      end
+
+      success_messages()
+    end
+
+    defp check_off_and_succeed(_cwd, _n), do: success_messages()
+
+    defp check_off(path, cwd, n) do
+      content =
+        path
+        |> File.read!()
+        |> String.split("\n")
+        |> Enum.map(&check_line(&1, n))
+        |> Enum.join("\n")
+
+      File.write!(path, content)
+
+      impl_path = Path.join(cwd, "lib/fake_phase_#{n}.ex")
+      File.mkdir_p!(Path.dirname(impl_path))
+      File.write!(impl_path, "defmodule FakePhase#{n} do\nend\n")
+    end
+
+    defp check_line(line, n) do
+      if String.contains?(line, "T00#{n} "), do: String.replace(line, "[ ]", "[X]"), else: line
+    end
+
+    defp critical_finding do
+      text = ~s({"summary":"should never run","findings":[{"severity":"critical","title":"bad"}]})
+
+      [
+        %Message{type: :system, subtype: :init, data: %{session_id: "s"}, raw: %{}},
+        %Message{
+          type: :assistant,
+          data: %{session_id: "s", message: %{"content" => text}},
+          raw: %{}
+        },
+        %Message{
+          type: :result,
+          subtype: :success,
+          data: %{session_id: "s", result: text, is_error: false, total_cost_usd: 0.05},
+          raw: %{}
+        }
+      ]
+    end
+
+    defp success_messages do
+      [
+        %Message{type: :system, subtype: :init, data: %{session_id: "s"}, raw: %{}},
+        %Message{
+          type: :result,
+          subtype: :success,
+          data: %{
+            session_id: "s",
+            result: "done",
+            num_turns: 3,
+            is_error: false,
+            total_cost_usd: 0.1,
+            usage: %{input_tokens: 0, output_tokens: 0}
+          },
+          raw: %{}
+        }
+      ]
+    end
+
+    defp error_messages(reason) do
+      [
+        %Message{type: :system, subtype: :init, data: %{session_id: "s"}, raw: %{}},
+        %Message{
+          type: :result,
+          subtype: :error,
+          data: %{session_id: "s", error: reason, is_error: true, total_cost_usd: 0.05},
+          raw: %{}
+        }
+      ]
+    end
+  end
+
+  defp checkpoint_first_git!(repo, args),
+    do: {_, 0} = System.cmd("git", ["-C", repo | args], stderr_to_stdout: true)
+
+  # A real, scaffolded repo (`.specify`/`.claude`, required by `Worktree.create`
+  # for a genuine — not faked — dispatch) with a structured, multi-task-phase
+  # `tasks.md`, mirroring `resume_test.exs`'s "chunked implement resume"
+  # fixtures. `complete` marks which task-phase numbers start pre-checked.
+  defp checkpoint_first_chunked_repo(feature, phases, complete) do
+    repo = Path.join(System.tmp_dir!(), "rr_ckpt_repo_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(Path.join(repo, ".specify/memory"))
+    File.write!(Path.join(repo, ".specify/memory/constitution.md"), "# C\n")
+    File.mkdir_p!(Path.join(repo, ".claude/skills"))
+    File.write!(Path.join(repo, ".claude/skills/.gitkeep"), "")
+    File.write!(Path.join(repo, ".claude/settings.json"), "{}")
+
+    spec_dir = Path.join(repo, "specs/#{Feature.spec_id(feature)}-#{feature.slug}")
+    File.mkdir_p!(spec_dir)
+
+    body =
+      Enum.map_join(phases, "\n", fn {n, title} ->
+        mark = if n in complete, do: "X", else: " "
+        "## Phase #{n}: #{title}\n\n- [#{mark}] T00#{n} #{title} task\n"
+      end)
+
+    File.write!(Path.join(spec_dir, "tasks.md"), "# Tasks\n\n" <> body)
+
+    checkpoint_first_git!(repo, ["init", "-q", "-b", "main"])
+    checkpoint_first_git!(repo, ["config", "user.email", "t@e.com"])
+    checkpoint_first_git!(repo, ["config", "user.name", "T"])
+    checkpoint_first_git!(repo, ["remote", "add", "origin", "git@example.com:test/ckpt.git"])
+    checkpoint_first_git!(repo, ["add", "-A"])
+    checkpoint_first_git!(repo, ["commit", "-q", "-m", "base"])
+    on_exit(fn -> File.rm_rf(repo) end)
+    repo
+  end
+
+  describe "025 US1: whole-run resume dispatches at the checkpoint, not the trail" do
+    setup do
+      prev_sdk = Application.get_env(:jido_claude, :sdk_module)
+      Application.put_env(:jido_claude, :sdk_module, CheckpointFirstFakeSDK)
+
+      on_exit(fn ->
+        if prev_sdk,
+          do: Application.put_env(:jido_claude, :sdk_module, prev_sdk),
+          else: Application.delete_env(:jido_claude, :sdk_module)
+
+        Application.delete_env(:speckit_orchestrator, :checkpoint_first_illegal_phases)
+      end)
+
+      :ok
+    end
+
+    # SC-001 (contracts/reconcile-checkpoint-first.md §4 worked case 1): a
+    # checkpoint naming `:implement` (task-phase 3) beside a trail whose
+    # newest boundary commit is `:tasks` — two phases behind. Before 025,
+    # `resume_run/1`'s dispatch derived the resume phase from the trail alone
+    # (`phase_after(:tasks) == :analyze`), rewinding a feature interrupted
+    # mid-implement and re-running `:analyze`. `CheckpointFirstFakeSDK` reports
+    # a critical finding for any `:analyze` dispatch, so a regression surfaces
+    # as `report.escalated == [id]` instead of `report.done == [id]`.
+    test "a feature interrupted mid-implement resumes at :implement, not :analyze (the defect)" do
+      # A numeric id, like every real feature id (`Backlog`/`SingleSpec`) —
+      # `Feature.spec_id/1`'s auto-allocation fallback (`ensure_spec_number/3`)
+      # only fires for an UNALLOCATED feature; recording the spec_number up
+      # front (mirrors production's `run_fresh/6` invariant, feature 022)
+      # keeps the worktree path/branch this fixture creates and the one
+      # `resume_run/1`'s real dispatch resolves byte-identical.
+      id = "#{System.unique_integer([:positive, :monotonic])}"
+      n = String.to_integer(id)
+      feature = %{feat(id, n) | spec_number: n}
+
+      phases = [
+        {"1", "Setup"},
+        {"2", "Core"},
+        {"3", "Widgets"},
+        {"4", "Gadgets"},
+        {"5", "Polish"}
+      ]
+
+      repo = checkpoint_first_chunked_repo(feature, phases, ["1", "2"])
+      Application.put_env(:speckit_orchestrator, :checkpoint_first_illegal_phases, ["1", "2"])
+      put_repo(repo)
+
+      {:ok, segment} = RepoIdentity.resolve(repo)
+      {:ok, layout} = Layout.build(repo, segment, :ad_hoc)
+
+      {:ok, wt} = Worktree.create(feature, repo: repo, worktree_root: layout.worktree_root)
+
+      # The trail: a single boundary commit proving only :tasks completed —
+      # two phases behind the checkpoint's :analyze completed-through.
+      checkpoint_first_git!(wt.path, [
+        "commit",
+        "--allow-empty",
+        "-q",
+        "-m",
+        "speckit: #{id} checkpoint after tasks"
+      ])
+
+      run_key = open_run(repo, layout, [feature], %RunContext{budget_usd: 100.0})
+      :ok = Writer.record_spec_number(run_key, id, n)
+
+      :ok =
+        Writer.record_checkpoint(run_key, id, %{
+          phase: :implement,
+          last_completed_phase: :analyze,
+          status: :in_progress,
+          reason: nil,
+          session_id: "s1",
+          implement_chunk: %{
+            ordinal: 3,
+            number: "3",
+            title: "Widgets",
+            total: 5,
+            sessions_used: 0,
+            ceiling: 14,
+            scope: :task_phase
+          }
+        })
+
+      me = self()
+
+      fake_publisher = fn feature, _base -> {:ok, "https://example/pr/#{feature.id}"} end
+
+      assert {:ok, pid} = SpeckitOrchestrator.resume_run(owner: me, publisher: fake_publisher)
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+      assert_receive {:run_complete, report}, 30_000
+      assert report.done == [id]
+      assert report.escalated == []
+
+      {:ok, detail} = Store.run(run_key)
+      phases_seen = detail.features |> hd() |> Map.fetch!(:phase_attempts) |> Enum.map(& &1.phase)
+
+      # A resume-triggered rewind would re-run :analyze (and land on
+      # :escalated, asserted above) instead of dispatching straight to the
+      # chunked implement loop.
+      refute :analyze in phases_seen
+      assert :implement_chunk in phases_seen
+    end
   end
 
   # ---- a never-started feature with no target scaffold (T027, integration) --
