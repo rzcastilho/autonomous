@@ -21,6 +21,13 @@ This was observed live on a real run (run `r000002`, target repository `mod-play
 
 The rewind is not only wasted money and wall-clock. It re-opened an artifact-writing phase over a tree that a later phase had already advanced, and — combined with a second, separate defect covered by its own feature — produced two concurrent sessions writing to one worktree, visible as a duplicated implementation progress commit on the branch.
 
+## Clarifications
+
+### Session 2026-09-22
+
+- Q: When a feature's checkpoint names a phase behind what the commit trail proves was already completed (a genuine contradiction), what should the resume do? → A: Block the feature — report the discrepancy, classify it as blocked, run nothing for it, operator resolves explicitly (consistent with every existing store-vs-evidence conflict).
+- Q: A feature has a durable checkpoint naming a mid-pipeline phase, but its branch no longer exists and there is no other corroborating artifact. What should the resume do? → A: Block it — a checkpoint is written only after a phase completed and its worktree was committed, so a checkpoint with no branch is contradictory. Report and block rather than restarting fresh or recreating the branch.
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - A whole-run resume continues where the crash happened (Priority: P1)
@@ -62,13 +69,14 @@ An operator resumes a run in which one feature's durable checkpoint and its bran
 
 **Why this priority**: The existing reconciliation rule is that store-versus-evidence disagreements surface for a human instead of being resolved silently. Promoting the checkpoint to primary must not create a new silent override. But the common case — a checkpoint that is simply *ahead* of the commit trail, which is exactly what the defect above produces — is the expected, healthy shape and must not be reported as a conflict.
 
-**Independent Test**: Feed a checkpoint naming an earlier phase than the newest boundary marker proves completed. The result must be a reported discrepancy. Feed a checkpoint naming a later phase than the newest marker and confirm it resolves to the checkpoint's phase with no discrepancy raised.
+**Independent Test**: Feed a checkpoint naming an earlier phase than the newest boundary marker proves completed. The result must be a reported discrepancy and a blocked classification. Feed a checkpoint naming a later phase than the newest marker and confirm it resolves to the checkpoint's phase with no discrepancy raised.
 
 **Acceptance Scenarios**:
 
 1. **Given** a feature whose checkpoint names a phase strictly ahead of what the commit trail shows, **When** the position is computed, **Then** the checkpoint's phase is used and no discrepancy is reported.
-2. **Given** a feature whose checkpoint names a phase strictly behind what the commit trail proves was already completed, **When** the position is computed, **Then** a discrepancy is reported to the operator naming the feature, the checkpoint's phase, and the trail's phase.
+2. **Given** a feature whose checkpoint names a phase strictly behind what the commit trail proves was already completed, **When** the position is computed, **Then** a discrepancy is reported to the operator naming the feature, the checkpoint's phase, and the trail's phase, and the feature is classified as blocked with no phase run for it.
 3. **Given** a reported discrepancy, **When** the operator reads the resume preview, **Then** the discrepancy is visible before any work starts and no budget has been spent.
+4. **Given** a feature that has a checkpoint but no committed branch and no other corroborating artifact, **When** its status is reconciled, **Then** it is reported as a discrepancy and blocked — not treated as never-started.
 
 ---
 
@@ -78,7 +86,8 @@ An operator resumes a run in which one feature's durable checkpoint and its bran
 - A feature already proven complete by its release evidence: unchanged — completion still wins over any checkpoint or trail position.
 - A checkpoint naming the final phase in the pipeline: treated the same as today's final-phase boundary, a completion signal rather than a resume position.
 - A checkpoint naming a phase the pipeline does not recognise (a record written by a different version): reported as a damaged record rather than silently coerced to a neighbouring phase.
-- A feature whose branch no longer exists but whose checkpoint does: the checkpoint alone is not proof that work landed; classification follows the existing rules for a feature with no committed branch.
+- A feature whose branch no longer exists but whose checkpoint does: contradictory — a checkpoint is written only after a phase completed and its worktree was committed, so a checkpoint with no branch to hold that work is reported as a discrepancy and the feature is blocked. It is never restarted from the first phase, and the branch is never recreated to resume onto.
+- A checkpoint naming the implementation phase but carrying no progress position (an older record): the implementation work starts from its beginning and no discrepancy is reported.
 - Implementation progress recorded in the checkpoint that points past the end of the current task list (the task list was regenerated since): the implementation work restarts from the beginning of the list rather than skipping it entirely, and the operator is told.
 
 ## Requirements *(mandatory)*
@@ -89,11 +98,13 @@ An operator resumes a run in which one feature's durable checkpoint and its bran
 - **FR-002**: When a feature carries no durable checkpoint, the whole-run resume MUST derive the resume position from the branch's phase-boundary commit trail, producing exactly the position it produces today.
 - **FR-003**: The single-feature resume and the whole-run resume MUST produce the same resume position for the same feature and the same evidence.
 - **FR-004**: A checkpoint whose phase is ahead of the commit trail's newest boundary MUST be treated as the expected shape — the checkpoint wins, and no discrepancy is reported.
-- **FR-005**: A checkpoint whose phase is behind what the commit trail proves was already completed MUST be reported to the operator as a discrepancy, naming the feature, the checkpoint's phase, and the trail's phase.
+- **FR-005**: A checkpoint whose phase is behind what the commit trail proves was already completed MUST be reported to the operator as a discrepancy, naming the feature, the checkpoint's phase, and the trail's phase, and the feature MUST be classified as blocked: no phase runs for it and no position is guessed from either source.
 - **FR-006**: A reported discrepancy MUST be visible in the read-only resume preview — before any phase runs and before any budget is spent.
 - **FR-007**: A resume that starts a feature at the implementation phase MUST carry the checkpoint's recorded implementation progress position, so already-completed portions of the implementation work are not repeated.
+- **FR-007a**: A checkpoint that names the implementation phase but records no progress position MUST start the implementation work from its beginning, without reporting a discrepancy — this is the shape older records carry, not a contradiction.
 - **FR-008**: The precedence rules that classify a feature as complete, escalated, halted, or failed MUST be unchanged by this feature; no checkpoint may advance a human-facing terminal state.
 - **FR-009**: A feature with neither a checkpoint nor any corroborating artifact MUST still be classified as never-started and run from the first phase.
+- **FR-009a**: A feature that has a checkpoint but no committed branch and no other corroborating artifact MUST be reported as a discrepancy and classified as blocked — never classified as never-started, and never resumed onto a recreated branch.
 - **FR-010**: A checkpoint naming the final phase of the pipeline MUST be treated as a completion signal, never as a resume position.
 - **FR-011**: A checkpoint naming an unrecognised phase MUST be reported as a damaged record and MUST start no work.
 - **FR-012**: The decision that maps a reconciled feature onto a status and a resume position MUST remain a single shared rule, used identically by the resume paths and by the record-repair preview — no second, divergent copy.
@@ -105,7 +116,7 @@ An operator resumes a run in which one feature's durable checkpoint and its bran
 - **Durable checkpoint**: the per-feature record written when a phase completes, naming the next phase, the phase just completed, and — for the implementation phase — how far the chunked work progressed. Already written today; this feature changes who reads it.
 - **Boundary commit trail**: the sequence of phase-completion markers in a feature branch's history. Remains corroborating evidence and the fallback source of position.
 - **Resume position**: the phase a feature restarts at, plus, for implementation, the point within that phase's work.
-- **Discrepancy**: an operator-facing report that the checkpoint and the trail tell contradictory stories, carried in the existing resume report alongside the other conflicts it already reports.
+- **Discrepancy**: an operator-facing report that the checkpoint and the trail tell contradictory stories, carried in the existing resume report alongside the other conflicts it already reports. A discrepancy blocks its feature; it is never a position the resume falls back to.
 
 ## Success Criteria *(mandatory)*
 
@@ -115,7 +126,7 @@ An operator resumes a run in which one feature's durable checkpoint and its bran
 - **SC-002**: The phase chosen for a given feature is identical whether the operator resumes that one feature or the whole run — verified across every phase the pipeline can be interrupted in.
 - **SC-003**: Zero spend is incurred on re-running a phase that the durable record already shows as completed.
 - **SC-004**: Every record that resumes correctly today resumes to the identical phase after the change, with zero new discrepancies reported.
-- **SC-005**: A checkpoint-versus-trail contradiction is reported to the operator before any work starts, in 100% of cases, and is never resolved silently.
+- **SC-005**: A checkpoint-versus-trail contradiction is reported to the operator before any work starts, in 100% of cases, blocks the feature, and is never resolved silently or guessed from either source.
 - **SC-006**: An interrupted implementation phase resumes without repeating any portion of the work the checkpoint records as completed.
 
 ## Assumptions
