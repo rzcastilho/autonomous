@@ -555,7 +555,14 @@ defmodule SpeckitOrchestrator.ResumeTest do
       {repo, layout} = hermetic_repo()
 
       run_key =
-        open_run(repo, layout, [%Feature{id: id, number: System.unique_integer([:positive, :monotonic]), slug: "widget", path: "#{id}-widget.md"}])
+        open_run(repo, layout, [
+          %Feature{
+            id: id,
+            number: System.unique_integer([:positive, :monotonic]),
+            slug: "widget",
+            path: "#{id}-widget.md"
+          }
+        ])
 
       write_checkpoint(run_key, id, :analyze, :halted)
       me = self()
@@ -595,7 +602,14 @@ defmodule SpeckitOrchestrator.ResumeTest do
       {repo, layout} = hermetic_repo()
 
       run_key =
-        open_run(repo, layout, [%Feature{id: id, number: System.unique_integer([:positive, :monotonic]), slug: "wrong-slug", path: "wrong.md"}])
+        open_run(repo, layout, [
+          %Feature{
+            id: id,
+            number: System.unique_integer([:positive, :monotonic]),
+            slug: "wrong-slug",
+            path: "wrong.md"
+          }
+        ])
 
       write_checkpoint(run_key, id, :analyze, :halted)
       me = self()
@@ -623,7 +637,17 @@ defmodule SpeckitOrchestrator.ResumeTest do
       # types at write time, so this is still legitimately reachable).
       id = unique_id()
       {repo, layout} = hermetic_repo()
-      run_key = open_run(repo, layout, [%Feature{id: id, number: System.unique_integer([:positive, :monotonic]), slug: nil, path: nil}])
+
+      run_key =
+        open_run(repo, layout, [
+          %Feature{
+            id: id,
+            number: System.unique_integer([:positive, :monotonic]),
+            slug: nil,
+            path: nil
+          }
+        ])
+
       write_checkpoint(run_key, id, :analyze, :halted)
       me = self()
 
@@ -646,7 +670,12 @@ defmodule SpeckitOrchestrator.ResumeTest do
 
       run_key =
         open_run(repo, layout_for(repo), [
-          %Feature{id: id, number: System.unique_integer([:positive, :monotonic]), slug: "widget", path: "#{id}-widget.md"}
+          %Feature{
+            id: id,
+            number: System.unique_integer([:positive, :monotonic]),
+            slug: "widget",
+            path: "#{id}-widget.md"
+          }
         ])
 
       write_checkpoint(run_key, id, :analyze, :halted)
@@ -689,6 +718,63 @@ defmodule SpeckitOrchestrator.ResumeTest do
       refute phase_recorded?(run_key, id, :plan)
       refute phase_recorded?(run_key, id, :tasks)
       assert phase_recorded?(run_key, id, :analyze)
+    end
+  end
+
+  # ---- 025 US1: parity with resume_run/1's whole-run dispatch ---------------
+
+  describe "resume/2 — 025 checkpoint-first parity with resume_run/1" do
+    # SC-002/FR-003: `resume/2`'s single-feature dispatch always resolves the
+    # checkpoint's own `phase` directly (`resolve_start_phase/2`'s no-`:from`
+    # clause — untouched by 025; see plan.md Project Structure). `resume_run/1`'s
+    # whole-run dispatch now consults exactly `resumable_run/0`'s
+    # `resume_phases` map (`inject_resume_run_strategy/5` wires it straight
+    # into the executor) — asserting the two agree here proves parity without
+    # opening a real harness session (zero spend, FR-006), across a trail
+    # deliberately behind the checkpoint: the exact shape that diverged before
+    # this feature (contracts/reconcile-checkpoint-first.md §4).
+    defp assert_resume_phase_parity(checkpoint_phase, last_completed_phase, trail_phase) do
+      id = unique_id()
+      repo = base_repo()
+      root = tmp_root()
+      point_config_at(repo, root)
+
+      {:ok, wt} = Worktree.create(feature(id), repo: repo, worktree_root: root)
+
+      if trail_phase do
+        git!(wt.path, [
+          "commit",
+          "--allow-empty",
+          "-q",
+          "-m",
+          "speckit: #{id} checkpoint after #{trail_phase}"
+        ])
+      end
+
+      run_key = open_run(repo, real_layout(repo, root), [feature(id)])
+
+      write_checkpoint(run_key, id, checkpoint_phase, :in_progress, %{
+        last_completed_phase: last_completed_phase
+      })
+
+      assert {:ok, %{resume_phases: resume_phases}} = SpeckitOrchestrator.resumable_run()
+      assert resume_phases[id] == checkpoint_phase
+    end
+
+    test "case 1 (the defect): checkpoint :implement, trail :tasks — both paths resume at :implement" do
+      assert_resume_phase_parity(:implement, :analyze, :tasks)
+    end
+
+    test "checkpoint :tasks, trail :specify — two phases behind" do
+      assert_resume_phase_parity(:tasks, :plan, :specify)
+    end
+
+    test "checkpoint :converge (implement just finished), trail :tasks" do
+      assert_resume_phase_parity(:converge, :implement, :tasks)
+    end
+
+    test "checkpoint :clarify with no boundary commit at all (trail nil)" do
+      assert_resume_phase_parity(:clarify, :specify, nil)
     end
   end
 

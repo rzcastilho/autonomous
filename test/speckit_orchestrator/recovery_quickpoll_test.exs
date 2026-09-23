@@ -210,4 +210,71 @@ defmodule SpeckitOrchestrator.RecoveryQuickpollTest do
     assert_receive {:started, "002", _notify}, 1_000
     refute_received {:started, "001", _}
   end
+
+  # ---- 025 Phase 6 (T019): byte-identical regression for both existing-record shapes ----
+  #
+  # SC-004/FR-014: a record that resumed correctly before 025 (checkpoint:
+  # nil — the trail-only shape — and a checkpoint that agrees with the trail,
+  # the shape a real writer produces at a normal boundary) must reconcile
+  # identically after 025: zero new conflicts, the same resume phase.
+
+  defp seed_mid_run(checkpoint_fixture) do
+    repo = base_repo()
+    Application.put_env(:speckit_orchestrator, :repo, repo)
+
+    {:ok, segment} = RepoIdentity.resolve(repo)
+    {:ok, layout} = Layout.build(repo, segment, :ad_hoc)
+
+    git!(repo, ["checkout", "-q", "-b", "feature/001-core-ledger"])
+    commit(repo, "speckit: 001 checkpoint after specify")
+    commit(repo, "speckit: 001 checkpoint after clarify")
+    commit(repo, "speckit: 001 checkpoint after plan")
+    git!(repo, ["checkout", "-q", "main"])
+
+    run_key = open_run(repo, layout, [feat("001")])
+
+    :ok =
+      Writer.record_phase_attempt(run_key, %{
+        attempt: minimal_attempt("001", :plan),
+        checkpoint: checkpoint_fixture
+      })
+
+    {layout, run_key}
+  end
+
+  test "checkpoint: nil — the trail-only shape — reconciles byte-identically to 014 (FR-002/FR-014)" do
+    {layout, run_key} = seed_mid_run(nil)
+    on_exit(fn -> File.rm_rf(layout.worktree_root) end)
+
+    {:ok, detail} = Store.run(run_key)
+
+    assert {:ok, %{statuses: statuses, resume_phases: resume_phases, report: report}} =
+             Recovery.reconcile_run(detail)
+
+    assert statuses["001"] == :running
+    assert resume_phases["001"] == :tasks
+    assert report.conflicts == []
+  end
+
+  test "a checkpoint agreeing with the trail at the same boundary reconciles identically (FR-004/FR-014)" do
+    agreeing = %{
+      phase: :tasks,
+      last_completed_phase: :plan,
+      status: :in_progress,
+      reason: nil,
+      session_id: "s1"
+    }
+
+    {layout, run_key} = seed_mid_run(agreeing)
+    on_exit(fn -> File.rm_rf(layout.worktree_root) end)
+
+    {:ok, detail} = Store.run(run_key)
+
+    assert {:ok, %{statuses: statuses, resume_phases: resume_phases, report: report}} =
+             Recovery.reconcile_run(detail)
+
+    assert statuses["001"] == :running
+    assert resume_phases["001"] == :tasks
+    assert report.conflicts == []
+  end
 end

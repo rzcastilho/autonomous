@@ -243,4 +243,89 @@ defmodule SpeckitOrchestrator.RecordRecoveryTest do
 
     assert {:error, :no_manifest} = SpeckitOrchestrator.recover_record()
   end
+
+  # ---- 025 Phase 6 (T019): byte-identical regression through the rebuild preview ----
+  #
+  # SC-004/FR-014: `recover_record/1`'s preview (built on `Rebuild.propose/3`,
+  # which shares `Reconcile.status/3` with `plan_run/2`) must resolve the same
+  # resume phase and raise no new conflict for both the checkpoint-less shape
+  # and an agreeing checkpoint at the same boundary.
+
+  defp seed_mid_run_for_rebuild(checkpoint_fixture) do
+    repo = base_repo()
+    Application.put_env(:speckit_orchestrator, :repo, repo)
+
+    {:ok, segment} = RepoIdentity.resolve(repo)
+    {:ok, layout} = Layout.build(repo, segment, {:breakdown, "core-ledger"})
+
+    git!(repo, ["checkout", "-q", "-b", "feature/001-core-ledger"])
+    commit(repo, "speckit: 001 checkpoint after specify")
+    commit(repo, "speckit: 001 checkpoint after clarify")
+    commit(repo, "speckit: 001 checkpoint after plan")
+    git!(repo, ["checkout", "-q", "main"])
+
+    File.mkdir_p!(layout.breakdown_root)
+    breakdown_file(layout.breakdown_root, "001", "None")
+
+    run_key = open_run(repo, layout, [feat("001")])
+
+    now = DateTime.utc_now()
+
+    attempt = %{
+      feature_id: "001",
+      phase: :plan,
+      ordinal: 1,
+      step: 1,
+      label: "plan",
+      started_at: now,
+      ended_at: now,
+      duration_ms: 0,
+      outcome: :ok,
+      model: "sonnet",
+      cost_usd: 0.0,
+      cost_kind: :estimate,
+      session_id: "s1",
+      error: nil
+    }
+
+    :ok =
+      Writer.record_phase_attempt(run_key, %{attempt: attempt, checkpoint: checkpoint_fixture})
+
+    {layout, run_key}
+  end
+
+  test "recover_record/1 preview resolves the checkpoint-less resume phase identically (FR-002/FR-014)" do
+    {layout, run_key} = seed_mid_run_for_rebuild(nil)
+    on_exit(fn -> File.rm_rf(layout.worktree_root) end)
+
+    {:ok, before} = Store.run(run_key)
+
+    assert {:ok, proposal} = SpeckitOrchestrator.recover_record()
+
+    assert proposal.statuses["001"] == :running
+    assert proposal.resume_phases["001"] == :tasks
+    assert proposal.report.conflicts == []
+
+    {:ok, after_read} = Store.run(run_key)
+    assert after_read.features == before.features
+  end
+
+  test "recover_record/1 preview resolves an agreeing checkpoint's resume phase identically (FR-004/FR-014)" do
+    agreeing = %{
+      phase: :tasks,
+      last_completed_phase: :plan,
+      status: :in_progress,
+      reason: nil,
+      session_id: "s1"
+    }
+
+    {layout, _run_key} = seed_mid_run_for_rebuild(agreeing)
+    on_exit(fn -> File.rm_rf(layout.worktree_root) end)
+
+    assert {:ok, proposal} = SpeckitOrchestrator.recover_record()
+
+    assert proposal.statuses["001"] == :running
+    assert proposal.resume_phases["001"] == :tasks
+    assert proposal.report.conflicts == []
+  end
 end
