@@ -547,6 +547,91 @@ defmodule SpeckitOrchestrator.ResumeTest do
     end
   end
 
+  # ---- 026 US2: a worker-only active run guards resume too ------------------
+
+  # Mirrors supersession_drain_test.exs's stub worker — polls the same
+  # boundary predicate a real phase/chunk/remediation site would, never
+  # killed from outside.
+  defp drain_aware_worker(me) do
+    send(me, :worker_running)
+    wait_for_worker_drain(me)
+  end
+
+  defp wait_for_worker_drain(me) do
+    if SpeckitOrchestrator.Workers.drain_requested?() do
+      send(me, :worker_drained)
+    else
+      Process.sleep(20)
+      wait_for_worker_drain(me)
+    end
+  end
+
+  describe "resume/2 — 026 worker-only active-run guard" do
+    test "refuses with {:error, {:active_run, worker_pid}} when only a worker is alive (no Coordinator), and starts no work (AS1, FR-005, SC-004)" do
+      id = unique_id()
+      {repo, layout} = hermetic_repo()
+      run_key = open_run(repo, layout, [feature(id)])
+      write_checkpoint(run_key, id, :analyze, :halted)
+
+      me = self()
+      {:ok, worker_pid} = SpeckitOrchestrator.Workers.spawn(run_key, id, fn -> drain_aware_worker(me) end)
+      assert_receive :worker_running, 2_000
+      refute Process.whereis(SpeckitOrchestrator.Coordinator)
+
+      assert {:error, {:active_run, ^worker_pid}} =
+               SpeckitOrchestrator.resume(id, features: [], runner: capturing_runner(me))
+
+      refute_received {:runner_called, _}
+      assert Process.alive?(worker_pid)
+
+      Process.exit(worker_pid, :kill)
+    end
+
+    test ":force drains the worker first, then proceeds (AS3, FR-006)" do
+      id = unique_id()
+      {repo, layout} = hermetic_repo()
+      run_key = open_run(repo, layout, [feature(id)])
+      write_checkpoint(run_key, id, :analyze, :halted)
+
+      me = self()
+      {:ok, worker_pid} = SpeckitOrchestrator.Workers.spawn(run_key, id, fn -> drain_aware_worker(me) end)
+      assert_receive :worker_running, 2_000
+
+      assert {:ok, pid} =
+               SpeckitOrchestrator.resume(id,
+                 features: [],
+                 runner: capturing_runner(me),
+                 force: true
+               )
+
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+      # resume/2's guard drains synchronously before anything else runs, so by
+      # the time it returns the worker has already observed the request and
+      # exited on its own — never killed from outside.
+      assert_received :worker_drained
+      refute Process.alive?(worker_pid)
+      assert_receive {:runner_called, feat}
+      assert feat.id == id
+    end
+
+    test "with no worker and no Coordinator, resume proceeds exactly as today (AS4)" do
+      id = unique_id()
+      {repo, layout} = hermetic_repo()
+      run_key = open_run(repo, layout, [feature(id)])
+      write_checkpoint(run_key, id, :analyze, :halted)
+
+      me = self()
+
+      assert {:ok, pid} =
+               SpeckitOrchestrator.resume(id, features: [], runner: capturing_runner(me))
+
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+      assert_receive {:runner_called, feat}
+      assert feat.id == id
+    end
+  end
+
   # ---- identity recovery from checkpoint alone (US1, FR-001..004) ---------
 
   describe "resume/2 — identity recovery from checkpoint alone" do

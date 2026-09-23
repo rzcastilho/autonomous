@@ -73,6 +73,14 @@ defmodule SpeckitOrchestrator.PhaseSession do
   def call_timeout(deadline_ms) when is_integer(deadline_ms) and deadline_ms > 0,
     do: deadline_ms + @call_grace_ms
 
+  @doc """
+  The fixed grace `call_timeout/1` adds on top of a session's own deadline —
+  shared with `Workers.Bound.wait_ms/3` (026), which uses the same grace when
+  bounding how long a drain waits for a worker's in-flight session.
+  """
+  @spec call_grace_ms() :: pos_integer()
+  def call_grace_ms, do: @call_grace_ms
+
   # ---- deadline cut -------------------------------------------------------
 
   defp cut(%Task{pid: pid} = task, deadline_ms) do

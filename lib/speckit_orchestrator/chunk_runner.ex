@@ -33,7 +33,8 @@ defmodule SpeckitOrchestrator.ChunkRunner do
     TaskPhaseRef,
     TaskPlan,
     Telemetry,
-    Worktree
+    Worktree,
+    Workers
   }
 
   alias SpeckitOrchestrator.Store.Writer
@@ -182,7 +183,10 @@ defmodule SpeckitOrchestrator.ChunkRunner do
         finish(ctx, agent)
 
       {:halted, :breaker, _state1} ->
-        halt(ctx, agent)
+        halt(ctx, agent, :breaker)
+
+      {:halted, :superseded, _state1} ->
+        halt(ctx, agent, :superseded)
 
       {:failed, reason, _state1} ->
         fail(ctx, agent, reason)
@@ -210,6 +214,7 @@ defmodule SpeckitOrchestrator.ChunkRunner do
           source: "/chunk_runner"
         )
 
+      Workers.session_started(deadline_ms)
       {:ok, agent1} = AgentServer.call(ctx.pid, signal, PhaseSession.call_timeout(deadline_ms))
       agent1 = PhaseStep.ensure_recorded(agent0, agent1, :implement)
       result = agent1.state.last_result
@@ -227,6 +232,7 @@ defmodule SpeckitOrchestrator.ChunkRunner do
         progress?: progress?,
         plan: after_plan,
         breaker?: breaker_tripped?(ctx.ledger),
+        drain?: Workers.drain_requested?(),
         transient?: transient?,
         error: result && result.error
       }
@@ -435,13 +441,13 @@ defmodule SpeckitOrchestrator.ChunkRunner do
   # existing `FeatureAgent` field the runner reads to short-circuit straight
   # to the specific SC-002 reason (or the breaker halt) instead of the
   # generic `{:implement, :error}` `Pipeline.next/3` would otherwise produce.
-  defp halt(ctx, agent) do
-    result = rollup(:halted, %{}, :breaker, step_cost(ctx, agent))
+  defp halt(ctx, agent, reason) do
+    result = rollup(:halted, %{}, reason, step_cost(ctx, agent))
 
     patch(agent,
       last_outcome: :error,
       last_result: result,
-      terminal_reason: {:halted, :breaker}
+      terminal_reason: {:halted, reason}
     )
   end
 
@@ -491,6 +497,9 @@ defmodule SpeckitOrchestrator.ChunkRunner do
 
   defp rollup_text(:halted, _signals, :breaker),
     do: "implement step halted — cost breaker tripped at a task-phase boundary"
+
+  defp rollup_text(:halted, _signals, :superseded),
+    do: "implement step drained — superseded by a new run at a task-phase boundary"
 
   defp rollup_text(:error, _signals, reason), do: "implement step failed: #{inspect(reason)}"
 

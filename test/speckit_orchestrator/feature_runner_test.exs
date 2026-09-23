@@ -1232,6 +1232,85 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
     assert_received {:feature_finished, "001", :halted, :breaker}
   end
 
+  # 026 US3: `Workers.drain_requested?/0` is read directly from a public
+  # named ETS table (Workers owns it, `:public`) — the same predicate a real
+  # phase/chunk/remediation boundary consults, forced true for `self()` here
+  # without spinning up a real registered worker.
+  defp request_drain_for(pid) do
+    :ets.insert(SpeckitOrchestrator.Workers.DrainRequests, {pid, DateTime.utc_now()})
+    on_exit(fn -> :ets.delete(SpeckitOrchestrator.Workers.DrainRequests, pid) end)
+  end
+
+  test "a drain request halts as :superseded at a phase boundary — boundary checkpoint written, terminal/escalation/notify skipped, feature row stays :running, worktree kept+committed (026 US3)" do
+    wt = scaffolded_worktree()
+    run_key = open_store_run()
+    test_pid = self()
+
+    terminal_handler = "tele-terminal-#{System.unique_integer([:positive])}"
+    drained_handler = "tele-drained-#{System.unique_integer([:positive])}"
+
+    :telemetry.attach(
+      terminal_handler,
+      [:speckit, :feature, :terminal],
+      fn event, meas, meta, _ -> send(test_pid, {:tele, event, meas, meta}) end,
+      nil
+    )
+
+    :telemetry.attach(
+      drained_handler,
+      [:speckit, :feature, :drained],
+      fn event, meas, meta, _ -> send(test_pid, {:tele, event, meas, meta}) end,
+      nil
+    )
+
+    on_exit(fn ->
+      :telemetry.detach(terminal_handler)
+      :telemetry.detach(drained_handler)
+    end)
+
+    request_drain_for(self())
+
+    result =
+      FeatureRunner.run(feature(),
+        worktree: wt,
+        notify: self(),
+        run_context: loop_off(),
+        run_key: run_key
+      )
+
+    assert result.status == :halted
+    assert result.reason == :superseded
+
+    refute_received {:feature_finished, "001", _status, _reason}
+    refute_received {:tele, [:speckit, :feature, :terminal], _meas, _meta}
+    assert_received {:tele, [:speckit, :feature, :drained], _meas, %{feature_id: "001"}}
+
+    {:ok, detail} = SpeckitOrchestrator.Store.run(run_key)
+    feature_record = Enum.find(detail.features, &(&1.feature_id == "001"))
+
+    # The row stays :running (never marked terminal) — supersession, not this
+    # runner, is what later marks it :ended_by_supersession.
+    assert feature_record.status == :running
+    assert feature_record.terminal_reason == nil
+    assert feature_record.escalations == []
+
+    # The boundary's own checkpoint (attempt + `{:cont, next}`) was recorded
+    # before the drained exit, exactly as the Independent Test requires — a
+    # resumed feature restarts here, not from scratch.
+    assert %{status: :in_progress, last_completed_phase: :specify} = feature_record.checkpoint
+
+    # Worktree kept + committed, same as any other non-:done exit — the
+    # per-phase boundary commit already captured everything, so
+    # `handle_worktree/5`'s own commit is a clean no-op rather than a second
+    # commit; what matters is nothing is left dangling uncommitted.
+    assert File.dir?(wt.path)
+    {status, 0} = System.cmd("git", ["-C", wt.path, "status", "--porcelain"])
+    assert status == ""
+
+    {log, 0} = System.cmd("git", ["-C", wt.repo, "log", "--format=%s", wt.branch])
+    assert log =~ "speckit: 001 checkpoint after specify"
+  end
+
   test "start_phase: :plan resumes mid-pipeline, skipping specify/clarify" do
     # :halt keeps the worktree (analyze critical -> :halted); :done removes it
     # entirely, which would defeat this assertion regardless of start phase.

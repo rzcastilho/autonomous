@@ -96,6 +96,7 @@ defmodule SpeckitOrchestrator.Chunking do
           optional(:progress?) => boolean(),
           optional(:plan) => TaskPlan.t(),
           optional(:breaker?) => boolean(),
+          optional(:drain?) => boolean(),
           optional(:transient?) => boolean(),
           # Not part of the documented contract signal set — plumbed through so
           # row 2's `{:session_error, term()}` reason carries the real failure,
@@ -114,6 +115,7 @@ defmodule SpeckitOrchestrator.Chunking do
           | {:skip, TaskPhase.t(), ChunkState.t()}
           | {:done, ChunkState.t()}
           | {:halted, :breaker, ChunkState.t()}
+          | {:halted, :superseded, ChunkState.t()}
           | {:failed, reason(), ChunkState.t()}
 
   @doc """
@@ -160,6 +162,7 @@ defmodule SpeckitOrchestrator.Chunking do
     outcome = Map.get(signals, :outcome)
     progress? = Map.get(signals, :progress?, false)
     breaker? = Map.get(signals, :breaker?, false)
+    drain? = Map.get(signals, :drain?, false)
     transient? = Map.get(signals, :transient?, false)
     limit = Config.implement_no_progress_limit()
 
@@ -191,7 +194,7 @@ defmodule SpeckitOrchestrator.Chunking do
       # it — leftovers past this point are reconciled by the sweep (rows
       # 12/13), not by re-dispatching the same task-phase.
       true ->
-        state |> advance_cursor_on_success(outcome) |> decide_next(outcome, breaker?)
+        state |> advance_cursor_on_success(outcome) |> decide_next(outcome, breaker?, drain?)
     end
   end
 
@@ -280,7 +283,7 @@ defmodule SpeckitOrchestrator.Chunking do
 
   defp advance_cursor_on_success(state, _outcome), do: state
 
-  defp decide_next(state, outcome, breaker?) do
+  defp decide_next(state, outcome, breaker?, drain?) do
     cond do
       # Row 6 — ceiling reached with no continuation in play (a fresh
       # task-phase/sweep/fallback dispatch would exceed it).
@@ -291,6 +294,11 @@ defmodule SpeckitOrchestrator.Chunking do
       # succeeded), never mid-scope (mid-scope continuations return above).
       breaker? and outcome == :ok ->
         {:halted, :breaker, state}
+
+      # Row 7b (026) — drain requested at the same boundary, evaluated after
+      # the breaker so a tripped breaker still wins (FR-011).
+      drain? and outcome == :ok ->
+        {:halted, :superseded, state}
 
       # Row 8 — FR-004 fallback: unstructured plan, nothing dispatched yet.
       not state.plan.structured? and state.sessions_used == 0 ->

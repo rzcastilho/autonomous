@@ -255,7 +255,18 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
   defp maybe_put_slug(opts, slug), do: Keyword.put(opts, :slug, slug)
 
   defp format_start_error({:preflight, problems}), do: "Preflight failed: #{inspect(problems)}"
+
+  # 026: a fresh run's own drain-before-supersede timed out — distinct
+  # wording from a preflight failure or the cost breaker (FR-011); nothing
+  # was started, so retrying (once the worker is confirmed stuck) is safe.
+  defp format_start_error({:drain_timeout, stuck}) do
+    "Still working, nothing started: #{drain_stuck_features(stuck)} — " <>
+      "retry once you're sure it's stuck"
+  end
+
   defp format_start_error(reason), do: "Failed to start: #{inspect(reason)}"
+
+  defp drain_stuck_features(stuck), do: Enum.map_join(stuck, ", ", & &1.feature_id)
 
   # ---- backlog preview --------------------------------------------------
 

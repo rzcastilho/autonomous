@@ -29,7 +29,8 @@ defmodule SpeckitOrchestrator do
     StackTracker,
     Store,
     TargetPack,
-    Worktree
+    Worktree,
+    Workers
   }
 
   alias SpeckitOrchestrator.Store.{Capacity, Export, Migrations, Prune, Writer}
@@ -56,8 +57,11 @@ defmodule SpeckitOrchestrator do
       `{repo_id, run_id}` to continue (`resume/2`, `resume_run/1`) supplies
       it here, skipping `Store.Writer.open_run/2` entirely so the resumed
       run writes into its existing record instead of superseding it. Absent
-      (default) — a fresh run opens (and, per FR-034, supersedes any prior
-      in-flight run for the repo).
+      (default) — a fresh run stops any prior Coordinator, drains every
+      worker still registered for the repo (026, bounded by each worker's
+      own session deadline — `{:error, {:drain_timeout, stuck}}` supersedes
+      nothing and starts nothing), then opens (and, per FR-034, supersedes
+      any prior in-flight run for the repo).
 
   019: every run is a stacked sequential run — one feature at a time, in
   ascending numeric order, each branching from the previous completed
@@ -157,9 +161,17 @@ defmodule SpeckitOrchestrator do
   # 018: a resume path already resolved the run to continue (`:run_key`) —
   # writing into the existing record, never superseding it. A fresh run
   # opens a new one, which *does* supersede any prior in-flight run for this
-  # repo (FR-023/FR-034), inside the same transaction — preflighted for
-  # writability and capacity first (FR-009/FR-031b), so a refusal supersedes
-  # nothing.
+  # repo (FR-023/FR-034) — preflighted for writability and capacity first
+  # (FR-009/FR-031b), so a refusal supersedes nothing.
+  #
+  # 026 (contracts/facade-supersession.md): once those preflights pass, the
+  # prior Coordinator is stopped (moved here from `start_run/2`, whose own
+  # call is now a no-op) and every worker still registered for this
+  # repository is drained — bounded by each worker's own session deadline,
+  # no wait at all when none is registered (FR-012/SC-005) — *before*
+  # `Store.open_run/2` supersedes the prior record. A drain timeout returns
+  # `{:error, {:drain_timeout, stuck}}` here, superseding nothing and
+  # starting no Coordinator (FR-004, SC-006).
   defp open_or_continue_run(opts, run_context, layout) do
     case Keyword.fetch(opts, :run_key) do
       {:ok, run_key} ->
@@ -171,16 +183,24 @@ defmodule SpeckitOrchestrator do
           repo_id = RepoIdentity.partition(Config.repo())
           features = resolve_features(opts, layout)
 
-          case Store.open_run(repo_id, %{
-                 features: store_features(features),
-                 settings: RunContext.to_map(run_context),
-                 scope: layout_scope(layout),
-                 layout: layout
-               }) do
-            {:ok, run_id} -> {:ok, {repo_id, run_id}}
-            {:error, reason} -> {:error, {:preflight, [{:store_open_failed, reason}]}}
+          stop_previous_run()
+
+          with :ok <- Workers.drain(repo_id) do
+            open_store_run(repo_id, features, run_context, layout)
           end
         end
+    end
+  end
+
+  defp open_store_run(repo_id, features, run_context, layout) do
+    case Store.open_run(repo_id, %{
+           features: store_features(features),
+           settings: RunContext.to_map(run_context),
+           scope: layout_scope(layout),
+           layout: layout
+         }) do
+      {:ok, run_id} -> {:ok, {repo_id, run_id}}
+      {:error, reason} -> {:error, {:preflight, [{:store_open_failed, reason}]}}
     end
   end
 
@@ -381,6 +401,17 @@ defmodule SpeckitOrchestrator do
   @doc "Live run snapshot (statuses, in-flight, spend, report)."
   @spec status() :: map()
   def status, do: Coordinator.status(@coordinator)
+
+  @doc """
+  Read-only listing of every worker currently registered for `repo`
+  (default `Config.repo/0`) — FR-013. Answers "is anything in flight?"
+  truthfully even with no live Coordinator (delegates to
+  `Workers.in_flight/1`).
+  """
+  @spec workers(String.t()) :: [SpeckitOrchestrator.Workers.entry()]
+  def workers(repo \\ Config.repo()) do
+    Workers.in_flight(RepoIdentity.partition(repo))
+  end
 
   @doc "Print the live run status as a table (iex operator surface)."
   @spec print_status() :: :ok
@@ -760,7 +791,7 @@ defmodule SpeckitOrchestrator do
       if feature.id == target_id do
         target_executor.(feature, base, notify)
       else
-        Task.Supervisor.start_child(SpeckitOrchestrator.RunnerSup, fn ->
+        Workers.spawn(run_key, feature.id, fn ->
           dispatch_resume(feature, base, notify, run_context, layout, resume_phases, run_key)
         end)
 
@@ -1430,14 +1461,41 @@ defmodule SpeckitOrchestrator do
     Enum.reduce(resume_phases, statuses, fn {id, _phase}, acc -> Map.put(acc, id, :pending) end)
   end
 
+  # 026 (contracts/facade-supersession.md): a live registered worker counts
+  # as an active run too — the Coordinator can be dead while its worker is
+  # still writing (the exact blind spot supersession closed in `run/1`).
+  # Without `:force`, a worker-only active state refuses with the same
+  # `{:error, {:active_run, pid}}` shape as a live Coordinator, `pid` now
+  # possibly the worker's (FR-005). With `:force`, the Coordinator is
+  # stopped and the repository's workers are drained rather than bypassed
+  # outright (FR-006) — `Workers.drain/1`'s own return shape is passed
+  # through unchanged.
   defp guard_active_run(opts) do
     if Keyword.get(opts, :force, false) do
-      :ok
+      stop_previous_run()
+      Workers.drain(guard_repo_id(opts))
     else
-      case Process.whereis(@coordinator) do
-        nil -> :ok
-        pid -> if Coordinator.status(pid).finished?, do: :ok, else: {:error, {:active_run, pid}}
+      case coordinator_active_pid() do
+        {:active, pid} ->
+          {:error, {:active_run, pid}}
+
+        :inactive ->
+          case Workers.in_flight(guard_repo_id(opts)) do
+            [%{pid: pid} | _rest] -> {:error, {:active_run, pid}}
+            [] -> :ok
+          end
       end
+    end
+  end
+
+  defp guard_repo_id(opts) do
+    RepoIdentity.partition(Keyword.get(opts, :repo, Config.repo()))
+  end
+
+  defp coordinator_active_pid do
+    case Process.whereis(@coordinator) do
+      nil -> :inactive
+      pid -> if Coordinator.status(pid).finished?, do: :inactive, else: {:active, pid}
     end
   end
 
@@ -1481,7 +1539,7 @@ defmodule SpeckitOrchestrator do
   # squashed commit onto `pr_base`, flattening the stack.
   defp resume_run_executor(run_context, layout, resume_phases, run_key) do
     fn feature, base, notify ->
-      Task.Supervisor.start_child(SpeckitOrchestrator.RunnerSup, fn ->
+      Workers.spawn(run_key, feature.id, fn ->
         dispatch_resume(feature, base, notify, run_context, layout, resume_phases, run_key)
       end)
 
@@ -1674,7 +1732,7 @@ defmodule SpeckitOrchestrator do
          run_key
        ) do
     fn feature, base, notify ->
-      Task.Supervisor.start_child(SpeckitOrchestrator.RunnerSup, fn ->
+      Workers.spawn(run_key, feature.id, fn ->
         case resume_worktree(feature, layout) do
           {:ok, worktree} ->
             FeatureRunner.run(feature,
@@ -1982,7 +2040,7 @@ defmodule SpeckitOrchestrator do
 
   defp seed_executor(description, run_context, layout) do
     fn feature, base, notify ->
-      Task.Supervisor.start_child(SpeckitOrchestrator.RunnerSup, fn ->
+      Workers.spawn(current_run_key(), feature.id, fn ->
         case ensure_spec_number(feature, current_run_key(), base) do
           {:ok, feature} ->
             case Worktree.create(feature, [base: base] ++ worktree_create_opts(layout)) do
@@ -2224,7 +2282,7 @@ defmodule SpeckitOrchestrator do
   end
 
   defp default_executor(feature, base, notify, run_context, layout) do
-    Task.Supervisor.start_child(SpeckitOrchestrator.RunnerSup, fn ->
+    Workers.spawn(current_run_key(), feature.id, fn ->
       case ensure_spec_number(feature, current_run_key(), base) do
         {:ok, feature} ->
           case Worktree.create(feature, [base: base] ++ worktree_create_opts(layout)) do

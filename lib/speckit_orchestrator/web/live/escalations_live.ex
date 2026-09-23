@@ -414,6 +414,15 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
   defp format_resume_error({:active_run, _pid}),
     do: "a run is already live for this repository — stop it, or retry with force"
 
+  # 026: `:force`'s own drain timed out — distinct wording from the plain
+  # active-run refusal above and from a parked-run/breaker message; names
+  # what is still working so the operator can judge whether it's genuinely
+  # stuck before retrying with force again.
+  defp format_resume_error({:drain_timeout, stuck}) do
+    features = Enum.map_join(stuck, ", ", & &1.feature_id)
+    "still working, nothing started: #{features} — retry with force once you're sure it's stuck"
+  end
+
   defp format_resume_error(other), do: inspect(other)
 
   # See TriggerLive's `run_unlinked/1` for why: `run/1` (via `resume/2`)
