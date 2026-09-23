@@ -159,4 +159,58 @@ defmodule SpeckitOrchestrator.Recovery.ReportTest do
     row_007_line = out |> String.split("\n") |> Enum.find(&String.starts_with?(&1, "007"))
     refute row_007_line =~ ~r/held|CONFLICT|next runnable|corrected|restored/
   end
+
+  # ---- 025 US3 (T016): reason_label/1 — contracts/report-discrepancy.md §3 --
+
+  describe "reason_label/1" do
+    test "a bare atom renders exactly as to_string/1 does today — no existing output changes" do
+      assert Report.reason_label(:ambiguous_evidence) == "ambiguous_evidence"
+      assert Report.reason_label(:pr_without_branch) == "pr_without_branch"
+      assert Report.reason_label(:done_without_artifacts) == "done_without_artifacts"
+      assert Report.reason_label(:checkpoint_without_branch) == "checkpoint_without_branch"
+    end
+
+    test "checkpoint_behind_trail renders tag + phase keys in map order" do
+      reason = {:checkpoint_behind_trail, %{checkpoint: :plan, trail: :analyze}}
+
+      assert Report.reason_label(reason) ==
+               "checkpoint_behind_trail (checkpoint: plan, trail: analyze)"
+    end
+
+    test "damaged_checkpoint with a garbled string value renders it quoted via inspect/1" do
+      reason = {:damaged_checkpoint, %{phase: "implemnt", last_completed_phase: nil}}
+
+      assert Report.reason_label(reason) ==
+               "damaged_checkpoint (phase: \"implemnt\", last_completed_phase: nil)"
+    end
+  end
+
+  test "format/1 renders a widened {tag, detail} conflict reason on both the row and CONFLICT note" do
+    report = %Report{
+      features: [
+        %{
+          id: "003",
+          slug: "core-ledger",
+          recorded: :running,
+          reconciled:
+            {:conflict, {:checkpoint_behind_trail, %{checkpoint: :plan, trail: :analyze}}},
+          resume_phase: nil,
+          corrected?: false
+        }
+      ],
+      conflicts: [
+        %{id: "003", reason: {:checkpoint_behind_trail, %{checkpoint: :plan, trail: :analyze}}}
+      ],
+      next_runnable: [],
+      spend: 12.4,
+      run_shape: {:breakdown, "core-ledger"}
+    }
+
+    out = Report.format(report)
+
+    assert out =~ "conflict:checkpoint_behind_trail (checkpoint: plan, trail: analyze)"
+
+    assert out =~
+             "CONFLICT — checkpoint_behind_trail (checkpoint: plan, trail: analyze); human resolve"
+  end
 end

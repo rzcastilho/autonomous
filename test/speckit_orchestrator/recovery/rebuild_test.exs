@@ -147,6 +147,40 @@ defmodule SpeckitOrchestrator.Recovery.RebuildTest do
     assert %{id: "001", reason: :done_without_artifacts} in proposal.report.conflicts
   end
 
+  # ---- 025 US3 (T018): the widened conflict reason survives the rebuild preview ----
+
+  test "propose/3: a checkpoint-behind-trail conflict carries its widened reason into :unreconcilable" do
+    run_key = open_record([feat("001")])
+
+    :ok =
+      Writer.record_phase_attempt(run_key, %{
+        attempt: minimal_attempt("001", :clarify),
+        checkpoint: %{
+          phase: :plan,
+          last_completed_phase: :clarify,
+          status: :in_progress,
+          reason: nil,
+          session_id: nil
+        }
+      })
+
+    git = fn
+      %{id: "001"} -> %{branch_committed?: true, last_boundary_phase: :analyze}
+      _ -> no_evidence(nil)
+    end
+
+    backlog = [feat("001")]
+
+    assert {:ok, proposal} = Rebuild.propose(record(run_key), backlog, git: git)
+
+    assert proposal.statuses["001"] == :blocked
+
+    reason = {:checkpoint_behind_trail, %{checkpoint: :plan, trail: :analyze}}
+
+    assert [%{kind: :unreconcilable, id: "001", detail: ^reason}] = proposal.discrepancies
+    assert %{id: "001", reason: reason} in proposal.report.conflicts
+  end
+
   test "propose/3: record-only feature (absent_from_backlog) is kept verbatim, unreconciled" do
     run_key = open_record([feat("001"), feat("002")])
     seed_terminal(run_key, "001", :done)

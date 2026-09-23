@@ -9,6 +9,8 @@ defmodule SpeckitOrchestrator.RecoveryTest do
     Layout,
     Recovery,
     Recovery.Evidence,
+    Recovery.Report,
+    Release,
     RepoIdentity,
     RunContext
   }
@@ -252,6 +254,40 @@ defmodule SpeckitOrchestrator.RecoveryTest do
     assert resume_phases["001"] == :tasks
   end
 
+  # ---- 025 US2 (T012): persistence-failure drain, checkpoint write lost ------
+  #
+  # A drain mid-`:plan` loses the checkpoint write (the drain's whole point is
+  # that the write never landed), but the boundary commit for `:plan` did.
+  # `Reconcile` must still fall through to the commit-trail clause (5) exactly
+  # as before 025, and `resumable/1` must still report the incompleteness.
+  test "a persistence-failure drain with a lost checkpoint write still resumes from the commit trail" do
+    repo = base_repo()
+    Application.put_env(:speckit_orchestrator, :repo, repo)
+    {:ok, segment} = RepoIdentity.resolve(repo)
+    {:ok, layout} = Layout.build(repo, segment, :ad_hoc)
+    on_exit(fn -> File.rm_rf(layout.worktree_root) end)
+
+    git!(repo, ["checkout", "-q", "-b", "feature/001-core-ledger"])
+    commit(repo, "speckit: 001 checkpoint after specify")
+    commit(repo, "speckit: 001 checkpoint after clarify")
+    commit(repo, "speckit: 001 checkpoint after plan")
+    git!(repo, ["checkout", "-q", "main"])
+
+    {repo_id, _run_id} = run_key = open_run(repo, layout, [feat("001")])
+
+    # The boundary commit landed, but the checkpoint write did not — the
+    # drain's own failure.
+    :ok =
+      Writer.record_phase_attempt(run_key, %{attempt: minimal_attempt("001", :plan, 1)})
+
+    :ok = Writer.flag_record_incomplete(run_key, :simulated_write_failure)
+
+    assert {:ok, summary} = SpeckitOrchestrator.resumable(repo_id)
+    assert summary.gap_possible? == true
+    assert summary.statuses["001"] == :running
+    assert summary.resume_phases["001"] == :tasks
+  end
+
   test "plan_run/2 rebuild carries a recorded spec_number through to the returned %Feature{}" do
     {layout, run_key} = seed_mid_run_state()
     on_exit(fn -> File.rm_rf(layout.worktree_root) end)
@@ -347,6 +383,61 @@ defmodule SpeckitOrchestrator.RecoveryTest do
     # chain there, so nothing is next-runnable at all, even though "002" is
     # itself merely :pending and precedes "003".
     assert report.next_runnable == []
+  end
+
+  # ---- 025 US3 (T017): a genuine contradiction blocks its feature, reports before any spend ----
+
+  test "plan_run/2 blocks a checkpoint-behind-trail feature: :blocked, in report.conflicts, no resume_phase, never released" do
+    repo = base_repo()
+    Application.put_env(:speckit_orchestrator, :repo, repo)
+    {:ok, segment} = RepoIdentity.resolve(repo)
+    {:ok, layout} = Layout.build(repo, segment, :ad_hoc)
+    on_exit(fn -> File.rm_rf(layout.worktree_root) end)
+
+    git!(repo, ["checkout", "-q", "-b", "feature/003-core-ledger"])
+    commit(repo, "speckit: 003 checkpoint after specify")
+    commit(repo, "speckit: 003 checkpoint after clarify")
+    commit(repo, "speckit: 003 checkpoint after plan")
+    commit(repo, "speckit: 003 checkpoint after tasks")
+    commit(repo, "speckit: 003 checkpoint after analyze")
+    git!(repo, ["checkout", "-q", "main"])
+
+    run_key = open_run(repo, layout, [feat("003", 3)])
+
+    # A checkpoint claiming completed-through :clarify (two phases behind the
+    # :analyze the trail actually proves) — contract worked case 4 verbatim.
+    :ok =
+      Writer.record_phase_attempt(run_key, %{
+        attempt: minimal_attempt("003", :clarify, 1),
+        checkpoint: %{
+          phase: :plan,
+          last_completed_phase: :clarify,
+          status: :in_progress,
+          reason: nil,
+          session_id: "s1"
+        }
+      })
+
+    {:ok, detail} = Store.run(run_key)
+
+    assert {:ok, %{statuses: statuses, resume_phases: resume_phases, report: report}} =
+             Recovery.plan_run(detail)
+
+    assert statuses["003"] == :blocked
+    refute Map.has_key?(resume_phases, "003")
+
+    assert %{id: "003", reason: {:checkpoint_behind_trail, %{checkpoint: :plan, trail: :analyze}}} in report.conflicts
+
+    # Release never releases the blocked feature and never reports it
+    # {:stopped, _, _} — :blocked is absent from Feature.terminal_statuses/0
+    # (only :escalated/:halted/:failed stop the chain).
+    features = [feat("003", 3)]
+    assert Release.next(features, statuses, false) == :none
+
+    out = Report.format(report)
+
+    assert out =~
+             "CONFLICT — checkpoint_behind_trail (checkpoint: plan, trail: analyze); human resolve"
   end
 
   test "resume_run/1 dispatches continuation at :tasks — specify/clarify/plan never regenerate" do

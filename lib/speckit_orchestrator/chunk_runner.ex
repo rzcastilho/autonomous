@@ -28,6 +28,7 @@ defmodule SpeckitOrchestrator.ChunkRunner do
     PhaseResult,
     PhaseSession,
     PhaseStep,
+    Pipeline,
     Store,
     TaskPhaseRef,
     TaskPlan,
@@ -89,6 +90,7 @@ defmodule SpeckitOrchestrator.ChunkRunner do
       |> Map.put(:start_ref, base_ref(ctx))
       |> Map.put(:baseline_sessions_used, sessions_used)
       |> Map.put(:cost_at_start, agent.state.cost_total || 0.0)
+      |> Map.put(:checkpoint_record, record)
 
     loop(ctx, state, %{}, agent)
   end
@@ -330,13 +332,67 @@ defmodule SpeckitOrchestrator.ChunkRunner do
           session_id: agent.state.session_id,
           error: result && result.error
         },
-        transcript: result && result.final_text
+        transcript: result && result.final_text,
+        checkpoint:
+          chunk_checkpoint(
+            Map.put(ctx, :session_id, agent.state.session_id),
+            state1,
+            scope,
+            outcome
+          )
       })
 
     :ok
   end
 
   defp record_chunk_attempt(_ctx, _state1, _scope, _outcome, _started_at, _agent), do: :ok
+
+  # ---- per-task-phase checkpoint write (015 contract, closed by 025) --------
+  #
+  # `implement_chunk` is read by `ChunkRunner`, persisted by
+  # `Store.Writer.write_checkpoint/3`, and rendered by `ConsoleHydration` —
+  # but until 025 no producer ever set it. Writes the *whole* checkpoint map,
+  # not just the new key: `write_checkpoint/3` replaces every column it is
+  # given, so a partial map would null `phase`/`last_completed_phase` mid-run.
+  # `nil` is a no-op (`write_checkpoint/3`'s own `nil` clause leaves the
+  # previous row intact) for any boundary that completed nothing recordable.
+  @spec chunk_checkpoint(map(), Chunking.state(), Chunking.scope(), atom()) :: map() | nil
+  defp chunk_checkpoint(ctx, state1, {:task_phase, tp}, :ok) do
+    %{
+      phase: :implement,
+      last_completed_phase: predecessor_of(:implement),
+      status: :in_progress,
+      reason: nil,
+      session_id: Map.get(ctx, :session_id),
+      analyze_remediation: carried_analyze_remediation(ctx),
+      implement_chunk: %{
+        ordinal: tp.ordinal,
+        number: tp.number,
+        title: tp.title,
+        total: TaskPlan.task_phase_count(state1.plan),
+        sessions_used: state1.sessions_used,
+        ceiling: state1.ceiling,
+        scope: :task_phase
+      }
+    }
+  end
+
+  defp chunk_checkpoint(_ctx, _state1, _scope, _outcome), do: nil
+
+  # `analyze_remediation` must survive a mid-implement checkpoint write — it
+  # is read back by `resume/2`'s context restore — so it is carried from the
+  # checkpoint row `run/1` already loaded, never dropped by this write.
+  defp carried_analyze_remediation(%{checkpoint_record: %{analyze_remediation: value}}), do: value
+  defp carried_analyze_remediation(_ctx), do: nil
+
+  defp predecessor_of(phase) do
+    phases = Pipeline.phases()
+
+    case Enum.find_index(phases, &(&1 == phase)) do
+      0 -> nil
+      idx -> Enum.at(phases, idx - 1)
+    end
+  end
 
   defp chunk_label(:task_phase, ordinal, total, title), do: "chunk #{ordinal}/#{total} #{title}"
   defp chunk_label(:sweep, _ordinal, _total, _title), do: "chunk sweep"
