@@ -320,6 +320,82 @@ defmodule SpeckitOrchestrator.WorktreeTest do
     end
   end
 
+  describe "branch_name/1" do
+    test "matches locate/2's :branch, spec_id-based" do
+      feature = %Feature{
+        id: "001",
+        number: 1,
+        slug: "core-ledger",
+        path: "001-core-ledger.md",
+        spec_number: 15
+      }
+
+      assert Worktree.branch_name(feature) == "feature/015-core-ledger"
+      assert Worktree.locate(feature, repo: "/tmp", worktree_root: "/tmp").branch ==
+               Worktree.branch_name(feature)
+    end
+
+    test "falls back to id when spec_number is nil" do
+      assert Worktree.branch_name(feature()) == "feature/001-core-ledger"
+    end
+  end
+
+  describe "current_branch/1" do
+    test "returns the branch name for an attached HEAD" do
+      repo = base_repo()
+      {:ok, wt} = Worktree.create(feature(), with_root(repo))
+
+      assert Worktree.current_branch(wt) == {:ok, "feature/001-core-ledger"}
+    end
+
+    test "returns {:detached, sha} when the worktree's HEAD is detached" do
+      repo = base_repo()
+      {:ok, wt} = Worktree.create(feature(), with_root(repo))
+      git!(wt.path, ["checkout", "-q", "--detach", "HEAD"])
+
+      assert {:ok, {:detached, sha}} = Worktree.current_branch(wt)
+      {expected_sha, 0} = System.cmd("git", ["-C", wt.path, "rev-parse", "--short", "HEAD"])
+      assert sha == String.trim(expected_sha)
+    end
+
+    test "reflects a stray branch checked out by outside tooling, not the orchestrator's branch" do
+      repo = base_repo()
+      {:ok, wt} = Worktree.create(feature(), with_root(repo))
+      git!(wt.path, ["checkout", "-q", "-b", "NNN-core-ledger"])
+
+      assert Worktree.current_branch(wt) == {:ok, "NNN-core-ledger"}
+    end
+  end
+
+  describe "commits_beyond/3" do
+    test "0 when the branch has no commits beyond its base" do
+      repo = base_repo()
+      {:ok, wt} = Worktree.create(feature(), with_root(repo))
+
+      assert {:ok, 0, %{branch_sha: sha, base_sha: sha}} =
+               Worktree.commits_beyond(repo, wt.branch, "main")
+    end
+
+    test ">0 once the branch has commits beyond its base" do
+      repo = base_repo()
+      {:ok, wt} = Worktree.create(feature(), with_root(repo))
+      File.write!(Path.join(wt.path, "impl.txt"), "code\n")
+      Worktree.commit(wt, "work")
+
+      assert {:ok, 1, %{branch_sha: branch_sha, base_sha: base_sha}} =
+               Worktree.commits_beyond(repo, wt.branch, "main")
+
+      refute branch_sha == base_sha
+    end
+
+    test "an unreadable ref surfaces as {:error, _} rather than guessing a count" do
+      repo = base_repo()
+      {:ok, wt} = Worktree.create(feature(), with_root(repo))
+
+      assert {:error, _} = Worktree.commits_beyond(repo, wt.branch, "no/such/ref")
+    end
+  end
+
   describe "merged?/4 — is this branch still a legitimate base?" do
     test "false for an unmerged branch, true once it lands in the base" do
       repo = base_repo()

@@ -20,7 +20,7 @@ defmodule SpeckitOrchestrator.Actions.RunRemediation do
     description: "Run the pre-phase remediation step and record the result into agent state",
     schema: []
 
-  alias SpeckitOrchestrator.{Config, Cost, Ledger, PhaseRequest, PhaseResult, PhaseSession}
+  alias SpeckitOrchestrator.{BranchGuard, Config, Cost, Ledger, PhaseRequest, PhaseResult, PhaseSession, Worktree}
 
   @impl true
   def run(_params, context) do
@@ -43,7 +43,7 @@ defmodule SpeckitOrchestrator.Actions.RunRemediation do
     case Jido.Harness.run_request(:claude, request, []) do
       {:ok, stream} ->
         result = PhaseSession.reduce(stream, Config.phase_timeout())
-        outcome = outcome_of(result)
+        {outcome, signals} = classify(state.worktree, result)
         {amount, _source} = Cost.for_phase(:remediation, result)
         record_cost(state.ledger, amount)
 
@@ -51,7 +51,7 @@ defmodule SpeckitOrchestrator.Actions.RunRemediation do
          %{
            last_result: result,
            last_outcome: outcome,
-           last_signals: %{},
+           last_signals: signals,
            session_id: result.session_id || state.session_id,
            cost_total: (state.cost_total || 0.0) + amount,
            history: [entry(outcome, amount) | state.history]
@@ -61,6 +61,31 @@ defmodule SpeckitOrchestrator.Actions.RunRemediation do
         {:ok, error_update(state, reason)}
     end
   end
+
+  # Branch-drift gate (027, US2) — same rule as RunFeaturePhase: a drifted
+  # session's outcome is always an error, regardless of what the transcript
+  # itself reported.
+  defp classify(worktree, result) do
+    case branch_drift(worktree) do
+      nil -> {outcome_of(result), %{}}
+      drift -> {:error, %{branch_drift: drift}}
+    end
+  end
+
+  defp branch_drift(%Worktree{branch: expected} = worktree) do
+    case Worktree.current_branch(worktree) do
+      {:ok, observed} ->
+        case BranchGuard.check(expected, observed) do
+          :ok -> nil
+          {:drift, d} -> d
+        end
+
+      {:error, _reason} ->
+        %{expected: expected, observed: {:detached, "unknown"}}
+    end
+  end
+
+  defp branch_drift(_worktree), do: nil
 
   defp error_update(state, reason) do
     %{

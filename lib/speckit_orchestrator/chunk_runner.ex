@@ -223,19 +223,25 @@ defmodule SpeckitOrchestrator.ChunkRunner do
       after_plan = TaskPlan.load(worktree_path(ctx.worktree), ctx.feature)
       after_count = TaskPlan.completed_tasks(after_plan)
       progress? = after_count > before_count
+      drift = agent1.state.last_signals[:branch_drift]
 
-      maybe_commit_boundary(ctx, scope, outcome, after_plan)
+      # 027, US2: a drifted session never gets a boundary commit — its write
+      # already landed on the wrong branch, so committing here would only
+      # compound it.
+      if is_nil(drift), do: maybe_commit_boundary(ctx, scope, outcome, after_plan)
       record_chunk_attempt(ctx, state1, scope, outcome, started_at, agent1)
 
-      signals = %{
-        outcome: outcome,
-        progress?: progress?,
-        plan: after_plan,
-        breaker?: breaker_tripped?(ctx.ledger),
-        drain?: Workers.drain_requested?(),
-        transient?: transient?,
-        error: result && result.error
-      }
+      signals =
+        %{
+          outcome: outcome,
+          progress?: progress?,
+          plan: after_plan,
+          breaker?: breaker_tripped?(ctx.ledger),
+          drain?: Workers.drain_requested?(),
+          transient?: transient?,
+          error: result && result.error
+        }
+        |> maybe_put_drift(drift)
 
       stop_meta =
         Map.merge(meta, %{
@@ -291,6 +297,9 @@ defmodule SpeckitOrchestrator.ChunkRunner do
       true -> {:error, false}
     end
   end
+
+  defp maybe_put_drift(signals, nil), do: signals
+  defp maybe_put_drift(signals, drift), do: Map.put(signals, :branch_drift, drift)
 
   # ---- per-chunk store record --------------------------------------------------
 

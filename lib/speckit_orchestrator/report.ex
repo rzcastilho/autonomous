@@ -4,6 +4,8 @@ defmodule SpeckitOrchestrator.Report do
   surface. Pure — takes the snapshot map, returns a string.
   """
 
+  alias SpeckitOrchestrator.PublishOutcome
+
   @doc "Format a `Coordinator.status/0` snapshot as a table."
   @spec format_status(map()) :: String.t()
   def format_status(snapshot) do
@@ -84,9 +86,10 @@ defmodule SpeckitOrchestrator.Report do
   # `{:empty_checkpoint, phase}` (net two) reads distinctly from
   # `{:missing_artifact, phase, artifact}` — same phase, different failure:
   # the phase committed no change at all, vs. it wrote something that isn't
-  # the named artifact. Every other reason renders as before (FR-013).
+  # the named artifact. A publish-failed/branch-drift reason (027) renders via
+  # `PublishOutcome.describe/1`. Every other reason renders as before (FR-013).
   defp format_reason({:empty_checkpoint, phase}), do: "#{phase} committed no change"
-  defp format_reason(reason), do: inspect(reason)
+  defp format_reason(reason), do: PublishOutcome.describe(reason) || inspect(reason)
 
   defp run_state(%{finished?: true}), do: "state:  finished"
   defp run_state(_), do: "state:  running"

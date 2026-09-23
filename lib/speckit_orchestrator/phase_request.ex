@@ -16,7 +16,7 @@ defmodule SpeckitOrchestrator.PhaseRequest do
   """
 
   alias Jido.Harness.RunRequest
-  alias SpeckitOrchestrator.{Config, Feature, Layout, Prompts}
+  alias SpeckitOrchestrator.{Config, Feature, Layout, Prompts, Worktree}
   alias SpeckitOrchestrator.TaskPlan.TaskPhase
 
   @slash %{
@@ -129,6 +129,8 @@ defmodule SpeckitOrchestrator.PhaseRequest do
   defp prompt(feature, :specify, layout) do
     "#{@slash.specify} Implement the feature specified in #{breakdown_ref(feature, layout)} " <>
       "(id #{feature.id}, #{feature.slug}). Use SPECIFY_FEATURE_DIRECTORY=specs/#{Feature.spec_id(feature)}-#{feature.slug}. " <>
+      "Use GIT_BRANCH_NAME=#{Worktree.branch_name(feature)} — that branch already exists and is " <>
+      "checked out: reuse it (allow existing branch); never create or switch to another branch. " <>
       "Follow the constitution."
   end
 

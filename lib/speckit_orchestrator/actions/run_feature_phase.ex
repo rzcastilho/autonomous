@@ -47,13 +47,15 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhase do
   alias SpeckitOrchestrator.{
     AnalyzeResult,
     ArtifactSubstance,
+    BranchGuard,
     Config,
     Cost,
     Ledger,
     PhaseRequest,
     PhaseResult,
     PhaseSession,
-    SpecDir
+    SpecDir,
+    Worktree
   }
 
   # The escalation signal is the literal `## NEEDS HUMAN` heading emitted by the
@@ -156,6 +158,36 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhase do
 
   # ---- gate classification ------------------------------------------------
 
+  # Branch-drift gate (027, US2) — ahead of every other clause, including the
+  # incomplete-session gate. A session that ends off the orchestrator's branch
+  # is never trusted for its own gate signals: whatever it wrote landed
+  # somewhere else, so nothing past this point should be classified as if the
+  # phase actually ran on the branch the orchestrator expects.
+  defp classify(phase, result, state, scope) do
+    case branch_drift(state.worktree) do
+      nil -> classify_after_drift(phase, result, state, scope)
+      drift -> {:error, %{branch_drift: drift}}
+    end
+  end
+
+  # `Worktree.current_branch/1` fails closed (an unreadable HEAD counts as
+  # drift, `observed: {:detached, "unknown"}`) — Principle II. A `nil`
+  # worktree (dry run / unit test) skips the check entirely.
+  defp branch_drift(%Worktree{branch: expected} = worktree) do
+    case Worktree.current_branch(worktree) do
+      {:ok, observed} ->
+        case BranchGuard.check(expected, observed) do
+          :ok -> nil
+          {:drift, d} -> d
+        end
+
+      {:error, _reason} ->
+        %{expected: expected, observed: {:detached, "unknown"}}
+    end
+  end
+
+  defp branch_drift(_worktree), do: nil
+
   # Incomplete-session gate, ahead of every phase-specific clause.
   #
   # A headless session that ends its turn ends the session — there is no next
@@ -170,7 +202,7 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhase do
   # keeps the detector from second-guessing a phase that demonstrably worked,
   # and leaves it as the generic net for the phases that have no artifact gate
   # at all (`:specify`, `:clarify`, `:analyze`, `:converge`, `:describe`).
-  defp classify(phase, %PhaseResult{status: :ok} = r, state, scope) do
+  defp classify_after_drift(phase, %PhaseResult{status: :ok} = r, state, scope) do
     if PhaseResult.outstanding_work?(r) and not gate_satisfied?(phase, state, scope) do
       Logger.warning(
         "phase #{phase} reported success with unreturned tool calls " <>
@@ -183,7 +215,7 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhase do
     end
   end
 
-  defp classify(phase, %PhaseResult{} = r, state, scope),
+  defp classify_after_drift(phase, %PhaseResult{} = r, state, scope),
     do: classify_gate(phase, r, state, scope)
 
   # True when `phase` has an artifact gate and it passes. A scoped implement

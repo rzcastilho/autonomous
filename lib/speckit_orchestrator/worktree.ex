@@ -58,18 +58,26 @@ defmodule SpeckitOrchestrator.Worktree do
   `resolve/1` to find a previously-kept worktree.
   """
   @spec locate(Feature.t(), keyword()) :: t()
-  def locate(%Feature{id: id, slug: slug} = feature, opts \\ []) do
+  def locate(%Feature{id: id} = feature, opts \\ []) do
     repo = Keyword.get(opts, :repo, Config.repo())
     root = Keyword.get(opts, :worktree_root, Config.worktree_root())
     spec_id = Feature.spec_id(feature)
 
     %__MODULE__{
-      path: Path.join(root, "#{spec_id}-#{slug}"),
-      branch: "feature/#{spec_id}-#{slug}",
+      path: Path.join(root, "#{spec_id}-#{feature.slug}"),
+      branch: branch_name(feature),
       repo: repo,
       feature_id: id
     }
   end
+
+  @doc """
+  The single source of truth for a feature's branch name,
+  `"feature/<spec_id>-<slug>"`. Reused by `locate/2` and the `specify` prompt's
+  `GIT_BRANCH_NAME` pin (027), so both name the same branch by construction.
+  """
+  @spec branch_name(Feature.t()) :: String.t()
+  def branch_name(%Feature{slug: slug} = feature), do: "feature/#{Feature.spec_id(feature)}-#{slug}"
 
   @doc "Remove the worktree directory (keeps the branch for later PR review)."
   @spec remove(t()) :: :ok | {:error, term()}
@@ -374,6 +382,60 @@ defmodule SpeckitOrchestrator.Worktree do
   @spec fork_point(t(), String.t()) :: {:ok, String.t()} | {:error, term()}
   def fork_point(%__MODULE__{repo: repo, branch: branch}, base) when is_binary(base) do
     git(repo, ["merge-base", branch, base])
+  end
+
+  @doc """
+  The branch actually checked out in this worktree, read from the worktree's
+  own `HEAD` — not the base repo's (027, `BranchGuard`). `git symbolic-ref`
+  names the branch when HEAD is attached; a detached HEAD (the target's own
+  tooling checked out a commit or a stray branch by sha) falls back to
+  `git rev-parse --short HEAD` and reports `{:detached, sha}` rather than
+  guessing a name. `{:error, reason}` only when both fail — the caller treats
+  that as drift too (Principle II: an unreadable HEAD is never assumed
+  correct).
+  """
+  @spec current_branch(t()) :: {:ok, String.t() | {:detached, String.t()}} | {:error, term()}
+  def current_branch(%__MODULE__{path: path}) do
+    case git(path, ["symbolic-ref", "--quiet", "--short", "HEAD"]) do
+      {:ok, name} ->
+        {:ok, name}
+
+      {:error, _} ->
+        case git(path, ["rev-parse", "--short", "HEAD"]) do
+          {:ok, sha} -> {:ok, {:detached, sha}}
+          {:error, _} = err -> err
+        end
+    end
+  end
+
+  @doc """
+  Whether `branch` carries any commit `base` does not (027, publish
+  integrity): `git rev-list --count base..branch`, run in the base repo. A
+  count of `0` means the branch is unpublishable as-is — the orchestrator's
+  own worktree never advanced it, so pushing and opening a PR would either be
+  a no-op or a corrupted stack link. Returns the two tip shas alongside the
+  count so a `0` result can be reported precisely (`branch_sha == base_sha`).
+  A git failure is treated by the caller as `:empty_branch`-class — it fails
+  closed rather than guessing the branch is fine.
+  """
+  @spec commits_beyond(Path.t(), String.t(), String.t()) ::
+          {:ok, non_neg_integer(), %{branch_sha: String.t(), base_sha: String.t()}}
+          | {:error, term()}
+  def commits_beyond(repo, branch, base)
+      when is_binary(repo) and is_binary(branch) and is_binary(base) do
+    with {:ok, count_str} <- git(repo, ["rev-list", "--count", "#{base}..#{branch}"]),
+         {:ok, count} <- parse_count(count_str),
+         {:ok, branch_sha} <- git(repo, ["rev-parse", branch]),
+         {:ok, base_sha} <- git(repo, ["rev-parse", base]) do
+      {:ok, count, %{branch_sha: branch_sha, base_sha: base_sha}}
+    end
+  end
+
+  defp parse_count(count_str) do
+    case Integer.parse(count_str) do
+      {count, ""} -> {:ok, count}
+      _ -> {:error, {:unparseable_count, count_str}}
+    end
   end
 
   defp git(repo, args) do

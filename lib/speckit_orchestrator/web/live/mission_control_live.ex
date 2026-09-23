@@ -15,7 +15,14 @@ defmodule SpeckitOrchestrator.Web.MissionControlLive do
 
   use SpeckitOrchestrator.Web, :live_view
 
-  alias SpeckitOrchestrator.{ConsoleHydration, ConsoleProjection, ConsoleReadModel, Coordinator, Ledger}
+  alias SpeckitOrchestrator.{
+    ConsoleHydration,
+    ConsoleProjection,
+    ConsoleReadModel,
+    Coordinator,
+    Ledger,
+    PublishOutcome
+  }
 
   @status_order [:pending, :blocked, :running, :escalated, :halted, :failed, :done]
 
@@ -172,7 +179,7 @@ defmodule SpeckitOrchestrator.Web.MissionControlLive do
       <div :if={@run_state.state == :parked} class="parked-banner" data-state="parked">
         <p class="parked-banner-message">
           Run parked at <strong class="parked-banner-mono">{@run_state.stopped_by}</strong>
-          — <span class="parked-banner-mono">{inspect(@run_state.stopped_reason)}</span>
+          — <span class="parked-banner-mono">{describe_reason(@run_state.stopped_reason)}</span>
         </p>
         <p class="parked-banner-actions">
           <button type="button" phx-click="continue_run" class="btn-primary" data-action="continue-run">
@@ -296,4 +303,6 @@ defmodule SpeckitOrchestrator.Web.MissionControlLive do
     frequencies = view.per_feature |> Map.values() |> Enum.frequencies_by(& &1.status)
     Enum.map(@status_order, &{&1, Map.get(frequencies, &1, 0)})
   end
+
+  defp describe_reason(reason), do: PublishOutcome.describe(reason) || inspect(reason)
 end

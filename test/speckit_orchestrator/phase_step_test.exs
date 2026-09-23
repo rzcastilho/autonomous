@@ -365,4 +365,42 @@ defmodule SpeckitOrchestrator.PhaseStepTest do
       assert [%{phase: :plan, outcome: :error} | _] = patched.state.history
     end
   end
+
+  describe "branch drift (027, US2)" do
+    test "a drifted session is not retried, not even as a transient one" do
+      tmp = Path.join(System.tmp_dir!(), "phase_step_drift_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(tmp)
+      System.cmd("git", ["init", "-b", "feature/042-phase-step"], cd: tmp)
+      File.write!(Path.join(tmp, "README.md"), "seed\n")
+      System.cmd("git", ["-c", "user.name=t", "-c", "user.email=t@t", "add", "-A"], cd: tmp)
+
+      System.cmd("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "seed"],
+        cd: tmp
+      )
+
+      on_exit(fn -> File.rm_rf(tmp) end)
+
+      # The stubbed harness session's own effect, exactly as at the
+      # `RunFeaturePhase` boundary.
+      System.cmd("git", ["checkout", "-b", "other"], cd: tmp)
+
+      worktree = %SpeckitOrchestrator.Worktree{
+        path: tmp,
+        branch: "feature/042-phase-step",
+        repo: tmp,
+        feature_id: "042"
+      }
+
+      pid = start_agent_with_worktree!(worktree)
+      agent = PhaseStep.run(pid, feature(), :plan, step: 1, timeout: 5_000, retries: 1)
+
+      assert agent.state.last_outcome == :error
+
+      assert %{branch_drift: %{expected: "feature/042-phase-step", observed: "other"}} =
+               agent.state.last_signals
+
+      # Exactly one session — the retry ladder never re-dispatched.
+      assert length(agent.state.history) == 1
+    end
+  end
 end

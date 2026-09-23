@@ -76,7 +76,8 @@ defmodule SpeckitOrchestrator.Pipeline do
           optional(:not_ready?) => boolean(),
           optional(:missing_artifact) => String.t(),
           optional(:unfilled_artifact?) => boolean(),
-          optional(:outstanding_work?) => boolean()
+          optional(:outstanding_work?) => boolean(),
+          optional(:branch_drift) => SpeckitOrchestrator.BranchGuard.drift()
         }
 
   @typedoc "Result of a transition."
@@ -129,6 +130,14 @@ defmodule SpeckitOrchestrator.Pipeline do
   """
   @spec next(phase(), outcome(), signals()) :: transition()
   def next(phase, outcome, signals \\ %{})
+
+  # Branch-drift gate (027, US2) — ahead of the incomplete-session clause and
+  # every other error clause. A session that ended off the orchestrator's
+  # branch is never a candidate for any other diagnosis: whatever it wrote
+  # landed on the wrong branch, so the phase fails by naming the drift.
+  def next(phase, :error, %{branch_drift: d}) when phase in @ordered do
+    {:failed, {:branch_drift, phase, d}}
+  end
 
   # Incomplete-session gate — ahead of the generic error clause so the reason
   # names what actually happened. The upstream classifier reports this when a

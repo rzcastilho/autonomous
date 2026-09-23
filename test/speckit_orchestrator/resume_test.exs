@@ -1135,6 +1135,167 @@ defmodule SpeckitOrchestrator.ResumeTest do
     end
   end
 
+  # ---- 027 US1: the publish-only continue route ----------------------------
+
+  describe "resume/2 — publish-only continue route" do
+    defp parked_publish_failure(run_key, id, branch) do
+      pf =
+        {:publish_failed, :push_failed,
+         %{branch: branch, remote: "origin", output: "stub rejected"}}
+
+      :ok = Writer.record_feature_terminal(run_key, id, :failed, pf)
+      :ok = Writer.park_run(run_key, %{stopped_by: id, status: :failed, reason: pf})
+      pf
+    end
+
+    test "continue_run/1 after a publish park retries only the publish: zero phase sessions, and the row flips back to :done with pr_url" do
+      id = unique_id()
+      {repo, layout} = hermetic_repo()
+      f = feature(id)
+      branch = Worktree.locate(f).branch
+
+      run_key = open_run(repo, layout, [f])
+      parked_publish_failure(run_key, id, branch)
+
+      me = self()
+
+      publisher = fn feature, base ->
+        send(me, {:publish, feature.id, base})
+        {:ok, "https://example/pr/#{feature.id}"}
+      end
+
+      assert {:ok, pid} = SpeckitOrchestrator.continue_run(publisher: publisher, owner: me)
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+      # The publish-only route never runs a phase session — it just retries
+      # the publish (SC-006).
+      assert_receive {:publish, ^id, _base}, 2_000
+      assert_receive {:run_complete, report}, 2_000
+      assert report.done == [id]
+      refute phase_recorded?(run_key, id, :specify)
+
+      {:ok, detail} = Store.run(run_key)
+      row = Enum.find(detail.features, &(&1.feature_id == id))
+      assert row.status == :done
+      assert row.terminal_reason == :done
+      assert row.pr_url == "https://example/pr/#{id}"
+    end
+
+    test "continue_run/1 with a pr_url already recorded via record_pr/3 never touches the publisher's push/gh path" do
+      id = unique_id()
+      {repo, layout} = hermetic_repo()
+      f = feature(id)
+      branch = Worktree.locate(f).branch
+
+      run_key = open_run(repo, layout, [f])
+      parked_publish_failure(run_key, id, branch)
+
+      # The operator opened the PR by hand while the run sat parked — the
+      # run isn't `:in_flight` at this point, so `record_pr/3` needs the
+      # explicit `:run_id` (its own `current_run_key()` shortcut only finds
+      # an in-flight run).
+      {_repo_id, run_id} = run_key
+      assert :ok = SpeckitOrchestrator.record_pr(id, "https://example/pr/manual", run_id: run_id)
+
+      me = self()
+
+      # No :publisher seam — exercises the real `publish_feature/3`
+      # short-circuit (contracts/publish-outcome.md §1 point 1). This
+      # hermetic repo's `origin` is a fake, unreachable URL, so a push
+      # attempt would error or hang rather than silently succeed — the run
+      # reaching :done proves no push/gh call happened.
+      assert {:ok, pid} = SpeckitOrchestrator.continue_run(owner: me)
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+      assert_receive {:run_complete, report}, 5_000
+      assert report.done == [id]
+
+      {:ok, detail} = Store.run(run_key)
+      row = Enum.find(detail.features, &(&1.feature_id == id))
+      assert row.pr_url == "https://example/pr/manual"
+    end
+
+    test "continue_run/1 with :from on a publish-failed feature refuses with {:error, {:publish_only, id}} and starts no run" do
+      id = unique_id()
+      {repo, layout} = hermetic_repo()
+      f = feature(id)
+      branch = Worktree.locate(f).branch
+
+      run_key = open_run(repo, layout, [f])
+      parked_publish_failure(run_key, id, branch)
+
+      me = self()
+
+      assert {:error, {:publish_only, ^id}} =
+               SpeckitOrchestrator.continue_run(runner: capturing_runner(me), from: :analyze)
+
+      refute_received {:runner_called, _}
+    end
+
+    # A second, untouched feature can only observe what it branched *from*
+    # via a real worktree (a checkpointed dispatch reuses its own worktree
+    # and never re-branches) — so this one test earns the extra real-repo
+    # setup the others avoid.
+    test "the next feature branches from the parked feature's branch once the publish-only route republishes it" do
+      id1 = unique_id()
+      id2 = unique_id()
+      repo = base_repo()
+      root = tmp_root()
+      point_config_at(repo, root)
+
+      f1 = feature(id1)
+      f2 = feature(id2)
+
+      {:ok, wt1} = Worktree.create(f1, repo: repo, worktree_root: root)
+      File.write!(Path.join(wt1.path, "f1.txt"), "built")
+      :ok = Worktree.commit(wt1, "feature 1 work")
+
+      run_key = open_run(repo, real_layout(repo, root), [f1, f2])
+      parked_publish_failure(run_key, id1, wt1.branch)
+
+      me = self()
+
+      publisher = fn feature, base ->
+        send(me, {:publish, feature.id, base})
+        {:ok, "https://example/pr/#{feature.id}"}
+      end
+
+      assert {:ok, pid} = SpeckitOrchestrator.continue_run(publisher: publisher, owner: me)
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+      assert_receive {:publish, ^id1, _base1}, 2_000
+
+      branch2 = Worktree.locate(f2, repo: repo, worktree_root: root).branch
+      assert wait_for_branch(repo, branch2), "feature 2's branch never appeared"
+
+      {parent, 0} = System.cmd("git", ["-C", repo, "merge-base", wt1.branch, branch2])
+      {tip1, 0} = System.cmd("git", ["-C", repo, "rev-parse", wt1.branch])
+      assert String.trim(parent) == String.trim(tip1)
+
+      # Drain feature 2's real FeatureRunner (FakeSDK) to completion before
+      # this test exits — an in-flight Task under RunnerSup outlives
+      # `on_exit`'s Coordinator stop and would otherwise still be spending
+      # against the shared `Ledger`/store when the next test starts.
+      assert_receive {:run_complete, _report}, 30_000
+    end
+  end
+
+  defp wait_for_branch(_repo, _branch, attempts \\ 100)
+  defp wait_for_branch(_repo, _branch, 0), do: false
+
+  defp wait_for_branch(repo, branch, attempts) do
+    case System.cmd("git", ["-C", repo, "rev-parse", "--verify", "--quiet", "refs/heads/#{branch}"],
+           stderr_to_stdout: true
+         ) do
+      {_, 0} ->
+        true
+
+      _ ->
+        Process.sleep(50)
+        wait_for_branch(repo, branch, attempts - 1)
+    end
+  end
+
   # ---- integration: real branch-gone / branch-reuse edge cases -------------
 
   describe "resume/2 — worktree recreation (integration)" do

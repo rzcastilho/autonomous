@@ -17,7 +17,7 @@ defmodule SpeckitOrchestrator.Web.RunDetailLive do
 
   use SpeckitOrchestrator.Web, :live_view
 
-  alias SpeckitOrchestrator.{Config, ConsoleProjection}
+  alias SpeckitOrchestrator.{Config, ConsoleProjection, PublishOutcome}
 
   @impl true
   def mount(%{"run_id" => run_id}, _session, socket) do
@@ -368,7 +368,7 @@ defmodule SpeckitOrchestrator.Web.RunDetailLive do
         · {format_elapsed(@run.duration_ms)} · ${format_money(@run.spend_usd)}
         <span :if={@run.halt_reason}>· halted: {inspect(@run.halt_reason)}</span>
         <span :if={@run.stopped_by} data-marker="stopped-by">
-          · stopped at {@run.stopped_by} ({inspect(@run.stopped_reason)})
+          · stopped at {@run.stopped_by} ({format_reason(@run.stopped_reason)})
         </span>
       </div>
 
@@ -405,7 +405,11 @@ defmodule SpeckitOrchestrator.Web.RunDetailLive do
   # `{:empty_checkpoint, phase}` (net two) reads distinctly from
   # `{:missing_artifact, phase, artifact}` — same phase, different failure:
   # the phase committed no change at all, vs. it wrote something that isn't
-  # the named artifact. Every other reason renders as before (FR-013).
-  defp format_reason({:empty_checkpoint, phase}), do: "#{phase} committed no change"
-  defp format_reason(reason), do: inspect(reason)
+  # the named artifact. A publish-failed/branch-drift reason (027) renders via
+  # `PublishOutcome.describe/1`, tried first. Every other reason renders as
+  # before (FR-013).
+  defp format_reason(reason), do: PublishOutcome.describe(reason) || format_legacy_reason(reason)
+
+  defp format_legacy_reason({:empty_checkpoint, phase}), do: "#{phase} committed no change"
+  defp format_legacy_reason(reason), do: inspect(reason)
 end

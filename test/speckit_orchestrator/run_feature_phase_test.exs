@@ -577,4 +577,99 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhaseTest do
       assert update.last_signals.artifact_absent_at_start? == true
     end
   end
+
+  describe "branch drift (027, US2)" do
+    test "a session that leaves the orchestrator's branch fails the phase with drift naming both branches" do
+      original = Application.get_env(:jido_claude, :sdk_module)
+      Application.put_env(:jido_claude, :sdk_module, CapturingSDK)
+      on_exit(fn -> restore(:jido_claude, :sdk_module, original) end)
+
+      tmp = Path.join(System.tmp_dir!(), "rfp_drift_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(tmp)
+      {_, 0} = System.cmd("git", ["init", "-b", "feature/001-s"], cd: tmp)
+      File.write!(Path.join(tmp, "README.md"), "seed\n")
+      System.cmd("git", ["-c", "user.name=t", "-c", "user.email=t@t", "add", "-A"], cd: tmp)
+
+      System.cmd("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "seed"],
+        cd: tmp
+      )
+
+      on_exit(fn -> File.rm_rf(tmp) end)
+
+      # The stubbed harness session's own effect: it moved HEAD off the branch
+      # the orchestrator expects — exactly what the mod-player incident's
+      # target-side hook did mid-`specify`.
+      {_, 0} = System.cmd("git", ["checkout", "-b", "other"], cd: tmp)
+
+      worktree = %SpeckitOrchestrator.Worktree{
+        path: tmp,
+        branch: "feature/001-s",
+        repo: tmp,
+        feature_id: "001"
+      }
+
+      assert {:ok, update} =
+               RunFeaturePhase.run(%{phase: :clarify}, context(%{worktree: worktree}))
+
+      assert update.last_outcome == :error
+      assert update.last_signals == %{branch_drift: %{expected: "feature/001-s", observed: "other"}}
+    end
+
+    test "a detached HEAD counts as drift too" do
+      original = Application.get_env(:jido_claude, :sdk_module)
+      Application.put_env(:jido_claude, :sdk_module, CapturingSDK)
+      on_exit(fn -> restore(:jido_claude, :sdk_module, original) end)
+
+      tmp = Path.join(System.tmp_dir!(), "rfp_drift_detached_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(tmp)
+      {_, 0} = System.cmd("git", ["init", "-b", "feature/001-s"], cd: tmp)
+      File.write!(Path.join(tmp, "README.md"), "seed\n")
+      System.cmd("git", ["-c", "user.name=t", "-c", "user.email=t@t", "add", "-A"], cd: tmp)
+
+      System.cmd("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "seed"],
+        cd: tmp
+      )
+
+      on_exit(fn -> File.rm_rf(tmp) end)
+      {_, 0} = System.cmd("git", ["checkout", "--detach", "HEAD"], cd: tmp)
+
+      worktree = %SpeckitOrchestrator.Worktree{
+        path: tmp,
+        branch: "feature/001-s",
+        repo: tmp,
+        feature_id: "001"
+      }
+
+      assert {:ok, update} =
+               RunFeaturePhase.run(%{phase: :clarify}, context(%{worktree: worktree}))
+
+      assert update.last_outcome == :error
+      assert %{branch_drift: %{expected: "feature/001-s", observed: {:detached, _sha}}} =
+               update.last_signals
+    end
+
+    test "a session that stayed on the expected branch is unaffected" do
+      original = Application.get_env(:jido_claude, :sdk_module)
+      Application.put_env(:jido_claude, :sdk_module, CapturingSDK)
+      on_exit(fn -> restore(:jido_claude, :sdk_module, original) end)
+
+      tmp = Path.join(System.tmp_dir!(), "rfp_no_drift_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(tmp)
+      System.cmd("git", ["init", "-b", "feature/001-s"], cd: tmp)
+      on_exit(fn -> File.rm_rf(tmp) end)
+
+      worktree = %SpeckitOrchestrator.Worktree{
+        path: tmp,
+        branch: "feature/001-s",
+        repo: tmp,
+        feature_id: "001"
+      }
+
+      assert {:ok, update} =
+               RunFeaturePhase.run(%{phase: :clarify}, context(%{worktree: worktree}))
+
+      refute Map.has_key?(update.last_signals, :branch_drift)
+      assert update.last_outcome == :ok
+    end
+  end
 end

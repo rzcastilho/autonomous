@@ -21,11 +21,20 @@ defmodule SpeckitOrchestrator.PhaseRequestTest do
     assert r.prompt =~ "core-ledger"
     assert r.model == "sonnet"
     assert r.prompt =~ "SPECIFY_FEATURE_DIRECTORY=specs/001-core-ledger"
+    assert r.prompt =~ "GIT_BRANCH_NAME=feature/001-core-ledger"
+    assert r.prompt =~ "reuse it (allow existing branch); never create or switch to another branch"
     assert r.cwd == "."
     assert r.max_turns == nil
     # specify runs a Spec Kit script (create-new-feature.sh) → Bash pre-approved.
     assert r.permission_mode == :accept_edits
     assert "Bash" in r.allowed_tools
+  end
+
+  test "GIT_BRANCH_NAME pin is specify-only — no other phase's prompt carries it" do
+    for phase <- [:plan, :tasks, :analyze, :implement, :clarify, :converge] do
+      r = PhaseRequest.build(feature(), phase)
+      refute r.prompt =~ "GIT_BRANCH_NAME", "#{phase} prompt should not carry the branch pin"
+    end
   end
 
   test "plan/tasks/converge get non-interactive Bash for their Spec Kit scripts" do
