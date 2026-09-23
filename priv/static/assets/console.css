@@ -918,6 +918,7 @@ fieldset {
 
 .parked-banner-mono {
   font-family: var(--font-mono);
+  white-space: pre-wrap;
 }
 
 .parked-banner-actions {
@@ -1178,6 +1179,7 @@ fieldset {
   font-family: var(--font-mono);
   font-size: var(--fs-meta);
   color: var(--text-faint);
+  white-space: pre-wrap;
 }
 
 .escalation-card-body {
@@ -1261,6 +1263,7 @@ fieldset {
   border: 1px solid var(--border-strong);
   border-radius: var(--r-chip);
   padding: 4px var(--sp-8);
+  white-space: pre-wrap;
 }
 
 .run-context-chip span {

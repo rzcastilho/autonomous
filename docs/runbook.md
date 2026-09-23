@@ -759,6 +759,68 @@ stopping feature and reason with both actions as buttons; Run History (`/runs`)
 and Run Detail (`/runs/:id`) render `:parked` distinctly from `:in_flight`/
 `:completed` and list never-started features as such.
 
+### Publish failure parked the run (027)
+
+A backlog feature's publish can fail three ways, all normalized to the same
+`{:publish_failed, kind, detail}` terminal reason and rendered verbatim by
+`PublishOutcome.describe/1` (Mission Control banner, Run Detail header, Runs
+row, and `Report.format_reason/1` all use it):
+
+- `:empty_branch` — the feature's branch has no commits beyond its base
+  (checked via `git rev-list --count` **before** any push or `gh` call, so a
+  no-op session never opens a PR for nothing)
+- `:push_failed` — `git push` was rejected; `detail.output` carries the
+  verbatim git output
+- `:pr_failed` — `gh pr create` exited non-zero; `detail.output` carries the
+  verbatim `gh` output
+
+A backlog feature's publish failure **parks the run** the same way any other
+non-done terminal does (see Parked runs above): `stopped_by` names the
+feature, `stopped_reason` is the `{:publish_failed, kind, detail}` tuple, the
+stack is **not** advanced onto that feature's branch, and no downstream
+feature is released. An ad-hoc feature's publish failure does not park
+anything — it logs, emits `[:speckit, :publish, :failed]`, and the feature
+still finishes `:done` (ad-hoc features aren't part of a stacked chain).
+
+**Resolve it** — same `continue_run/1` / `end_run/1` choice as any parked run.
+Continuing a publish-only failure is cheap: no phase re-runs. If a `pr_url`
+was already recorded (the push/PR itself succeeded but something after it
+didn't), the publisher is skipped entirely on continue. Otherwise it retries
+push + `gh pr create` from the existing branch, then the chain resumes as
+normal with the next feature's base set to this branch.
+
+`resume/2`/`continue_run/1` on a publish-failed feature is publish-only by
+design — passing `:from`, `:prompt`, `:from_task_phase`,
+`:remediation_prompt`, or `:remediation_model` returns
+`{:error, {:publish_only, feature_id}}` rather than silently ignoring the
+option, since none of them make sense when no phase is being re-run.
+
+### Branch drift fails the phase that caused it (027)
+
+Every session that drives a phase, an implement chunk, or a remediation
+attempt checks its `git` branch **immediately after the session ends** — the
+first check `RunFeaturePhase`/`RunAutoRemediation`/`RunRemediation` run,
+ahead of even the incomplete-session gate. If HEAD is not the branch the
+worktree was checked out on (a detached HEAD, or a different named branch —
+whether from a model running `git checkout -b`, `git switch`, or the target's
+own tooling), the phase fails immediately with
+`{:branch_drift, phase, %{expected: branch, observed: observed}}`, rendered
+by the same `PublishOutcome.describe/1` used above.
+
+Drift is a **hard failure, never retried** — `PhaseStep.retry_reason/1`
+checks for `branch_drift` before any other retry condition, including the
+usual transient-error retry. The worktree is kept for post-mortem, but no
+commit is made on either branch: the feature's own progress on the stray
+branch (if any) and the orchestrator's branch are both left exactly as the
+drifting session left them, so nothing is silently merged or lost.
+
+Fix by inspecting the transcript for what caused the checkout (the 027
+Background incident was `git.commit` extension tooling defaulting to a
+generated branch name instead of reusing the checked-out one — see the
+`specify`'s `GIT_BRANCH_NAME` pin below, US3, which mitigates this for
+targets carrying that extension), then `resolve/1` the feature and re-run
+from the drifted phase.
+
 ### Store reset procedure (schema v1 -> v2)
 
 019 bumps the store schema `1 -> 2` as a **clean break** — a v1 directory

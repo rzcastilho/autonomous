@@ -1232,6 +1232,47 @@ defmodule SpeckitOrchestrator.FeatureRunnerTest do
     assert_received {:feature_finished, "001", :halted, :breaker}
   end
 
+  test "branch drift (027, US2): a session that leaves the orchestrator's branch fails, keeps the worktree, and writes no further git state" do
+    wt = scaffolded_worktree()
+
+    hook = fn prompt, options ->
+      SpeckitOrchestrator.FakeArtifacts.write(prompt, options)
+
+      # The stubbed harness session's own effect — exactly what the mod-player
+      # incident's target-side hook did mid-`specify`: it moved HEAD off the
+      # branch the orchestrator expects.
+      if String.contains?(prompt, "/speckit.specify") do
+        System.cmd("git", ["checkout", "-b", "other"], cd: Map.get(options, :cwd))
+      end
+
+      :ok
+    end
+
+    Application.put_env(:speckit_orchestrator, :test_artifact_hook, hook)
+    on_exit(fn -> Application.delete_env(:speckit_orchestrator, :test_artifact_hook) end)
+
+    {branch_before, 0} = System.cmd("git", ["-C", wt.repo, "rev-parse", wt.branch])
+
+    result = FeatureRunner.run(feature(), worktree: wt, notify: self())
+
+    assert result.status == :failed
+    assert {:branch_drift, :specify, %{expected: expected, observed: "other"}} = result.reason
+    assert expected == wt.branch
+    assert_received {:feature_finished, "001", :failed, {:branch_drift, :specify, _}}
+
+    # Worktree kept for post-mortem, never removed.
+    assert File.dir?(wt.path)
+
+    # No git write followed the drift: the orchestrator's own branch is
+    # exactly where it started...
+    {branch_after, 0} = System.cmd("git", ["-C", wt.repo, "rev-parse", wt.branch])
+    assert branch_after == branch_before
+
+    # ...and the stray branch got no commit either.
+    {stray_after, 0} = System.cmd("git", ["-C", wt.path, "rev-parse", "other"])
+    assert stray_after == branch_before
+  end
+
   # 026 US3: `Workers.drain_requested?/0` is read directly from a public
   # named ETS table (Workers owns it, `:public`) — the same predicate a real
   # phase/chunk/remediation boundary consults, forced true for `self()` here

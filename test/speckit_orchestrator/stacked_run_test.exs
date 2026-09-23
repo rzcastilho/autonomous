@@ -6,10 +6,13 @@ defmodule SpeckitOrchestrator.StackedRunTest do
   the stacked-always behaviour, unconditionally.
   """
 
-  # async: false — the facade run uses a fixed Coordinator name.
-  use ExUnit.Case, async: false
+  # async: false — the facade run uses a fixed Coordinator name. StoreCase
+  # (not plain ExUnit.Case) because 027's publish-stop and empty-branch
+  # cases park a real store run that would otherwise block every later
+  # test's `run/1` on the same repository (`{:error, {:parked_run, …}}`).
+  use SpeckitOrchestrator.StoreCase, async: false
 
-  alias SpeckitOrchestrator.Feature
+  alias SpeckitOrchestrator.{Feature, Worktree}
 
   defp feat(id, slug),
     do: %Feature{id: id, number: String.to_integer(id), slug: slug, path: "#{id}.md"}
@@ -352,9 +355,9 @@ defmodule SpeckitOrchestrator.StackedRunTest do
     refute Process.alive?(pid1)
   end
 
-  # ---- US3: a publish failure never breaks the chain (FR-018) ----------------
+  # ---- US1: a backlog publish failure stops the chain (027, FR-002/003/004) --
 
-  test "a completed feature's PR publish failure still stacks the next feature on its local branch, and the failure is recorded via telemetry, not swallowed" do
+  test "a backlog feature's publish failure stops the chain: feature 2 never releases, the run parks, and stopped_by names the publish-failed reason" do
     me = self()
     handler_id = {:publish_failed_test, self()}
 
@@ -375,8 +378,8 @@ defmodule SpeckitOrchestrator.StackedRunTest do
       :ok
     end
 
-    # 001's publish fails; 002's succeeds — proves the failure neither halts
-    # nor blocks the chain.
+    # 001's publish fails with an arbitrary (non-normalized) seam term; 002
+    # would succeed if it ever ran.
     publisher = fn
       %Feature{id: "001"}, _base ->
         {:error, :push_rejected}
@@ -401,15 +404,164 @@ defmodule SpeckitOrchestrator.StackedRunTest do
     assert_receive {:built, "001", "main"}, 2_000
 
     assert_receive {:telemetry, [:speckit, :publish, :failed], %{},
-                    %{feature_id: "001", reason: :push_rejected}},
+                    %{
+                      feature_id: "001",
+                      kind: :pr_failed,
+                      reason: {:publish_failed, :pr_failed, _detail}
+                    }},
                    2_000
 
-    # 002 still stacks on 001's local branch, despite 001's PR never opening.
-    assert_receive {:built, "002", "feature/001-core"}, 2_000
-    assert_receive {:pr, "002", "feature/001-core"}, 2_000
+    # The chain stopped at 001 — 002 never builds, never publishes.
+    refute_received {:built, "002", _}
+    refute_received {:pr, "002", _}
 
     assert_receive {:run_complete, report}, 2_000
-    assert report.done == ["001", "002"]
+    assert report.failed == ["001"]
+    assert report.not_started == ["002"]
+
+    assert %{feature_id: "001", status: :failed, reason: {:publish_failed, :pr_failed, detail}} =
+             report.stopped_by
+
+    assert detail.branch == "feature/001-core"
+  end
+
+  test "an ad-hoc feature's publish failure never stops the run — it stays :done (FR-007)" do
+    me = self()
+
+    executor = fn feature, base, notify ->
+      send(me, {:built, feature.id, base})
+      notify.(feature.id, :done, nil)
+      :ok
+    end
+
+    publisher = fn _feature, _base -> {:error, :push_rejected} end
+
+    features = [ad_hoc_feat("900", "hotfix", ~U[2026-01-01 00:00:00Z])]
+
+    {:ok, pid} =
+      SpeckitOrchestrator.run(
+        features: features,
+        executor: executor,
+        publisher: publisher,
+        owner: me
+      )
+
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    assert_receive {:built, "900", "main"}, 2_000
+    assert_receive {:run_complete, report}, 2_000
+    assert report.done == ["900"]
+    assert report.stopped_by == nil
+  end
+
+  test "an empty branch (no commits beyond base) fails the real publisher before any push, against a real temp repo" do
+    repo = temp_repo!()
+    on_exit(fn -> File.rm_rf!(repo) end)
+
+    prior_repo = Application.get_env(:speckit_orchestrator, :repo)
+    Application.put_env(:speckit_orchestrator, :repo, repo)
+
+    on_exit(fn ->
+      if prior_repo,
+        do: Application.put_env(:speckit_orchestrator, :repo, prior_repo),
+        else: Application.delete_env(:speckit_orchestrator, :repo)
+    end)
+
+    feature = feat("001", "core")
+    branch = Worktree.locate(feature).branch
+
+    # Branch points at the same commit as "main" — no commits beyond base,
+    # so it is unpublishable as-is. No remote is configured on this temp
+    # repo, so a push attempt would fail with a different (push_failed)
+    # reason — `:empty_branch` proves the push step never ran.
+    {_out, 0} = System.cmd("git", ["-C", repo, "branch", branch, "main"])
+
+    me = self()
+
+    executor = fn f, base, notify ->
+      send(me, {:built, f.id, base})
+      notify.(f.id, :done, nil)
+      :ok
+    end
+
+    # No :publisher seam — exercises the real `publish_feature/3`.
+    {:ok, pid} =
+      SpeckitOrchestrator.run(
+        features: [feature],
+        executor: executor,
+        owner: me
+      )
+
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    assert_receive {:built, "001", "main"}, 2_000
+    assert_receive {:run_complete, report}, 2_000
+
+    assert %{feature_id: "001", status: :failed, reason: {:publish_failed, :empty_branch, detail}} =
+             report.stopped_by
+
+    assert detail.branch == branch
+    assert detail.branch_sha == detail.base_sha
+  end
+
+  test "stack_seed/1 seeds the chain by spec_id, not backlog number, when they differ" do
+    me = self()
+
+    executor = fn feature, base, notify ->
+      send(me, {:built, feature.id, base})
+      notify.(feature.id, :done, nil)
+      :ok
+    end
+
+    # A backlog feature whose spec_id (015) differs from its backlog number
+    # (002) — the chain entry must name the branch the feature actually
+    # built on (`feature/015-vote`), not `feature/002-vote`.
+    seeded = %{feat("002", "vote") | spec_number: 15}
+    features = [seeded, feat("003", "results")]
+
+    {:ok, pid} =
+      SpeckitOrchestrator.run(
+        features: features,
+        statuses: %{"002" => :done, "003" => :pending},
+        executor: executor,
+        publisher: fn _f, _b -> {:ok, "u"} end,
+        owner: me
+      )
+
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    assert_receive {:built, "003", "feature/015-vote"}, 2_000
+    refute_received {:built, "002", _}
+  end
+
+  defp temp_repo! do
+    path =
+      Path.join(System.tmp_dir!(), "speckit-empty-branch-#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(path)
+    {_out, 0} = System.cmd("git", ["-C", path, "init", "-q", "-b", "main"])
+
+    # `RepoIdentity.resolve/1` (Layout preflight) reads `origin` locally —
+    # any parseable URL satisfies it without a reachable remote.
+    {_out, 0} =
+      System.cmd("git", ["-C", path, "remote", "add", "origin", "https://example/scratch.git"])
+
+    {_out, 0} =
+      System.cmd("git", [
+        "-C",
+        path,
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@t",
+        "commit",
+        "--allow-empty",
+        "-q",
+        "-m",
+        "root"
+      ])
+
+    path
   end
 
   # T033 (quickstart Scenario 3): every remaining `pr_workflow`/`max_concurrency`

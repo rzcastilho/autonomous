@@ -154,7 +154,7 @@ defmodule SpeckitOrchestrator.FeatureRunner do
         {status, reason, agent} =
           case maybe_run_remediation(pid, feature, timeout, remediation_prompt, run_key) do
             {:error, agent} ->
-              {:failed, :remediation_failed, agent}
+              {:failed, remediation_failure_reason(agent), agent}
 
             :ok ->
               loop(
@@ -175,7 +175,7 @@ defmodule SpeckitOrchestrator.FeatureRunner do
 
         call(pid, "feature.finalize", %{status: status, reason: reason}, timeout)
         {message, pr} = commit_message_and_pr(feature, status, worktree, layout)
-        handle_worktree(feature, status, worktree, message, stack_base)
+        handle_worktree(feature, status, reason, worktree, message, stack_base)
 
         if drained?(status, reason) do
           emit_drained(feature)
@@ -196,7 +196,7 @@ defmodule SpeckitOrchestrator.FeatureRunner do
         }
       catch
         kind, err ->
-          handle_worktree(feature, :failed, worktree, nil, stack_base)
+          handle_worktree(feature, :failed, {kind, err}, worktree, nil, stack_base)
           record_feature_terminal(run_key, feature, :failed, {kind, err}, nil)
           notify(notify, feature.id, :failed, {kind, err})
           stop_agent(pid)
@@ -267,6 +267,14 @@ defmodule SpeckitOrchestrator.FeatureRunner do
   defp blank?(nil), do: true
   defp blank?(str) when is_binary(str), do: String.trim(str) == ""
 
+  # 027, US2: a pre-phase remediation session that drifted off the
+  # orchestrator's branch names the drift explicitly (contracts/branch-guard.md
+  # §3), rather than the generic `:remediation_failed`.
+  defp remediation_failure_reason(%{state: %{last_signals: %{branch_drift: d}}}),
+    do: {:branch_drift, :remediation, d}
+
+  defp remediation_failure_reason(_agent), do: :remediation_failed
+
   # ---- loop ---------------------------------------------------------------
 
   defp loop(
@@ -305,7 +313,7 @@ defmodule SpeckitOrchestrator.FeatureRunner do
     # claims the run advanced (research R7). Every other transition
     # (`:done`/`:escalated`/`:halted`/`:failed` from `Pipeline.next/3` or the
     # terminal override) is untouched — the per-phase boundary commit has
-    # never applied to those; `handle_worktree/5` commits the final state
+    # never applied to those; `handle_worktree/6` commits the final state
     # once the loop returns.
     decorated =
       case decorated do
@@ -660,19 +668,26 @@ defmodule SpeckitOrchestrator.FeatureRunner do
     AgentServer.call(pid, Signal.new!(type, data, source: "/runner"), timeout)
   end
 
-  defp handle_worktree(_feature, _status, nil, _message, _stack_base), do: :ok
+  defp handle_worktree(_feature, _status, _reason, nil, _message, _stack_base), do: :ok
 
   # Commit whatever the pipeline generated onto the feature branch BEFORE the
   # worktree is torn down — otherwise a successful run's spec/plan/tasks/code is
   # discarded on removal. `message` was authored (Claude, PR workflow) or
   # templated by `commit_message_and_pr/4` before the store write, so the git
   # history and the recorded `pr_description` always agree.
-  defp handle_worktree(_feature, :done, %Worktree{} = wt, message, stack_base) do
+  defp handle_worktree(_feature, :done, _reason, %Worktree{} = wt, message, stack_base) do
     _ = Worktree.squash(wt, merge_base(wt, stack_base), message)
     Worktree.remove(wt)
   end
 
-  defp handle_worktree(feature, status, %Worktree{} = wt, _message, _stack_base) do
+  # 027, US2: a branch-drift terminal writes no further git state to either
+  # branch — no commit, only `keep_for_inspection/1` for post-mortem (Principle
+  # II; contracts/branch-guard.md §4-§5).
+  defp handle_worktree(_feature, _status, {:branch_drift, _, _}, %Worktree{} = wt, _message, _stack_base) do
+    Worktree.keep_for_inspection(wt)
+  end
+
+  defp handle_worktree(feature, status, _reason, %Worktree{} = wt, _message, _stack_base) do
     _ = Worktree.commit(wt, "speckit: feature #{feature.id} pipeline artifacts (#{status})")
     Worktree.keep_for_inspection(wt)
   end

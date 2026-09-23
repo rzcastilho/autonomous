@@ -80,23 +80,29 @@ defmodule SpeckitOrchestrator.Telemetry do
       metadata `%{repo_id, removed}`. Fires after `prune/1` executes
       (FR-031a) — the only mechanism that removes recorded state.
 
-  Events (emitted by `SpeckitOrchestrator` — 019, FR-018): a completed
-  feature's PR publish can fail without failing the run — the local branch
-  still becomes the next feature's base regardless — but neither outcome is
-  merely swallowed:
+  Events (emitted by `SpeckitOrchestrator` — 019, FR-018; chain-stop
+  semantics 027 US1): neither publish outcome is merely swallowed. An
+  ad-hoc feature's publish failure never fails the run (FR-007) — its local
+  branch is never part of the chain either way. A **backlog** feature's
+  publish failure converts its terminal from `:done` to `:failed`
+  (`{:publish_failed, kind, detail}`) and stops the chain; its branch never
+  becomes the next feature's base:
 
     * `[:speckit, :publish, :opened]` — measurements `%{}`, metadata
       `%{feature_id, url}`. Fires when `publish_feature/3` (push + PR open)
       succeeds; `url` is what `gh pr create` returned, and is also persisted
       (`Store.Writer.record_pr_url/3`) so it survives a restart.
     * `[:speckit, :publish, :failed]` — measurements `%{}`, metadata
-      `%{feature_id, reason}`. Fires when `publish_feature/3` fails for a
-      `:done` backlog feature.
+      `%{feature_id, kind, reason}`. Fires when `publish_feature/3` fails.
+      `kind` is the normalized reason's `:empty_branch | :push_failed |
+      :pr_failed` tag.
 
   Call `attach_default_logger/0` from `iex` to log every event.
   """
 
   require Logger
+
+  alias SpeckitOrchestrator.PublishOutcome
 
   @phase [:speckit, :phase]
   @chunk [:speckit, :chunk]
@@ -216,7 +222,10 @@ defmodule SpeckitOrchestrator.Telemetry do
   end
 
   def handle_event([:speckit, :publish, :failed], _meas, meta, _cfg) do
-    Logger.warning("feature #{meta.feature_id} PR publish failed: #{inspect(meta.reason)}")
+    Logger.warning(
+      "feature #{meta.feature_id} PR publish failed: " <>
+        (PublishOutcome.describe(meta.reason) || inspect(meta.reason))
+    )
   end
 
   def handle_event(_event, _meas, _meta, _cfg), do: :ok

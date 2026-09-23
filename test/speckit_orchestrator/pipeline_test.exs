@@ -417,6 +417,35 @@ defmodule SpeckitOrchestrator.PipelineTest do
     end
   end
 
+  describe "branch-drift gate (027, US2)" do
+    test "branch drift fails the phase that caused it, by name, from every phase" do
+      d = %{expected: "feature/001-s", observed: "other"}
+
+      for phase <- Pipeline.phases() do
+        assert Pipeline.next(phase, :error, %{branch_drift: d}) ==
+                 {:failed, {:branch_drift, phase, d}}
+      end
+    end
+
+    # Drift is checked ahead of every other error signal — a session that both
+    # drifted AND left work outstanding is reported as drift, never the
+    # incomplete-session reason.
+    test "drift takes precedence over the incomplete-session signal" do
+      d = %{expected: "feature/001-s", observed: {:detached, "abc1234"}}
+
+      assert Pipeline.next(:plan, :error, %{branch_drift: d, outstanding_work?: true}) ==
+               {:failed, {:branch_drift, :plan, d}}
+    end
+
+    # The signal only ever arrives with an :error outcome, but pin that a
+    # stray one on an :ok outcome cannot divert a phase that actually
+    # succeeded.
+    test "the signal does not divert a successful phase" do
+      d = %{expected: "feature/001-s", observed: "other"}
+      assert Pipeline.next(:plan, :ok, %{branch_drift: d}) == {:cont, :tasks}
+    end
+  end
+
   describe "converge gate" do
     test "not_ready? at converge fails instead of reaching :done" do
       assert Pipeline.next(:converge, :ok, %{not_ready?: true}) == {:failed, :converge_not_ready}

@@ -81,6 +81,10 @@ defmodule SpeckitOrchestrator.PhaseStep do
     signals = st.last_signals || %{}
 
     cond do
+      # Branch drift (027, US2) is checked first, ahead of every other test:
+      # a drifted session is never retried, not even as a transient one — a
+      # fresh session would only write to the same wrong branch again.
+      Map.has_key?(signals, :branch_drift) -> nil
       st.last_outcome != :error and not Map.get(signals, :unfilled_artifact?, false) -> nil
       PhaseResult.transient?(st.last_result) and st.last_outcome == :error -> "failed transiently"
       Map.get(signals, :outstanding_work?, false) -> "ended with work outstanding"

@@ -25,8 +25,18 @@ defmodule SpeckitOrchestrator.ChunkRunnerTest do
         {:always_exhaust, n} -> always_exhaust(cwd, prompt, n)
         :checkpoint_only -> checkpoint_only(cwd, prompt)
         :terminal_error -> terminal_error_messages()
+        :branch_drift -> branch_drift_messages(cwd)
         _ -> mark_and_succeed(cwd, prompt)
       end
+    end
+
+    # A stand-in for the mod-player incident's target-side hook: the session
+    # itself moves HEAD off the orchestrator's branch (027, US2), then reports
+    # a perfectly successful transcript — exactly the shape the drift gate
+    # exists to catch regardless of what the transcript claims.
+    defp branch_drift_messages(cwd) do
+      System.cmd("git", ["checkout", "-b", "other"], cd: cwd)
+      success_messages()
     end
 
     defp mark_and_succeed(cwd, prompt) do
@@ -408,6 +418,32 @@ defmodule SpeckitOrchestrator.ChunkRunnerTest do
     # commits (research R5) — see recovery/evidence_test.exs for the direct
     # regex assertion against Evidence itself.
     refute Enum.any?(subjects, &Regex.match?(~r/^speckit: \S+ checkpoint after \w+$/, &1))
+  end
+
+  test "branch drift (027, US2): a drifted chunk session is neither boundary-committed nor continued",
+       %{root: root, feature: feature, worktree: worktree, pid: pid} do
+    Application.put_env(:speckit_orchestrator, :chunk_runner_test_scenario, :branch_drift)
+
+    {before_sha, 0} = System.cmd("git", ["rev-parse", "feature/001-fake"], cd: root)
+
+    agent = ChunkRunner.run(ctx(%{pid: pid, feature: feature, worktree: worktree}))
+
+    assert agent.state.last_outcome == :error
+
+    assert {:failed,
+            {:branch_drift, :implement,
+             %{expected: "feature/001-fake", observed: "other"}}} = agent.state.terminal_reason
+
+    # Neither branch moved: no boundary commit landed on the stray branch, and
+    # the orchestrator's own branch is exactly where it started.
+    {after_sha, 0} = System.cmd("git", ["rev-parse", "feature/001-fake"], cd: root)
+    assert after_sha == before_sha
+
+    {stray_sha, 0} = System.cmd("git", ["rev-parse", "other"], cd: root)
+    assert stray_sha == before_sha
+
+    {log, 0} = System.cmd("git", ["-C", root, "log", "--all", "--format=%s"])
+    refute String.contains?(log, "implement task-phase")
   end
 
   test "each chunk session is recorded in the store, without double-counting its cost",

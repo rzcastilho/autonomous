@@ -16,7 +16,7 @@ defmodule SpeckitOrchestrator.Web.RunsLive do
 
   use SpeckitOrchestrator.Web, :live_view
 
-  alias SpeckitOrchestrator.ConsoleProjection
+  alias SpeckitOrchestrator.{ConsoleProjection, PublishOutcome}
 
   @outcome_options [:all_done, :escalated, :halted, :failed, :mixed]
 
@@ -171,7 +171,7 @@ defmodule SpeckitOrchestrator.Web.RunsLive do
                   {run.state}
                 </span>
                 <span :if={run.state == :parked} class="run-context-chip" data-marker="stopped-by">
-                  stopped at {run.stopped_by} ({inspect(run.stopped_reason)})
+                  stopped at {run.stopped_by} ({describe_reason(run.stopped_reason)})
                 </span>
               </td>
               <td>{run.outcome || "—"}</td>
@@ -199,4 +199,6 @@ defmodule SpeckitOrchestrator.Web.RunsLive do
   defp format_bytes(nil), do: "0 B"
   defp format_bytes(bytes) when bytes < 1_000_000, do: "#{div(bytes, 1000)} KB"
   defp format_bytes(bytes), do: "#{Float.round(bytes / 1_000_000, 1)} MB"
+
+  defp describe_reason(reason), do: PublishOutcome.describe(reason) || inspect(reason)
 end

@@ -17,6 +17,7 @@ defmodule SpeckitOrchestrator do
     Layout,
     Ledger,
     Pipeline,
+    PublishOutcome,
     PullRequest,
     Recovery,
     Release,
@@ -658,6 +659,7 @@ defmodule SpeckitOrchestrator do
           | {:error, {:unknown_phase, term()}}
           | {:error, {:unknown_model, String.t()}}
           | {:error, {:active_run, pid()}}
+          | {:error, {:publish_only, String.t()}}
   def resume(feature_id, opts \\ []) do
     remediation_model = Keyword.get(opts, :remediation_model)
 
@@ -666,39 +668,128 @@ defmodule SpeckitOrchestrator do
          {:ok, run_key, detail} <- read_current_run(),
          {:ok, feature_record} <- find_feature_record(detail, feature_id),
          {:ok, feature} <- resolve_identity(feature_id, feature_record, opts),
-         {:ok, start_phase} <- resolve_start_phase(feature_record.checkpoint, opts),
-         {:ok, _resolved} <- Config.remediation_model(start_phase, remediation_model) do
-      {merged_opts, fell_back} = RunContext.merge(opts, RunContext.from_map(detail.settings))
-      log_context_fallback(feature_id, fell_back)
+         {:ok, route} <-
+           resolve_resume_route(feature_id, feature_record, opts, remediation_model) do
+      dispatch_resume_route(route, feature_id, feature, run_key, detail, opts, remediation_model)
+    end
+  end
 
-      run_context = RunContext.capture(merged_opts)
-      prompt = Keyword.get(opts, :prompt)
-      remediation_prompt = Keyword.get(opts, :remediation_prompt)
-      start_task_phase = task_phase_override(start_phase, opts)
+  # 027 US1: a feature whose stored row is `:failed` with a publish reason
+  # (contracts/publish-outcome.md §4) never re-runs a phase — its worktree
+  # output is already good, only the publish step failed. Any option that
+  # implies a phase re-run refuses loudly (SC-006) rather than silently
+  # ignoring it.
+  defp resolve_resume_route(feature_id, feature_record, opts, remediation_model) do
+    if publish_failed_record?(feature_record) do
+      resolve_publish_only_route(feature_id, opts)
+    else
+      with {:ok, start_phase} <- resolve_start_phase(feature_record.checkpoint, opts),
+           {:ok, _resolved} <- Config.remediation_model(start_phase, remediation_model) do
+        {:ok, {:phase, start_phase}}
+      end
+    end
+  end
 
-      with {:ok, scope} <- restore_run_scope(detail, merged_opts) do
-        scope = merge_resume_target(scope, feature)
+  defp publish_failed_record?(%{status: :failed, terminal_reason: {:publish_failed, _, _}}),
+    do: true
 
-        scope.merged_opts
-        |> maybe_put_layout(detail.run.layout)
-        |> Keyword.put(:features, scope.features)
-        |> Keyword.put(:statuses, dispatch_statuses(scope.statuses, scope.resume_phases))
-        |> Keyword.put(:run_key, run_key)
-        |> inject_resume_scope_strategy(
-          feature.id,
-          start_phase,
-          prompt,
-          remediation_prompt,
-          remediation_model,
+  defp publish_failed_record?(_feature_record), do: false
+
+  @publish_only_blocking_opts [:from, :prompt, :from_task_phase, :remediation_prompt, :remediation_model]
+
+  defp resolve_publish_only_route(feature_id, opts) do
+    if Enum.any?(@publish_only_blocking_opts, &Keyword.has_key?(opts, &1)) do
+      {:error, {:publish_only, feature_id}}
+    else
+      {:ok, :publish_only}
+    end
+  end
+
+  defp dispatch_resume_route({:phase, start_phase}, feature_id, feature, run_key, detail, opts, remediation_model) do
+    {merged_opts, fell_back} = RunContext.merge(opts, RunContext.from_map(detail.settings))
+    log_context_fallback(feature_id, fell_back)
+
+    run_context = RunContext.capture(merged_opts)
+    prompt = Keyword.get(opts, :prompt)
+    remediation_prompt = Keyword.get(opts, :remediation_prompt)
+    start_task_phase = task_phase_override(start_phase, opts)
+
+    with {:ok, scope} <- restore_run_scope(detail, merged_opts) do
+      scope = merge_resume_target(scope, feature)
+
+      scope.merged_opts
+      |> maybe_put_layout(detail.run.layout)
+      |> Keyword.put(:features, scope.features)
+      |> Keyword.put(:statuses, dispatch_statuses(scope.statuses, scope.resume_phases))
+      |> Keyword.put(:run_key, run_key)
+      |> inject_resume_scope_strategy(
+        feature.id,
+        start_phase,
+        prompt,
+        remediation_prompt,
+        remediation_model,
+        run_context,
+        detail.run.layout,
+        scope.layout,
+        start_task_phase,
+        scope.resume_phases,
+        run_key
+      )
+      |> run()
+    end
+  end
+
+  defp dispatch_resume_route(:publish_only, feature_id, feature, run_key, detail, opts, _remediation_model) do
+    {merged_opts, fell_back} = RunContext.merge(opts, RunContext.from_map(detail.settings))
+    log_context_fallback(feature_id, fell_back)
+
+    run_context = RunContext.capture(merged_opts)
+
+    with {:ok, scope} <- restore_run_scope(detail, merged_opts) do
+      scope = merge_resume_target(scope, feature)
+
+      scope.merged_opts
+      |> maybe_put_layout(detail.run.layout)
+      |> Keyword.put(:features, scope.features)
+      |> Keyword.put(:statuses, dispatch_statuses(scope.statuses, scope.resume_phases))
+      |> Keyword.put(:run_key, run_key)
+      |> inject_publish_only_strategy(
+        feature.id,
+        run_key,
+        scope.layout,
+        scope.resume_phases,
+        run_context
+      )
+      |> run()
+    end
+  end
+
+  # Same caller-`:runner`/`:executor` precedence as `inject_resume_scope_strategy/12`.
+  # The target executor never runs a phase session (SC-006): it just notifies
+  # `:done` with reason `:republish`, so `run_stacked/4`'s `pr_notify` wrapper
+  # drives the ordinary publish path (§1-§2) against the base the restored
+  # chain resolves.
+  defp inject_publish_only_strategy(opts, target_id, run_key, scope_layout, resume_phases, run_context) do
+    if Keyword.has_key?(opts, :runner) or Keyword.has_key?(opts, :executor) do
+      opts
+    else
+      target_executor = fn feature, _base, notify ->
+        Workers.spawn(run_key, feature.id, fn -> notify.(feature.id, :done, :republish) end)
+        :ok
+      end
+
+      Keyword.put(
+        opts,
+        :executor,
+        split_resume_executor(
+          target_id,
+          target_executor,
           run_context,
-          detail.run.layout,
-          scope.layout,
-          start_task_phase,
-          scope.resume_phases,
+          scope_layout,
+          resume_phases,
           run_key
         )
-        |> run()
-      end
+      )
     end
   end
 
@@ -2165,7 +2256,7 @@ defmodule SpeckitOrchestrator do
     |> Enum.filter(&(&1.group == :backlog))
     |> Enum.take_while(&(Map.get(statuses, &1.id, &1.status) not in [:pending, :running]))
     |> Enum.reverse()
-    |> Enum.map(&"feature/#{&1.id}-#{&1.slug}")
+    |> Enum.map(&Worktree.locate(&1).branch)
   end
 
   # Preflight the real target (pack scaffold + committed constitution + remote)
@@ -2224,26 +2315,31 @@ defmodule SpeckitOrchestrator do
 
   defp pr_notify(feature, base, tracker, publisher, notify) do
     fn id, status, reason ->
-      if status == :done, do: publish_and_advance(feature, base, tracker, publisher)
-      notify.(id, status, reason)
+      if status == :done do
+        handle_publish(feature, base, tracker, publisher, notify, reason)
+      else
+        notify.(id, status, reason)
+      end
     end
   end
 
-  # Best-effort: publish the feature, then advance the stack to its branch —
-  # only for a backlog feature (FR-028: an ad-hoc feature never advances the
-  # chain). Both outcomes are logged AND emitted as a telemetry event (a
-  # failure is never merely swallowed, FR-018) — but neither fails the run:
-  # the local branch still exists, so the next feature stacks on it
-  # regardless, whether or not its PR was ever opened.
+  # 027 US1: a backlog feature's publish failure stops the chain instead of
+  # being swallowed — it converts the terminal from `:done` to `:failed` with
+  # a normalized `{:publish_failed, kind, detail}` reason, skips the stack
+  # push, and forwards `:failed` so the Coordinator's existing stop/park path
+  # parks the run (contracts/publish-outcome.md §2). An ad-hoc feature never
+  # takes this edge (FR-007, FR-028): its notification and status are
+  # unaffected by a publish failure, and it never joins the chain either way.
   #
   # The opened URL is also persisted, so the console can link to the PR from a
   # `:done` feature's drawer on any later boot rather than only in the log
   # line of the session that opened it.
-  defp publish_and_advance(feature, base, tracker, publisher) do
-    case publisher.(feature, base) do
+  defp handle_publish(feature, base, tracker, publisher, notify, reason) do
+    case normalize_publisher_result(publisher.(feature, base), feature, base) do
       {:ok, url} ->
         Logger.info("feature #{feature.id} PR opened: #{url}")
         record_pr_url(feature.id, url)
+        maybe_clear_publish_failure(feature.id)
 
         :telemetry.execute(
           [:speckit, :publish, :opened],
@@ -2251,18 +2347,71 @@ defmodule SpeckitOrchestrator do
           %{feature_id: feature.id, url: url}
         )
 
-      {:error, reason} ->
-        Logger.warning("feature #{feature.id} publish failed: #{inspect(reason)}")
+        if feature.group == :backlog do
+          StackTracker.push(tracker, Worktree.locate(feature).branch)
+        end
+
+        notify.(feature.id, :done, reason)
+
+      {:error, {:publish_failed, kind, _detail} = pf} ->
+        Logger.warning("feature #{feature.id} publish failed: #{PublishOutcome.describe(pf)}")
 
         :telemetry.execute(
           [:speckit, :publish, :failed],
           %{},
-          %{feature_id: feature.id, reason: reason}
+          %{feature_id: feature.id, kind: kind, reason: pf}
         )
-    end
 
-    if feature.group == :backlog do
-      StackTracker.push(tracker, Worktree.locate(feature).branch)
+        if feature.group == :backlog do
+          record_publish_failure(feature.id, pf)
+          notify.(feature.id, :failed, pf)
+        else
+          notify.(feature.id, :done, reason)
+        end
+    end
+  end
+
+  # A seam publisher (tests) may return any `{:error, term}`; normalize a
+  # non-tagged term into the same `:pr_failed` shape the real `gh` failure
+  # takes, so the chain-stop path and its `describe/1` rendering are uniform
+  # regardless of what produced the failure.
+  defp normalize_publisher_result({:ok, _url} = ok, _feature, _base), do: ok
+
+  defp normalize_publisher_result({:error, {:publish_failed, _kind, _detail}} = err, _feature, _base),
+    do: err
+
+  defp normalize_publisher_result({:error, other}, feature, base) do
+    branch = Worktree.locate(feature).branch
+
+    {:error,
+     {:publish_failed, :pr_failed, %{branch: branch, base: base, exit: 1, output: inspect(other)}}}
+  end
+
+  defp record_publish_failure(feature_id, pf) do
+    case current_run_key() do
+      nil -> :ok
+      run_key -> Store.record_feature_terminal(run_key, feature_id, :failed, pf)
+    end
+  end
+
+  # The publish-only continue route re-notifies `:done` for a feature whose
+  # stored row is still `:failed` with the prior publish reason (`resume/2`
+  # never re-runs a phase for it, so nothing else flips the status back).
+  # Flips it to `:done` now that the retried publish succeeded; a no-op for
+  # the ordinary first-publish path, where the row is already `:done`.
+  defp maybe_clear_publish_failure(feature_id) do
+    case current_run_key() do
+      nil ->
+        :ok
+
+      run_key ->
+        with {:ok, detail} <- Store.run(run_key),
+             %{status: :failed, terminal_reason: {:publish_failed, _, _}} <-
+               Enum.find(detail.features, &(&1.feature_id == feature_id)) do
+          Store.record_feature_terminal(run_key, feature_id, :done, :done)
+        else
+          _ -> :ok
+        end
     end
   end
 
@@ -2309,13 +2458,87 @@ defmodule SpeckitOrchestrator do
     :ok
   end
 
-  # Real publisher: push the feature branch, then open a PR against its base.
+  # Real publisher: proves the branch has commits beyond its base before
+  # touching git further (027 US1, contracts/publish-outcome.md §1) — an
+  # unpublishable branch never reaches `push`/`gh` at all — then pushes and
+  # opens a PR. A `pr_url` already recorded for this feature (the operator
+  # opened it by hand via `record_pr/3`, or this is the publish-only continue
+  # route retrying after a prior push already landed) short-circuits before
+  # any of that.
   defp publish_feature(feature, base, layout) do
+    case store_pr_url(feature.id) do
+      url when is_binary(url) -> {:ok, url}
+      nil -> do_publish_feature(feature, base, layout)
+    end
+  end
+
+  defp do_publish_feature(feature, base, layout) do
     wt = Worktree.locate(feature, worktree_create_opts(layout))
 
-    with :ok <- Worktree.push(wt, Config.pr_remote()) do
+    with {:ok, _count, _shas} <- verify_publishable(wt, base),
+         :ok <- normalize_push(wt, Config.pr_remote()) do
       {title, body} = pr_text(feature, base)
-      PullRequest.open(Config.repo(), %{head: wt.branch, base: base, title: title, body: body})
+
+      Config.repo()
+      |> PullRequest.open(%{head: wt.branch, base: base, title: title, body: body})
+      |> normalize_pr_result(wt.branch, base)
+    end
+  end
+
+  defp verify_publishable(wt, base) do
+    case Worktree.commits_beyond(Config.repo(), wt.branch, base) do
+      {:ok, 0, %{branch_sha: branch_sha, base_sha: base_sha}} ->
+        {:error,
+         {:publish_failed, :empty_branch,
+          %{branch: wt.branch, base: base, branch_sha: branch_sha, base_sha: base_sha}}}
+
+      {:ok, count, shas} ->
+        {:ok, count, shas}
+
+      {:error, reason} ->
+        {:error,
+         {:publish_failed, :empty_branch,
+          %{
+            branch: wt.branch,
+            base: base,
+            branch_sha: "unreadable",
+            base_sha: render_git_output(reason)
+          }}}
+    end
+  end
+
+  defp normalize_push(wt, remote) do
+    case Worktree.push(wt, remote) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        {:error,
+         {:publish_failed, :push_failed,
+          %{branch: wt.branch, remote: remote, output: render_git_output(reason)}}}
+    end
+  end
+
+  defp normalize_pr_result({:ok, url}, _branch, _base), do: {:ok, url}
+
+  defp normalize_pr_result({:error, {:gh_failed, code, out}}, branch, base) do
+    {:error, {:publish_failed, :pr_failed, %{branch: branch, base: base, exit: code, output: out}}}
+  end
+
+  defp render_git_output({:git_failed, _code, out}), do: out
+  defp render_git_output({:remote_branch_moved, branch, moved}),
+    do: "remote #{branch} moved to #{moved} since last known"
+
+  defp render_git_output(other), do: inspect(other)
+
+  defp store_pr_url(feature_id) do
+    with run_key when run_key != nil <- current_run_key(),
+         {:ok, detail} <- Store.run(run_key),
+         %{pr_url: url} when is_binary(url) <-
+           Enum.find(detail.features, &(&1.feature_id == feature_id)) do
+      url
+    else
+      _ -> nil
     end
   end
 

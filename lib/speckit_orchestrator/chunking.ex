@@ -101,7 +101,10 @@ defmodule SpeckitOrchestrator.Chunking do
           # Not part of the documented contract signal set — plumbed through so
           # row 2's `{:session_error, term()}` reason carries the real failure,
           # rather than `nil`.
-          optional(:error) => term()
+          optional(:error) => term(),
+          # 027, US2 — set by `ChunkRunner` when the dispatched session's
+          # branch drifted; unconditionally terminal (row 0).
+          optional(:branch_drift) => SpeckitOrchestrator.BranchGuard.drift()
         }
 
   @type reason ::
@@ -109,6 +112,7 @@ defmodule SpeckitOrchestrator.Chunking do
           | {:session_ceiling, pos_integer()}
           | {:unchecked_tasks, [String.t()]}
           | {:session_error, term()}
+          | {:branch_drift, :implement, SpeckitOrchestrator.BranchGuard.drift()}
 
   @type decision ::
           {:dispatch, SpeckitOrchestrator.ChunkScope.t(), ChunkState.t()}
@@ -167,6 +171,12 @@ defmodule SpeckitOrchestrator.Chunking do
     limit = Config.implement_no_progress_limit()
 
     cond do
+      # Row 0 (027, US2) — branch drift is unconditionally terminal, ahead of
+      # every other row: the session already wrote (or half-wrote) to the
+      # wrong branch, so outcome/progress/breaker no longer matter.
+      Map.has_key?(signals, :branch_drift) ->
+        {:failed, {:branch_drift, :implement, Map.get(signals, :branch_drift)}, state}
+
       # Row 2 — a genuine (non-transient) session error always fails.
       outcome == :error and not transient? ->
         {:failed, {:session_error, Map.get(signals, :error)}, state}
@@ -223,12 +233,20 @@ defmodule SpeckitOrchestrator.Chunking do
 
   @doc """
   Operator-facing sentence for a terminal failure `reason()` (SC-002,
-  contracts/chunking.md §3). The four reasons are exhaustive by construction —
+  contracts/chunking.md §3). The reasons are exhaustive by construction —
   `reason()`'s union has no other member, so there is no catch-all clause here
   (Constitution II: fail loud rather than paper over a fifth shape with a
-  generic message).
+  generic message). `{:branch_drift, :implement, d}` (027) is not rendered
+  here — `PublishOutcome.describe/1` already covers it, phase-generically,
+  and is what every operator surface calls first.
   """
   @spec failure_sentence(reason()) :: String.t()
+  def failure_sentence({:branch_drift, :implement, %{expected: expected, observed: observed}}) do
+    SpeckitOrchestrator.PublishOutcome.describe(
+      {:branch_drift, :implement, %{expected: expected, observed: observed}}
+    )
+  end
+
   def failure_sentence({:stuck_task_phase, %TaskPhaseRef{} = ref, limit}) do
     ~s(task-phase #{ref.number || ref.ordinal} "#{ref.title}" made no progress in #{limit} consecutive sessions)
   end

@@ -134,6 +134,31 @@ defmodule SpeckitOrchestrator.ChunkingTest do
     end
   end
 
+  describe "row 0 — branch drift (027, US2)" do
+    test "drift fails immediately, ahead of every other signal" do
+      state = Chunking.start(five_phase_plan())
+      {:dispatch, _scope, state1} = Chunking.next(state, %{})
+      d = %{expected: "feature/001-s", observed: "other"}
+
+      assert Chunking.next(state1, %{outcome: :ok, branch_drift: d}) ==
+               {:failed, {:branch_drift, :implement, d}, state1}
+    end
+
+    test "drift wins even alongside a transient error, progress, and a tripped breaker" do
+      state = Chunking.start(five_phase_plan())
+      {:dispatch, _scope, state1} = Chunking.next(state, %{})
+      d = %{expected: "feature/001-s", observed: {:detached, "abc1234"}}
+
+      assert Chunking.next(state1, %{
+               outcome: :error,
+               transient?: true,
+               progress?: true,
+               breaker?: true,
+               branch_drift: d
+             }) == {:failed, {:branch_drift, :implement, d}, state1}
+    end
+  end
+
   # ---- rows 3-5 — exhaustion ----------------------------------------------------
 
   describe "rows 3/5 — exhaustion continuation" do

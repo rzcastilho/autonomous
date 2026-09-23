@@ -138,9 +138,12 @@ dependency, fully unit-testable:
   (`PhaseResult.outstanding_work?/1` — headless, ending the turn ends the
   session, so a model "waiting on subagents" never finishes). Both are retried
   once by `PhaseStep` before the feature fails; a plainly missing artifact is
-  not. Gate signals are extracted upstream and
-  passed in, keeping this module side-effect free. `Pipeline` still sees
-  exactly one `:analyze` outcome per feature run.
+  not. A fourth gate, the **branch-drift gate** (feature 027), fails a phase
+  whose session ends off the orchestrator's branch (`BranchGuard.check/2`) —
+  checked first, ahead of the incomplete-session gate, and never retried
+  (`PhaseStep.retry_reason/1` short-circuits on it). Gate signals are extracted
+  upstream and passed in, keeping this module side-effect free. `Pipeline`
+  still sees exactly one `:analyze` outcome per feature run.
 - `Severity` / `Remediation` (feature 017; exhaustion policy, feature 021) — a
   bounded, switchable **auto-remediation loop** sits strictly *below* the
   analyze gate, inside the `:analyze` step: when analyze reports findings at
@@ -290,6 +293,32 @@ untouched. `guard_active_run/1` (behind `continue_run/1`/`resume/2`/
 with no live Coordinator; `:force` drains rather than bypasses.
 `SpeckitOrchestrator.workers/0,1` is the read-only "what's in flight"
 surface. See `specs/026-drain-superseded-runner/` and `docs/runbook.md`.
+
+**Publish integrity (feature 027).** A 2026-09-23 incident chained two failures
+past each other: a backlog feature's publish silently didn't stop the chain,
+and a session that drifted off its checked-out branch went undetected, so a
+downstream feature stacked onto a base that never existed on the real branch.
+Three fixes close it. **US1** normalizes every real-publisher failure
+(`Worktree.commits_beyond/3` catches an empty branch before any push/`gh`
+call; a failed `git push`; a failed `gh pr create`) to
+`{:publish_failed, kind, detail}`; for a backlog feature this **parks the run**
+exactly like any other non-done terminal (`stopped_by` names the feature, the
+stack is not advanced onto it), while an ad-hoc feature's publish failure
+still just logs and finishes `:done`. `resume/2`/`continue_run/1` on a
+publish-failed feature is a dedicated **publish-only route** — zero phase
+re-runs, skips the publisher entirely if a `pr_url` was already recorded.
+**US2** is the branch-drift gate described under `Pipeline` above, applied
+identically at every session-driving site (`RunFeaturePhase`,
+`RunAutoRemediation`, `RunRemediation`, and `ChunkRunner`/`Chunking` for
+implement chunks) — `FeatureRunner` writes no commit on a drift terminal,
+only `keep_for_inspection/1`, so neither branch is corrupted further. **US3**
+mitigates the common case: the `specify` prompt now pins
+`GIT_BRANCH_NAME=<Worktree.branch_name/1>` with reuse semantics, so a target
+carrying spec-tooling git extensions reuses the orchestrator's branch instead
+of inventing one — US2's gate is the backstop if a model ignores the pin.
+`PublishOutcome.describe/1` is the single human-facing renderer for both
+`:publish_failed` and `:branch_drift` reasons, used by `Report.format_reason/1`
+and every console surface. See `docs/runbook.md`.
 
 **Feature vertical (Phase 3).** `Worktree` manages per-feature git worktrees
 (`feature/NNN-slug`), asserting the committed `.specify/`/`.claude/` scaffold
