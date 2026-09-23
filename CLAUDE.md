@@ -268,6 +268,28 @@ App tree: `Ledger` + `{Task.Supervisor, RunnerSup}`; the Coordinator is
 per-run. A parked run refuses new work for that repository until an operator
 resolves it with an explicit `:continue` or `:end` decision
 (`SpeckitOrchestrator.continue_run/1` / `end_run/1`) — see `docs/runbook.md`.
+**Supersession drain (Phase 8, feature 026).** Stopping a prior run's
+Coordinator never touched the `RunnerSup` task actually driving a feature — a
+live `claude` session, mid-worktree-write — so a fresh `run/1` could release
+the same feature into the same worktree while the old session was still
+writing (incident `r000002`). Every `RunnerSup` child now registers itself
+(as its first act, via `Workers.spawn/3`) in `SpeckitOrchestrator.WorkerRegistry`
+(`Registry`, `keys: :duplicate`, keyed by repository), started under the app
+supervisor before `RunnerSup` alongside `SpeckitOrchestrator.Workers` (the
+process-layer module owning that registration plus a public ETS
+drain-request table). `Workers.drain_requested?/0` is the boundary predicate
+every session-driving site (phase, chunk, remediation) consults immediately
+after the existing `Ledger.breaker_tripped?/1` check — same drain-don't-kill
+discipline, never `Process.exit/2`. A fresh `run/1` stops the prior
+Coordinator, then `Workers.drain/1`s the repository's registered workers
+(bounded by each worker's own session deadline + grace, `Workers.Bound`), and
+only then supersedes the prior record — a drain timeout starts nothing
+(`{:error, {:drain_timeout, stuck}}`), leaving the prior run's record
+untouched. `guard_active_run/1` (behind `continue_run/1`/`resume/2`/
+`resume_run/1`) treats a live registered worker as an active run too, even
+with no live Coordinator; `:force` drains rather than bypasses.
+`SpeckitOrchestrator.workers/0,1` is the read-only "what's in flight"
+surface. See `specs/026-drain-superseded-runner/` and `docs/runbook.md`.
 
 **Feature vertical (Phase 3).** `Worktree` manages per-feature git worktrees
 (`feature/NNN-slug`), asserting the committed `.specify/`/`.claude/` scaffold

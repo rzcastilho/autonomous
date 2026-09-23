@@ -34,7 +34,8 @@ defmodule SpeckitOrchestrator.AnalyzeRunner do
     Prompts,
     Remediation,
     Severity,
-    Telemetry
+    Telemetry,
+    Workers
   }
 
   alias SpeckitOrchestrator.Store.Writer
@@ -95,7 +96,8 @@ defmodule SpeckitOrchestrator.AnalyzeRunner do
       step: :analyze,
       outcome: agent.state.last_outcome,
       result: parsed_result(agent),
-      breaker?: breaker_tripped?(ctx.ledger)
+      breaker?: breaker_tripped?(ctx.ledger),
+      drain?: Workers.drain_requested?()
     }
 
     case Remediation.next(state, signals) do
@@ -106,7 +108,10 @@ defmodule SpeckitOrchestrator.AnalyzeRunner do
         finish(ctx, state1, agent, n)
 
       {:halted, :breaker, state1} ->
-        halt(ctx, state1, agent)
+        halt(ctx, state1, agent, :breaker)
+
+      {:halted, :superseded, state1} ->
+        halt(ctx, state1, agent, :superseded)
 
       {:remediate, findings, state1} ->
         # This analyze run is not the final one — the loop is about to run a
@@ -132,13 +137,17 @@ defmodule SpeckitOrchestrator.AnalyzeRunner do
     case Remediation.next(state, %{
            step: :remediation,
            outcome: outcome,
-           breaker?: breaker_tripped?(ctx.ledger)
+           breaker?: breaker_tripped?(ctx.ledger),
+           drain?: Workers.drain_requested?()
          }) do
       {:failed, :remediation_failed, state1} ->
         fail(ctx, state1, agent)
 
       {:halted, :breaker, state1} ->
-        halt(ctx, state1, agent)
+        halt(ctx, state1, agent, :breaker)
+
+      {:halted, :superseded, state1} ->
+        halt(ctx, state1, agent, :superseded)
 
       _continue ->
         {agent1, state1} = analyze(ctx, state)
@@ -251,6 +260,7 @@ defmodule SpeckitOrchestrator.AnalyzeRunner do
       # `ctx.timeout` is the session deadline `RunAutoRemediation` enforces
       # through `PhaseSession` (as `Config.phase_timeout/0`); the call waits
       # strictly longer so that deadline, not this call, ends a runaway session.
+      Workers.session_started(ctx.timeout)
       {:ok, agent} = AgentServer.call(ctx.pid, signal, PhaseSession.call_timeout(ctx.timeout))
       entry = List.first(agent.state.history) || %{}
       outcome = Map.get(entry, :outcome, agent.state.last_outcome)
@@ -407,18 +417,23 @@ defmodule SpeckitOrchestrator.AnalyzeRunner do
   # checkpoint alone rather than record this agent as the `:analyze` attempt.
   # Without it the remediation step's outcome, cost and transcript overwrite
   # the analyze run at the same `attempt_id`, and analyze's own record is lost.
-  defp halt(ctx, state, agent) do
-    Logger.info("feature #{ctx.feature.id} analyze auto-remediation halted — breaker tripped")
+  defp halt(ctx, state, agent, reason) do
+    Logger.info(
+      "feature #{ctx.feature.id} analyze auto-remediation halted — #{halt_log_reason(reason)}"
+    )
 
     patch(agent,
       last_outcome: :error,
       last_signals: %{},
-      terminal_reason: {:halted, :breaker},
+      terminal_reason: {:halted, reason},
       analyze_remediation: provenance(state),
       analyze_runs: state.analyze_runs,
       analyze_attempt_recorded?: true
     )
   end
+
+  defp halt_log_reason(:breaker), do: "breaker tripped"
+  defp halt_log_reason(:superseded), do: "superseded by a new run"
 
   defp fail(ctx, state, agent) do
     Logger.warning(

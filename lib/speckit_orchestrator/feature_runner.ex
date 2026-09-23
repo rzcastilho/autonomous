@@ -33,7 +33,8 @@ defmodule SpeckitOrchestrator.FeatureRunner do
     Pipeline,
     Remediation,
     Store,
-    Worktree
+    Worktree,
+    Workers
   }
 
   alias SpeckitOrchestrator.Remediation.Settings
@@ -174,11 +175,17 @@ defmodule SpeckitOrchestrator.FeatureRunner do
 
         call(pid, "feature.finalize", %{status: status, reason: reason}, timeout)
         {message, pr} = commit_message_and_pr(feature, status, worktree, layout)
-        record_feature_terminal(run_key, feature, status, reason, pr)
-        record_diversion_escalation(run_key, feature, agent, status, reason)
         handle_worktree(feature, status, worktree, message, stack_base)
-        emit_terminal(feature, status, reason, agent.state.cost_total)
-        notify(notify, feature.id, status, reason)
+
+        if drained?(status, reason) do
+          emit_drained(feature)
+        else
+          record_feature_terminal(run_key, feature, status, reason, pr)
+          record_diversion_escalation(run_key, feature, agent, status, reason)
+          emit_terminal(feature, status, reason, agent.state.cost_total)
+          notify(notify, feature.id, status, reason)
+        end
+
         stop_agent(pid)
 
         %{
@@ -244,6 +251,7 @@ defmodule SpeckitOrchestrator.FeatureRunner do
 
     :telemetry.span([:speckit, :phase], meta, fn ->
       {:ok, %{agent: before}} = AgentServer.state(pid)
+      Workers.session_started(timeout)
       {:ok, agent} = call(pid, "remediation.run", %{}, PhaseSession.call_timeout(timeout))
       agent = PhaseStep.ensure_recorded(before, agent, :remediation)
       entry = List.first(agent.state.history) || %{}
@@ -343,6 +351,9 @@ defmodule SpeckitOrchestrator.FeatureRunner do
         cond do
           breaker_tripped?(ledger) ->
             {:halted, :breaker, agent}
+
+          Workers.drain_requested?() ->
+            {:halted, :superseded, agent}
 
           store_unwritable?(run_key) ->
             {:halted, {:persistence_failed, store_health_reason()}, agent}
@@ -568,6 +579,23 @@ defmodule SpeckitOrchestrator.FeatureRunner do
     )
 
     Logger.info("feature #{feature.id} terminal=#{status} reason=#{inspect(reason)}")
+  end
+
+  # A drained exit (026) is deliberately not a terminal status — the feature
+  # row stays `:running` for supersession to mark `:ended_by_supersession`
+  # (FR-011) — so it gets its own event instead of `[:speckit, :feature,
+  # :terminal]`.
+  defp drained?(:halted, :superseded), do: true
+  defp drained?(_status, _reason), do: false
+
+  defp emit_drained(feature) do
+    :telemetry.execute(
+      [:speckit, :feature, :drained],
+      %{system_time: System.system_time()},
+      %{feature_id: feature.id}
+    )
+
+    Logger.info("feature #{feature.id} drained (superseded)")
   end
 
   # ---- start/terminal recording (018) ---------------------------------------

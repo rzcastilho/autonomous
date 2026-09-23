@@ -328,6 +328,45 @@ defmodule SpeckitOrchestrator.ChunkingTest do
     end
   end
 
+  # ---- row 7b (026) — drain requested (supersession) -----------------------
+
+  describe "row 7b — drain requested (026)" do
+    test "an absent drain? signal leaves today's rows unchanged" do
+      state = Chunking.start(five_phase_plan())
+      {:dispatch, {:task_phase, tp1}, state1} = Chunking.next(state, %{})
+      plan = complete_task_phase(state1.plan, tp1.ordinal)
+
+      assert {:dispatch, {:task_phase, _tp2}, _state2} =
+               Chunking.next(state1, %{outcome: :ok, plan: plan})
+    end
+
+    test "halts at the same boundary as the breaker (a scope's session just succeeded)" do
+      state = Chunking.start(five_phase_plan())
+      {:dispatch, {:task_phase, tp1}, state1} = Chunking.next(state, %{})
+      plan = complete_task_phase(state1.plan, tp1.ordinal)
+
+      assert Chunking.next(state1, %{outcome: :ok, plan: plan, drain?: true}) ==
+               {:halted, :superseded, %{state1 | plan: plan, cursor: 2, attempt: 1, no_progress: 0}}
+    end
+
+    test "does not fire mid-scope (an exhaustion continuation ignores it)" do
+      state = Chunking.start(five_phase_plan())
+      {:dispatch, {:task_phase, tp1}, state1} = Chunking.next(state, %{})
+
+      assert {:dispatch, {:task_phase, ^tp1}, _state2} =
+               Chunking.next(state1, %{outcome: :exhausted, progress?: true, drain?: true})
+    end
+
+    test "a tripped breaker wins over a drain request at the same boundary (FR-011)" do
+      state = Chunking.start(five_phase_plan())
+      {:dispatch, {:task_phase, tp1}, state1} = Chunking.next(state, %{})
+      plan = complete_task_phase(state1.plan, tp1.ordinal)
+
+      assert {:halted, :breaker, _state2} =
+               Chunking.next(state1, %{outcome: :ok, plan: plan, breaker?: true, drain?: true})
+    end
+  end
+
   # ---- row 8 — unstructured fallback --------------------------------------------
 
   describe "row 8 — FR-004 unstructured fallback" do

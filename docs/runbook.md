@@ -597,13 +597,20 @@ trail.
    — not re-recorded on every checkpoint), not live `Config` defaults — same
    explicit-opt > recorded > live-Config precedence as `resume/2` (FR-007).
 5. **Guard against clobbering a live run.** If a `Coordinator` is already
-   alive and unfinished, `resume_run/1` refuses:
+   alive and unfinished, `resume_run/1` (and `resume/2`, `continue_run/1`)
+   refuses:
    ```elixir
    iex> SpeckitOrchestrator.resume_run()
    {:error, {:active_run, #PID<0.123.0>}}
    ```
    Pass `force: true` only when you're certain the live process is stuck, not
-   genuinely still working.
+   genuinely still working. **026:** the same refusal fires even with no
+   live `Coordinator`, if a worker is still registered for the repository
+   (`pid` is then the worker's, not the Coordinator's) — the Coordinator can
+   die while its worker keeps writing, and the guard closes that gap too.
+   With `:force`, the guard stops the Coordinator (if any) and then drains
+   every registered worker — see "Supersession drains before it supersedes"
+   below for what that means and how it can time out.
 
 **Supersession, not a single slot.** A fresh `run/1` opens a new store record
 and supersedes whatever prior in-flight run exists for the same repository
@@ -612,6 +619,53 @@ and supersedes whatever prior in-flight run exists for the same repository
 distinguishable from a normal completion. Unlike the pre-018 single manifest
 slot, **every prior run is retained** — see "Run history & detail" below to
 review any of them, not only the most recent.
+
+### Supersession drains before it supersedes (026)
+
+Superseding a run used to stop only the prior run's `Coordinator` — the
+`RunnerSup` task actually driving a feature (a live `claude` session,
+mid-worktree-write) was never touched, so a fresh `run/1` could release the
+same feature into the same worktree while the old session was still writing
+(incident `r000002`). A fresh `run/1` now:
+
+1. stops the prior `Coordinator` (as before), then
+2. **drains** every worker still registered for the repository — each one is
+   asked to stop at its own next phase/chunk/remediation boundary (after that
+   boundary's attempt, checkpoint, and transcript are already recorded) and
+   given up to its own session deadline (plus grace) to exit on its own —
+   **never** killed from outside (an outside kill orphans the `claude` CLI
+   process), then
+3. only once every worker has exited does it supersede the prior record and
+   start the new one.
+
+With no worker registered this adds no wait at all. If a worker doesn't exit
+within its bound, `run/1` (and `run_spec/2`, and `guard_active_run/1`'s
+`:force` path above) returns instead of superseding anything:
+
+```elixir
+iex> SpeckitOrchestrator.run(features: my_features)
+{:error, {:drain_timeout, [%{feature_id: "003", run_id: "r000009"}]}}
+```
+
+Nothing was started and the prior run record is untouched — safe to inspect
+(`SpeckitOrchestrator.workers/0`, below) and retry. A drained worker's own
+feature row is left `:running` (not marked terminal) — the *new* run's
+supersession is what later marks it `:ended_by_supersession`, exactly as if
+the drain had never happened; look for
+`[:speckit, :feature, :drained]` in the logs (distinct from
+`[:speckit, :feature, :terminal]`) to confirm a feature exited this way
+rather than genuinely halting.
+
+**`SpeckitOrchestrator.workers/0`, `workers/1`** — read-only, answers "is
+anything still in flight?" truthfully even with no live `Coordinator`:
+
+```elixir
+iex> SpeckitOrchestrator.workers()
+[%{pid: #PID<0.456.0>, feature_id: "003", run_id: "r000009", deadline_at: ~U[...]}]
+
+iex> SpeckitOrchestrator.workers("other/repo")
+[]
+```
 
 For the single-feature case (one feature stuck, rest of the run fine), reach
 for `resume/2` (previous section) instead of `resume_run/1` — restarting the

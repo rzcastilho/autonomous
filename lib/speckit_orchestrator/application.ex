@@ -23,6 +23,12 @@ defmodule SpeckitOrchestrator.Application do
         # Console read-model: folds orchestrator telemetry, never persists
         # (FR-036), never mutates orchestrator state.
         SpeckitOrchestrator.ConsoleProjection,
+        # Findable/drainable workers (026): a `Registry` mapping a worker pid
+        # to the repository it is running for, and the ETS-table owner that
+        # latches drain requests against it. Both start before `RunnerSup` so
+        # no worker can ever spawn unregistered.
+        {Registry, keys: :duplicate, name: SpeckitOrchestrator.WorkerRegistry},
+        SpeckitOrchestrator.Workers,
         # Supervises the per-feature FeatureRunner tasks.
         {Task.Supervisor, name: SpeckitOrchestrator.RunnerSup},
         # Owns the per-run Coordinator so its lifetime is the run's, not the

@@ -14,7 +14,7 @@ defmodule SpeckitOrchestrator.PhaseStep do
 
   alias Jido.{AgentServer, Signal}
 
-  alias SpeckitOrchestrator.{Config, Feature, PhaseResult, PhaseSession, Pipeline}
+  alias SpeckitOrchestrator.{Config, Feature, PhaseResult, PhaseSession, Pipeline, Workers}
 
   @doc """
   Run `phase` for `feature` via the agent at `pid`, retrying transient
@@ -96,6 +96,8 @@ defmodule SpeckitOrchestrator.PhaseStep do
 
     :telemetry.span([:speckit, :phase], meta, fn ->
       {:ok, %{agent: before}} = AgentServer.state(pid)
+
+      Workers.session_started(timeout)
 
       {:ok, agent} =
         call(

@@ -12,6 +12,21 @@ defmodule SpeckitOrchestrator.Telemetry do
       adds `%{kind, reason}`. (Emitted via `:telemetry.span/3`.)
     * `[:speckit, :feature, :terminal]` — measurements `%{cost_total,
       system_time}`, metadata `%{feature_id, status, reason}`.
+    * `[:speckit, :feature, :drained]` — measurements `%{system_time}`,
+      metadata `%{feature_id}`. Fires instead of `[:speckit, :feature,
+      :terminal]` when a supersession drain (026) stops the worker at a
+      boundary — the feature row stays `:running` for supersession to mark
+      `:ended_by_supersession`, so this is deliberately distinct from a
+      terminal status (breaker halt included, FR-011).
+
+  Events (emitted by `SpeckitOrchestrator.Workers` — 026,
+  `contracts/workers.md`):
+
+    * `[:speckit, :drain, :start]` — measurements `%{}`, metadata `%{repo_id,
+      feature_ids}`. Fires when `drain/1` begins waiting for a non-empty
+      registry (never for an empty one — FR-012).
+    * `[:speckit, :drain, :stop]` — measurements `%{}`, metadata `%{repo_id,
+      feature_ids, result: :ok | :timeout}`.
 
   Events (emitted by `ChunkRunner`, one `:implement` step's chunk loop —
   `specs/015-implement-phase-chunking/contracts/telemetry-chunk.md` §1):
@@ -91,6 +106,9 @@ defmodule SpeckitOrchestrator.Telemetry do
     [:speckit, :phase, :stop],
     [:speckit, :phase, :exception],
     [:speckit, :feature, :terminal],
+    [:speckit, :feature, :drained],
+    [:speckit, :drain, :start],
+    [:speckit, :drain, :stop],
     [:speckit, :chunk, :start],
     [:speckit, :chunk, :stop],
     [:speckit, :chunk, :exception],
@@ -140,6 +158,23 @@ defmodule SpeckitOrchestrator.Telemetry do
     Logger.info(
       "feature #{meta.feature_id} terminal=#{meta.status} reason=#{inspect(meta.reason)} " <>
         "cost_total=#{inspect(meas.cost_total)}"
+    )
+  end
+
+  def handle_event([:speckit, :feature, :drained], _meas, meta, _cfg) do
+    Logger.info("feature #{meta.feature_id} drained (superseded)")
+  end
+
+  def handle_event([:speckit, :drain, :start], _meas, meta, _cfg) do
+    Logger.info(
+      "drain start: repo=#{inspect(meta.repo_id)} feature_ids=#{inspect(meta.feature_ids)}"
+    )
+  end
+
+  def handle_event([:speckit, :drain, :stop], _meas, meta, _cfg) do
+    Logger.info(
+      "drain stop: repo=#{inspect(meta.repo_id)} feature_ids=#{inspect(meta.feature_ids)} " <>
+        "result=#{meta.result}"
     )
   end
 

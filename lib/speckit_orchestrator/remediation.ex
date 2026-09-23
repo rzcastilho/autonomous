@@ -24,7 +24,8 @@ defmodule SpeckitOrchestrator.Remediation do
           optional(:outcome) => :ok | :error,
           optional(:result) => AnalyzeResult.t() | nil,
           optional(:step) => :analyze | :remediation,
-          optional(:breaker?) => boolean()
+          optional(:breaker?) => boolean(),
+          optional(:drain?) => boolean()
         }
 
   @doc """
@@ -37,6 +38,8 @@ defmodule SpeckitOrchestrator.Remediation do
     3. a remediation step errored → `{:failed, :remediation_failed, state}`
        (stop now, do not consume remaining attempts)
     4. the breaker tripped → `{:halted, :breaker, state}`
+    4b. (026) a drain was requested → `{:halted, :superseded, state}` — checked
+        after the breaker so a tripped breaker still wins (FR-011)
     5. no findings at or above the threshold → `{:gate, state}`
     6. the attempt limit is spent → `{:gate, {:exhausted, n}, state}`
     7. otherwise → `{:remediate, findings, state'}` with `attempts_used`
@@ -51,6 +54,7 @@ defmodule SpeckitOrchestrator.Remediation do
           | {:gate, {:exhausted, pos_integer()}, state()}
           | {:remediate, [AnalyzeResult.finding()], state()}
           | {:halted, :breaker, state()}
+          | {:halted, :superseded, state()}
           | {:failed, :remediation_failed, state()}
   def next(state, signals) do
     state
@@ -74,6 +78,8 @@ defmodule SpeckitOrchestrator.Remediation do
     do: {:failed, :remediation_failed, state}
 
   defp decide(state, %{breaker?: true}), do: {:halted, :breaker, state}
+
+  defp decide(state, %{drain?: true}), do: {:halted, :superseded, state}
 
   defp decide(%{settings: %Settings{threshold: threshold}} = state, _signals) do
     findings = AnalyzeResult.findings_at_or_above(state.last_result, threshold)

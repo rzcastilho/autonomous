@@ -210,6 +210,38 @@ defmodule SpeckitOrchestrator.RemediationTest do
       assert {:halted, :breaker, _state} = Remediation.next(state, signals)
     end
 
+    test "row 4b (026): a drain requested between steps halts as :superseded" do
+      state = base_state()
+      signals = %{step: :analyze, outcome: :ok, result: result([]), drain?: true}
+      assert {:halted, :superseded, _state} = Remediation.next(state, signals)
+    end
+
+    test "row 4b (026): a tripped breaker wins over a drain request (FR-011)" do
+      state = base_state()
+
+      signals = %{
+        step: :analyze,
+        outcome: :ok,
+        result: result([]),
+        breaker?: true,
+        drain?: true
+      }
+
+      assert {:halted, :breaker, _state} = Remediation.next(state, signals)
+    end
+
+    test "row 2 before row 4b: an errored analyze step gates even if a drain was requested" do
+      state = base_state()
+      signals = %{step: :analyze, outcome: :error, drain?: true}
+      assert {:gate, _state} = Remediation.next(state, signals)
+    end
+
+    test "row 3 before row 4b: a remediation failure is named even if a drain was requested" do
+      state = base_state()
+      signals = %{step: :remediation, outcome: :error, drain?: true}
+      assert {:failed, :remediation_failed, _state} = Remediation.next(state, signals)
+    end
+
     test "row 5 before row 6: a converged final run advances even on the last allowed attempt" do
       state = base_state(%{settings: %Settings{attempt_limit: 1}, attempts_used: 1})
       signals = %{step: :analyze, outcome: :ok, result: result([])}

@@ -243,6 +243,70 @@ defmodule SpeckitOrchestrator.ResumeRunTest do
     refute Process.alive?(blocking_pid)
   end
 
+  # ---- 026 US2: a worker-only active run guards resume_run/1 too ------------
+
+  # Mirrors supersession_drain_test.exs's stub worker — polls the same
+  # boundary predicate a real phase/chunk/remediation site would, never
+  # killed from outside.
+  defp drain_aware_worker(me) do
+    send(me, :worker_running)
+    wait_for_worker_drain(me)
+  end
+
+  defp wait_for_worker_drain(me) do
+    if SpeckitOrchestrator.Workers.drain_requested?() do
+      send(me, :worker_drained)
+    else
+      Process.sleep(20)
+      wait_for_worker_drain(me)
+    end
+  end
+
+  test "resume_run/1 refuses with {:error, {:active_run, worker_pid}} when only a worker is alive (no Coordinator), and starts no work (AS1, FR-005, SC-004)" do
+    layout = done_layout("998-worker-guard")
+    on_exit(fn -> File.rm_rf(layout.worktree_root) end)
+    repo = Application.get_env(:speckit_orchestrator, :repo)
+
+    run_key = open_run(repo, layout, [feat("998")], %RunContext{budget_usd: 100.0})
+
+    me = self()
+    {:ok, worker_pid} = SpeckitOrchestrator.Workers.spawn(run_key, "998", fn -> drain_aware_worker(me) end)
+    assert_receive :worker_running, 2_000
+    refute Process.whereis(@coordinator)
+
+    assert {:error, {:active_run, ^worker_pid}} =
+             SpeckitOrchestrator.resume_run(runner: capturing_runner(me))
+
+    refute_received {:started, _, _}
+    assert Process.alive?(worker_pid)
+
+    Process.exit(worker_pid, :kill)
+  end
+
+  test "resume_run/1 :force drains the worker first, then proceeds (AS3, FR-006)" do
+    layout = done_layout("997-worker-force")
+    on_exit(fn -> File.rm_rf(layout.worktree_root) end)
+    repo = Application.get_env(:speckit_orchestrator, :repo)
+
+    run_key = open_run(repo, layout, [feat("997")], %RunContext{budget_usd: 100.0})
+
+    me = self()
+    {:ok, worker_pid} = SpeckitOrchestrator.Workers.spawn(run_key, "997", fn -> drain_aware_worker(me) end)
+    assert_receive :worker_running, 2_000
+
+    assert {:ok, new_pid} =
+             SpeckitOrchestrator.resume_run(runner: capturing_runner(me), owner: me, force: true)
+
+    on_exit(fn -> if Process.alive?(new_pid), do: GenServer.stop(new_pid) end)
+
+    # resume_run/1's guard drains synchronously before anything else runs, so
+    # by the time it returns the worker has already observed the request and
+    # exited on its own — never killed from outside.
+    assert_received :worker_drained
+    refute Process.alive?(worker_pid)
+    assert_receive {:started, "997", _notify}, 1_000
+  end
+
   # ---- recorded context reapply, not live Config (T025) ----------------------
   #
   # 019 retired `:max_concurrency` (and the `Coordinator` `cap`/`set_cap/2`
