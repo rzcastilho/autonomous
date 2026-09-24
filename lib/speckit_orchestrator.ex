@@ -2335,6 +2335,8 @@ defmodule SpeckitOrchestrator do
   # `:done` feature's drawer on any later boot rather than only in the log
   # line of the session that opened it.
   defp handle_publish(feature, base, tracker, publisher, notify, reason) do
+    feature = with_allocated_spec_number(feature)
+
     case normalize_publisher_result(publisher.(feature, base), feature, base) do
       {:ok, url} ->
         Logger.info("feature #{feature.id} PR opened: #{url}")
@@ -2368,6 +2370,22 @@ defmodule SpeckitOrchestrator do
         else
           notify.(feature.id, :done, reason)
         end
+    end
+  end
+
+  # `stacked_runner/4` closes over the pre-allocation struct: `ensure_spec_number/3`
+  # allocates on a separate copy inside the executor's Task, which never flows
+  # back. Without the store's number, `Worktree.locate/2` names the branch by
+  # backlog number (`feature/004-…`) instead of the one the feature was built
+  # on (`feature/017-…`), so the publisher checked/pushed a nonexistent branch
+  # and the stack advanced onto it (mod-player r000002).
+  defp with_allocated_spec_number(%Feature{spec_number: n} = feature) when is_integer(n),
+    do: feature
+
+  defp with_allocated_spec_number(feature) do
+    case Store.spec_number(current_run_key(), feature.id) do
+      n when is_integer(n) -> %{feature | spec_number: n}
+      nil -> feature
     end
   end
 
