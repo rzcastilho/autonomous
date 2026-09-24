@@ -28,7 +28,8 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
     ConsoleReadModel,
     Coordinator,
     Ledger,
-    Release
+    Release,
+    WaveHistory
   }
 
   @impl true
@@ -40,7 +41,7 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
     repo = Config.repo()
     packages = package_slugs(Path.join([repo, Config.specs_root(), "breakdown"]))
     run_detail = current_run_detail()
-    selected_package = default_package(packages, run_detail)
+    selected_package = WaveHistory.default_package(packages, SpeckitOrchestrator.run_history())
 
     {:ok,
      socket
@@ -54,18 +55,9 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
        known_backlog_ids: known_backlog_ids(repo, packages)
      )
      |> load_backlog()
-     |> seed(run_detail)}
+     |> seed(run_detail)
+     |> refresh_wave()}
   end
-
-  # Default the drawn wave to the current in-flight run's package; otherwise
-  # the first alphabetical package (U2, FR-012). `Store.current_run_key/1` is
-  # already scoped to this repo's `repo_id` (018), so no cross-repo staleness
-  # check is needed — unlike the pre-018 manifest file.
-  defp default_package(packages, %{run: %{scope: {:breakdown, slug}}}) do
-    if slug in packages, do: slug, else: List.first(packages)
-  end
-
-  defp default_package(packages, _run_detail), do: List.first(packages)
 
   defp load_backlog(socket) do
     try do
@@ -81,10 +73,9 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
   end
 
   # Per-package breakdown dir (FR-012, 012): the operator-selected package under
-  # specs/autonomous/breakdown/ is shown (defaulting to the active run's wave,
-  # see default_package/3); zero packages falls back to the pre-012 flat
-  # Config.breakdown_dir/0 (an old-layout repo, or one that hasn't adopted
-  # packages yet).
+  # specs/autonomous/breakdown/ is shown (defaulting per WaveHistory.default_package/2,
+  # 028); zero packages falls back to the pre-012 flat Config.breakdown_dir/0
+  # (an old-layout repo, or one that hasn't adopted packages yet).
   defp load_features(repo, nil), do: legacy_features(repo)
 
   defp load_features(repo, slug) do
@@ -109,10 +100,7 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
     status = coordinator_status()
     view = ConsoleReadModel.merge(status, ledger_snapshot(), ConsoleProjection.read())
 
-    assign(socket,
-      view: overlay_manifest(view, run_detail),
-      run_package: run_package(run_detail)
-    )
+    assign(socket, view: overlay_manifest(view, run_detail))
   end
 
   # No live Coordinator (fresh boot, no resume yet) — fall back to the store's
@@ -125,13 +113,45 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
     ConsoleReadModel.hydrate(view, run_detail, DateTime.utc_now())
   end
 
-  # Which breakdown package the in-flight run is scoped to — the only wave
-  # allowed to draw live status (see `chain_view/1`). `:ad_hoc` is returned as
-  # itself so it can never equal a package slug; `nil` means "unknown scope",
-  # which disables the gate rather than blanking every wave.
-  defp run_package(%{run: %{scope: {:breakdown, slug}}}), do: slug
-  defp run_package(%{run: %{scope: :ad_hoc}}), do: :ad_hoc
-  defp run_package(_run_detail), do: nil
+  # ---- wave-scoped history (028) ---------------------------------------------
+  #
+  # Each wave draws its own resolved source run rather than the live read
+  # model unconditionally (see `chain_view/1`, contracts/wave-history.md).
+  # `nil` in the legacy no-packages layout (`selected_package == nil`), where
+  # the gate stays off and `assigns.view` draws ungated (FR-009).
+
+  defp refresh_wave(socket) do
+    socket
+    |> assign(live_run_id: SpeckitOrchestrator.current_run_id())
+    |> resolve_wave()
+  end
+
+  defp resolve_wave(socket) do
+    source = wave_source_for(socket.assigns.selected_package, SpeckitOrchestrator.run_history())
+    {source, wave_view} = wave_view_for(source)
+
+    assign(socket, wave_source: source, wave_view: wave_view)
+  end
+
+  defp wave_source_for(nil, _history), do: nil
+  defp wave_source_for(slug, history), do: WaveHistory.source_for(slug, history)
+
+  defp wave_view_for({:recorded, %{run_id: run_id, state: state}} = source) do
+    case SpeckitOrchestrator.run_detail(run_id) do
+      {:ok, detail} ->
+        view =
+          %{active?: false, per_feature: %{}, observed: %{}}
+          |> ConsoleReadModel.hydrate(detail, DateTime.utc_now())
+          |> Map.update!(:per_feature, &WaveHistory.interrupt_all(&1, state))
+
+        {source, view}
+
+      {:error, reason} ->
+        {{:unavailable, %{run_id: run_id, reason: reason}}, nil}
+    end
+  end
+
+  defp wave_view_for(source), do: {source, nil}
 
   defp current_run_detail do
     case SpeckitOrchestrator.current_run_id() do
@@ -175,17 +195,34 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
       ) do
     run_detail = current_run_detail()
     view = ConsoleReadModel.merge(coordinator_status, ledger_snapshot, ConsoleProjection.read())
+    current_run_id = SpeckitOrchestrator.current_run_id()
 
-    {:noreply,
-     assign(socket,
-       view: overlay_manifest(view, run_detail),
-       run_package: run_package(run_detail)
-     )}
+    socket =
+      socket
+      |> assign(view: overlay_manifest(view, run_detail))
+      |> maybe_refresh_wave(current_run_id)
+
+    {:noreply, socket}
   end
 
   def handle_info({:console, :run_finished, report}, socket) do
     view = socket.assigns.view
-    {:noreply, assign(socket, view: %{view | finished?: true, report: report})}
+
+    {:noreply,
+     socket
+     |> assign(view: %{view | finished?: true, report: report})
+     |> refresh_wave()}
+  end
+
+  # Re-resolves the selected wave's source only when the in-flight run
+  # changed since the last tick (FR-004, R5) — a reconcile tick otherwise
+  # never re-reads history.
+  defp maybe_refresh_wave(socket, current_run_id) do
+    if current_run_id == socket.assigns.live_run_id do
+      socket
+    else
+      refresh_wave(socket)
+    end
   end
 
   # ---- drawer ---------------------------------------------------------------
@@ -196,7 +233,8 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
      socket
      |> assign(selected_package: slug, selected_feature_id: nil)
      |> load_backlog()
-     |> seed()}
+     |> seed()
+     |> resolve_wave()}
   end
 
   def handle_event("select_feature", %{"id" => id}, socket) do
@@ -277,6 +315,44 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
               </option>
             </select>
           </form>
+        </div>
+
+        <div
+          :if={@selected_package}
+          class="dag-wave-source"
+          data-wave-source={wave_source_kind(@wave_source)}
+        >
+          <div
+            :if={wave_source_run(@wave_source)}
+            class="record-block"
+          >
+            <div class="record-block-label">Source run</div>
+            <dl class="record-block-fields">
+              <dt>run</dt>
+              <dd>
+                <a
+                  href={"/runs/#{wave_source_run(@wave_source).run_id}"}
+                  data-wave-source-run
+                  class="record-block-link"
+                >
+                  {wave_source_run(@wave_source).run_id}
+                </a>
+              </dd>
+              <dt>state</dt>
+              <dd data-wave-source-state>{inspect(wave_source_run(@wave_source).state)}</dd>
+            </dl>
+          </div>
+
+          <p :if={@wave_source == :none} class="dag-canvas-sub">
+            No recorded run for <code>{@selected_package}</code>
+          </p>
+
+          <p :if={match?({:unavailable, _}, @wave_source)} class="dag-canvas-sub">
+            History for <code>{@selected_package}</code> could not be read
+            <%= if run_id = wave_source_unavailable_run_id(@wave_source) do %>
+              · <code>{run_id}</code>
+            <% end %>
+          </p>
         </div>
 
         <div :if={@backlog_links != []} class="dag-chain" data-chain="backlog">
@@ -375,20 +451,16 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
   # per-feature map, which is keyed by id alone (`ConsoleReadModel`, the
   # `:feature_id` telemetry metadata, the store's feature records). Drawing the
   # live view under every wave therefore made an idle wave look like it was
-  # running the active wave's phases. Only the wave the run is actually scoped
-  # to draws live status/phases/spend; the rest are drawn cold. A run whose
-  # scope we can't read (`run_package == nil`) and the legacy no-packages layout
-  # (`selected_package == nil`) leave the gate off, so neither can regress.
-  defp chain_view(assigns) do
-    if drawing_run_package?(assigns),
-      do: assigns.view,
-      else: %{assigns.view | per_feature: %{}}
-  end
-
-  defp drawing_run_package?(%{run_package: nil}), do: true
-  defp drawing_run_package?(%{selected_package: nil}), do: true
-  defp drawing_run_package?(%{run_package: package, selected_package: package}), do: true
-  defp drawing_run_package?(_assigns), do: false
+  # running the active wave's phases. Each wave now draws only its own
+  # resolved `wave_source` (contracts/wave-history.md): the live model for the
+  # in-flight wave, its own hydrated recorded run otherwise, and cold when
+  # there's none/unreadable. The legacy no-packages layout
+  # (`selected_package == nil`) leaves the gate off, so it can't regress
+  # (FR-009).
+  defp chain_view(%{selected_package: nil} = assigns), do: assigns.view
+  defp chain_view(%{wave_source: {:live, _}} = assigns), do: assigns.view
+  defp chain_view(%{wave_source: {:recorded, _}} = assigns), do: assigns.wave_view
+  defp chain_view(_assigns), do: %{per_feature: %{}}
 
   # The drawer reads from whichever chain owns the clicked node, so a gated-out
   # backlog node opens empty rather than showing the colliding id's live run.
@@ -427,6 +499,20 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLive do
     |> Enum.sort()
     |> Enum.map(&%{id: &1, slug: get_in(assigns.view.per_feature, [&1, :slug])})
   end
+
+  # ---- wave source receipt (contracts/dag-surface.md) ------------------------
+
+  defp wave_source_kind({:live, _}), do: "live"
+  defp wave_source_kind({:recorded, _}), do: "recorded"
+  defp wave_source_kind(:none), do: "none"
+  defp wave_source_kind({:unavailable, _}), do: "unavailable"
+
+  defp wave_source_run({:live, run}), do: run
+  defp wave_source_run({:recorded, run}), do: run
+  defp wave_source_run(_source), do: nil
+
+  defp wave_source_unavailable_run_id({:unavailable, %{run_id: run_id}}), do: run_id
+  defp wave_source_unavailable_run_id(_source), do: nil
 
   defp node_status(view, id), do: get_in(view.per_feature, [id, :status]) || :pending
   defp node_spend(view, id), do: get_in(view.per_feature, [id, :spend]) || 0.0
