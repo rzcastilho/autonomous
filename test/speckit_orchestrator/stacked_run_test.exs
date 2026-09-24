@@ -12,7 +12,7 @@ defmodule SpeckitOrchestrator.StackedRunTest do
   # test's `run/1` on the same repository (`{:error, {:parked_run, …}}`).
   use SpeckitOrchestrator.StoreCase, async: false
 
-  alias SpeckitOrchestrator.{Feature, Worktree}
+  alias SpeckitOrchestrator.{Config, Feature, RepoIdentity, Store, Worktree}
 
   defp feat(id, slug),
     do: %Feature{id: id, number: String.to_integer(id), slug: slug, path: "#{id}.md"}
@@ -532,6 +532,46 @@ defmodule SpeckitOrchestrator.StackedRunTest do
 
     assert_receive {:built, "003", "feature/015-vote"}, 2_000
     refute_received {:built, "002", _}
+  end
+
+  # Regression (mod-player r000002): the executor allocates the spec number on
+  # its own copy of the feature, so the publisher's closure still held
+  # `spec_number: nil` and published/stacked `feature/004-…` — a branch that
+  # never existed — instead of the `feature/017-…` it actually built on.
+  test "a spec number allocated during the run names the published and stacked branch" do
+    me = self()
+
+    # Mirrors `default_executor/5`: allocation lands in the store only, never
+    # on the struct the stacked runner closed over.
+    executor = fn feature, base, notify ->
+      run_key = Store.current_run_key(RepoIdentity.partition(Config.repo()))
+      n = if feature.id == "001", do: 17, else: 18
+      :ok = Store.record_spec_number(run_key, feature.id, n)
+      send(me, {:built, feature.id, base})
+      notify.(feature.id, :done, nil)
+      :ok
+    end
+
+    publisher = fn feature, base ->
+      send(me, {:pr, feature.id, Worktree.locate(feature).branch, base})
+      {:ok, "https://example/pr/#{feature.id}"}
+    end
+
+    {:ok, pid} =
+      SpeckitOrchestrator.run(
+        features: [feat("001", "contrast"), feat("002", "motion")],
+        executor: executor,
+        publisher: publisher,
+        owner: me
+      )
+
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    assert_receive {:pr, "001", "feature/017-contrast", "main"}, 2_000
+    assert_receive {:built, "002", "feature/017-contrast"}, 2_000
+    assert_receive {:pr, "002", "feature/018-motion", "feature/017-contrast"}, 2_000
+    assert_receive {:run_complete, report}, 2_000
+    assert report.done == ["001", "002"]
   end
 
   defp temp_repo! do
