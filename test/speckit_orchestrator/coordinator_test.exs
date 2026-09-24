@@ -191,4 +191,47 @@ defmodule SpeckitOrchestrator.CoordinatorTest do
     assert_receive {:run_complete, report}, 1_000
     assert report.done == ["001", "002"]
   end
+
+  # ---- interactive clarify (029, research.md R6) -----------------------------
+
+  test "{:feature_awaiting, id} updates statuses without ending the run or releasing another feature" do
+    features = [feat("001"), feat("002")]
+    pid = start(features)
+
+    await_started("001")
+    send(pid, {:feature_awaiting, "001"})
+
+    assert Coordinator.status(pid).statuses["001"] == :awaiting_answers
+    refute_received {:started, "002", _}
+    refute_received {:run_complete, _}
+  end
+
+  test "{:feature_resumed, id} sets the feature back to :running, still without releasing another feature" do
+    features = [feat("001"), feat("002")]
+    pid = start(features)
+
+    await_started("001")
+    send(pid, {:feature_awaiting, "001"})
+    send(pid, {:feature_resumed, "001"})
+
+    assert Coordinator.status(pid).statuses["001"] == :running
+    refute_received {:started, "002", _}
+    refute_received {:run_complete, _}
+  end
+
+  test "a feature that goes through awaiting/resumed still finishes the run normally" do
+    features = [feat("001"), feat("002")]
+    pid = start(features)
+
+    n1 = await_started("001")
+    send(pid, {:feature_awaiting, "001"})
+    send(pid, {:feature_resumed, "001"})
+    n1.("001", :done, nil)
+
+    n2 = await_started("002")
+    n2.("002", :done, nil)
+
+    assert_receive {:run_complete, report}, 1_000
+    assert report.done == ["001", "002"]
+  end
 end

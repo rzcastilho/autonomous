@@ -22,7 +22,8 @@ defmodule SpeckitOrchestrator.Web.CoreComponents do
     failed: "Failed",
     done: "Done",
     never_started: "Never started",
-    interrupted: "Interrupted"
+    interrupted: "Interrupted",
+    awaiting_answers: "awaiting answers"
   }
 
   @doc "Human label for a lifecycle status. Prose, not a contract value."
@@ -32,24 +33,27 @@ defmodule SpeckitOrchestrator.Web.CoreComponents do
   @doc """
   Canonical contract status name for a lifecycle status, as emitted into
   markup via `data-status`. `:never_started` folds to `"blocked"` — the
-  contract status whose meaning it shares — so no eighth color exists
-  (docs/design-constitution.md §II). Total: an unrecognised atom folds to
-  `"pending"` rather than raising, because a console is an observability
-  surface and MUST NOT crash a view over an unexpected status.
+  contract status whose meaning it shares (docs/design-constitution.md §II).
+  `:awaiting_answers` (029) gets its own eighth color rather than folding.
+  Total: an unrecognised atom folds to `"pending"` rather than raising,
+  because a console is an observability surface and MUST NOT crash a view
+  over an unexpected status.
   """
   @spec status_class(atom()) :: String.t()
   def status_class(:never_started), do: "blocked"
   def status_class(:interrupted), do: "blocked"
 
   def status_class(status)
-      when status in ~w(done running escalated halted failed pending blocked)a,
+      when status in
+             ~w(done running escalated halted failed pending blocked awaiting_answers)a,
       do: to_string(status)
 
   def status_class(_other), do: "pending"
 
-  @doc "The seven contract statuses, in the contract's table order."
+  @doc "The eight contract statuses, in the contract's table order."
   @spec statuses() :: [String.t()]
-  def statuses, do: ~w(done running escalated halted failed pending blocked)
+  def statuses,
+    do: ~w(done running escalated halted failed pending blocked awaiting_answers)
 
   attr(:status, :atom, required: true, doc: "one of Feature.status/0")
 
@@ -62,6 +66,30 @@ defmodule SpeckitOrchestrator.Web.CoreComponents do
     </span>
     """
   end
+
+  @doc """
+  The "round n/m · waited Xm · Ym left" meta line for an awaiting feature
+  (029, contracts/operator-surfaces.md "Every status surface") — shared by
+  Mission Control, Runs, Run Detail and the feature drawer so waited/left
+  read identically everywhere. `nil` when the feature isn't awaiting anything
+  (or `pending_questions/0` has no open round for it), rendering nothing.
+  """
+  @spec awaiting_meta(map() | nil) :: String.t() | nil
+  def awaiting_meta(nil), do: nil
+
+  def awaiting_meta(%{round: round, max_rounds: max_rounds} = pending) do
+    "round #{round}/#{max_rounds} · waited #{duration_label(elapsed_seconds(pending))} · " <>
+      "#{duration_label(remaining_seconds(pending))} left"
+  end
+
+  defp elapsed_seconds(%{started_at: started_at}),
+    do: DateTime.diff(DateTime.utc_now(), started_at)
+
+  defp remaining_seconds(%{deadline_at: deadline_at}),
+    do: max(DateTime.diff(deadline_at, DateTime.utc_now()), 0)
+
+  defp duration_label(seconds) when seconds < 60, do: "#{seconds}s"
+  defp duration_label(seconds), do: "#{div(seconds, 60)}m"
 
   @doc """
   A persisted artifact (a PR, a checkpoint pointer, a transcript path) shown
@@ -172,8 +200,9 @@ defmodule SpeckitOrchestrator.Web.CoreComponents do
   defp phase_cell_state(%{state: :completed}, _status), do: "completed"
   defp phase_cell_state(%{state: :interrupted}, _status), do: "interrupted"
 
-  defp phase_cell_state(%{state: :active}, status) when status in [:escalated, :halted, :failed],
-    do: to_string(status)
+  defp phase_cell_state(%{state: :active}, status)
+       when status in [:escalated, :halted, :failed, :awaiting_answers],
+       do: to_string(status)
 
   defp phase_cell_state(%{state: :active}, _status), do: "active"
   defp phase_cell_state(_cell, _status), do: "pending"

@@ -1,6 +1,6 @@
 defmodule SpeckitOrchestrator.RunContext do
   @moduledoc """
-  The nine run-shaping settings captured at `run/1` time and reapplied on
+  The twelve run-shaping settings captured at `run/1` time and reapplied on
   `resume/2`. Pure value object — no IO beyond reading `Config` in
   `capture/1`. Excludes secrets/credentials by construction (FR-011): only
   bool/number/string/list-of-string fields exist.
@@ -22,7 +22,10 @@ defmodule SpeckitOrchestrator.RunContext do
             auto_remediation_threshold: nil,
             auto_remediation_attempt_limit: nil,
             auto_remediation_model: nil,
-            auto_remediation_exhaustion_policy: nil
+            auto_remediation_exhaustion_policy: nil,
+            interactive_clarify: nil,
+            clarify_answer_timeout_s: nil,
+            clarify_max_rounds: nil
 
   @type t :: %__MODULE__{
           budget_usd: number() | nil,
@@ -33,7 +36,10 @@ defmodule SpeckitOrchestrator.RunContext do
           auto_remediation_threshold: String.t() | nil,
           auto_remediation_attempt_limit: pos_integer() | nil,
           auto_remediation_model: String.t() | nil,
-          auto_remediation_exhaustion_policy: String.t() | nil
+          auto_remediation_exhaustion_policy: String.t() | nil,
+          interactive_clarify: boolean() | nil,
+          clarify_answer_timeout_s: pos_integer() | nil,
+          clarify_max_rounds: pos_integer() | nil
         }
 
   @keys [
@@ -45,7 +51,10 @@ defmodule SpeckitOrchestrator.RunContext do
     :auto_remediation_threshold,
     :auto_remediation_attempt_limit,
     :auto_remediation_model,
-    :auto_remediation_exhaustion_policy
+    :auto_remediation_exhaustion_policy,
+    :interactive_clarify,
+    :clarify_answer_timeout_s,
+    :clarify_max_rounds
   ]
 
   @doc "Resolves each field from `opts`, falling back to live `Config` — the capture boundary."
@@ -75,7 +84,11 @@ defmodule SpeckitOrchestrator.RunContext do
           :auto_remediation_exhaustion_policy,
           Config.auto_remediation_exhaustion_policy()
         )
-        |> stringify_policy()
+        |> stringify_policy(),
+      interactive_clarify: Keyword.get(opts, :interactive_clarify, Config.interactive_clarify?()),
+      clarify_answer_timeout_s:
+        Keyword.get(opts, :clarify_answer_timeout_s, Config.clarify_answer_timeout_s()),
+      clarify_max_rounds: Keyword.get(opts, :clarify_max_rounds, Config.clarify_max_rounds())
     }
   end
 
@@ -105,7 +118,10 @@ defmodule SpeckitOrchestrator.RunContext do
       "auto_remediation_threshold" => ctx.auto_remediation_threshold,
       "auto_remediation_attempt_limit" => ctx.auto_remediation_attempt_limit,
       "auto_remediation_model" => ctx.auto_remediation_model,
-      "auto_remediation_exhaustion_policy" => ctx.auto_remediation_exhaustion_policy
+      "auto_remediation_exhaustion_policy" => ctx.auto_remediation_exhaustion_policy,
+      "interactive_clarify" => ctx.interactive_clarify,
+      "clarify_answer_timeout_s" => ctx.clarify_answer_timeout_s,
+      "clarify_max_rounds" => ctx.clarify_max_rounds
     }
   end
 
@@ -123,7 +139,10 @@ defmodule SpeckitOrchestrator.RunContext do
       auto_remediation_threshold: Map.get(map, "auto_remediation_threshold"),
       auto_remediation_attempt_limit: Map.get(map, "auto_remediation_attempt_limit"),
       auto_remediation_model: Map.get(map, "auto_remediation_model"),
-      auto_remediation_exhaustion_policy: Map.get(map, "auto_remediation_exhaustion_policy")
+      auto_remediation_exhaustion_policy: Map.get(map, "auto_remediation_exhaustion_policy"),
+      interactive_clarify: Map.get(map, "interactive_clarify"),
+      clarify_answer_timeout_s: Map.get(map, "clarify_answer_timeout_s"),
+      clarify_max_rounds: Map.get(map, "clarify_max_rounds")
     }
   end
 

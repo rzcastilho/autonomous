@@ -128,9 +128,33 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLiveTest do
     node_002 = extract_node(html, "002")
     assert node_002 =~ "stacks on feature/001-core-ledger"
 
-    for status <- ~w(pending blocked running escalated halted failed done) do
+    for status <- ~w(pending blocked running awaiting_answers escalated halted failed done) do
       assert html =~ ~s(data-legend-status="#{status}")
     end
+  end
+
+  # ---- 029 US4: awaiting node (contracts/operator-surfaces.md Every status surface) ----
+
+  test "an awaiting feature's node carries the awaiting_answers status color", %{conn: conn} do
+    point_backlog_at(@valid_dir)
+
+    {:ok, pid} =
+      Coordinator.start_link(
+        name: Coordinator,
+        features: [feat("001"), feat("002")],
+        runner: fn _feature, _notify -> :ok end,
+        owner: self()
+      )
+
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    send(pid, {:feature_awaiting, "001"})
+    :sys.get_state(pid)
+
+    {:ok, _view, html} = live(conn, "/dag")
+
+    node_001 = extract_node(html, "001")
+    assert node_001 =~ ~s(data-status="awaiting_answers")
   end
 
   test "with 2 breakdown packages the chain defaults to the first wave and the picker switches waves",

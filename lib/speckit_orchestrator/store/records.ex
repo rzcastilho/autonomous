@@ -318,6 +318,47 @@ defmodule SpeckitOrchestrator.Store.Records do
           }
   end
 
+  defmodule ClarifyRound do
+    @moduledoc false
+    defstruct [
+      :key,
+      :run_key,
+      :feature_id,
+      :seq,
+      :round,
+      :max_rounds,
+      :questions_raw,
+      :questions,
+      :started_at,
+      :deadline_at,
+      :outcome,
+      :answers,
+      :answered_at,
+      :answered_via,
+      :applied_at,
+      :closed_at
+    ]
+
+    @type t :: %__MODULE__{
+            key: {binary(), binary(), binary(), pos_integer()},
+            run_key: {binary(), binary()},
+            feature_id: binary(),
+            seq: pos_integer(),
+            round: pos_integer(),
+            max_rounds: pos_integer(),
+            questions_raw: binary(),
+            questions: {:numbered, list()} | {:freeform, binary()},
+            started_at: DateTime.t(),
+            deadline_at: DateTime.t(),
+            outcome: :open | :answered | :timed_out | :breaker | :drained | :interrupted,
+            answers: map() | nil,
+            answered_at: DateTime.t() | nil,
+            answered_via: :console | :iex | nil,
+            applied_at: DateTime.t() | nil,
+            closed_at: DateTime.t() | nil
+          }
+  end
+
   @table_modules %{
     speckit_meta: Meta,
     speckit_seq: Seq,
@@ -330,7 +371,8 @@ defmodule SpeckitOrchestrator.Store.Records do
     speckit_escalation: Escalation,
     speckit_remediation_attempt: RemediationAttempt,
     speckit_cost_entry: CostEntry,
-    speckit_transcript: Transcript
+    speckit_transcript: Transcript,
+    speckit_clarify_round: ClarifyRound
   }
 
   @type damaged :: {:error, {:damaged, term(), term()}}

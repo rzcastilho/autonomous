@@ -84,6 +84,13 @@ defmodule SpeckitOrchestrator.Recovery.Report do
   defp reconciled_label(:failed), do: "failed"
   defp reconciled_label({:resume, phase}), do: "running (resume: #{phase})"
   defp reconciled_label({:conflict, reason}), do: "conflict:#{reason_label(reason)}"
+
+  # 029: `{:escalated, {:needs_human, sub}}` is the one `Reconcile.result()`
+  # shape whose reason isn't the `{tag, %{}}` shape `reason_label/1` renders —
+  # rendered directly rather than forcing that function to grow a second
+  # shape it otherwise never sees.
+  defp reconciled_label({:escalated, {:needs_human, sub}}), do: "escalated:needs_human:#{sub}"
+  defp reconciled_label({:escalated, reason}), do: "escalated:#{inspect(reason)}"
   # A 016 US3 "absent from backlog" row carries its raw recorded status
   # through unreconciled (e.g. `:running`) — not a shape `Reconcile.result/0`
   # ever produces, so it falls through here.
@@ -94,7 +101,7 @@ defmodule SpeckitOrchestrator.Recovery.Report do
       Map.has_key?(conflict_reasons, id) ->
         "CONFLICT — #{reason_label(Map.fetch!(conflict_reasons, id))}; human resolve"
 
-      row.reconciled in [:escalated, :halted] ->
+      row.reconciled in [:escalated, :halted] or match?({:escalated, _}, row.reconciled) ->
         "held (human gate)"
 
       Map.has_key?(discrepancy_notes, id) ->

@@ -158,6 +158,30 @@ defmodule SpeckitOrchestrator.Web.RunDetailLive do
   defp finding_text(finding),
     do: Map.get(finding, "title") || Map.get(finding, "detail") || inspect(finding)
 
+  # ---- interactive clarify round history (029, FR-015) -----------------------
+
+  defp clarify_answer_text({:typed, text}), do: text
+  defp clarify_answer_text({:default, text}), do: text
+  defp clarify_answer_text(_other), do: ""
+
+  defp clarify_outcome_label(:timed_out), do: "timed out"
+  defp clarify_outcome_label(:breaker), do: "breaker"
+  defp clarify_outcome_label(:drained), do: "drained"
+  defp clarify_outcome_label(:interrupted), do: "interrupted"
+  defp clarify_outcome_label(other), do: to_string(other)
+
+  defp clarify_exhausted_evidence(f) do
+    Enum.find_value(f.escalations, fn
+      %{reason: {:needs_human, :rounds_exhausted}, evidence: evidence} -> evidence
+      _ -> nil
+    end)
+  end
+
+  defp clarify_exhausted_label(f) do
+    max_rounds = f.clarify_rounds |> List.last() |> Map.get(:max_rounds)
+    "rounds exhausted — #{clarify_exhausted_evidence(f).rounds_used} of #{max_rounds} used"
+  end
+
   # ---- render ---------------------------------------------------------------
 
   @impl true
@@ -272,6 +296,37 @@ defmodule SpeckitOrchestrator.Web.RunDetailLive do
                   threshold=<span>{r.threshold}</span>
                   cost=<span>${format_money(r.cost_usd)}</span>
                 </span>
+              </div>
+            </div>
+
+            <div :if={f.clarify_rounds != []} data-clarify-rounds>
+              <div class="run-context-label">INTERACTIVE CLARIFY</div>
+              <div :for={r <- f.clarify_rounds} class="clarify-block" data-round={r.round}>
+                <div>
+                  round {r.round}/{r.max_rounds} · asked {format_datetime(r.started_at)}
+                </div>
+                <details>
+                  <summary>questions</summary>
+                  <pre>{r.questions_raw}</pre>
+                </details>
+                <div :if={r.outcome == :answered}>
+                  <div :for={{qid, ans} <- r.answers || %{}} class="run-context">
+                    <span class="run-context-chip">
+                      {qid}: {clarify_answer_text(ans)}
+                      <span :if={match?({:default, _}, ans)}>(accepted recommended)</span>
+                    </span>
+                  </div>
+                  <div class="field-hint">
+                    answered {format_datetime(r.answered_at)} via {r.answered_via}
+                  </div>
+                </div>
+                <span :if={r.outcome not in [:answered, :open]} class="badge badge-neutral">
+                  {clarify_outcome_label(r.outcome)}
+                </span>
+              </div>
+
+              <div :if={clarify_exhausted_evidence(f)} class="clarify-block" data-round="exhausted">
+                {clarify_exhausted_label(f)}
               </div>
             </div>
 

@@ -24,6 +24,8 @@ defmodule SpeckitOrchestrator.Report do
       "spend:  $#{fmt_spend(Map.get(snapshot, :spend, 0.0))}" <>
         breaker(Map.get(snapshot, :breaker_tripped, false)),
       advanced_line(snapshot),
+      awaiting_line(snapshot),
+      clarify_line(snapshot),
       stopped_line(snapshot),
       run_state(snapshot)
     ]
@@ -88,11 +90,79 @@ defmodule SpeckitOrchestrator.Report do
   # the phase committed no change at all, vs. it wrote something that isn't
   # the named artifact. A publish-failed/branch-drift reason (027) renders via
   # `PublishOutcome.describe/1`. Every other reason renders as before (FR-013).
-  defp format_reason({:empty_checkpoint, phase}), do: "#{phase} committed no change"
-  defp format_reason(reason), do: PublishOutcome.describe(reason) || inspect(reason)
+  #
+  # 029: every non-answer exit from `:awaiting_answers` reaches this as a
+  # `{:needs_human, sub}` tuple (research.md R5); plain `:needs_human` (mode
+  # off, or the pre-029 clarify escalation) is untouched by these clauses and
+  # falls through to the catch-all exactly as before (SC-003). Public (not
+  # `defp`) so a test can assert every variant directly.
+  @doc "Render a terminal/escalation reason as it appears in the status table and reports."
+  @spec format_reason(term()) :: String.t()
+  def format_reason({:needs_human, :rounds_exhausted}),
+    do: "needs human — clarify rounds exhausted"
+
+  def format_reason({:needs_human, :answer_timeout}), do: "needs human — answer timeout"
+
+  def format_reason({:needs_human, :breaker}),
+    do: "needs human — breaker tripped while awaiting answers"
+
+  def format_reason({:needs_human, :drained}),
+    do: "needs human — drained while awaiting answers"
+
+  def format_reason({:needs_human, :restart}),
+    do: "needs human — orchestrator restarted while awaiting answers"
+
+  def format_reason({:empty_checkpoint, phase}), do: "#{phase} committed no change"
+  def format_reason(reason), do: PublishOutcome.describe(reason) || inspect(reason)
 
   defp run_state(%{finished?: true}), do: "state:  finished"
   defp run_state(_), do: "state:  running"
+
+  # 029, contracts/facade-api.md Status, research.md R14: absent entirely when
+  # nothing awaits (mode off, or on but nothing waiting), so mode-off output
+  # is byte-identical (FR-002). Structurally at most one entry (one-at-a-time
+  # run), but this renders any number the same way.
+  defp awaiting_line(snapshot) do
+    case Map.get(snapshot, :awaiting, %{}) do
+      empty when map_size(empty) == 0 ->
+        nil
+
+      awaiting ->
+        awaiting
+        |> Enum.sort_by(fn {id, _} -> id end)
+        |> Enum.map_join("\n", &format_awaiting/1)
+    end
+  end
+
+  defp format_awaiting({id, %{round: round, max_rounds: max_rounds} = info}) do
+    "awaiting: #{id} round #{round}/#{max_rounds} waited " <>
+      "#{duration(elapsed_seconds(info))} #{duration(remaining_seconds(info))} left"
+  end
+
+  defp elapsed_seconds(%{started_at: started_at}),
+    do: DateTime.diff(DateTime.utc_now(), started_at)
+
+  defp remaining_seconds(%{deadline_at: deadline_at}),
+    do: max(DateTime.diff(deadline_at, DateTime.utc_now()), 0)
+
+  defp duration(seconds) when seconds < 60, do: "#{seconds}s"
+  defp duration(seconds), do: "#{div(seconds, 60)}m"
+
+  # 029, data-model.md Coordinator report, research.md R15: absent (not an
+  # empty "clarify:" line) whenever no feature ever opened a round — the
+  # same byte-identical-when-off discipline as `advanced_line/1`.
+  defp clarify_line(snapshot) do
+    case Map.get(snapshot, :report) do
+      %{clarify_rounds: rounds} when map_size(rounds) > 0 ->
+        "clarify: " <>
+          (rounds
+           |> Enum.sort_by(fn {id, _} -> id end)
+           |> Enum.map_join("  ", fn {id, rs} -> "#{id}=#{length(rs)}" end))
+
+      _ ->
+        nil
+    end
+  end
 
   # Simple monospace table: pad each column to its widest cell.
   defp table(rows) do

@@ -238,6 +238,22 @@ defmodule SpeckitOrchestrator.Config do
   @spec store_headroom_bytes() :: pos_integer()
   def store_headroom_bytes, do: get(:store_headroom_bytes, 150_000_000)
 
+  @doc "Default: whether interactive clarify answering is on for a run (029, FR-001)."
+  @spec interactive_clarify?() :: boolean()
+  def interactive_clarify?, do: get(:interactive_clarify, false)
+
+  @doc "Default seconds an operator has to answer before a round times out (029, 60..86_400)."
+  @spec clarify_answer_timeout_s() :: pos_integer()
+  def clarify_answer_timeout_s, do: get(:clarify_answer_timeout_s, 1_800)
+
+  @doc "Default max interactive-clarify rounds per feature run (029, 1..5)."
+  @spec clarify_max_rounds() :: pos_integer()
+  def clarify_max_rounds, do: get(:clarify_max_rounds, 3)
+
+  @doc "Wait-loop poll interval in ms while a feature is `:awaiting_answers` (029). Not a run setting."
+  @spec clarify_poll_ms() :: pos_integer()
+  def clarify_poll_ms, do: get(:clarify_poll_ms, 1_000)
+
   @spec get(atom(), term()) :: term()
   defp get(key, default), do: Application.get_env(@app, key, default)
 end

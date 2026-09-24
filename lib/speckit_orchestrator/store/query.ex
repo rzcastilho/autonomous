@@ -88,6 +88,50 @@ defmodule SpeckitOrchestrator.Store.Query do
     |> unwrap()
   end
 
+  @doc "One interactive-clarify round, by its key (029)."
+  @spec clarify_round(Ids.ordinal_id()) ::
+          {:ok, map()} | {:error, :absent} | {:error, {:damaged, term(), term()}}
+  def clarify_round(round_key) do
+    Mnesia.transaction(fn ->
+      case Mnesia.read(:speckit_clarify_round, round_key) do
+        [] -> {:error, :absent}
+        [tuple] -> Records.decode(:speckit_clarify_round, tuple)
+      end
+    end)
+    |> unwrap()
+  end
+
+  @doc """
+  Every `:open` interactive-clarify round for `run_key` (029) — feeds
+  `SpeckitOrchestrator.pending_questions/0,1`. `[]` on a transaction failure
+  rather than an error tuple, matching `in_flight/1`'s read-only tolerance.
+  """
+  @spec open_clarify_rounds({binary(), binary()}) :: [map()]
+  def open_clarify_rounds(run_key) do
+    case Mnesia.transaction(fn ->
+           :speckit_clarify_round
+           |> Mnesia.index_read(run_key, :run_key)
+           |> index_decode(:speckit_clarify_round)
+           |> Enum.filter(&(&1.outcome == :open))
+         end) do
+      {:ok, rounds} -> rounds
+      {:error, _reason} -> []
+    end
+  end
+
+  @doc "Every interactive-clarify round for `run_key`, any outcome (029, run-detail round history)."
+  @spec clarify_rounds({binary(), binary()}) :: [map()]
+  def clarify_rounds(run_key) do
+    case Mnesia.transaction(fn ->
+           :speckit_clarify_round
+           |> Mnesia.index_read(run_key, :run_key)
+           |> index_decode(:speckit_clarify_round)
+         end) do
+      {:ok, rounds} -> rounds
+      {:error, _reason} -> []
+    end
+  end
+
   @doc "On-demand retrieval of one phase attempt's transcript, verbatim (FR-029)."
   @spec transcript(tuple()) ::
           {:ok, map()} | {:error, :absent} | {:error, {:damaged, term(), term()}}
@@ -324,6 +368,12 @@ defmodule SpeckitOrchestrator.Store.Query do
         |> Mnesia.index_read(f.key, :feature_key)
         |> index_decode(:speckit_remediation_attempt)
         |> Enum.sort_by(& &1.ordinal),
+      clarify_rounds:
+        :speckit_clarify_round
+        |> Mnesia.index_read(f.run_key, :run_key)
+        |> index_decode(:speckit_clarify_round)
+        |> Enum.filter(&(&1.feature_id == f.feature_id))
+        |> Enum.sort_by(& &1.round),
       checkpoint: read_one(:speckit_checkpoint, f.key)
     }
   end

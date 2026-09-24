@@ -28,6 +28,12 @@ defmodule SpeckitOrchestrator.Store.Migrations do
   was built in a directory named for its wave number, so this backfills
   `spec_number` from the row's own `:number` rather than inventing data
   (FR-007).
+
+  Version 6 (feature 029, data-model.md) creates `speckit_clarify_round` — a
+  **create**, not a transform: no existing row of any table is touched.
+  `Store.Boot` already creates every table `Store.Schema` declares on every
+  boot, so this migration only matters for a node whose on-disk schema
+  predates the table.
   """
 
   alias SpeckitOrchestrator.Store.{Mnesia, Schema}
@@ -82,7 +88,7 @@ defmodule SpeckitOrchestrator.Store.Migrations do
 
   @doc "The schema version this build of the orchestrator understands."
   @spec current_version() :: pos_integer()
-  def current_version, do: 5
+  def current_version, do: 6
 
   @doc "Every migration, ascending by version."
   @spec all() :: [migration()]
@@ -92,7 +98,8 @@ defmodule SpeckitOrchestrator.Store.Migrations do
        fn -> {:error, {:incompatible_record, 1}} end},
       {3, "append feature_run.pr_url", &add_pr_url/0},
       {4, "append feature_run.advanced_with_findings", &add_advanced_with_findings/0},
-      {5, "append feature_run.spec_number (backfilled from :number)", &add_spec_number/0}
+      {5, "append feature_run.spec_number (backfilled from :number)", &add_spec_number/0},
+      {6, "create speckit_clarify_round", &create_clarify_round/0}
     ]
   end
 
@@ -126,6 +133,8 @@ defmodule SpeckitOrchestrator.Store.Migrations do
       Schema.table(:speckit_feature_run).attributes
     )
   end
+
+  defp create_clarify_round, do: Mnesia.create_table(:speckit_clarify_round)
 
   @doc """
   Apply every migration whose version is greater than `from_version`

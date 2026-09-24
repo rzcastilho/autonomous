@@ -27,16 +27,21 @@ defmodule SpeckitOrchestrator.FeatureRunner do
     Cost,
     Describe,
     FeatureAgent,
+    InteractiveClarify,
+    Ledger,
+    NeedsHuman,
     PhaseResult,
     PhaseSession,
     PhaseStep,
     Pipeline,
     Remediation,
+    SpecDir,
     Store,
     Worktree,
     Workers
   }
 
+  alias SpeckitOrchestrator.InteractiveClarify.AnswerSet
   alias SpeckitOrchestrator.Remediation.Settings
   alias SpeckitOrchestrator.Store.Writer
 
@@ -127,7 +132,14 @@ defmodule SpeckitOrchestrator.FeatureRunner do
       reset_implement_sessions: Keyword.get(opts, :reset_implement_sessions, false),
       remediation_settings: remediation_settings!(run_context),
       run_key: run_key,
-      stack_base: stack_base
+      stack_base: stack_base,
+      # 029: the mode's settings, resolved once per run from the run's
+      # **captured** context (never live Config — see `remediation_settings!/1`
+      # just above for why), and the current clarify re-run's answer block
+      # (set only inside `answer_the_clarify_gate/…`, `nil` everywhere else —
+      # byte-identical prompt when the mode is off or between rounds).
+      interactive_clarify_settings: interactive_clarify_settings!(run_context),
+      clarify_answers: nil
     }
 
     with {:ok, pid} <- start_agent(feature, opts) do
@@ -169,7 +181,8 @@ defmodule SpeckitOrchestrator.FeatureRunner do
                 layout,
                 step_opts,
                 run_key,
-                nil
+                nil,
+                0
               )
           end
 
@@ -289,7 +302,8 @@ defmodule SpeckitOrchestrator.FeatureRunner do
          layout,
          step_opts,
          run_key,
-         mark
+         mark,
+         clarify_rounds_used
        ) do
     started_at = DateTime.utc_now()
     agent = run_step(pid, feature, phase, step, timeout, ledger, worktree, layout, step_opts)
@@ -379,12 +393,38 @@ defmodule SpeckitOrchestrator.FeatureRunner do
               layout,
               step_opts,
               run_key,
-              mark
+              mark,
+              clarify_rounds_used
             )
         end
 
       {:done, :done} ->
         {:done, done_reason(mark), agent}
+
+      # 029: intercepted strictly after the pure `Pipeline`/`Checkpoint`
+      # boundary above has already run — the standard `record_attempt/9`
+      # call just below writes this exact `{:escalated, :needs_human}`
+      # checkpoint regardless of what happens next (research.md R12 "checkpoint
+      # at wait entry" is satisfied by that ordinary write, not a second one).
+      # `InteractiveClarify.decide/3` then decides whether this loop iteration
+      # ends here (today's path, byte-identical when the mode is off — FR-002)
+      # or hands off to the wait.
+      {:escalated, :needs_human} when phase == :clarify ->
+        handle_clarify_gate(
+          pid,
+          feature,
+          agent,
+          ledger,
+          worktree,
+          run_context,
+          layout,
+          step_opts,
+          run_key,
+          mark,
+          clarify_rounds_used,
+          step,
+          timeout
+        )
 
       {:escalated, reason} ->
         {:escalated, reason, agent}
@@ -394,6 +434,300 @@ defmodule SpeckitOrchestrator.FeatureRunner do
 
       {:failed, reason} ->
         {:failed, reason, agent}
+    end
+  end
+
+  # ---- interactive clarify (029, contracts/wait-protocol.md) ----------------
+  #
+  # Reached only from `loop/13`'s `{:escalated, :needs_human} when phase ==
+  # :clarify` clause, strictly after the ordinary per-phase boundary
+  # (`record_attempt/9`, checkpoint included) has already run — this never
+  # duplicates that write (research.md R12).
+
+  defp handle_clarify_gate(
+         pid,
+         feature,
+         agent,
+         ledger,
+         worktree,
+         run_context,
+         layout,
+         step_opts,
+         run_key,
+         mark,
+         rounds_used,
+         step,
+         timeout
+       ) do
+    settings = Map.fetch!(step_opts, :interactive_clarify_settings)
+
+    case InteractiveClarify.decide({:escalated, :needs_human}, settings, rounds_used) do
+      :pass ->
+        {:escalated, :needs_human, agent}
+
+      # T042, data-model.md Escalation.evidence: the final unanswered
+      # question block, plus the round count spent on it — exhaustion opens
+      # no round of its own (research.md R5 "creates no round row"), so this
+      # is the only place that evidence is ever available.
+      {:escalated, {:needs_human, :rounds_exhausted} = reason} ->
+        raw = questions_raw(agent.state, worktree, feature)
+        {:escalated, reason, with_diversion_evidence(agent, %{questions: raw, rounds_used: rounds_used})}
+
+      :await ->
+        await_answers(%{
+          pid: pid,
+          feature: feature,
+          agent: agent,
+          ledger: ledger,
+          worktree: worktree,
+          run_context: run_context,
+          layout: layout,
+          step_opts: step_opts,
+          run_key: run_key,
+          mark: mark,
+          rounds_used: rounds_used,
+          step: step,
+          timeout: timeout,
+          settings: settings,
+          poll_ms: Config.clarify_poll_ms()
+        })
+    end
+  end
+
+  # Entry (contracts/wait-protocol.md § Entry): parse the questions, open the
+  # round (one transaction — sets `FeatureRun.status: :awaiting_answers` in
+  # the same write, `Writer.record_feature_awaiting/3`), notify, and enter the
+  # tick loop. A store failure here (no `run_key`, or the write itself erring)
+  # falls back to today's plain escalation rather than waiting on a round that
+  # was never durably opened.
+  defp await_answers(ctx) do
+    round = ctx.rounds_used + 1
+    raw = questions_raw(ctx.agent.state, ctx.worktree, ctx.feature)
+    questions = NeedsHuman.parse_questions(raw)
+
+    case Writer.record_feature_awaiting(ctx.run_key, ctx.feature.id, %{
+           round: round,
+           max_rounds: ctx.settings.max_rounds,
+           questions_raw: raw,
+           questions: questions,
+           answer_timeout_s: ctx.settings.answer_timeout_s
+         }) do
+      {:ok, seq} ->
+        round_key = round_key(ctx.run_key, ctx.feature.id, seq)
+        deadline_at = DateTime.add(DateTime.utc_now(), ctx.settings.answer_timeout_s, :second)
+
+        :telemetry.execute(
+          [:speckit, :clarify, :awaiting],
+          %{system_time: System.system_time()},
+          %{
+            feature_id: ctx.feature.id,
+            seq: seq,
+            round: round,
+            max_rounds: ctx.settings.max_rounds,
+            deadline_at: deadline_at
+          }
+        )
+
+        notify_coordinator({:feature_awaiting, ctx.feature.id})
+
+        clarify_tick(Map.merge(ctx, %{round_key: round_key, seq: seq}))
+
+      {:error, reason} ->
+        Logger.error(
+          "feature #{ctx.feature.id} could not open interactive-clarify round: #{inspect(reason)}"
+        )
+
+        {:escalated, :needs_human, ctx.agent}
+    end
+  end
+
+  # Tick (contracts/wait-protocol.md § Tick): drain and breaker are checked
+  # first, every tick, and neither starts a session or spends (FR-004,
+  # FR-011). Every other branch reads the round row transactionally — the
+  # runner acts on the transaction's result, never on the message that woke
+  # it (research.md R3), so a lost `{:clarify_answered, _}` message costs at
+  # most one `poll_ms` tick (SC-002).
+  defp clarify_tick(ctx) do
+    Workers.waiting(ctx.poll_ms)
+
+    cond do
+      Workers.drain_requested?() -> finish_wait(ctx, :drained, :drained)
+      breaker_tripped?(ctx.ledger) -> finish_wait(ctx, :breaker, :breaker)
+      true -> read_clarify_round(ctx)
+    end
+  end
+
+  defp read_clarify_round(ctx) do
+    case Store.Query.clarify_round(ctx.round_key) do
+      {:ok, %{outcome: :answered} = round} ->
+        answered(ctx, round)
+
+      {:ok, %{outcome: :open, deadline_at: deadline_at}} ->
+        if DateTime.compare(DateTime.utc_now(), deadline_at) != :lt do
+          finish_wait(ctx, :timed_out, :answer_timeout)
+        else
+          wait_tick(ctx)
+        end
+
+      # Defensive only — this loop is the sole writer of an `:open` round; a
+      # non-`:open`/`:answered` outcome here means something else already
+      # closed it (e.g. a restart reconcile racing an unexpectedly still-live
+      # process). Escalate on the matching reason rather than spin forever.
+      {:ok, %{outcome: outcome}} ->
+        {:escalated, InteractiveClarify.on_exit(exit_for(outcome)), ctx.agent}
+
+      {:error, :absent} ->
+        {:escalated, {:needs_human, :restart}, ctx.agent}
+    end
+  end
+
+  defp wait_tick(ctx) do
+    key = ctx.round_key
+
+    receive do
+      {:clarify_answered, ^key} -> clarify_tick(ctx)
+    after
+      ctx.poll_ms -> clarify_tick(ctx)
+    end
+  end
+
+  # `close_round/3` is the guarded write (research.md R3): if it loses the
+  # race to a just-landed answer, it returns `{:error, {:stale_round,
+  # :answered}}` and the runner takes the answered path instead of
+  # escalating, exactly as the contract requires.
+  defp finish_wait(ctx, close_outcome, exit_reason) do
+    case Writer.close_round(ctx.run_key, ctx.feature.id, %{seq: ctx.seq, outcome: close_outcome}) do
+      :ok ->
+        {:escalated, InteractiveClarify.on_exit(exit_reason), ctx.agent}
+
+      {:error, {:stale_round, :answered}} ->
+        {:ok, round} = Store.Query.clarify_round(ctx.round_key)
+        answered(ctx, round)
+
+      {:error, {:stale_round, other}} ->
+        {:escalated, InteractiveClarify.on_exit(exit_for(other)), ctx.agent}
+
+      {:error, reason} ->
+        Logger.error(
+          "feature #{ctx.feature.id} could not close interactive-clarify round: #{inspect(reason)}"
+        )
+
+        {:escalated, {:needs_human, exit_reason}, ctx.agent}
+    end
+  end
+
+  defp exit_for(:timed_out), do: :answer_timeout
+  defp exit_for(:breaker), do: :breaker
+  defp exit_for(:drained), do: :drained
+  defp exit_for(_other), do: :restart
+
+  # Answered path (contracts/wait-protocol.md § Answered path). Step 1: a
+  # breaker/drain that tripped in the gap between the answer landing and this
+  # tick observing it escalates without ever starting the re-run session,
+  # leaving the round `:answered` with `applied_at: nil` so a later resume can
+  # still reuse it (research.md R12). Steps 2-4: resume the feature, fold the
+  # answers into a fresh `:clarify` session via the ordinary `loop/13` path —
+  # re-entering `Pipeline.next/3` and `decide/3` exactly as any other clarify
+  # attempt would, with `rounds_used` advanced by one.
+  defp answered(ctx, round) do
+    cond do
+      breaker_tripped?(ctx.ledger) ->
+        {:escalated, InteractiveClarify.on_exit(:breaker), ctx.agent}
+
+      Workers.drain_requested?() ->
+        {:escalated, InteractiveClarify.on_exit(:drained), ctx.agent}
+
+      true ->
+        _ = Writer.record_feature_resumed(ctx.run_key, ctx.feature.id)
+        _ = Writer.mark_round_applied(ctx.round_key)
+
+        :telemetry.execute(
+          [:speckit, :clarify, :answered],
+          %{system_time: System.system_time()},
+          %{feature_id: ctx.feature.id, seq: ctx.seq, round: round.round}
+        )
+
+        notify_coordinator({:feature_resumed, ctx.feature.id})
+
+        rendered = AnswerSet.render(%AnswerSet{answers: round.answers}, round.round)
+        step_opts = Map.put(ctx.step_opts, :clarify_answers, rendered)
+
+        loop(
+          ctx.pid,
+          ctx.feature,
+          :clarify,
+          ctx.step,
+          ctx.timeout,
+          ctx.ledger,
+          ctx.worktree,
+          ctx.run_context,
+          ctx.layout,
+          step_opts,
+          ctx.run_key,
+          ctx.mark,
+          ctx.rounds_used + 1
+        )
+    end
+  end
+
+  defp round_key({repo_id, run_id}, feature_id, seq),
+    do: SpeckitOrchestrator.Store.Ids.ordinal_id(repo_id, run_id, feature_id, seq)
+
+  # The final transcript usually carries the marker directly (matches the
+  # clarify gate's own check, `Actions.RunFeaturePhase.classify_gate/4`); a
+  # reviewer that wrote it only into `spec.md` (the gate's "or" clause) is
+  # covered by falling back to the spec file itself.
+  defp questions_raw(st, worktree, feature) do
+    final_text = st.last_result && st.last_result.final_text
+
+    case NeedsHuman.extract(final_text) do
+      nil -> questions_raw_from_spec(worktree, feature) || ""
+      block -> block
+    end
+  end
+
+  defp questions_raw_from_spec(%Worktree{path: path}, feature) do
+    case SpecDir.file(path, feature, "spec.md") do
+      nil ->
+        nil
+
+      file ->
+        case File.read(file) do
+          {:ok, content} -> NeedsHuman.extract(content)
+          _ -> nil
+        end
+    end
+  end
+
+  defp questions_raw_from_spec(_worktree, _feature), do: nil
+
+  # 029, research.md R6: the runner reaches the Coordinator by its one
+  # well-known registered name — the same lookup `guard_active_run/1` and
+  # `coordinator_active_pid/0` already use in the facade — rather than
+  # threading a new pid through every runner-spawning call site. At most one
+  # Coordinator is ever live per node (`guard_active_run/1` enforces it), so
+  # this is never ambiguous. No live Coordinator (a plain unit test calling
+  # this module directly) is a silent no-op.
+  defp notify_coordinator(message) do
+    case Process.whereis(SpeckitOrchestrator.Coordinator) do
+      nil -> :ok
+      pid -> send(pid, message)
+    end
+
+    :ok
+  end
+
+  # Resolved once per feature run from the run's **captured** `RunContext`,
+  # mirroring `remediation_settings!/1` just below — never from live `Config`,
+  # so a mid-run config edit never reaches an in-flight run.
+  defp interactive_clarify_settings!(run_context) do
+    case InteractiveClarify.Settings.from_context(run_context) do
+      {:ok, settings} ->
+        settings
+
+      {:error, reason} ->
+        raise ArgumentError,
+              "invalid recorded interactive-clarify settings: #{inspect(reason)}"
     end
   end
 
@@ -491,6 +825,18 @@ defmodule SpeckitOrchestrator.FeatureRunner do
       settings: Map.fetch!(step_opts, :remediation_settings),
       run_key: Map.get(step_opts, :run_key)
     })
+  end
+
+  # 029: an interactive-clarify re-run carries the operator's answers,
+  # `step_opts.clarify_answers` (`nil` on the first attempt and on every phase
+  # but `:clarify` — a plain `PhaseStep.run/4` no-op there, byte-identical to
+  # the generic clause below).
+  defp run_step(pid, feature, :clarify, step, timeout, _ledger, _worktree, _layout, step_opts) do
+    PhaseStep.run(pid, feature, :clarify,
+      step: step,
+      timeout: timeout,
+      operator_answers: Map.get(step_opts, :clarify_answers)
+    )
   end
 
   defp run_step(pid, feature, phase, step, timeout, _ledger, _worktree, _layout, _step_opts) do
@@ -641,7 +987,7 @@ defmodule SpeckitOrchestrator.FeatureRunner do
         kind: status,
         phase: agent.state.phase,
         reason: reason,
-        evidence: %{}
+        evidence: diversion_evidence(agent)
       })
 
     :ok
@@ -649,8 +995,22 @@ defmodule SpeckitOrchestrator.FeatureRunner do
 
   defp record_diversion_escalation(_run_key, _feature, _agent, _status, _reason), do: :ok
 
+  # 029, T042: a local-only carrier for the one diversion (rounds-exhausted)
+  # that has evidence to attach — set via `with_diversion_evidence/2` right
+  # before the terminal tuple is returned, never round-tripped through Jido's
+  # own signal/action pipeline. `last_signals` is a free-form `:map` field in
+  # `FeatureAgent`'s schema, so stuffing an extra key into it here is safe:
+  # nothing re-reads or overwrites it after this point in the run.
+  defp with_diversion_evidence(agent, evidence) do
+    signals = Map.put(agent.state.last_signals || %{}, :diversion_evidence, evidence)
+    %{agent | state: %{agent.state | last_signals: signals}}
+  end
+
+  defp diversion_evidence(agent),
+    do: Map.get(agent.state.last_signals || %{}, :diversion_evidence, %{})
+
   defp breaker_tripped?(nil), do: false
-  defp breaker_tripped?(ledger), do: SpeckitOrchestrator.Ledger.breaker_tripped?(ledger)
+  defp breaker_tripped?(ledger), do: Ledger.breaker_tripped?(ledger)
 
   defp store_unwritable?(nil), do: false
   defp store_unwritable?(_run_key), do: Store.Health.failed?()

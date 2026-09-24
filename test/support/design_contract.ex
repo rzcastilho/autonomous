@@ -75,7 +75,7 @@ defmodule SpeckitOrchestrator.Web.DesignContract do
     end
   end
 
-  # ---- §II — the 24 contract colors, transcribed verbatim from
+  # ---- §II — the 25 contract colors, transcribed verbatim from
   # docs/design-constitution.md §II (G-7: a dedicated test asserts this
   # transcription matches the doc's own fenced CSS block). ----
 
@@ -103,7 +103,8 @@ defmodule SpeckitOrchestrator.Web.DesignContract do
     {"--halted", "#fb7185"},
     {"--failed", "#f43f5e"},
     {"--pending", "#64748b"},
-    {"--blocked", "#475569"}
+    {"--blocked", "#475569"},
+    {"--awaiting", "#fb923c"}
   ]
 
   @doc false
@@ -125,10 +126,11 @@ defmodule SpeckitOrchestrator.Web.DesignContract do
                         @derived_tokens
 
   @status_hexes Enum.filter(@contract_colors, fn {name, _} ->
-                  name in ~w(--done --running --escalated --halted --failed --pending --blocked)
+                  name in
+                    ~w(--done --running --escalated --halted --failed --pending --blocked --awaiting)
                 end)
 
-  @status_names ~w(done running escalated halted failed pending blocked)
+  @status_names ~w(done running escalated halted failed pending blocked awaiting_answers)
 
   @spacing_grid [4, 6, 8, 10, 12, 14, 18, 20, 22]
   @layout_named_values ~w(236px 460px 280px)

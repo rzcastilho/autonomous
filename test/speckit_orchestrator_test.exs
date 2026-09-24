@@ -8,7 +8,7 @@ defmodule SpeckitOrchestratorTest do
   use SpeckitOrchestrator.StoreCase, async: false
   import ExUnit.CaptureIO
 
-  alias SpeckitOrchestrator.{Feature, RepoIdentity, Store, Worktree}
+  alias SpeckitOrchestrator.{Config, Feature, RepoIdentity, Store, Worktree}
   alias SpeckitOrchestrator.Store.Writer
 
   test "run/1 with an injected runner drives the backlog to completion; status/0 reflects it" do
@@ -29,6 +29,21 @@ defmodule SpeckitOrchestratorTest do
     out = capture_io(fn -> SpeckitOrchestrator.print_status() end)
     assert out =~ "FEATURE"
     assert out =~ "001"
+  end
+
+  # ---- 029 US4 (FR-001): interactive-clarify preflight ----------------------
+
+  test "run/1 refuses an out-of-range interactive-clarify setting before any store write" do
+    features = [%Feature{id: "801", number: 801, slug: "a", path: "a.md"}]
+    repo_id = RepoIdentity.partition(Config.repo())
+
+    assert {:error, {:preflight, [{:invalid_answer_timeout, 30}]}} =
+             SpeckitOrchestrator.run(features: features, clarify_answer_timeout_s: 30)
+
+    assert {:error, {:preflight, [{:invalid_max_rounds, 6}]}} =
+             SpeckitOrchestrator.run(features: features, clarify_max_rounds: 6)
+
+    assert {:ok, []} = Store.runs(repo_id)
   end
 
   # ---- spec number allocation flow (022) -------------------------------------
@@ -197,5 +212,98 @@ defmodule SpeckitOrchestratorTest do
     assert Store.spec_number(run_key, "003") == 15
     assert branch_exists?(repo, "feature/015-resumed")
     refute branch_exists?(repo, "feature/002-resumed")
+  end
+
+  # ---- pending_questions/0 and answer/3 — iex parity (029 US3) ---------------
+  #
+  # These are the exact functions `EscalationsLive`'s "answer" event handler
+  # calls with `via: :console` (escalations_live.ex) — an iex caller (the
+  # default `via: :iex`) drives the identical path, so this only needs to
+  # prove the facade functions themselves work end to end, not re-derive the
+  # console test coverage.
+
+  alias SpeckitOrchestrator.NeedsHuman.Question
+
+  defp open_awaiting_run(feature_id, round_info) do
+    repo_id = RepoIdentity.partition(Config.repo())
+
+    {:ok, run_id} =
+      Writer.open_run(repo_id, %{
+        features: [
+          %{
+            feature_id: feature_id,
+            slug: "slug-#{feature_id}",
+            path: "#{feature_id}.md",
+            number: String.to_integer(feature_id),
+            group: :backlog,
+            created_at: nil
+          }
+        ],
+        settings: %{},
+        scope: :ad_hoc,
+        layout: %{}
+      })
+
+    run_key = {repo_id, run_id}
+    {:ok, seq} = Writer.record_feature_awaiting(run_key, feature_id, round_info)
+    {run_key, seq}
+  end
+
+  test "pending_questions/0 lists the feature, round and each question" do
+    questions = [
+      %Question{id: "Q1", text: "Prorate mid-month?", context: nil, options: [], recommended: "yes"},
+      %Question{id: "Q2", text: "Which timezone?", context: nil, options: [], recommended: "UTC"}
+    ]
+
+    {_run_key, seq} =
+      open_awaiting_run("601", %{
+        round: 1,
+        max_rounds: 3,
+        questions_raw: "## NEEDS HUMAN\n\n### Q1: Prorate mid-month?\n",
+        questions: {:numbered, questions},
+        answer_timeout_s: 1_800
+      })
+
+    [pending] = SpeckitOrchestrator.pending_questions()
+
+    assert pending.feature_id == "601"
+    assert pending.round == 1
+    assert pending.max_rounds == 3
+    assert pending.seq == seq
+    assert {:numbered, [q1, q2]} = pending.questions
+    assert q1.id == "Q1"
+    assert q2.id == "Q2"
+    assert %DateTime{} = pending.started_at
+    assert %DateTime{} = pending.deadline_at
+  end
+
+  test "pending_questions/0 returns [] when nothing is awaiting" do
+    assert SpeckitOrchestrator.pending_questions() == []
+  end
+
+  test "answer/3 submitted from iex (default via) proceeds exactly as a console submission" do
+    questions = [
+      %Question{id: "Q1", text: "Prorate mid-month?", context: nil, options: [], recommended: nil}
+    ]
+
+    {run_key, seq} =
+      open_awaiting_run("602", %{
+        round: 1,
+        max_rounds: 3,
+        questions_raw: "## NEEDS HUMAN\n\n### Q1: Prorate mid-month?\n",
+        questions: {:numbered, questions},
+        answer_timeout_s: 1_800
+      })
+
+    assert :ok = SpeckitOrchestrator.answer("602", seq, %{"Q1" => "by day"})
+
+    {repo_id, run_id} = run_key
+    round_key = SpeckitOrchestrator.Store.Ids.ordinal_id(repo_id, run_id, "602", seq)
+    {:ok, round} = SpeckitOrchestrator.Store.Query.clarify_round(round_key)
+
+    assert round.outcome == :answered
+    assert round.answered_via == :iex
+    assert round.answers == %{"Q1" => {:typed, "by day"}}
+    assert SpeckitOrchestrator.pending_questions() == []
   end
 end

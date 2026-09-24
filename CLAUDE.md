@@ -115,9 +115,14 @@ dependency, fully unit-testable:
   `:escalated` when the run's severity threshold is High or lower — either,
   **unless** the loop exhausted its attempts on that finding and the run's
   exhaustion policy is `:proceed`, in which case it advances instead). The
-  clarify gate is the one that has no knobs at all: `## NEEDS HUMAN` escalates
-  unconditionally, which is why a run configured with `:proceed` still stops
-  there. The analyze gate is threshold-governed as of
+  clarify gate escalates `## NEEDS HUMAN` unconditionally, which is why a run
+  configured with `:proceed` still stops there — its one knob (feature 029,
+  `interactive_clarify`, off by default) only changes *how* it stops: on, the
+  feature waits in a new non-terminal `:awaiting_answers` state instead of
+  escalating outright, bounded by an answer timeout and a max-round count,
+  and falls back to today's unconditional escalate-and-park on timeout,
+  exhausted rounds, breaker trip, or supersession drain — off, the gate is
+  byte-identical to before 029. The analyze gate is threshold-governed as of
   constitution 2.0.0: one knob (`auto_remediation_threshold`, signalled as
   `gate_threshold`, default `:high`) decides both when auto-remediation runs
   and when the gate diverts, so a run pinned to `:critical` advances past a

@@ -35,7 +35,8 @@ defmodule SpeckitOrchestrator.Release do
   1. breaker tripped ⇒ `:none` (Principle IV — drain, don't kill)
   2. any feature `:escalated`/`:halted`/`:failed` ⇒ `{:stopped, id, status}`
      (the lowest-ordered one, when more than one)
-  3. any feature `:running` ⇒ `:none` (structural one-at-a-time)
+  3. any feature `:running`/`:awaiting_answers` ⇒ `:none` (structural
+     one-at-a-time — 029's interactive-clarify wait counts as in flight)
   4. some feature `:pending` ⇒ `{:release, lowest_ordered_pending}`
   5. otherwise ⇒ `:none` (run complete)
   """
@@ -54,7 +55,7 @@ defmodule SpeckitOrchestrator.Release do
       stopped = find_stopped(ordered, statuses) ->
         stopped
 
-      Enum.any?(ordered, &(status_of(&1, statuses) == :running)) ->
+      Enum.any?(ordered, &(status_of(&1, statuses) in [:running, :awaiting_answers])) ->
         :none
 
       pending = Enum.find(ordered, &(status_of(&1, statuses) == :pending)) ->

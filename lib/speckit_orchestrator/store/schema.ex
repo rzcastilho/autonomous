@@ -1,6 +1,7 @@
 defmodule SpeckitOrchestrator.Store.Schema do
   @moduledoc """
-  The twelve table specs as data (018, contracts/schema.md § Tables). Pure —
+  The thirteen table specs as data (018, contracts/schema.md § Tables; 029
+  adds `speckit_clarify_round`, schema v6). Pure —
   no `:mnesia` reference (Principle I). `Store.Boot` creates tables from this,
   `Store.Records` shapes tuples from this, `Store.Migrations` evolves it, and
   `Store.Mnesia` is the only module that turns any of this into a real
@@ -198,6 +199,30 @@ defmodule SpeckitOrchestrator.Store.Schema do
         type: :set,
         storage: :disc_only_copies,
         index: []
+      },
+      %{
+        name: :speckit_clarify_round,
+        attributes: [
+          :key,
+          :run_key,
+          :feature_id,
+          :seq,
+          :round,
+          :max_rounds,
+          :questions_raw,
+          :questions,
+          :started_at,
+          :deadline_at,
+          :outcome,
+          :answers,
+          :answered_at,
+          :answered_via,
+          :applied_at,
+          :closed_at
+        ],
+        type: :set,
+        storage: :disc_copies,
+        index: [:run_key, :feature_id]
       }
     ]
   end
