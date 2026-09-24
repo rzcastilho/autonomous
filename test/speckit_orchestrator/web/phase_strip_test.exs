@@ -128,6 +128,18 @@ defmodule SpeckitOrchestrator.Web.PhaseStripTest do
     end
   end
 
+  # ---- 028-dag-wave-history (FR-007a) ----------------------------------------
+
+  test "an interrupted phase cell renders phase-cell-interrupted, never phase-cell-active or scPulse" do
+    html = strip(%{phases: %{implement: %{state: :interrupted}}, status: :interrupted})
+
+    assert html =~
+             ~s(<span class="phase-cell phase-cell-interrupted" data-phase="implement" title="implement — interrupted">)
+
+    refute html =~ "phase-cell-active"
+    refute html =~ "scPulse"
+  end
+
   test "chunk and remediation sub-labels coexist on their own cells" do
     chunk = %{
       ordinal: 2,

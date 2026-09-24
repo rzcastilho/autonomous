@@ -892,4 +892,346 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLiveTest do
     refute html =~ ~s(data-legend-origin="ad-hoc")
     assert html =~ ~s(data-dag-node="001" data-node-origin="backlog")
   end
+
+  # ---- 028-dag-wave-history: each wave draws only its own resolved run ------
+
+  describe "wave-scoped run history (028)" do
+    # Both waves carry the full 001-003 fixture backlog (not just 001, unlike
+    # `breakdown_packages`), so a test can exercise a feature id beyond `001`
+    # (e.g. `003` for the interrupted-feature scenario).
+    defp repo_with_full_colliding_packages do
+      repo = Path.join(System.tmp_dir!(), "dag_full_collide_#{System.unique_integer([:positive])}")
+      dest = Path.join(repo, "specs/autonomous/breakdown")
+
+      for wave <- ["alpha", "beta"] do
+        wave_dir = Path.join(dest, wave)
+        File.mkdir_p!(wave_dir)
+
+        for name <- ["001-core-ledger.md", "002-categories.md", "003-budgets.md"] do
+          File.cp!(Path.join(@valid_dir, name), Path.join(wave_dir, name))
+        end
+      end
+
+      git!(repo, ["init", "-q", "-b", "main"])
+      git!(repo, ["remote", "add", "origin", "git@example.com:test/#{Path.basename(repo)}.git"])
+      on_exit(fn -> File.rm_rf(repo) end)
+      Application.put_env(:speckit_orchestrator, :repo, repo)
+      repo
+    end
+
+    defp record_done_run(run_key, feature_id) do
+      :ok = Writer.record_feature_started(run_key, feature_id)
+
+      for phase <- [:specify, :clarify, :plan, :tasks, :analyze, :implement, :converge] do
+        :ok =
+          Writer.record_phase_attempt(run_key, %{
+            attempt: minimal_attempt(feature_id, phase),
+            cost: %{amount_usd: 2.0, kind: :actual}
+          })
+      end
+
+      :ok = Writer.record_feature_terminal(run_key, feature_id, :done, nil, [])
+    end
+
+    # A summary whose declared `run_id` doesn't match the primary key its own
+    # `:speckit_run` row is actually stored under — models a corrupted index:
+    # `run_history/1` (a `:repo_id` secondary-index scan) reads it fine, but
+    # `run_detail/1`'s primary-key lookup by `run_id` finds nothing (FR-010).
+    defp fabricate_unreadable_run(repo, slug, run_id) do
+      repo_id = RepoIdentity.partition(repo)
+      now = DateTime.utc_now()
+
+      record = %SpeckitOrchestrator.Store.Records.Run{
+        key: {repo_id, "not-#{run_id}"},
+        repo_id: repo_id,
+        run_id: run_id,
+        state: :completed,
+        outcome: :all_done,
+        outcome_index: :all_done,
+        started_at: now,
+        ended_at: now,
+        duration_ms: 0,
+        spend_usd: 0.0,
+        record_complete?: true,
+        halt_reason: nil,
+        stopped_by: nil,
+        stopped_reason: nil,
+        scope: {:breakdown, slug},
+        layout: %{},
+        superseded_by: nil,
+        schema_version: 1
+      }
+
+      {:ok, :ok} = Mnesia.transaction(fn -> Mnesia.write(Records.encode(record)) end)
+      :ok
+    end
+
+    test "a completed beta run's phases and spend never leak onto alpha's same-numbered node (FR-001/002, SC-001)",
+         %{conn: conn} do
+      repo = repo_with_full_colliding_packages()
+      run_key = open_store_run(repo, [feat("001")], {:breakdown, "beta"})
+      record_done_run(run_key, "001")
+      :ok = Writer.close_run(run_key, :all_done)
+
+      refute Process.whereis(Coordinator)
+
+      {:ok, view, _html} = live(conn, "/dag")
+
+      # beta has the only recorded run, so it's the default wave (FR-008) —
+      # switch to alpha to exercise the leak check this test is about.
+      html =
+        view
+        |> element(~s(form[data-form="wave-picker"]))
+        |> render_change(%{"slug" => "alpha"})
+
+      node = extract_node(html, "001")
+      assert node =~ ~s(data-status="pending")
+      refute node =~ "phase-cell-completed"
+      assert node =~ "$0.00"
+    end
+
+    test "the drawer for alpha's node shows none of beta's completed run (FR-003)", %{conn: conn} do
+      repo = repo_with_full_colliding_packages()
+      run_key = open_store_run(repo, [feat("001")], {:breakdown, "beta"})
+      record_done_run(run_key, "001")
+      :ok = Writer.close_run(run_key, :all_done)
+
+      {:ok, view, _html} = live(conn, "/dag")
+
+      # beta has the only recorded run, so it's the default wave (FR-008) —
+      # switch to alpha before checking the drawer for a leak.
+      view
+      |> element(~s(form[data-form="wave-picker"]))
+      |> render_change(%{"slug" => "alpha"})
+
+      html = render_click(view, "select_feature", %{"id" => "001"})
+
+      assert html =~ ~s(id="feature-drawer")
+      drawer = html |> String.split(~s(id="feature-drawer")) |> List.last()
+      refute drawer =~ "$14.00"
+      refute drawer =~ ~s(<span class="status-chip" data-status="done">)
+    end
+
+    test "a live update while the run's wave isn't selected never leaks onto another wave's node (FR-004)",
+         %{conn: conn} do
+      repo = repo_with_full_colliding_packages()
+      _run_key = open_store_run(repo, [feat("001")], {:breakdown, "beta"})
+
+      {:ok, pid} =
+        Coordinator.start_link(
+          name: Coordinator,
+          features: [feat("001")],
+          runner: fn _feature, _notify -> :ok end,
+          owner: self()
+        )
+
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+      {:ok, view, _html} = live(conn, "/dag")
+
+      # Beta's run is in flight, so mount defaults there — switch to alpha.
+      html =
+        view
+        |> element(~s(form[data-form="wave-picker"]))
+        |> render_change(%{"slug" => "alpha"})
+
+      assert extract_node(html, "001") =~ ~s(data-status="pending")
+
+      send(view.pid, {:console, :feature_updated, %{id: "001", feature: %{status: :done}}})
+      html2 = render(view)
+
+      refute extract_node(html2, "001") =~ ~s(data-status="done")
+      assert extract_node(html2, "001") =~ ~s(data-status="pending")
+    end
+
+    test "selecting the wave whose own run finished shows that run's recorded status, phases, and spend (FR-005, US1 scenario 3)",
+         %{conn: conn} do
+      repo = repo_with_full_colliding_packages()
+      run_key = open_store_run(repo, [feat("001")], {:breakdown, "beta"})
+      record_done_run(run_key, "001")
+      :ok = Writer.close_run(run_key, :all_done)
+
+      {:ok, view, _html} = live(conn, "/dag")
+
+      html =
+        view
+        |> element(~s(form[data-form="wave-picker"]))
+        |> render_change(%{"slug" => "beta"})
+
+      node = extract_node(html, "001")
+      assert node =~ ~s(data-status="done")
+      assert node =~ "phase-cell-completed"
+      assert node =~ "$14.00"
+      assert html =~ ~s(data-wave-source="recorded")
+    end
+
+    test "each wave shows its own most recent run's status/phases/spend (US2-1, SC-002)", %{conn: conn} do
+      repo = repo_with_full_colliding_packages()
+
+      alpha_key = open_store_run(repo, [feat("001")], {:breakdown, "alpha"})
+      record_done_run(alpha_key, "001")
+      :ok = Writer.close_run(alpha_key, :all_done)
+
+      beta_key = open_store_run(repo, [feat("001")], {:breakdown, "beta"})
+      :ok = Writer.record_feature_terminal(beta_key, "001", :halted, :test_fixture, [])
+      :ok = Writer.close_run(beta_key, :halted)
+
+      {:ok, view, html} = live(conn, "/dag")
+
+      # beta is the most recent recorded run overall, so it's the default
+      # wave (FR-008).
+      assert extract_node(html, "001") =~ ~s(data-status="halted")
+
+      html2 =
+        view
+        |> element(~s(form[data-form="wave-picker"]))
+        |> render_change(%{"slug" => "alpha"})
+
+      assert extract_node(html2, "001") =~ ~s(data-status="done")
+    end
+
+    test "the newest run wins — no merge with an older run of the same wave (US2-2, FR-006)", %{conn: conn} do
+      repo = repo_with_full_colliding_packages()
+
+      older_key = open_store_run(repo, [feat("001")], {:breakdown, "alpha"})
+      record_done_run(older_key, "001")
+      :ok = Writer.close_run(older_key, :all_done)
+
+      newer_key = open_store_run(repo, [feat("001")], {:breakdown, "alpha"})
+      :ok = Writer.record_feature_terminal(newer_key, "001", :halted, :test_fixture, [])
+      :ok = Writer.close_run(newer_key, :halted)
+
+      {:ok, _view, html} = live(conn, "/dag")
+
+      node = extract_node(html, "001")
+      assert node =~ ~s(data-status="halted")
+      refute node =~ "phase-cell-completed"
+    end
+
+    test "a wave with no recorded run ever draws cold with data-wave-source=\"none\" (US2-3)", %{conn: conn} do
+      repo_with_full_colliding_packages()
+
+      {:ok, _view, html} = live(conn, "/dag")
+
+      assert html =~ ~s(data-wave-source="none")
+      node = extract_node(html, "001")
+      assert node =~ ~s(data-status="pending")
+    end
+
+    test "a parked run's feature left :running is drawn interrupted, recorded phases intact, no live motion (US2-4, FR-007a)",
+         %{conn: conn} do
+      repo = repo_with_full_colliding_packages()
+      run_key = open_store_run(repo, [feat("003")], {:breakdown, "alpha"})
+
+      :ok = Writer.record_feature_started(run_key, "003")
+
+      for phase <- [:specify, :clarify, :plan, :tasks] do
+        :ok = Writer.record_phase_attempt(run_key, %{attempt: minimal_attempt("003", phase)})
+      end
+
+      :ok =
+        Writer.record_checkpoint(run_key, "003", %{
+          phase: :analyze,
+          last_completed_phase: :tasks,
+          status: :running,
+          reason: nil,
+          session_id: "s1"
+        })
+
+      :ok = Writer.park_run(run_key, %{stopped_by: "003", reason: :test_interrupt})
+
+      refute Process.whereis(Coordinator)
+
+      {:ok, _view, html} = live(conn, "/dag")
+
+      node = extract_node(html, "003")
+      assert node =~ ~s(data-status="blocked")
+      assert node =~ "Interrupted"
+
+      for phase <- ~w(specify clarify plan tasks) do
+        [cell] = Regex.run(~r/<span[^>]*data-phase="#{phase}"[^>]*>/, node)
+        assert cell =~ "phase-cell-completed"
+      end
+
+      [analyze_cell] = Regex.run(~r/<span[^>]*data-phase="analyze"[^>]*>/, node)
+      assert analyze_cell =~ "phase-cell-interrupted"
+      assert analyze_cell =~ "analyze — interrupted"
+
+      refute node =~ "phase-cell-active"
+    end
+
+    test "the receipt strip names the source run and links to it (US2-5, FR-007)", %{conn: conn} do
+      repo = repo_with_full_colliding_packages()
+      run_key = open_store_run(repo, [feat("001")], {:breakdown, "beta"})
+      record_done_run(run_key, "001")
+      :ok = Writer.close_run(run_key, :all_done)
+
+      {:ok, view, _html} = live(conn, "/dag")
+
+      html =
+        view
+        |> element(~s(form[data-form="wave-picker"]))
+        |> render_change(%{"slug" => "beta"})
+
+      {_repo_id, run_id} = run_key
+
+      assert html =~ ~s(data-wave-source="recorded")
+      assert html =~ ~s(href="/runs/#{run_id}" data-wave-source-run)
+      assert html =~ "data-wave-source-state"
+      assert html =~ ":completed"
+    end
+
+    test "an unreadable run record for the newest summary renders unavailable, never another wave's state (FR-010)",
+         %{conn: conn} do
+      repo = repo_with_full_colliding_packages()
+
+      beta_key = open_store_run(repo, [feat("001")], {:breakdown, "beta"})
+      record_done_run(beta_key, "001")
+      :ok = Writer.close_run(beta_key, :all_done)
+
+      :ok = fabricate_unreadable_run(repo, "alpha", "999999")
+
+      {:ok, view, _html} = live(conn, "/dag")
+
+      # beta has the only real recorded run, so it's the default wave
+      # (FR-008) — switch to alpha to exercise the unreadable-record path.
+      html =
+        view
+        |> element(~s(form[data-form="wave-picker"]))
+        |> render_change(%{"slug" => "alpha"})
+
+      assert html =~ ~s(data-wave-source="unavailable")
+      assert html =~ "999999"
+      node = extract_node(html, "001")
+      assert node =~ ~s(data-status="pending")
+      refute node =~ "$14.00"
+
+      html2 =
+        view
+        |> element(~s(form[data-form="wave-picker"]))
+        |> render_change(%{"slug" => "beta"})
+
+      assert extract_node(html2, "001") =~ ~s(data-status="done")
+    end
+
+    test "with no run in flight, mount defaults to the wave of the most recent recorded run (US3-2, SC-004)",
+         %{conn: conn} do
+      repo = repo_with_full_colliding_packages()
+
+      alpha_key = open_store_run(repo, [feat("001")], {:breakdown, "alpha"})
+      record_done_run(alpha_key, "001")
+      :ok = Writer.close_run(alpha_key, :all_done)
+
+      beta_key = open_store_run(repo, [feat("001")], {:breakdown, "beta"})
+      record_done_run(beta_key, "001")
+      :ok = Writer.close_run(beta_key, :all_done)
+
+      refute Process.whereis(Coordinator)
+
+      {:ok, _view, html} = live(conn, "/dag")
+
+      assert html =~ ~s(<option value="beta" selected="")
+      assert extract_node(html, "001") =~ ~s(data-status="done")
+    end
+  end
 end

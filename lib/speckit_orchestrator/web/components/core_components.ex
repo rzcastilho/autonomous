@@ -21,7 +21,8 @@ defmodule SpeckitOrchestrator.Web.CoreComponents do
     halted: "Halted",
     failed: "Failed",
     done: "Done",
-    never_started: "Never started"
+    never_started: "Never started",
+    interrupted: "Interrupted"
   }
 
   @doc "Human label for a lifecycle status. Prose, not a contract value."
@@ -38,6 +39,7 @@ defmodule SpeckitOrchestrator.Web.CoreComponents do
   """
   @spec status_class(atom()) :: String.t()
   def status_class(:never_started), do: "blocked"
+  def status_class(:interrupted), do: "blocked"
 
   def status_class(status)
       when status in ~w(done running escalated halted failed pending blocked)a,
@@ -168,6 +170,7 @@ defmodule SpeckitOrchestrator.Web.CoreComponents do
 
   defp phase_cell_state(nil, _status), do: "pending"
   defp phase_cell_state(%{state: :completed}, _status), do: "completed"
+  defp phase_cell_state(%{state: :interrupted}, _status), do: "interrupted"
 
   defp phase_cell_state(%{state: :active}, status) when status in [:escalated, :halted, :failed],
     do: to_string(status)
