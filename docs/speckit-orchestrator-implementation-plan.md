@@ -84,7 +84,7 @@ Each phase ends with a demoable checkpoint and explicit exit criteria. Order mat
 Stand up the toolchain and burn down the CONFIRM list with a throwaway spike project.
 
 Tasks:
-1. Install Elixir 1.20.2 / OTP 28 (asdf or mise; commit `.tool-versions`).
+1. Install Elixir 1.20.2 / OTP 28 (asdf or mise; commit `mise.toml`).
 2. Install and authenticate the Claude Code CLI; verify `claude --model opus -p "print your model id"` and the same for `sonnet` against your org allowlist. Record the resolved model IDs.
 3. Install `uv`, then `specify` CLI pinned to v0.12.x; run `specify self check`.
 4. Initialize the **target repo** (not the orchestrator): `specify init . --integration claude`, write a real `constitution.md`, commit `.specify/` + `.claude/`.

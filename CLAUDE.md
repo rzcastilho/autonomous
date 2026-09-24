@@ -60,7 +60,7 @@ roll-up carries the step's actual summed cost).
 ## Toolchain — read first
 
 Run every Elixir command through mise; the plain shell PATH is a stale global
-Elixir 1.19.5, while this repo pins **1.20.2-otp-28** in `.tool-versions`:
+Elixir 1.19.5, while this repo pins **1.20.2-otp-28** in `mise.toml`:
 
 ```bash
 mise exec -- mix test          # NOT: mix test
@@ -68,8 +68,8 @@ mise exec -- iex -S mix
 mise exec -- mix compile
 ```
 
-`warnings_as_errors` is on — a warning fails the build. OTP 28 is system-provided
-(erlang is not mise-managed; do not add an `erlang` line to `.tool-versions`).
+`warnings_as_errors` is on — a warning fails the build. `mise.toml` also pins
+Erlang/OTP **28.5.0.6** alongside Elixir.
 
 ## Commands
 

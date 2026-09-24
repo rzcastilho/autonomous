@@ -563,8 +563,9 @@ or a database MUST be justified against these choices and recorded per the
 Governance amendment procedure.
 
 **Toolchain.** Elixir `~> 1.20` on OTP 28, pinned to `1.20.2-otp-28` via
-`.tool-versions`; every command runs through `mise exec --` (Quality & Test
-Discipline). Erlang/OTP is system-provided and MUST NOT be mise-managed.
+`mise.toml`; every command runs through `mise exec --` (Quality & Test
+Discipline). Erlang/OTP MAY be mise-managed; when pinned, it lives in
+`mise.toml` alongside Elixir (currently `28.5.0.6`).
 
 **Backend (control plane + data plane).**
 
@@ -693,7 +694,7 @@ four permitted keyframes.
 ## Quality & Test Discipline
 
 - All Elixir commands MUST run through mise (`mise exec -- …`); the pinned
-  toolchain is `1.20.2-otp-28` per `.tool-versions`, and the bare PATH is stale.
+  toolchain is `1.20.2-otp-28` per `mise.toml`, and the bare PATH is stale.
 - `warnings_as_errors` is ON: a compiler warning is a build failure and MUST be
   fixed, not suppressed.
 - The pure core MUST hold test coverage above 90%. Wave, DAG, and breaker logic

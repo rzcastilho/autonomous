@@ -19,7 +19,7 @@ paid live CLI) is the remaining gate before fleet use.
 
 ## Requirements
 
-- Elixir **1.20.2** / OTP **28** (`.tool-versions`; `mise install`).
+- Elixir **1.20.2** / OTP **28** (`mise.toml`; `mise install`).
 - Claude Code CLI, authenticated (`ANTHROPIC_API_KEY` or equivalent).
 - `specify` CLI **v0.12.x**:
   ```
