@@ -69,6 +69,7 @@ Dark, near-black, low-chroma canvas. A single violet accent. Color carries **mea
 | `failed` | `#f43f5e` |
 | `pending` | `#64748b` |
 | `blocked` | `#475569` |
+| `awaiting` | `#fb923c` |
 
 **Rules**
 
@@ -88,6 +89,7 @@ Dark, near-black, low-chroma canvas. A single violet accent. Color carries **mea
   --accent-deep:#5a3fe0; --accent-shadow:#2a2350;
   --done:#34d399; --running:#38bdf8; --escalated:#fbbf24;
   --halted:#fb7185; --failed:#f43f5e; --pending:#64748b; --blocked:#475569;
+  --awaiting:#fb923c;
 }
 ```
 

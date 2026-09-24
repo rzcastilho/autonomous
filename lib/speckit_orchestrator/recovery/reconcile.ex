@@ -26,12 +26,17 @@ defmodule SpeckitOrchestrator.Recovery.Reconcile do
   @typedoc "A conflict reason: a bare atom, or a tag carrying diagnostic detail (025)."
   @type conflict_reason :: atom() | {atom(), map()}
 
-  @typedoc "The reconciled decision for one feature."
+  @typedoc """
+  The reconciled decision for one feature. `{:escalated, reason}` (029) is
+  the one variant that carries a reason — every other bare atom is
+  passthrough or clause 1's unconditional gate.
+  """
   @type result ::
           :done
           | {:resume, Pipeline.phase()}
           | :pending
           | :escalated
+          | {:escalated, term()}
           | :halted
           | :failed
           | {:conflict, conflict_reason()}
@@ -60,6 +65,14 @@ defmodule SpeckitOrchestrator.Recovery.Reconcile do
 
   # Clause 2 — `failed` stays `failed` (US3).
   def status(:failed, %Evidence{}, _run_shape), do: :failed
+
+  # 029, research.md R12: a persisted `:awaiting_answers` row reconciled at
+  # all only means its worker is already dead (a live one is drained and
+  # records its own escalation first, ahead of ever reaching restart
+  # reconciliation) — unconditional, like clause 1, since no amount of
+  # evidence makes an orphaned wait resumable on its own.
+  def status(:awaiting_answers, %Evidence{}, _run_shape),
+    do: {:escalated, {:needs_human, :restart}}
 
   # Clause 3 — `done` requires corroboration (US3): same shape-aware
   # done-signal formula as clause 4, applied to an already-terminal `:done`.

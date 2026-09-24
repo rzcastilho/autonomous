@@ -33,7 +33,7 @@ defmodule SpeckitOrchestrator.Store.BootTest do
     assert output =~ "BOOT_OK"
     assert output =~ "TABLES_OK true"
     assert output =~ "PROBE_OK true"
-    assert output =~ "VERSION [{:speckit_meta, :schema_version, 5}]"
+    assert output =~ "VERSION [{:speckit_meta, :schema_version, 6}]"
   end
 
   @tag :boot_subprocess
@@ -91,7 +91,7 @@ defmodule SpeckitOrchestrator.Store.BootTest do
       """)
 
     assert output =~ "BOOT_OK"
-    assert output =~ "SECOND_BOOT_ERROR {:schema_version_ahead, 6, 5}"
+    assert output =~ "SECOND_BOOT_ERROR {:schema_version_ahead, 7, 6}"
   end
 
   @tag :boot_subprocess
@@ -176,7 +176,7 @@ defmodule SpeckitOrchestrator.Store.BootTest do
 
     assert output =~ "BOOT_OK"
     assert output =~ "SECOND_BOOT_OK"
-    assert output =~ "VERSION_AFTER [{:speckit_meta, :schema_version, 5}]"
+    assert output =~ "VERSION_AFTER [{:speckit_meta, :schema_version, 6}]"
     # The row is still readable through the current decode, with every
     # appended field defaulted/backfilled — a migration, not a reset.
     # spec_number backfills from :number, which this synthetic row left nil.
@@ -238,7 +238,7 @@ defmodule SpeckitOrchestrator.Store.BootTest do
 
     assert output =~ "BOOT_OK"
     assert output =~ "SECOND_BOOT_OK"
-    assert output =~ "VERSION_AFTER [{:speckit_meta, :schema_version, 5}]"
+    assert output =~ "VERSION_AFTER [{:speckit_meta, :schema_version, 6}]"
     # pr_url survives untouched; advanced_with_findings is nil (appended);
     # spec_number backfills from this row's own :number (1) — feature 022.
     assert output =~ ~s(MIGRATED {"001", "https://github.com/o/repo/pull/1", nil, 1})

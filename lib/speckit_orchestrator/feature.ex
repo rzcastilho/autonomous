@@ -31,6 +31,7 @@ defmodule SpeckitOrchestrator.Feature do
   @type status ::
           :pending
           | :running
+          | :awaiting_answers
           | :done
           | :escalated
           | :halted

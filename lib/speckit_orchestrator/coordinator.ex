@@ -53,7 +53,7 @@ defmodule SpeckitOrchestrator.Coordinator do
   use GenServer
 
   alias SpeckitOrchestrator.{Feature, Ledger, Release, Store}
-  alias SpeckitOrchestrator.Store.{Health, Writer}
+  alias SpeckitOrchestrator.Store.{Health, Query, Writer}
 
   @type status :: Feature.status()
 
@@ -154,6 +154,21 @@ defmodule SpeckitOrchestrator.Coordinator do
   @impl true
   def handle_call(:status, _from, state) do
     {:reply, snapshot(state), state}
+  end
+
+  # 029, research.md R6: `:awaiting_answers`/`:running` are both non-terminal
+  # and both occupy the run's one in-flight slot (`Release.next/3`), so these
+  # only update `statuses` for `status/0`/`print_status/0` to read — no
+  # `advance/1`, since nothing more can be released either way, and no report
+  # field changes until the feature reaches a terminal status.
+  @impl true
+  def handle_info({:feature_awaiting, id}, state) do
+    {:noreply, %{state | statuses: Map.put(state.statuses, id, :awaiting_answers)}}
+  end
+
+  @impl true
+  def handle_info({:feature_resumed, id}, state) do
+    {:noreply, %{state | statuses: Map.put(state.statuses, id, :running)}}
   end
 
   # ---- orchestration ------------------------------------------------------
@@ -292,8 +307,32 @@ defmodule SpeckitOrchestrator.Coordinator do
       stopped_by: format_stopped(stopped),
       spend: spend(state),
       breaker_tripped: breaker_tripped?(state),
-      advanced_with_findings: advanced_with_findings(state, done)
+      advanced_with_findings: advanced_with_findings(state, done),
+      clarify_rounds: clarify_rounds_report(state)
     }
+  end
+
+  # 029, data-model.md Coordinator report, research.md R15: `%{}` when the
+  # mode is off (no rounds ever opened) or this Coordinator isn't store-backed
+  # (`run_key: nil`, most test Coordinators) — holds only features that opened
+  # at least one round, never an empty list.
+  defp clarify_rounds_report(%__MODULE__{run_key: nil}), do: %{}
+
+  defp clarify_rounds_report(%__MODULE__{run_key: run_key}) do
+    run_key
+    |> Query.clarify_rounds()
+    |> Enum.group_by(& &1.feature_id)
+    |> Map.new(fn {feature_id, rounds} ->
+      {feature_id, rounds |> Enum.sort_by(& &1.round) |> Enum.map(&round_summary/1)}
+    end)
+  end
+
+  defp round_summary(%{outcome: :answered} = r) do
+    %{round: r.round, seq: r.seq, outcome: r.outcome, asked_at: r.started_at, answered_at: r.answered_at}
+  end
+
+  defp round_summary(r) do
+    %{round: r.round, seq: r.seq, outcome: r.outcome, asked_at: r.started_at, closed_at: r.closed_at}
   end
 
   # Feature 021: derived from the reasons the Coordinator already retains, so

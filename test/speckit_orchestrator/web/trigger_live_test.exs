@@ -336,4 +336,99 @@ defmodule SpeckitOrchestrator.Web.TriggerLiveTest do
       assert mc_html =~ "auto_remediation_exhaustion_policy: :proceed"
     end
   end
+
+  # ---- 029 US4 launch controls (contracts/operator-surfaces.md Trigger form) ----
+
+  describe "interactive clarify launch controls" do
+    setup do
+      prior = %{
+        interactive_clarify: Application.get_env(:speckit_orchestrator, :interactive_clarify),
+        clarify_answer_timeout_s:
+          Application.get_env(:speckit_orchestrator, :clarify_answer_timeout_s),
+        clarify_max_rounds: Application.get_env(:speckit_orchestrator, :clarify_max_rounds)
+      }
+
+      on_exit(fn ->
+        Enum.each(prior, fn
+          {k, nil} -> Application.delete_env(:speckit_orchestrator, k)
+          {k, v} -> Application.put_env(:speckit_orchestrator, k, v)
+        end)
+      end)
+
+      :ok
+    end
+
+    test "the switch and its two fields are pre-filled from Config", %{conn: conn} do
+      point_backlog_at(@valid_dir)
+      Application.put_env(:speckit_orchestrator, :interactive_clarify, true)
+      Application.put_env(:speckit_orchestrator, :clarify_answer_timeout_s, 120)
+      Application.put_env(:speckit_orchestrator, :clarify_max_rounds, 2)
+
+      {:ok, _view, html} = live(conn, "/trigger")
+
+      assert html =~ ~s(data-interactive-clarify="true")
+      assert html =~ ~s(data-clarify-timeout)
+      assert html =~ ~s(value="2")
+    end
+
+    test "the timeout and rounds inputs are disabled while the switch is off, enabled once toggled on",
+         %{conn: conn} do
+      point_backlog_at(@valid_dir)
+
+      {:ok, view, html} = live(conn, "/trigger")
+      assert html =~ ~s(data-interactive-clarify="false")
+      assert html =~ ~s(data-clarify-timeout="" disabled="")
+      assert html =~ ~s(data-clarify-rounds="" disabled="")
+
+      html = render_click(view, "toggle_interactive_clarify", %{})
+
+      assert html =~ ~s(data-interactive-clarify="true")
+      refute html =~ ~s(data-clarify-timeout="" disabled)
+      refute html =~ ~s(data-clarify-rounds="" disabled)
+    end
+
+    test "an out-of-range timeout is refused before the run starts", %{conn: conn} do
+      point_backlog_at(@valid_dir)
+
+      {:ok, view, _html} = live(conn, "/trigger")
+
+      render_click(view, "toggle_interactive_clarify", %{})
+      render_change(view, "update_clarify", %{"answer_timeout_min" => "0", "max_rounds" => "2"})
+
+      html = render_click(view, "start_backlog", %{})
+
+      assert html =~ ~s(data-error="clarify-timeout")
+      refute Process.whereis(Coordinator)
+    end
+
+    test "an out-of-range round limit is refused before the run starts", %{conn: conn} do
+      point_backlog_at(@valid_dir)
+
+      {:ok, view, _html} = live(conn, "/trigger")
+
+      render_click(view, "toggle_interactive_clarify", %{})
+      render_change(view, "update_clarify", %{"answer_timeout_min" => "30", "max_rounds" => "9"})
+
+      html = render_click(view, "start_backlog", %{})
+
+      assert html =~ ~s(data-error="clarify-rounds")
+      refute Process.whereis(Coordinator)
+    end
+
+    test "start_opts/1 converts minutes to clarify_answer_timeout_s", %{conn: conn} do
+      point_backlog_at(@valid_dir)
+
+      {:ok, view, _html} = live(conn, "/trigger")
+
+      render_click(view, "toggle_interactive_clarify", %{})
+      render_change(view, "update_clarify", %{"answer_timeout_min" => "2", "max_rounds" => "1"})
+
+      result = render_click(view, "start_backlog", %{})
+      {:ok, _mc_view, mc_html} = follow_redirect(result, conn)
+
+      assert mc_html =~ "interactive_clarify: true"
+      assert mc_html =~ "clarify_answer_timeout_s: 120"
+      assert mc_html =~ "clarify_max_rounds: 1"
+    end
+  end
 end

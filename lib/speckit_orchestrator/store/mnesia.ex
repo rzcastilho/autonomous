@@ -48,14 +48,29 @@ defmodule SpeckitOrchestrator.Store.Mnesia do
   @spec create_tables() :: :ok | {:error, term()}
   def create_tables do
     Enum.reduce_while(Schema.tables(), :ok, fn spec, :ok ->
-      case create_table(spec) do
+      case create_table_spec(spec) do
         :ok -> {:cont, :ok}
         {:error, reason} -> {:halt, {:error, reason}}
       end
     end)
   end
 
-  defp create_table(%{name: name} = spec) do
+  @doc """
+  Create one named table from `Store.Schema`, idempotently
+  (`{:already_exists, _}` is success). Used by a `Store.Migrations` entry
+  that introduces a new table (a create, not a transform) — the same
+  create/tables `Store.Boot` already runs unconditionally at startup, so
+  this only matters for a node whose disk predates the table.
+  """
+  @spec create_table(atom()) :: :ok | {:error, term()}
+  def create_table(name) when is_atom(name) do
+    case Schema.table(name) do
+      %{} = spec -> create_table_spec(spec)
+      nil -> {:error, {:unknown_table, name}}
+    end
+  end
+
+  defp create_table_spec(%{name: name} = spec) do
     opts =
       [attributes: spec.attributes, type: spec.type, index: spec.index] ++
         [{spec.storage, [node()]}]
@@ -79,12 +94,19 @@ defmodule SpeckitOrchestrator.Store.Mnesia do
 
   @doc """
   Run `fun` (arity 0) inside a `:mnesia` transaction; `{:ok, result}` /
-  `{:error, reason}`, normalizing `:mnesia.transaction/1`'s
-  `{:atomic, _} | {:aborted, _}`.
+  `{:error, reason}`, normalizing `:mnesia.sync_transaction/1`'s
+  `{:atomic, _} | {:aborted, _}`. Deliberately `sync_transaction/1`, not
+  `transaction/1` (029 restart-drill finding): plain `transaction/1` can
+  return before a `disc_copies` write is actually flushed to the local disc
+  log, so a hard kill right after a successful write (e.g. a feature that
+  just entered `:awaiting_answers`) can lose the row entirely on restart.
+  `sync_transaction/1` blocks until the disc log is durably written before
+  returning, which every store write relies on transitively through this
+  one function (Principle I: the only module that calls `:mnesia`).
   """
   @spec transaction((-> result)) :: {:ok, result} | {:error, term()} when result: var
   def transaction(fun) when is_function(fun, 0) do
-    case :mnesia.transaction(fun) do
+    case :mnesia.sync_transaction(fun) do
       {:atomic, result} -> {:ok, result}
       {:aborted, reason} -> {:error, reason}
     end

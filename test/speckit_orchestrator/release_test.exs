@@ -72,6 +72,13 @@ defmodule SpeckitOrchestrator.ReleaseTest do
       assert Release.next(features, statuses, false) == :none
     end
 
+    test "an :awaiting_answers feature counts as in flight too (029, US1 stacked-backlog edge case)" do
+      features = [feat("001", 1), feat("002", 2), feat("003", 3)]
+      statuses = %{"001" => :awaiting_answers}
+
+      assert Release.next(features, statuses, false) == :none
+    end
+
     test "stop on :escalated: later features stay pending and are never returned" do
       features = [feat("001", 1), feat("002", 2), feat("003", 3)]
       statuses = %{"001" => :done, "002" => :escalated}

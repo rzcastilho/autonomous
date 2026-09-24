@@ -447,6 +447,291 @@ defmodule SpeckitOrchestrator.Store.Writer do
   end
 
   @doc """
+  Open an interactive-clarify round (029, data-model.md), one transaction:
+  writes the feature's `status: :awaiting_answers` and a new
+  `speckit_clarify_round` row with `outcome: :open`, `deadline_at` derived
+  from `round_info.answer_timeout_s`. `seq` is monotonic per
+  `{run_key, feature_id}` across invocations (existing rows are never
+  deleted, so counting them is enough — same technique as
+  `next_escalation_ordinal/2`). Returns the opened round's `seq` so the
+  caller (`FeatureRunner`) can address it in `answer_round/3`/`close_round/3`.
+
+  `round_info` is `%{round:, max_rounds:, questions_raw:, questions:,
+  answer_timeout_s:}`.
+  """
+  @spec record_feature_awaiting(run_key(), binary(), map()) ::
+          {:ok, pos_integer()} | {:error, term()}
+  def record_feature_awaiting({repo_id, run_id} = run_key, feature_id, round_info) do
+    run_transaction(fn ->
+      feature_key = Ids.feature_key(repo_id, run_id, feature_id)
+
+      case Mnesia.read(:speckit_feature_run, feature_key, :write) do
+        [tuple] ->
+          case Records.decode(:speckit_feature_run, tuple) do
+            {:ok, feature} ->
+              Mnesia.write(Records.encode(%{feature | status: :awaiting_answers}))
+
+              seq = next_clarify_seq(run_key, feature_id)
+              started_at = DateTime.utc_now()
+              deadline_at = DateTime.add(started_at, round_info.answer_timeout_s, :second)
+
+              Mnesia.write(
+                Records.encode(%Records.ClarifyRound{
+                  key: Ids.ordinal_id(repo_id, run_id, feature_id, seq),
+                  run_key: run_key,
+                  feature_id: feature_id,
+                  seq: seq,
+                  round: round_info.round,
+                  max_rounds: round_info.max_rounds,
+                  questions_raw: round_info.questions_raw,
+                  questions: normalize_questions(round_info.questions),
+                  started_at: started_at,
+                  deadline_at: deadline_at,
+                  outcome: :open,
+                  answers: nil,
+                  answered_at: nil,
+                  answered_via: nil,
+                  applied_at: nil,
+                  closed_at: nil
+                })
+              )
+
+              seq
+
+            {:error, damaged} ->
+              Mnesia.abort(damaged)
+          end
+
+        [] ->
+          Mnesia.abort({:absent, feature_key})
+      end
+    end)
+    |> case do
+      {:error, _reason} = error -> error
+      seq -> {:ok, seq}
+    end
+  end
+
+  @doc """
+  Set a feature back to `:running` after its interactive-clarify round is
+  answered (029), one transaction. Does not touch the round row itself —
+  callers write `outcome: :answered` via `answer_round/3` first.
+  """
+  @spec record_feature_resumed(run_key(), binary()) :: :ok | {:error, term()}
+  def record_feature_resumed({repo_id, run_id}, feature_id) do
+    run_transaction(fn ->
+      feature_key = Ids.feature_key(repo_id, run_id, feature_id)
+
+      case Mnesia.read(:speckit_feature_run, feature_key, :write) do
+        [tuple] ->
+          case Records.decode(:speckit_feature_run, tuple) do
+            {:ok, feature} ->
+              Mnesia.write(Records.encode(%{feature | status: :running}))
+              :ok
+
+            {:error, damaged} ->
+              Mnesia.abort(damaged)
+          end
+
+        [] ->
+          Mnesia.abort({:absent, feature_key})
+      end
+    end)
+  end
+
+  @doc """
+  Commit an operator answer to an open interactive-clarify round (029,
+  research.md R3), one guarded transaction: accepts only when the row is
+  `outcome: :open`, the submitted `seq` matches the row's `seq`, and
+  `now < deadline_at`. `payload` is `%{seq:, answers:, answered_via:}`
+  (`answers` is an `InteractiveClarify.AnswerSet.answers` map). Any other
+  state — already `:answered`/`:timed_out`/`:breaker`/`:drained`/
+  `:interrupted`, or a submission past the deadline — returns
+  `{:error, {:stale_round, current}}` and writes nothing (SC-006).
+  """
+  @spec answer_round(run_key(), binary(), map()) ::
+          :ok | {:error, {:stale_round, atom()}} | {:error, term()}
+  def answer_round({repo_id, run_id}, feature_id, %{seq: seq} = payload) do
+    run_transaction(fn ->
+      round_key = Ids.ordinal_id(repo_id, run_id, feature_id, seq)
+
+      case Mnesia.read(:speckit_clarify_round, round_key, :write) do
+        [tuple] ->
+          case Records.decode(:speckit_clarify_round, tuple) do
+            {:ok, %Records.ClarifyRound{outcome: :open, deadline_at: deadline_at} = round} ->
+              now = DateTime.utc_now()
+
+              if DateTime.compare(now, deadline_at) == :lt do
+                Mnesia.write(
+                  Records.encode(%{
+                    round
+                    | outcome: :answered,
+                      answers: payload.answers,
+                      answered_at: now,
+                      answered_via: Map.get(payload, :answered_via)
+                  })
+                )
+
+                :ok
+              else
+                Mnesia.abort({:stale_round, :timed_out})
+              end
+
+            {:ok, %Records.ClarifyRound{outcome: current}} ->
+              Mnesia.abort({:stale_round, current})
+
+            {:error, damaged} ->
+              Mnesia.abort(damaged)
+          end
+
+        [] ->
+          Mnesia.abort({:absent, round_key})
+      end
+    end)
+  end
+
+  @doc """
+  Close an interactive-clarify round on any non-answer exit (029, research.md
+  R3/R5), one guarded transaction: flips the row out of `outcome: :open` to
+  `payload.outcome` (`:timed_out | :breaker | :drained | :interrupted`).
+  Fails, and writes nothing, when the row is already out of `:open` (an
+  answer won the race).
+  """
+  @spec close_round(run_key(), binary(), map()) ::
+          :ok | {:error, {:stale_round, atom()}} | {:error, term()}
+  def close_round({repo_id, run_id}, feature_id, %{seq: seq, outcome: outcome})
+      when outcome in [:timed_out, :breaker, :drained, :interrupted] do
+    run_transaction(fn ->
+      round_key = Ids.ordinal_id(repo_id, run_id, feature_id, seq)
+
+      case Mnesia.read(:speckit_clarify_round, round_key, :write) do
+        [tuple] ->
+          case Records.decode(:speckit_clarify_round, tuple) do
+            {:ok, %Records.ClarifyRound{outcome: :open} = round} ->
+              Mnesia.write(
+                Records.encode(%{round | outcome: outcome, closed_at: DateTime.utc_now()})
+              )
+
+              :ok
+
+            {:ok, %Records.ClarifyRound{outcome: current}} ->
+              Mnesia.abort({:stale_round, current})
+
+            {:error, damaged} ->
+              Mnesia.abort(damaged)
+          end
+
+        [] ->
+          Mnesia.abort({:absent, round_key})
+      end
+    end)
+  end
+
+  @doc """
+  Mark an answered round's answers as consumed by the clarify re-run (029),
+  one transaction. Idempotent: a second call for the same `round_key` leaves
+  the first `applied_at` untouched.
+  """
+  @spec mark_round_applied(SpeckitOrchestrator.Store.Ids.ordinal_id(), DateTime.t()) ::
+          :ok | {:error, term()}
+  def mark_round_applied(round_key, applied_at \\ DateTime.utc_now()) do
+    run_transaction(fn ->
+      case Mnesia.read(:speckit_clarify_round, round_key, :write) do
+        [tuple] ->
+          case Records.decode(:speckit_clarify_round, tuple) do
+            {:ok, round} ->
+              Mnesia.write(Records.encode(%{round | applied_at: round.applied_at || applied_at}))
+              :ok
+
+            {:error, damaged} ->
+              Mnesia.abort(damaged)
+          end
+
+        [] ->
+          Mnesia.abort({:absent, round_key})
+      end
+    end)
+  end
+
+  @doc """
+  Reconcile a persisted `:awaiting_answers` feature with no live worker into
+  an escalation on restart (029, research.md R12), one transaction: the
+  feature's own open round (if any) → `:interrupted`, the feature →
+  `:escalated` with reason `{:needs_human, :restart}`, and the escalation
+  recorded — the questions stay on the round row rather than being lost.
+  """
+  @spec reconcile_awaiting_answers(run_key(), binary()) :: :ok | {:error, term()}
+  def reconcile_awaiting_answers({repo_id, run_id} = run_key, feature_id) do
+    run_transaction(fn ->
+      feature_key = Ids.feature_key(repo_id, run_id, feature_id)
+
+      case Mnesia.read(:speckit_feature_run, feature_key, :write) do
+        [tuple] ->
+          case Records.decode(:speckit_feature_run, tuple) do
+            {:ok, feature} ->
+              questions_raw = close_open_round(run_key, feature_id)
+
+              Mnesia.write(
+                Records.encode(%{
+                  feature
+                  | status: :escalated,
+                    terminal_reason: {:needs_human, :restart},
+                    ended_at: DateTime.utc_now()
+                })
+              )
+
+              ordinal = next_escalation_ordinal(run_key, feature_id)
+
+              Mnesia.write(
+                Records.encode(%Records.Escalation{
+                  id: Ids.ordinal_id(repo_id, run_id, feature_id, ordinal),
+                  run_key: run_key,
+                  feature_id: feature_id,
+                  kind: :escalated,
+                  phase: :clarify,
+                  severity: nil,
+                  reason: {:needs_human, :restart},
+                  evidence: %{questions: questions_raw},
+                  raised_at: DateTime.utc_now(),
+                  resolution: nil
+                })
+              )
+
+              :ok
+
+            {:error, damaged} ->
+              Mnesia.abort(damaged)
+          end
+
+        [] ->
+          Mnesia.abort({:absent, feature_key})
+      end
+    end)
+  end
+
+  defp close_open_round(run_key, feature_id) do
+    :speckit_clarify_round
+    |> Mnesia.index_read(run_key, :run_key)
+    |> Enum.find_value(fn tuple ->
+      case Records.decode(:speckit_clarify_round, tuple) do
+        {:ok, %Records.ClarifyRound{feature_id: ^feature_id, outcome: :open} = round} -> round
+        _ -> nil
+      end
+    end)
+    |> case do
+      nil ->
+        nil
+
+      %Records.ClarifyRound{} = round ->
+        Mnesia.write(
+          Records.encode(%{round | outcome: :interrupted, closed_at: DateTime.utc_now()})
+        )
+
+        round.questions_raw
+    end
+  end
+
+  @doc """
   Record an escalation or halt (FR-025), one transaction. `escalation` is
   `%{feature_id:, kind:, phase:, reason:, evidence:, severity: (optional)}`.
   """
@@ -908,4 +1193,23 @@ defmodule SpeckitOrchestrator.Store.Writer do
     |> length()
     |> Kernel.+(1)
   end
+
+  # Monotonic per `{run_key, feature_id}` across invocations (resumes):
+  # `speckit_clarify_round` rows are never deleted, so counting is enough —
+  # same technique as `next_escalation_ordinal/2`.
+  defp next_clarify_seq(run_key, feature_id) do
+    :speckit_clarify_round
+    |> Mnesia.index_read(run_key, :run_key)
+    |> Enum.count(fn tuple -> elem(tuple, 3) == feature_id end)
+    |> Kernel.+(1)
+  end
+
+  # Stored as plain maps (data-model.md), not `NeedsHuman.Question` structs —
+  # keeps the store's decode boundary free of a pure-core module dependency
+  # and matches `Export.encode/1`'s existing plain-data expectations.
+  defp normalize_questions({:numbered, questions}) do
+    {:numbered, Enum.map(questions, &Map.from_struct/1)}
+  end
+
+  defp normalize_questions({:freeform, text}), do: {:freeform, text}
 end

@@ -14,6 +14,7 @@ defmodule SpeckitOrchestrator do
     Coordinator,
     Feature,
     FeatureRunner,
+    InteractiveClarify,
     Layout,
     Ledger,
     Pipeline,
@@ -34,7 +35,9 @@ defmodule SpeckitOrchestrator do
     Workers
   }
 
-  alias SpeckitOrchestrator.Store.{Capacity, Export, Migrations, Prune, Writer}
+  alias SpeckitOrchestrator.Store.{Capacity, Export, Ids, Migrations, Prune, Query, Writer}
+  alias SpeckitOrchestrator.InteractiveClarify.AnswerSet
+  alias SpeckitOrchestrator.NeedsHuman
 
   require Logger
 
@@ -121,6 +124,7 @@ defmodule SpeckitOrchestrator do
     # nothing and creates nothing.
     with :ok <- reject_retired_opts(opts),
          {:ok, _settings} <- preflight_remediation(run_context),
+         {:ok, _settings} <- preflight_interactive_clarify(run_context),
          :ok <- preflight_parked_run(),
          {:ok, layout} <- preflight_layout(opts),
          {:ok, run_key} <- open_or_continue_run(opts, run_context, layout) do
@@ -267,6 +271,16 @@ defmodule SpeckitOrchestrator do
     end
   end
 
+  # 029, FR-001/FR-017: the interactive-clarify knobs go through the single
+  # validator (`InteractiveClarify.Settings.from_context/1`), the same
+  # preflight shape as remediation — refused before any store write.
+  defp preflight_interactive_clarify(run_context) do
+    case InteractiveClarify.Settings.from_context(run_context) do
+      {:ok, settings} -> {:ok, settings}
+      {:error, reason} -> {:error, {:preflight, [reason]}}
+    end
+  end
+
   # Repository-identity + Layout resolution (FR-011), once per run. `:layout`
   # lets a caller that already resolved one (a resume path rebuilding it from
   # the manifest's recorded segment+scope, T033, or `run_spec/2`'s ad-hoc
@@ -399,9 +413,21 @@ defmodule SpeckitOrchestrator do
   defp blank?(nil), do: true
   defp blank?(description) when is_binary(description), do: String.trim(description) == ""
 
-  @doc "Live run snapshot (statuses, in-flight, spend, report)."
+  @doc """
+  Live run snapshot (statuses, in-flight, spend, report). Gains `:awaiting`
+  (029, contracts/facade-api.md Status) — `%{feature_id => %{round,
+  max_rounds, started_at, deadline_at}}`, sourced from the persisted round
+  rows rather than Coordinator state, so it reads correctly even across a
+  restart. `%{}` when nothing is currently awaiting an answer.
+  """
   @spec status() :: map()
-  def status, do: Coordinator.status(@coordinator)
+  def status, do: Map.put(Coordinator.status(@coordinator), :awaiting, awaiting_snapshot())
+
+  defp awaiting_snapshot do
+    Map.new(pending_questions(), fn p ->
+      {p.feature_id, Map.take(p, [:round, :max_rounds, :started_at, :deadline_at])}
+    end)
+  end
 
   @doc """
   Read-only listing of every worker currently registered for `repo`
@@ -417,6 +443,122 @@ defmodule SpeckitOrchestrator do
   @doc "Print the live run status as a table (iex operator surface)."
   @spec print_status() :: :ok
   def print_status, do: status() |> Report.format_status() |> IO.puts()
+
+  @doc """
+  Every question currently awaiting an operator answer for `repo`'s current
+  run (029, contracts/facade-api.md `pending_questions/0,1`). `[]` when
+  nothing waits; never raises on an absent run.
+  """
+  @spec pending_questions(keyword()) :: [map()]
+  def pending_questions(opts \\ []) do
+    repo_id = RepoIdentity.partition(Keyword.get(opts, :repo, Config.repo()))
+
+    case Store.current_run_key(repo_id) do
+      nil -> []
+      run_key -> run_key |> Query.open_clarify_rounds() |> Enum.map(&pending_shape(run_key, &1))
+    end
+  end
+
+  defp pending_shape({repo_id, run_id}, round) do
+    %{
+      feature_id: round.feature_id,
+      spec_label: spec_label_for({repo_id, run_id}, round.feature_id),
+      seq: round.seq,
+      round: round.round,
+      max_rounds: round.max_rounds,
+      questions: NeedsHuman.rehydrate(round.questions),
+      questions_raw: round.questions_raw,
+      started_at: round.started_at,
+      deadline_at: round.deadline_at
+    }
+  end
+
+  defp spec_label_for(run_key, feature_id) do
+    with {:ok, %{features: features}} <- Store.run(run_key),
+         %{spec_number: n} when is_integer(n) <-
+           Enum.find(features, &(&1.feature_id == feature_id)) do
+      String.pad_leading(Integer.to_string(n), 3, "0")
+    else
+      _ -> nil
+    end
+  end
+
+  @doc """
+  Submit an operator answer to `feature_id`'s open interactive-clarify round
+  `seq` (029, contracts/facade-api.md `answer/3,4`). `answers` is
+  `%{"Q1" => "…"}` / a keyword list, or a plain string for a freeform round.
+  `opts[:via]` is `:console | :iex` (default `:iex`), recorded as
+  `answered_via`. Builds the `AnswerSet` from the round's own stored parse
+  and refuses before any write (Principle II) — a second submission for an
+  already-`:answered` (or otherwise closed) round refuses with
+  `{:error, {:stale_round, outcome}}` and does nothing (SC-006).
+  """
+  @spec answer(String.t(), pos_integer(), map() | keyword() | String.t(), keyword()) ::
+          :ok
+          | {:error, :not_awaiting}
+          | {:error, {:stale_round, atom()}}
+          | {:error, {:missing_answer, String.t()}}
+          | {:error, :empty_answer}
+  def answer(feature_id, seq, answers, opts \\ []) do
+    repo_id = RepoIdentity.partition(Keyword.get(opts, :repo, Config.repo()))
+
+    case Store.current_run_key(repo_id) do
+      nil ->
+        {:error, :not_awaiting}
+
+      {repo_id, run_id} = run_key ->
+        round_key = Ids.ordinal_id(repo_id, run_id, feature_id, seq)
+
+        case Query.clarify_round(round_key) do
+          {:ok, %{outcome: :open} = round} ->
+            submit_answer(run_key, round_key, feature_id, round, answers, opts)
+
+          {:ok, %{outcome: other}} ->
+            {:error, {:stale_round, other}}
+
+          {:error, :absent} ->
+            {:error, :not_awaiting}
+        end
+    end
+  end
+
+  defp submit_answer(run_key, round_key, feature_id, round, raw_answers, opts) do
+    questions = NeedsHuman.rehydrate(round.questions)
+
+    with {:ok, answer_set} <- AnswerSet.build(questions, normalize_answers(raw_answers)) do
+      via = Keyword.get(opts, :via, :iex)
+
+      case Writer.answer_round(run_key, feature_id, %{
+             seq: round.seq,
+             answers: answer_set.answers,
+             answered_via: via
+           }) do
+        :ok ->
+          notify_clarify_workers(elem(run_key, 0), round_key)
+          :ok
+
+        {:error, _} = error ->
+          error
+      end
+    end
+  end
+
+  defp normalize_answers(answers) when is_binary(answers), do: %{"*" => answers}
+
+  defp normalize_answers(answers) when is_map(answers),
+    do: Map.new(answers, fn {k, v} -> {to_string(k), v} end)
+
+  defp normalize_answers(answers) when is_list(answers),
+    do: Map.new(answers, fn {k, v} -> {to_string(k), v} end)
+
+  # At most one registered worker per repository by construction (one
+  # in-flight run at a time), but every registered pid is notified — a
+  # harmless no-op wake-up for any that isn't the one waiting on this round.
+  defp notify_clarify_workers(repo_id, round_key) do
+    repo_id
+    |> Workers.in_flight()
+    |> Enum.each(&send(&1.pid, {:clarify_answered, round_key}))
+  end
 
   @doc """
   Prepare a previously-escalated/halted feature for re-run after a human has
@@ -1563,19 +1705,47 @@ defmodule SpeckitOrchestrator do
   # through unchanged.
   defp guard_active_run(opts) do
     if Keyword.get(opts, :force, false) do
+      # 029, contracts/facade-api.md § Resume guard: `:force` never special-
+      # cases an awaiting feature — draining it is exactly what the generic
+      # `Workers.drain/1` below already does (its tick loop checks
+      # `Workers.drain_requested?()` first, ahead of the round row itself),
+      # which lands the same `{:needs_human, :drained}` escalation the plain
+      # drain fallback (T041) always produces.
       stop_previous_run()
       Workers.drain(guard_repo_id(opts))
     else
-      case coordinator_active_pid() do
-        {:active, pid} ->
-          {:error, {:active_run, pid}}
+      case awaiting_feature(opts) do
+        {:awaiting, feature_id} ->
+          {:error, {:awaiting_answers, feature_id}}
 
-        :inactive ->
-          case Workers.in_flight(guard_repo_id(opts)) do
-            [%{pid: pid} | _rest] -> {:error, {:active_run, pid}}
-            [] -> :ok
+        :none ->
+          case coordinator_active_pid() do
+            {:active, pid} ->
+              {:error, {:active_run, pid}}
+
+            :inactive ->
+              case Workers.in_flight(guard_repo_id(opts)) do
+                [%{pid: pid} | _rest] -> {:error, {:active_run, pid}}
+                [] -> :ok
+              end
           end
       end
+    end
+  end
+
+  # 029, contracts/facade-api.md § Resume guard: checked ahead of
+  # `{:active_run, pid}` so `resume/2`/`continue_run/1`/`resume_run/1` name
+  # the awaiting feature specifically rather than the generic live-run
+  # refusal. `:none` on any absent/damaged run — never raises.
+  defp awaiting_feature(opts) do
+    repo_id = guard_repo_id(opts)
+
+    with run_key when not is_nil(run_key) <- Store.current_run_key(repo_id),
+         {:ok, detail} <- Store.run(run_key),
+         %{feature_id: id} <- Enum.find(detail.features, &(&1.status == :awaiting_answers)) do
+      {:awaiting, id}
+    else
+      _ -> :none
     end
   end
 

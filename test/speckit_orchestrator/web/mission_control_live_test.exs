@@ -1291,4 +1291,53 @@ defmodule SpeckitOrchestrator.Web.MissionControlLiveTest do
     refute row =~ ">—<"
     assert elapsed_seconds(row) >= 0
   end
+
+  # ---- 029 US4: awaiting pill (contracts/operator-surfaces.md Every status surface) ----
+
+  test "an awaiting feature shows the round/waited/left pill and its row links to Escalations",
+       %{conn: conn} do
+    repo_id = RepoIdentity.partition(Config.repo())
+
+    {:ok, run_id} =
+      Writer.open_run(repo_id, %{
+        features: [
+          %{
+            feature_id: "701",
+            slug: "slug-701",
+            path: "701.md",
+            number: 701,
+            group: :backlog,
+            created_at: nil
+          }
+        ],
+        settings: %{},
+        scope: :ad_hoc,
+        layout: %{}
+      })
+
+    run_key = {repo_id, run_id}
+
+    {:ok, _seq} =
+      Writer.record_feature_awaiting(run_key, "701", %{
+        round: 1,
+        max_rounds: 3,
+        questions_raw: "## NEEDS HUMAN\n\nWhich timezone?",
+        questions: {:freeform, "Which timezone?"},
+        answer_timeout_s: 1_800
+      })
+
+    pid = start_coordinator([feat("701", 701)])
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    send(pid, {:feature_awaiting, "701"})
+    :sys.get_state(pid)
+
+    {:ok, _view, html} = live(conn, "/")
+
+    assert html =~ ~s(data-status="awaiting_answers")
+    assert html =~ "round 1/3"
+    assert html =~ "waited"
+    assert html =~ "left"
+    assert html =~ "/escalations#awaiting-701"
+  end
 end

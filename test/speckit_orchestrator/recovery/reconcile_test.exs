@@ -170,6 +170,28 @@ defmodule SpeckitOrchestrator.Recovery.ReconcileTest do
     end
   end
 
+  # ---- 029 (research.md R12): an orphaned interactive-clarify wait --------
+
+  describe "status/3 — a persisted :awaiting_answers row with no live worker" do
+    test "reconciles unconditionally to {:escalated, {:needs_human, :restart}}, like a gate" do
+      ev = evidence(%{branch_committed?: true, pr_record?: true, final_marker?: true})
+
+      assert Reconcile.status(:awaiting_answers, ev, :ad_hoc) ==
+               {:escalated, {:needs_human, :restart}}
+    end
+
+    test "no evidence/shape combination changes the outcome" do
+      shapes = [{:breakdown, "core-ledger"}, :ad_hoc]
+
+      for shape <- shapes, branch? <- [true, false], pr? <- [true, false] do
+        ev = evidence(%{branch_committed?: branch?, pr_record?: pr?})
+
+        assert Reconcile.status(:awaiting_answers, ev, shape) ==
+                 {:escalated, {:needs_human, :restart}}
+      end
+    end
+  end
+
   # ---- US3 (T017): clause 2 — failed passthrough -----------------------------
 
   describe "status/3 clause 2 — failed stays failed" do

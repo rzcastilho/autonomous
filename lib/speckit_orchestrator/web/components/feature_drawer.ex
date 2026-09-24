@@ -27,6 +27,8 @@ defmodule SpeckitOrchestrator.Web.FeatureDrawerComponent do
   attr(:on_close, :string, default: "close_drawer")
 
   def feature_drawer(assigns) do
+    assigns = assign(assigns, :awaiting, awaiting_meta(awaiting_for(assigns.feature_id)))
+
     ~H"""
     <div class="feature-drawer-backdrop" phx-click={@on_close}></div>
     <aside
@@ -41,6 +43,7 @@ defmodule SpeckitOrchestrator.Web.FeatureDrawerComponent do
           <div class="drawer-title-row">
             <span class="drawer-id">{@feature_id}</span>
             <.status_pill :if={@feature} status={@feature[:status] || :pending} />
+            <span :if={@awaiting} class="awaiting-meta" data-awaiting-meta>{@awaiting}</span>
           </div>
           <div class="drawer-slug">{(@feature && @feature[:slug]) || "—"}</div>
           <div class="drawer-branch">feature/{@feature_id}-{(@feature && @feature[:slug]) || "…"}</div>
@@ -159,8 +162,9 @@ defmodule SpeckitOrchestrator.Web.FeatureDrawerComponent do
   defp phase_cell_state(nil, _status), do: "pending"
   defp phase_cell_state(%{state: :completed}, _status), do: "completed"
 
-  defp phase_cell_state(%{state: :active}, status) when status in [:escalated, :halted, :failed],
-    do: to_string(status)
+  defp phase_cell_state(%{state: :active}, status)
+       when status in [:escalated, :halted, :failed, :awaiting_answers],
+       do: to_string(status)
 
   defp phase_cell_state(%{state: :active}, _status), do: "active"
   defp phase_cell_state(_cell, _status), do: "pending"
@@ -231,5 +235,13 @@ defmodule SpeckitOrchestrator.Web.FeatureDrawerComponent do
       {run_id, nil} -> "/transcripts?run_id=#{run_id}&feature=#{feature_id}"
       {run_id, phase} -> "/transcripts?run_id=#{run_id}&feature=#{feature_id}&phase=#{phase}"
     end
+  end
+
+  # 029, contracts/operator-surfaces.md "Every status surface": the drawer is
+  # a plain function component with no assign of its own for this, so it
+  # reads the current repo's open rounds directly — a single cheap
+  # transactional read, same call `EscalationsLive` makes.
+  defp awaiting_for(feature_id) do
+    Enum.find(SpeckitOrchestrator.pending_questions(), &(&1.feature_id == feature_id))
   end
 end
