@@ -53,6 +53,15 @@ defmodule SpeckitOrchestrator.Telemetry do
     `attempt` / `limit` **only while the loop is enabled**; with the loop off
     the metadata map is byte-identical to pre-017 (FR-010, SC-007a).
 
+  Events (run-level, no `feature_id`; emitted by `Coordinator.init/1`):
+
+    * `[:speckit, :run, :start]` — measurements `%{system_time}`, metadata
+      `%{run_key}` (`nil` for a store-less Coordinator). Fires once per
+      Coordinator start, including a crash-recovery restart of the same run.
+      Feature ids are per-wave, so `ConsoleProjection` drops its per-feature
+      slices when `run_key` changes — otherwise wave B's `002` inherits
+      wave A's `002` phase timeline.
+
   Events (run-level, no `feature_id`; `specs/016-resume-backlog-scope/contracts/manifest-guard.md`):
 
     * `[:speckit, :run, :scope_narrowing_refused]` — measurements
@@ -122,6 +131,7 @@ defmodule SpeckitOrchestrator.Telemetry do
     [:speckit, :remediation, :start],
     [:speckit, :remediation, :stop],
     [:speckit, :remediation, :exception],
+    [:speckit, :run, :start],
     [:speckit, :run, :scope_narrowing_refused],
     [:speckit, :store, :write_failed],
     [:speckit, :store, :capacity_refused],

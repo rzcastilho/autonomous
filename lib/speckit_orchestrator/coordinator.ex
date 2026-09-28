@@ -133,6 +133,12 @@ defmodule SpeckitOrchestrator.Coordinator do
       self_pid: self()
     }
 
+    :telemetry.execute(
+      [:speckit, :run, :start],
+      %{system_time: System.system_time()},
+      %{run_key: state.run_key}
+    )
+
     {:ok, state, {:continue, :release}}
   end
 

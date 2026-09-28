@@ -372,6 +372,68 @@ defmodule SpeckitOrchestrator.ConsoleReadModelTest do
     end
   end
 
+  describe "apply_event/4 — [:speckit, :run, :start]" do
+    defp finished_002(model) do
+      model
+      |> ConsoleReadModel.apply_event(
+        [:speckit, :phase, :start],
+        %{system_time: 1},
+        %{feature_id: "002", phase: :specify, model: "sonnet"}
+      )
+      |> ConsoleReadModel.apply_event(
+        [:speckit, :phase, :stop],
+        %{duration: 10},
+        %{feature_id: "002", phase: :specify, outcome: :ok, cost: 0.5, model: "sonnet"}
+      )
+    end
+
+    defp run_start(model, run_key),
+      do: ConsoleReadModel.apply_event(model, [:speckit, :run, :start], %{}, %{run_key: run_key})
+
+    test "a new run drops the previous run's feature slices but keeps the feed" do
+      model =
+        ConsoleReadModel.new()
+        |> run_start({"repo", "r000009"})
+        |> finished_002()
+        |> run_start({"repo", "r000010"})
+
+      assert model.features == %{}
+      assert model.run_key == {"repo", "r000010"}
+      assert [%{text: "run started"} | older] = model.feed
+      assert Enum.any?(older, &(&1.feature_id == "002"))
+    end
+
+    test "a restart of the same run keeps its feature slices" do
+      model =
+        ConsoleReadModel.new()
+        |> run_start({"repo", "r000009"})
+        |> finished_002()
+
+      assert run_start(model, {"repo", "r000009"}) == model
+    end
+
+    test "a same-id feature in the next wave merges no inherited phases" do
+      projection =
+        ConsoleReadModel.new()
+        |> run_start({"repo", "r000009"})
+        |> finished_002()
+        |> run_start({"repo", "r000010"})
+
+      coordinator_status = %{
+        per_feature: %{"002" => %{status: :pending}},
+        totals: %{},
+        inflight: [],
+        finished?: false,
+        report: nil
+      }
+
+      merged = ConsoleReadModel.merge(coordinator_status, nil, projection)
+
+      assert merged.per_feature["002"].phases == %{}
+      assert merged.per_feature["002"].spend == 0.0
+    end
+  end
+
   describe "apply_event/4 — [:speckit, :run, :scope_narrowing_refused] (specs/016-resume-backlog-scope)" do
     test "pushes one :warn feed entry with feature_id nil naming the dropped ids, and leaves features untouched" do
       model =

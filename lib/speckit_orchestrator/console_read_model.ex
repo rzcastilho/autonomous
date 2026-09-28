@@ -60,11 +60,15 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
           pr_url: String.t() | nil
         }
 
-  @type t :: %{features: %{String.t() => feature_slice()}, feed: [event_entry()]}
+  @type t :: %{
+          features: %{String.t() => feature_slice()},
+          feed: [event_entry()],
+          run_key: term()
+        }
 
   @doc "An empty console read-model."
   @spec new() :: t()
-  def new, do: %{features: %{}, feed: []}
+  def new, do: %{features: %{}, feed: [], run_key: nil}
 
   @doc """
   Fold one telemetry event into the model. Pure — no side effects, no
@@ -74,7 +78,7 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
   `[:speckit, :phase, :start/:stop/:exception]`, `[:speckit, :feature,
   :terminal]`, `[:speckit, :chunk, :start/:stop/:exception/:resolved]`,
   `[:speckit, :remediation, :start/:stop/:exception]`,
-  `[:speckit, :run, :scope_narrowing_refused]`, and
+  `[:speckit, :run, :start]`, `[:speckit, :run, :scope_narrowing_refused]`, and
   `[:speckit, :publish, :opened/:failed]`. Any other event passes through
   unchanged.
   """
@@ -311,6 +315,24 @@ defmodule SpeckitOrchestrator.ConsoleReadModel do
     |> push_feed(
       entry(id, :analyze, :error, "auto-remediation exception: #{inspect(meta[:reason])}")
     )
+  end
+
+  # ---- run start -------------------------------------------------------------
+  # Feature ids are per-wave (`NNN` of `NNN-slug.md`), and this model is keyed
+  # by id alone and outlives any one run — so a new run's `002` used to merge
+  # the previous wave's `002` slice (phases, spend, windows) and draw phases
+  # that never ran. A different `run_key` drops every slice; the same one (a
+  # crash-recovery restart of the same run) keeps them. The feed survives:
+  # it is a chronological log, not per-run state.
+
+  def apply_event(model, [:speckit, :run, :start], _measurements, %{run_key: run_key}) do
+    if Map.get(model, :run_key) == run_key do
+      model
+    else
+      model
+      |> Map.merge(%{features: %{}, run_key: run_key})
+      |> push_feed(entry(nil, nil, :info, "run started"))
+    end
   end
 
   # ---- run-level guard refusal (specs/016-resume-backlog-scope) -------------

@@ -49,6 +49,23 @@ defmodule SpeckitOrchestrator.CoordinatorTest do
     refute Map.has_key?(report, :blocked)
   end
 
+  test "init emits [:speckit, :run, :start] carrying the run_key" do
+    test_pid = self()
+    handler_id = {__MODULE__, :run_start, make_ref()}
+
+    :telemetry.attach(
+      handler_id,
+      [:speckit, :run, :start],
+      fn _event, _meas, meta, _cfg -> send(test_pid, {:run_start, self(), meta}) end,
+      nil
+    )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+
+    pid = start([])
+    assert_receive {:run_start, ^pid, %{run_key: nil}}, 1_000
+  end
+
   test "empty backlog finishes immediately with no stopped_by" do
     start([])
     assert_receive {:run_complete, report}, 1_000
