@@ -688,10 +688,9 @@ defmodule SpeckitOrchestrator.Web.PipelineDagLiveTest do
   end
 
   # Both tests below use an id ("902"/"903") outside the fixture backlog
-  # (rendered in the ad-hoc lane) on purpose: the real telemetry events they
-  # emit fold into the node-global `ConsoleProjection` for the rest of the
-  # suite's lifetime — reusing "001" here would leak an open :clarify window
-  # into every later test that asserts on that id's phase strip.
+  # (rendered in the ad-hoc lane). The real telemetry events they emit fold
+  # into the node-global `ConsoleProjection`; `StoreCase` resets it before
+  # each test, so an open :clarify window no longer leaks past this test.
   test "a live phase's window grows the drawer's ELAPSED on the next reconcile tick, same as Mission Control (US2)",
        %{conn: conn} do
     repo = real_repo_with_backlog()

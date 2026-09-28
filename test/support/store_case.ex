@@ -38,7 +38,28 @@ defmodule SpeckitOrchestrator.StoreCase do
     stop_lingering_run()
     Enum.each(Schema.names(), &Mnesia.clear_table/1)
     Health.clear()
+    reset_console_projection()
     :ok
+  end
+
+  # `ConsoleProjection` is node-global and never persists, so every phase
+  # telemetry event any earlier test emitted is still folded into it. With no
+  # live Coordinator, `ConsoleReadModel.overlay_observed/2` turns a leftover
+  # `:active` phase cell into a `:running` row — Mission Control then draws the
+  # recovered-run banner instead of "no active run", and the Pipeline Chain
+  # grows a phantom ad-hoc lane instead of the empty backlog. Which test ran
+  # first decided the outcome. `:sys.replace_state/2` is processed in mailbox
+  # order, so telemetry already queued from an earlier test is folded (and
+  # discarded) before the reset lands.
+  defp reset_console_projection do
+    case Process.whereis(SpeckitOrchestrator.ConsoleProjection) do
+      nil ->
+        :ok
+
+      pid ->
+        :sys.replace_state(pid, &%{&1 | model: SpeckitOrchestrator.ConsoleReadModel.new()})
+        :ok
+    end
   end
 
   # A run's Coordinator and StackTracker live under `CoordinatorSup`, not linked
