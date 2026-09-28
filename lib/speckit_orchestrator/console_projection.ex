@@ -127,6 +127,11 @@ defmodule SpeckitOrchestrator.ConsoleProjection do
     broadcast_feed(state, model)
   end
 
+  # A new run may have dropped every feature slice; open LiveViews reseed from
+  # it on the next reconcile tick.
+  defp broadcast_diff(state, [:speckit, :run, :start], model, _metadata),
+    do: broadcast_feed(state, model)
+
   defp broadcast_diff(state, [:speckit, :run, :scope_narrowing_refused], model, _metadata),
     do: broadcast_feed(state, model)
 
