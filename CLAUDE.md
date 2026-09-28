@@ -69,7 +69,10 @@ mise exec -- mix compile
 ```
 
 `warnings_as_errors` is on — a warning fails the build. `mise.toml` also pins
-Erlang/OTP **28.5.0.6** alongside Elixir.
+Erlang/OTP **28.5.0.6** alongside Elixir. On a fresh checkout mise refuses the
+file ("Config files in …/mise.toml are not trusted") and every `mise exec`
+fails — review it, then `mise trust mise.toml` once; the first run installs the
+pinned Erlang.
 
 ## Commands
 
