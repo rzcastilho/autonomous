@@ -377,7 +377,50 @@ defmodule SpeckitOrchestrator.Web.RunDetailLiveTest do
 
     assert html =~ ~s(data-feature="002")
     # :never_started folds to the "blocked" contract status — its shared
-    # meaning, per docs/design-constitution.md §II — so no eighth color exists.
+    # meaning, per docs/design-constitution.md §II — it gets no color of its own.
     assert html =~ ~s(data-status="blocked")
+  end
+
+  # ---- 029 US4: round-history block (contracts/operator-surfaces.md Run Detail) ----
+
+  test "the round-history block renders an answered round and a rounds-exhausted evidence row",
+       %{conn: conn, repo_id: repo_id} do
+    run_id = open(repo_id, ["001"])
+    run_key = {repo_id, run_id}
+
+    {:ok, seq} =
+      Writer.record_feature_awaiting(run_key, "001", %{
+        round: 1,
+        max_rounds: 2,
+        questions_raw: "## NEEDS HUMAN\n\n### Q1: Which timezone?\n",
+        questions: {:freeform, "Which timezone?"},
+        answer_timeout_s: 1_800
+      })
+
+    :ok =
+      Writer.answer_round(run_key, "001", %{
+        seq: seq,
+        answers: %{"*" => {:typed, "UTC"}},
+        answered_via: :console
+      })
+
+    :ok =
+      Writer.record_escalation(run_key, %{
+        feature_id: "001",
+        kind: :escalated,
+        phase: :clarify,
+        reason: {:needs_human, :rounds_exhausted},
+        evidence: %{questions: "## NEEDS HUMAN\n\nstill unresolved", rounds_used: 2}
+      })
+
+    {:ok, _view, html} = live(conn, "/runs/#{run_id}")
+
+    assert html =~ ~s(data-clarify-rounds)
+    assert html =~ ~s(data-round="1")
+    assert html =~ "round 1/2"
+    assert html =~ "UTC"
+    assert html =~ "via console"
+    assert html =~ ~s(data-round="exhausted")
+    assert html =~ "rounds exhausted — 2 of 2 used"
   end
 end

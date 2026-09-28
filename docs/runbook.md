@@ -387,6 +387,93 @@ failure.
 
 ---
 
+## Interactive clarify (029)
+
+By default a `## NEEDS HUMAN` at `clarify` behaves exactly as above: the
+feature escalates, its worktree is kept, and the run parks until an operator
+resolves it. **Interactive clarify** is an opt-in per-run mode that answers
+those questions live, inside the run, instead of parking it.
+
+**The three settings** (Trigger Run page's **Interactive clarify** control
+group, or the equivalent `SpeckitOrchestrator.run/1` opts):
+
+- **Interactive clarify** — on/off, default **off**. Off is byte-identical to
+  today's escalate-and-park behavior.
+- **Answer timeout** — minutes an operator has to answer before the round
+  times out. Default 30 minutes; range 1–1440 (1 minute to 24 hours).
+- **Max rounds** — maximum question rounds per feature. Default 3; range 1–5.
+
+```elixir
+iex> SpeckitOrchestrator.run(
+  interactive_clarify: true,
+  clarify_answer_timeout_s: 1800,
+  clarify_max_rounds: 3
+)
+```
+
+Out-of-range values are refused before any run starts (`Coordinator`, store
+row) — same discipline as the auto-remediation-exhaustion-policy check below.
+A resumed run reuses its recorded settings unless the operator overrides them
+on `resume/2`.
+
+**While waiting.** With the switch on, a clarify gate that finds `## NEEDS
+HUMAN` puts the feature in a new non-terminal status, **awaiting answers**,
+instead of escalating: no model session runs, no cost is reserved, the
+worktree stays live, the run does not park, and the feature still counts as
+the run's one in-flight slot (nothing downstream releases). "Awaiting
+answers" shows as a distinct status everywhere status is shown — the console
+(`Mission Control`, `/runs/:run_id`, and the in-flight listing), the iex
+status table (`SpeckitOrchestrator.print_status/0`), and the run report —
+each with elapsed wait and time left before timeout.
+
+**Answering surfaces:**
+
+- **Console** — the feature's `/runs/:run_id` panel updates live (no manual
+  refresh) with the pending round's questions. Numbered questions (`Q1..Qn`,
+  the reviewer's required format under `## NEEDS HUMAN`) each get their own
+  answer field and, where the reviewer gave one, a one-click "use
+  recommended default" — a blank field with a default takes it; a question
+  with no default must be answered before submitting. Unstructured
+  free-text `## NEEDS HUMAN` bodies get a single answer field for the whole
+  block.
+- **iex**:
+  ```elixir
+  iex> SpeckitOrchestrator.pending_questions()
+  # => [%{feature_id: "NNN", round: 1, max_rounds: 3, questions: [...], deadline_at: ~U[...]}]
+
+  iex> SpeckitOrchestrator.answer("NNN", _seq = 1, %{"Q1" => "yes", "Q2" => "no"})
+  :ok
+  ```
+  A single free-text answer (unstructured round) is a plain string instead of
+  a map. Answers submitted against a round that is no longer current
+  (already answered, timed out, or superseded) are rejected with
+  `{:error, {:stale_round, outcome}}` and have no effect.
+
+On accepted answers the system records them against the round and re-runs
+`clarify` with the answers supplied as authoritative operator input, folded
+into the spec's clarifications. If `## NEEDS HUMAN` is resolved the feature
+continues to `plan` in the same run — no parked run, no manual resume. If it
+persists and rounds remain, a new round begins (questions shown again, round
+number advanced).
+
+**Every fallback that is not an answer ends the wait the same way today's
+escalation already does** — feature escalates, worktree kept, run parks —
+differing only in the recorded reason:
+
+| Fallback | Trigger | Recorded reason |
+|---|---|---|
+| Timeout | Answer timeout elapses with no submission | answer window expired |
+| Rounds exhausted | Round limit reached and `## NEEDS HUMAN` still present | rounds exhausted |
+| Breaker | Cost breaker trips while awaiting answers | breaker (no new session started) |
+| Drain | A superseding run asks this repository's worker to drain | drained (never waits the full answer timeout — same drain-don't-kill bound as any other in-flight session) |
+| Restart | The orchestrator process restarts while a feature awaits answers | the wait does not survive a restart; on recovery the feature is treated as escalated at clarify, pending questions preserved, the existing resume path applies |
+
+Every round — questions asked, answers given (or the fallback outcome), and
+timestamps — is recorded in the feature's run history and visible in the
+`/runs/:run_id` detail view and the report, even across the fallbacks above.
+
+---
+
 ## Auto-remediation and the exhaustion policy (017, 021)
 
 Before the `analyze` gate decides, a bounded corrective loop MAY retry

@@ -27,6 +27,9 @@ defmodule SpeckitOrchestrator.PhaseStep do
     * `:retries` — transient-retry budget (default `Config.phase_max_retries/0`).
     * `:span_meta` — extra keys merged into the `[:speckit, :phase]` span
       meta (e.g. `%{attempt:, limit:}`).
+    * `:operator_answers` — (029) the rendered "Operator answers" block for
+      an interactive-clarify re-run; threaded into every retry of this same
+      call, `nil` (default) is a no-op everywhere else.
   """
   @spec run(pid(), Feature.t(), Pipeline.phase(), keyword()) :: struct()
   def run(pid, feature, phase, opts) do
@@ -34,15 +37,16 @@ defmodule SpeckitOrchestrator.PhaseStep do
     timeout = Keyword.fetch!(opts, :timeout)
     retries = Keyword.get(opts, :retries, Config.phase_max_retries())
     span_meta = Keyword.get(opts, :span_meta, %{})
+    operator_answers = Keyword.get(opts, :operator_answers)
 
-    run_with_retry(pid, feature, phase, step, timeout, span_meta, retries)
+    run_with_retry(pid, feature, phase, step, timeout, span_meta, retries, operator_answers)
   end
 
   # Re-run a phase that failed transiently (a server/API drop, not a real
   # error) up to `retries` times before giving up. Real errors and most gate
   # outcomes (signals, not `:error`) fall straight through.
-  defp run_with_retry(pid, feature, phase, step, timeout, span_meta, retries) do
-    agent = run_once(pid, feature, phase, step, timeout, span_meta)
+  defp run_with_retry(pid, feature, phase, step, timeout, span_meta, retries, operator_answers) do
+    agent = run_once(pid, feature, phase, step, timeout, span_meta, operator_answers)
     st = agent.state
 
     case retries > 0 and retry_reason(st) do
@@ -57,7 +61,7 @@ defmodule SpeckitOrchestrator.PhaseStep do
           "feature #{feature.id} phase #{phase} #{reason} — retrying (#{retries} left)"
         )
 
-        run_with_retry(pid, feature, phase, step, timeout, span_meta, retries - 1)
+        run_with_retry(pid, feature, phase, step, timeout, span_meta, retries - 1, operator_answers)
     end
   end
 
@@ -93,7 +97,7 @@ defmodule SpeckitOrchestrator.PhaseStep do
     end
   end
 
-  defp run_once(pid, feature, phase, step, timeout, span_meta) do
+  defp run_once(pid, feature, phase, step, timeout, span_meta, operator_answers) do
     meta =
       %{feature_id: feature.id, phase: phase, model: Config.model_for(phase), step: step}
       |> Map.merge(span_meta)
@@ -103,13 +107,14 @@ defmodule SpeckitOrchestrator.PhaseStep do
 
       Workers.session_started(timeout)
 
-      {:ok, agent} =
-        call(
-          pid,
-          "phase.run",
-          %{phase: phase, deadline_ms: timeout},
-          PhaseSession.call_timeout(timeout)
-        )
+      signal_data = %{phase: phase, deadline_ms: timeout}
+
+      signal_data =
+        if operator_answers,
+          do: Map.put(signal_data, :operator_answers, operator_answers),
+          else: signal_data
+
+      {:ok, agent} = call(pid, "phase.run", signal_data, PhaseSession.call_timeout(timeout))
 
       agent = ensure_recorded(before, agent, phase)
       entry = List.first(agent.state.history) || %{}

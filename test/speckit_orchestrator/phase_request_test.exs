@@ -163,6 +163,57 @@ defmodule SpeckitOrchestrator.PhaseRequestTest do
     refute r.prompt == base.prompt
   end
 
+  describe "clarify_answers option (029)" do
+    test "non-blank answers are appended after resume_prompt's section" do
+      base = PhaseRequest.build(feature(), :clarify)
+
+      r =
+        PhaseRequest.build(feature(), :clarify,
+          resume_prompt: "operator note",
+          clarify_answers: "---\nOperator answers (authoritative, round 1):\nAnswer text\n"
+        )
+
+      assert r.prompt ==
+               base.prompt <>
+                 "\n\n---\nOperator guidance (resume): operator note" <>
+                 "\n\n---\nOperator answers (authoritative, round 1):\nAnswer text\n"
+    end
+
+    test "coexists with resume_prompt — both sections appear" do
+      r =
+        PhaseRequest.build(feature(), :clarify,
+          resume_prompt: "operator note",
+          clarify_answers: "---\nOperator answers (authoritative, round 1):\nQ1: yes\n"
+        )
+
+      assert r.prompt =~ "Operator guidance (resume): operator note"
+      assert r.prompt =~ "Operator answers (authoritative, round 1):"
+      assert r.prompt =~ "Q1: yes"
+    end
+
+    test "blank/absent leaves the prompt byte-identical (mode off, FR-002)" do
+      base = PhaseRequest.build(feature(), :clarify)
+
+      for blank <- [nil, "", "   ", "\n\t"] do
+        r = PhaseRequest.build(feature(), :clarify, clarify_answers: blank)
+        assert r.prompt == base.prompt, "blank #{inspect(blank)} must not change the prompt"
+      end
+
+      assert PhaseRequest.build(feature(), :clarify).prompt == base.prompt
+    end
+
+    test "only affects the prompt — every other RunRequest field is unchanged" do
+      base = PhaseRequest.build(feature(), :clarify)
+      r = PhaseRequest.build(feature(), :clarify, clarify_answers: "---\nOperator answers: x\n")
+
+      assert r.model == base.model
+      assert r.permission_mode == base.permission_mode
+      assert r.allowed_tools == base.allowed_tools
+      assert r.disallowed_tools == base.disallowed_tools
+      assert r.cwd == base.cwd
+    end
+  end
+
   test "plan_stack config feeds the plan prompt when set" do
     original = Application.get_env(:speckit_orchestrator, :plan_stack)
     Application.put_env(:speckit_orchestrator, :plan_stack, ["Elixir", "SQLite"])

@@ -15,6 +15,8 @@ defmodule SpeckitOrchestrator.Web.MissionControlLive do
 
   use SpeckitOrchestrator.Web, :live_view
 
+  alias Phoenix.LiveView.JS
+
   alias SpeckitOrchestrator.{
     ConsoleHydration,
     ConsoleProjection,
@@ -24,7 +26,16 @@ defmodule SpeckitOrchestrator.Web.MissionControlLive do
     PublishOutcome
   }
 
-  @status_order [:pending, :blocked, :running, :escalated, :halted, :failed, :done]
+  @status_order [
+    :pending,
+    :blocked,
+    :running,
+    :awaiting_answers,
+    :escalated,
+    :halted,
+    :failed,
+    :done
+  ]
 
   @impl true
   def mount(_params, _session, socket) do
@@ -173,6 +184,7 @@ defmodule SpeckitOrchestrator.Web.MissionControlLive do
       assigns
       |> assign(:status_counts, status_counts(assigns.view))
       |> assign(:recovered?, not assigns.view.active? and assigns.view.per_feature != %{})
+      |> assign(:awaiting_by_feature, awaiting_by_feature())
 
     ~H"""
     <div class="view-mission-control" data-view="mission-control">
@@ -251,13 +263,25 @@ defmodule SpeckitOrchestrator.Web.MissionControlLive do
               <tbody>
                 <tr
                   :for={{id, f} <- Enum.sort_by(@view.per_feature, fn {id, _} -> id end)}
-                  phx-click="select_feature"
+                  phx-click={
+                    if f.status == :awaiting_answers,
+                      do: JS.navigate("/escalations#awaiting-#{id}"),
+                      else: "select_feature"
+                  }
                   phx-value-id={id}
                   data-feature-row={id}
                 >
                   <td>{id}</td>
                   <td>{f.slug}</td>
-                  <td><.status_pill status={f.status} /></td>
+                  <td>
+                    <.status_pill status={f.status} />
+                    <span
+                      :if={awaiting_meta(Map.get(@awaiting_by_feature, id))}
+                      class="awaiting-meta"
+                    >
+                      {awaiting_meta(Map.get(@awaiting_by_feature, id))}
+                    </span>
+                  </td>
                   <td>
                     <.phase_strip
                       phases={f.phases}
@@ -297,6 +321,10 @@ defmodule SpeckitOrchestrator.Web.MissionControlLive do
       />
     </div>
     """
+  end
+
+  defp awaiting_by_feature do
+    Map.new(SpeckitOrchestrator.pending_questions(), &{&1.feature_id, &1})
   end
 
   defp status_counts(view) do

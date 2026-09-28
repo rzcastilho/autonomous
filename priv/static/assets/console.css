@@ -23,6 +23,7 @@
   /* Status — the only saturated colors in the system (§II) */
   --done: #34d399; --running: #38bdf8; --escalated: #fbbf24;
   --halted: #fb7185; --failed: #f43f5e; --pending: #64748b; --blocked: #475569;
+  --awaiting: #fb923c;
 
   /* Radii (§IV; pip from §V) */
   --r-pip: 2px; --r-chip: 5px; --r-control: 7px;
@@ -216,6 +217,10 @@ fieldset {
   --sc: var(--blocked);
 }
 
+[data-status="awaiting_answers"] {
+  --sc: var(--awaiting);
+}
+
 /* Motion (docs/design-constitution.md §VI): exactly these four keyframes,
    each attached only where a live referent exists — see the selectors below
    that carry `animation:`. */
@@ -342,9 +347,15 @@ fieldset {
 }
 
 /* Interrupted (028, FR-007a): a past run's feature left mid-flight — the
-   existing `--blocked` token, no eighth status color, no motion. */
+   existing `--blocked` token, no motion. */
 .phase-cell-interrupted {
   background: var(--blocked);
+}
+
+/* Awaiting answers (029): the current phase cell while a feature waits on an
+   operator answer — its own token, no motion (the wait spends nothing). */
+.phase-cell-awaiting_answers {
+  background: var(--awaiting);
 }
 
 .cost-gauge {
@@ -1292,6 +1303,43 @@ fieldset {
   color: var(--text);
 }
 
+/* 029 US3: one block per numbered `Qn` in the "Awaiting answers" panel
+   (contracts/operator-surfaces.md Escalations view). */
+.clarify-question {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--r-input);
+  padding: 14px var(--sp-14);
+  margin-bottom: var(--sp-10);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+}
+
+.clarify-question-text {
+  font-family: var(--font-sans);
+  font-size: var(--fs-section);
+  color: var(--text);
+}
+
+.clarify-question-context {
+  font-family: var(--font-sans);
+  font-size: var(--fs-meta);
+  color: var(--text-secondary);
+}
+
+.clarify-question-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.clarify-question-recommended {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+}
+
 .transcript-row td {
   background: var(--bg);
   padding: 0 0 var(--sp-12);
@@ -1497,6 +1545,15 @@ a.btn-primary {
   font-family: var(--font-mono);
   font-size: var(--fs-subject);
   font-weight: 600;
+}
+
+/* 029: the "round n/m · waited Xm · Ym left" meta line, wherever an
+   awaiting feature's pill appears (Mission Control, Runs, Run Detail, the
+   drawer). */
+.awaiting-meta {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--text-faint);
 }
 
 .drawer-slug {

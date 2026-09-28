@@ -13,7 +13,10 @@ defmodule SpeckitOrchestrator.RunContextTest do
     :auto_remediation_threshold,
     :auto_remediation_attempt_limit,
     :auto_remediation_model,
-    :auto_remediation_exhaustion_policy
+    :auto_remediation_exhaustion_policy,
+    :interactive_clarify,
+    :clarify_answer_timeout_s,
+    :clarify_max_rounds
   ]
 
   setup do
@@ -41,7 +44,10 @@ defmodule SpeckitOrchestrator.RunContextTest do
         auto_remediation_threshold: :critical,
         auto_remediation_attempt_limit: 3,
         auto_remediation_model: "opus",
-        auto_remediation_exhaustion_policy: :proceed
+        auto_remediation_exhaustion_policy: :proceed,
+        interactive_clarify: true,
+        clarify_answer_timeout_s: 120,
+        clarify_max_rounds: 2
       ]
 
       assert RunContext.capture(opts) == %RunContext{
@@ -53,7 +59,10 @@ defmodule SpeckitOrchestrator.RunContextTest do
                auto_remediation_threshold: "critical",
                auto_remediation_attempt_limit: 3,
                auto_remediation_model: "opus",
-               auto_remediation_exhaustion_policy: "proceed"
+               auto_remediation_exhaustion_policy: "proceed",
+               interactive_clarify: true,
+               clarify_answer_timeout_s: 120,
+               clarify_max_rounds: 2
              }
     end
 
@@ -67,6 +76,9 @@ defmodule SpeckitOrchestrator.RunContextTest do
       Application.put_env(:speckit_orchestrator, :auto_remediation_attempt_limit, 4)
       Application.put_env(:speckit_orchestrator, :auto_remediation_model, "sonnet")
       Application.put_env(:speckit_orchestrator, :auto_remediation_exhaustion_policy, :proceed)
+      Application.put_env(:speckit_orchestrator, :interactive_clarify, true)
+      Application.put_env(:speckit_orchestrator, :clarify_answer_timeout_s, 600)
+      Application.put_env(:speckit_orchestrator, :clarify_max_rounds, 1)
 
       assert RunContext.capture([]) == %RunContext{
                budget_usd: 12.0,
@@ -77,7 +89,10 @@ defmodule SpeckitOrchestrator.RunContextTest do
                auto_remediation_threshold: "medium",
                auto_remediation_attempt_limit: 4,
                auto_remediation_model: "sonnet",
-               auto_remediation_exhaustion_policy: "proceed"
+               auto_remediation_exhaustion_policy: "proceed",
+               interactive_clarify: true,
+               clarify_answer_timeout_s: 600,
+               clarify_max_rounds: 1
              }
     end
 
@@ -118,10 +133,30 @@ defmodule SpeckitOrchestrator.RunContextTest do
       RunContext.capture(auto_remediation_exhaustion_policy: :proceed)
       assert RunContext.capture([]).auto_remediation_exhaustion_policy == "escalate"
     end
+
+    test "defaults (no opts, no Config override) resolve interactive_clarify off (029, FR-002)" do
+      ctx = RunContext.capture([])
+      assert ctx.interactive_clarify == false
+      assert ctx.clarify_answer_timeout_s == 1_800
+      assert ctx.clarify_max_rounds == 3
+    end
+
+    test "resolves the interactive-clarify fields from opts when present" do
+      ctx =
+        RunContext.capture(
+          interactive_clarify: true,
+          clarify_answer_timeout_s: 90,
+          clarify_max_rounds: 5
+        )
+
+      assert ctx.interactive_clarify == true
+      assert ctx.clarify_answer_timeout_s == 90
+      assert ctx.clarify_max_rounds == 5
+    end
   end
 
   describe "to_map/1" do
-    test "produces a JSON-ready string-keyed map of exactly the nine settings" do
+    test "produces a JSON-ready string-keyed map of exactly the twelve settings" do
       ctx = %RunContext{
         budget_usd: 25.0,
         plan_stack: ["research", "plan"],
@@ -131,7 +166,10 @@ defmodule SpeckitOrchestrator.RunContextTest do
         auto_remediation_threshold: "high",
         auto_remediation_attempt_limit: 2,
         auto_remediation_model: nil,
-        auto_remediation_exhaustion_policy: "escalate"
+        auto_remediation_exhaustion_policy: "escalate",
+        interactive_clarify: false,
+        clarify_answer_timeout_s: 1_800,
+        clarify_max_rounds: 3
       }
 
       assert RunContext.to_map(ctx) == %{
@@ -143,11 +181,14 @@ defmodule SpeckitOrchestrator.RunContextTest do
                "auto_remediation_threshold" => "high",
                "auto_remediation_attempt_limit" => 2,
                "auto_remediation_model" => nil,
-               "auto_remediation_exhaustion_policy" => "escalate"
+               "auto_remediation_exhaustion_policy" => "escalate",
+               "interactive_clarify" => false,
+               "clarify_answer_timeout_s" => 1_800,
+               "clarify_max_rounds" => 3
              }
     end
 
-    test "map keys are exactly the nine settings, nothing else" do
+    test "map keys are exactly the twelve settings, nothing else" do
       map = RunContext.to_map(%RunContext{})
 
       assert Map.keys(map) |> Enum.sort() ==
@@ -160,7 +201,10 @@ defmodule SpeckitOrchestrator.RunContextTest do
                  "auto_remediation_threshold",
                  "auto_remediation_attempt_limit",
                  "auto_remediation_model",
-                 "auto_remediation_exhaustion_policy"
+                 "auto_remediation_exhaustion_policy",
+                 "interactive_clarify",
+                 "clarify_answer_timeout_s",
+                 "clarify_max_rounds"
                ])
     end
   end
@@ -195,6 +239,16 @@ defmodule SpeckitOrchestrator.RunContextTest do
 
       assert ctx |> RunContext.to_map() |> RunContext.from_map() == ctx
     end
+
+    test "round-trips the three interactive-clarify fields through to_map/from_map (029)" do
+      ctx = %RunContext{
+        interactive_clarify: true,
+        clarify_answer_timeout_s: 300,
+        clarify_max_rounds: 4
+      }
+
+      assert ctx |> RunContext.to_map() |> RunContext.from_map() == ctx
+    end
   end
 
   describe "merge/2" do
@@ -219,7 +273,7 @@ defmodule SpeckitOrchestrator.RunContextTest do
 
       assert Keyword.fetch(merged, :pr_base) == :error
       assert :pr_base in fell_back
-      assert length(fell_back) == 9
+      assert length(fell_back) == 12
     end
 
     test "explicit opt > recorded > absent precedence holds for the auto-remediation fields too" do
@@ -238,6 +292,28 @@ defmodule SpeckitOrchestrator.RunContextTest do
       assert Keyword.get(merged, :auto_remediation_exhaustion_policy) == "proceed"
       assert Keyword.fetch(merged, :auto_remediation_model) == :error
       assert :auto_remediation_model in fell_back
+    end
+
+    test "explicit opt > recorded > absent precedence holds for the interactive-clarify fields too (029)" do
+      recorded = %RunContext{interactive_clarify: true, clarify_answer_timeout_s: 300}
+
+      {merged, fell_back} = RunContext.merge([interactive_clarify: false], recorded)
+
+      assert Keyword.get(merged, :interactive_clarify) == false
+      assert Keyword.get(merged, :clarify_answer_timeout_s) == 300
+      assert Keyword.fetch(merged, :clarify_max_rounds) == :error
+      assert :clarify_max_rounds in fell_back
+    end
+
+    test "a pre-029 recorded run without the interactive-clarify keys falls back to Config defaults" do
+      recorded = %RunContext{pr_base: "trunk"}
+
+      {merged, fell_back} = RunContext.merge([], recorded)
+
+      assert Keyword.fetch(merged, :interactive_clarify) == :error
+      assert :interactive_clarify in fell_back
+      assert :clarify_answer_timeout_s in fell_back
+      assert :clarify_max_rounds in fell_back
     end
 
     test "result is independent of opts vs recorded argument precedence order" do

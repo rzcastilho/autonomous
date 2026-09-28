@@ -10,6 +10,7 @@ defmodule SpeckitOrchestrator.Web.EscalationsLiveTest do
   import Phoenix.LiveViewTest
 
   alias SpeckitOrchestrator.{Config, Coordinator, Feature, Layout, RepoIdentity, RunContext}
+  alias SpeckitOrchestrator.NeedsHuman.Question
 
   @endpoint SpeckitOrchestrator.Web.Endpoint
 
@@ -794,5 +795,106 @@ defmodule SpeckitOrchestrator.Web.EscalationsLiveTest do
 
     assert html =~ ~s(data-escalation="e16")
     refute html =~ ~s(data-auto-remediation)
+  end
+
+  # ---- awaiting answers panel (029 US3) --------------------------------------
+
+  defp open_awaiting_run(feature_id, round_info) do
+    repo_id = RepoIdentity.partition(Config.repo())
+
+    {:ok, run_id} =
+      Writer.open_run(repo_id, %{
+        features: [
+          %{
+            feature_id: feature_id,
+            slug: "slug-#{feature_id}",
+            path: "#{feature_id}.md",
+            number: String.to_integer(feature_id),
+            group: :backlog,
+            created_at: nil
+          }
+        ],
+        settings: %{},
+        scope: :ad_hoc,
+        layout: %{}
+      })
+
+    run_key = {repo_id, run_id}
+    {:ok, seq} = Writer.record_feature_awaiting(run_key, feature_id, round_info)
+    {run_key, seq}
+  end
+
+  test "numbered questions render one field per Qn with context, options and recommended", %{
+    conn: conn
+  } do
+    questions = [
+      %Question{
+        id: "Q1",
+        text: "Prorate mid-month changes?",
+        context: "Decides ledger split behavior.",
+        options: ["A) Prorate by day", "B) Apply from next period"],
+        recommended: "B — simplest statement"
+      },
+      %Question{id: "Q2", text: "Which timezone?", context: nil, options: [], recommended: "UTC"}
+    ]
+
+    open_awaiting_run("501", %{
+      round: 1,
+      max_rounds: 3,
+      questions_raw: "## NEEDS HUMAN\n\n### Q1: Prorate mid-month changes?\n",
+      questions: {:numbered, questions},
+      answer_timeout_s: 1_800
+    })
+
+    {:ok, _view, html} = live(conn, "/escalations")
+
+    assert html =~ ~s(data-question="Q1")
+    assert html =~ "Prorate mid-month changes?"
+    assert html =~ "Decides ledger split behavior."
+    assert html =~ "A) Prorate by day"
+    assert html =~ "B) Apply from next period"
+    assert html =~ "B — simplest statement"
+    assert html =~ ~s(data-question="Q2")
+    assert html =~ ~s(name="answers[Q1]")
+    assert html =~ ~s(name="answers[Q2]")
+    refute html =~ ~s(name="answers[*]")
+  end
+
+  test "Use recommended fills the matching field", %{conn: conn} do
+    questions = [
+      %Question{id: "Q1", text: "Prorate?", context: nil, options: [], recommended: "yes"}
+    ]
+
+    open_awaiting_run("502", %{
+      round: 1,
+      max_rounds: 3,
+      questions_raw: "## NEEDS HUMAN\n\n### Q1: Prorate?\n",
+      questions: {:numbered, questions},
+      answer_timeout_s: 1_800
+    })
+
+    {:ok, view, _html} = live(conn, "/escalations")
+
+    html =
+      render_click(view, "use_default", %{"feature_id" => "502", "qid" => "Q1", "text" => "yes"})
+
+    assert html =~ ~s(name="answers[Q1]")
+    assert html =~ ">yes</textarea>"
+  end
+
+  test "an unstructured block still renders a single freeform field", %{conn: conn} do
+    open_awaiting_run("503", %{
+      round: 1,
+      max_rounds: 3,
+      questions_raw: "## NEEDS HUMAN\n\nWhich database backend?",
+      questions: {:freeform, "Which database backend?"},
+      answer_timeout_s: 1_800
+    })
+
+    {:ok, _view, html} = live(conn, "/escalations")
+
+    assert html =~ "Which database backend?"
+    assert html =~ ~s(name="answers[*]")
+    refute html =~ ~s(data-question="Q1")
   end
 end

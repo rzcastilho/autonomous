@@ -138,4 +138,50 @@ defmodule SpeckitOrchestrator.WorkersTest do
       assert Workers.session_started(1_000) == :ok
     end
   end
+
+  describe "waiting/1 (029)" do
+    test "publishes a short poll_ms deadline, same as session_started/1" do
+      repo = fresh_repo()
+      run_key = {repo, "run-1"}
+      poll_ms = 1_000
+
+      pid =
+        spawn_stub(run_key, "001", fn parent ->
+          Workers.waiting(poll_ms)
+          send(parent, :published)
+          Process.sleep(:infinity)
+        end)
+
+      assert_receive :published
+
+      assert [%{pid: ^pid, deadline_at: %DateTime{} = deadline_at}] = Workers.in_flight(repo)
+      remaining_ms = DateTime.diff(deadline_at, DateTime.utc_now(), :millisecond)
+      assert remaining_ms > 0 and remaining_ms <= poll_ms
+
+      Process.exit(pid, :kill)
+    end
+
+    # SC-005: the drain bound for a waiting worker is `poll_ms + call_grace +
+    # 30s` — independent of however long `answer_timeout_s` is (up to
+    # 86_400s = 24h). `Workers.Bound.wait_ms/3` only ever sees the deadline
+    # `waiting/1` published, never the answer timeout itself, so this holds
+    # structurally: it is exercised here as the same arithmetic
+    # `Workers.drain/1` applies to any worker.
+    test "the drain bound for a waiting worker ignores answer_timeout_s" do
+      now = DateTime.utc_now()
+      poll_deadline = DateTime.add(now, 1_000, :millisecond)
+
+      short_wait_ms = SpeckitOrchestrator.Workers.Bound.wait_ms(poll_deadline, now)
+
+      # A worker mid-*session* (the pre-029 case) publishes a deadline as far
+      # out as the run's configured answer timeout would be, were it (wrongly)
+      # used for the wait instead of poll_ms — the bound must not approach
+      # that scale.
+      long_session_deadline = DateTime.add(now, 86_400, :second)
+      long_wait_ms = SpeckitOrchestrator.Workers.Bound.wait_ms(long_session_deadline, now)
+
+      assert short_wait_ms < 300_000
+      assert long_wait_ms - short_wait_ms >= 86_000_000 - 1_000
+    end
+  end
 end

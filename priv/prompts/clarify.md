@@ -50,6 +50,33 @@ If a would-be escalation fails any of these, default it instead (step 2).
   you are almost certainly escalating conventions — re-apply the materiality
   test and default the low-stakes ones.
 
+## Question format
+
+When you emit `## NEEDS HUMAN`, write each item as a numbered `### Qn` entry
+so the operator gets one answer field per question, with a one-click
+recommended default:
+
+```markdown
+## NEEDS HUMAN
+
+### Q1: Does a mid-month plan change prorate the current period?
+**Context**: Decides whether ledger entries split at the change date (data model) and what the
+customer sees on the statement.
+**Options**: A) Prorate by day · B) Apply from next period · C) Charge the higher plan for the whole period
+**Recommended**: B — no split entries, simplest statement
+
+### Q2: …
+```
+
+- Number items from Q1 with no gaps.
+- Each item has `**Context**` and at least one of `**Options**` /
+  `**Recommended**`.
+- If a question genuinely doesn't fit that shape, an unstructured block still
+  works — the console falls back to a single freeform answer field for it.
+
+The materiality test and "bound and batch" rules above are unchanged — this
+section only governs the shape of what you already decided to escalate.
+
 ## Hard rules
 
 - Never invent an answer to a **material** underivable decision — that is the

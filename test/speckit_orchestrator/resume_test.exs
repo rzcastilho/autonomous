@@ -632,6 +632,61 @@ defmodule SpeckitOrchestrator.ResumeTest do
     end
   end
 
+  # ---- 029: the awaiting-answers guard (contracts/facade-api.md § Resume guard) --
+
+  describe "resume/2 — 029 awaiting-answers guard" do
+    test "refuses with {:error, {:awaiting_answers, id}} without :force, and starts no work" do
+      id = unique_id()
+      {repo, layout} = hermetic_repo()
+      run_key = open_run(repo, layout, [feature(id)])
+
+      {:ok, _seq} =
+        SpeckitOrchestrator.Store.Writer.record_feature_awaiting(run_key, id, %{
+          round: 1,
+          max_rounds: 3,
+          questions_raw: "## NEEDS HUMAN\n\nwhich timezone?",
+          questions: {:freeform, "which timezone?"},
+          answer_timeout_s: 1_800
+        })
+
+      me = self()
+
+      assert {:error, {:awaiting_answers, ^id}} =
+               SpeckitOrchestrator.resume(id, features: [], runner: capturing_runner(me))
+
+      refute_received {:runner_called, _}
+    end
+
+    test ":force proceeds even while the feature is recorded :awaiting_answers" do
+      id = unique_id()
+      {repo, layout} = hermetic_repo()
+      run_key = open_run(repo, layout, [feature(id)])
+      write_checkpoint(run_key, id, :clarify, :escalated)
+
+      {:ok, _seq} =
+        SpeckitOrchestrator.Store.Writer.record_feature_awaiting(run_key, id, %{
+          round: 1,
+          max_rounds: 3,
+          questions_raw: "## NEEDS HUMAN\n\nwhich timezone?",
+          questions: {:freeform, "which timezone?"},
+          answer_timeout_s: 1_800
+        })
+
+      me = self()
+
+      assert {:ok, pid} =
+               SpeckitOrchestrator.resume(id,
+                 features: [],
+                 runner: capturing_runner(me),
+                 force: true
+               )
+
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+      assert_receive {:runner_called, feat}
+      assert feat.id == id
+    end
+  end
+
   # ---- identity recovery from checkpoint alone (US1, FR-001..004) ---------
 
   describe "resume/2 — identity recovery from checkpoint alone" do
@@ -1501,6 +1556,79 @@ defmodule SpeckitOrchestrator.ResumeTest do
       assert log =~ "budget_usd"
       assert log =~ "plan_stack"
       assert log =~ "pr_remote"
+    end
+
+    # ---- 029 US4 (FR-017): interactive-clarify settings ride the same
+    # generic `RunContext.merge/2` reapply as every other run-shaping
+    # setting above — these close the gap research.md R10 says should hold
+    # "for free". ----
+
+    test "a resumed run keeps its recorded interactive-clarify settings (no fallback logged)" do
+      id = unique_id()
+      {repo, layout} = hermetic_repo()
+
+      run_key =
+        open_run(
+          repo,
+          layout,
+          [
+            %Feature{
+              id: id,
+              number: System.unique_integer([:positive, :monotonic]),
+              slug: "widget",
+              path: "#{id}-widget.md"
+            }
+          ],
+          %RunContext{
+            interactive_clarify: true,
+            clarify_answer_timeout_s: 300,
+            clarify_max_rounds: 4
+          }
+        )
+
+      write_checkpoint(run_key, id, :analyze, :halted)
+      me = self()
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert {:ok, pid} =
+                   SpeckitOrchestrator.resume(id, features: [], runner: capturing_runner(me))
+
+          on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+          assert_receive {:runner_called, _feat}
+        end)
+
+      refute log =~ "interactive_clarify"
+      refute log =~ "clarify_answer_timeout_s"
+      refute log =~ "clarify_max_rounds"
+    end
+
+    test "an explicit override at resume takes precedence over a recorded value (surfaces at preflight)" do
+      id = unique_id()
+      {repo, layout} = hermetic_repo()
+
+      run_key =
+        open_run(
+          repo,
+          layout,
+          [
+            %Feature{
+              id: id,
+              number: System.unique_integer([:positive, :monotonic]),
+              slug: "widget",
+              path: "#{id}-widget.md"
+            }
+          ],
+          %RunContext{interactive_clarify: true, clarify_max_rounds: 2}
+        )
+
+      write_checkpoint(run_key, id, :analyze, :halted)
+
+      # The recorded value (2) is in-range and would preflight clean — an
+      # out-of-range EXPLICIT override only surfaces here if it actually won
+      # over the recorded one, not the other way around.
+      assert {:error, {:preflight, [{:invalid_max_rounds, 99}]}} =
+               SpeckitOrchestrator.resume(id, features: [], clarify_max_rounds: 99)
     end
   end
 

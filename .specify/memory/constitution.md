@@ -1,5 +1,41 @@
 <!--
 Sync Impact Report
+Version change: 4.0.0 → 5.0.0
+Bump rationale: MAJOR. Principle V's clarify escalation was unconditional:
+  "MUST escalate … on an unresolved `## NEEDS HUMAN`". Under a per-run opt-in
+  mode it is now conditional. This is a redefinition of a principle guarantee,
+  the same class of change as the 3.0.0 and 4.0.0 amendments. With the mode off
+  (the default), behaviour is byte-identical to 4.0.0. With it on, the feature
+  waits in a non-terminal `:awaiting_answers` state and a human operator answers
+  the open questions. Clarify then re-runs with the answers as authoritative
+  input. Every exit other than an answer falls back to the old escalation
+  exactly: timeout, exhausted rounds, breaker, supersession drain, or restart.
+  No ambiguity is resolved without a human.
+Modified principles:
+  - V. Human-in-the-Loop Escalation (the clarify escalation gains a bounded,
+    opt-in, human-answered wait ahead of it; rationale paragraph for 5.0.0)
+Modified sections:
+  - Development Workflow (a clarify re-run carrying human answers is not a
+    "retry past the human")
+Added principles: none
+Added sections: none
+Removed sections: none
+Templates requiring updates:
+  ✅ .specify/templates/plan-template.md — Constitution Check is principle-agnostic
+  ✅ .specify/templates/spec-template.md — no principle-specific references
+  ✅ .specify/templates/tasks-template.md — no principle-specific references
+  ✅ .specify/templates/checklist-template.md — generic; no change
+  ⚠️ docs/design-constitution.md — a new `:awaiting_answers` status needs its
+     own status color and token (Principle VII: one color per status). The
+     change lands with feature 029 under the Governance procedure.
+  ⚠️ CLAUDE.md ("the clarify gate is the one that has no knobs at all") and
+     docs/runbook.md (NEEDS HUMAN operator flow) describe current code. They
+     are updated in the same change as the feature 029 implementation (spec
+     FR-020), not ahead of the code.
+Follow-up TODOs: none deferred. The amendment ratifies specs/029-interactive-clarify
+  (FR-019) ahead of its plan.
+
+Prior report (4.0.0):
 Version change: 3.0.0 → 4.0.0
 Bump rationale: MAJOR — Principle V's last absolute bound is relaxed. Through
   3.0.0 a constitution Critical finding halted "unconditionally, at every
@@ -354,7 +390,31 @@ within budget plus one outstanding reservation.
 
 The pipeline MUST NOT fabricate resolution of ambiguity or of a quality
 failure. The clarify gate MUST escalate a feature to `:escalated` on an
-unresolved `## NEEDS HUMAN` marker in `spec.md`.
+unresolved `## NEEDS HUMAN` marker in `spec.md`, except where a run has opted
+into the **interactive clarify** wait below. That wait asks the human sooner;
+it does not resolve anything without one.
+
+A run MAY opt into **interactive clarify**. Instead of escalating, the gate then
+puts the feature into a non-terminal `:awaiting_answers` state and asks a human
+operator the open questions, subject to all of:
+
+- it is switchable per run, **off by default**, and a run with it off MUST
+  behave byte-identically to the unconditional escalation above;
+- only a human answer may resolve the questions. The answers are fed back to
+  the clarify reviewer as authoritative operator input, the gate is evaluated
+  again on the re-run, and no default, timeout, model judgement, or absent
+  answer may stand in for them;
+- it is bounded by a per-run answer timeout and a per-run limit on question
+  rounds, both recorded with the run;
+- every exit from the wait that is not a human answer MUST fall back to the
+  unconditional escalation exactly, with a recorded reason naming the exit.
+  Those exits are: timeout, exhausted rounds, a tripped cost breaker, a
+  supersession drain, and an orchestrator restart;
+- while waiting, no model session runs and no cost is reserved or committed
+  (Principle IV). The feature still counts as the run's single in-flight
+  feature, and its worktree is retained;
+- every round is durably recorded: questions, answers or exit, and timestamps.
+  Every round is also surfaced on the operator console (Principle VII).
 
 The analyze gate MUST halt to `:halted` on a constitution Critical finding.
 Critical is the top of the severity ordering, so **no threshold** may let one
@@ -457,6 +517,16 @@ that a constitution violation was advanced past and that nothing automated
 stands in front of it. "Unattended" is precisely what it must never become —
 the advance is a transfer of the decision to a named human gate, not the
 removal of one.
+
+5.0.0 relaxes the clarify escalation in the opposite direction from the analyze
+relaxations. It does not remove a human. It asks the human sooner, inside the
+run. In live operation most `## NEEDS HUMAN` escalations are plain questions an
+attended operator can answer in a minute. Parking the whole run to wait for a
+later resume, which re-runs the same reviewer with those same answers, cost
+hours of wall clock and bought no extra safety. The wait is bounded, costs
+nothing while idle, and falls back to the old escalation on every exit that is
+not an answer. So the old guarantee still holds in its essential form:
+ambiguity is never resolved without a human.
 
 ### VI. Idiomatic Elixir/OTP & Functional Design
 
@@ -655,7 +725,7 @@ is held in **Mnesia**, which ships with Erlang/OTP.
 
 `docs/design-constitution.md` is the authoritative reference for the concrete
 values Principle VII enforces: the color tokens (surfaces, borders, four text
-steps, the single violet accent, the seven status colors), the two-family type
+steps, the single violet accent, the eight status colors), the two-family type
 scale, geometry and spacing, the core component specs (status dot, chip, phase
 pips, data table, record block, event feed, timeline, toast, drawer), and the
 four permitted keyframes.
@@ -711,7 +781,9 @@ four permitted keyframes.
   `specify → clarify → plan → tasks → analyze → implement → converge`.
 - The clarify gate (human stand-in) and the deterministic analyze gate are
   mandatory quality gates; a phase MAY auto-retry a transient failure, but a gate
-  diversion (`:escalated` / `:halted`) MUST NOT be retried past the human.
+  diversion (`:escalated` / `:halted`) MUST NOT be retried past the human. A
+  clarify re-run carrying a human's answers from an interactive clarify round
+  (Principle V) is the human's resolution, not a retry past them.
 - Each feature runs in its own git worktree on a `feature/NNN-slug` branch, one
   feature at a time; the committed `.specify/`/`.claude/` scaffold MUST travel
   into each worktree, and `specify init` MUST NEVER be run inside a worktree.
@@ -731,4 +803,4 @@ deviation already is. Reviews and PRs MUST verify compliance with these
 principles; the constitution and the implementation plan together are the
 runtime guidance for autonomous and human contributors alike.
 
-**Version**: 4.0.0 | **Ratified**: 2026-07-11 | **Last Amended**: 2026-08-05
+**Version**: 5.0.0 | **Ratified**: 2026-07-11 | **Last Amended**: 2026-09-24

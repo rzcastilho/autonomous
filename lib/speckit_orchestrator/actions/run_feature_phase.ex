@@ -39,7 +39,12 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhase do
       # Wall-clock deadline for this one session (ms), enforced by
       # `PhaseSession.reduce/2`; the caller sizes it (`Chunking.deadline_ms/2`
       # for a chunk, the phase timeout otherwise). `nil` = `Config.phase_timeout/0`.
-      deadline_ms: [type: {:or, [nil, :pos_integer]}, required: false, default: nil]
+      deadline_ms: [type: {:or, [nil, :pos_integer]}, required: false, default: nil],
+      # 029: the rendered "Operator answers" block for a clarify re-run after
+      # an interactive-clarify round is answered. Folded into the prompt only
+      # at `phase == :clarify` (below) — `nil` everywhere else, byte-identical
+      # to today (FR-002).
+      operator_answers: [type: {:or, [nil, :string]}, required: false, default: nil]
     ]
 
   require Logger
@@ -51,19 +56,13 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhase do
     Config,
     Cost,
     Ledger,
+    NeedsHuman,
     PhaseRequest,
     PhaseResult,
     PhaseSession,
     SpecDir,
     Worktree
   }
-
-  # The escalation signal is the literal `## NEEDS HUMAN` heading emitted by the
-  # clarify reviewer. Match it only as a real Markdown heading (line start, whole
-  # line) — a naive substring match trips on prose that *mentions* the marker,
-  # e.g. "No `## NEEDS HUMAN` — nothing material left", turning a clean pass into
-  # a false escalation.
-  @needs_human_marker ~r/^\#\#[ \t]+NEEDS HUMAN[ \t]*$/m
 
   # Converge's verdict line (see priv/prompts/converge.md). Line-anchored for the
   # same reason as the NEEDS HUMAN marker: prose that *mentions* the marker must
@@ -92,7 +91,8 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhase do
         cwd: worktree_path(state.worktree),
         resume_prompt: resume_prompt_for(state, phase, params),
         layout: state.layout,
-        scope: scope
+        scope: scope,
+        clarify_answers: if(phase == :clarify, do: Map.get(params, :operator_answers))
       )
 
     case Jido.Harness.run_request(:claude, request, []) do
@@ -235,7 +235,7 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhase do
   # refuses on the unresolved clarification but reports `:ok` (a false-green).
   defp classify_gate(:clarify, %PhaseResult{} = r, state, _scope) do
     needs_human? =
-      Regex.match?(@needs_human_marker, r.final_text || "") or
+      NeedsHuman.present?(r.final_text) or
         spec_has_needs_human?(state.worktree, state.feature)
 
     {outcome_of(r), %{needs_human?: needs_human?}}
@@ -466,7 +466,7 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhase do
 
       file ->
         case File.read(file) do
-          {:ok, content} -> Regex.match?(@needs_human_marker, content)
+          {:ok, content} -> NeedsHuman.present?(content)
           _ -> false
         end
     end

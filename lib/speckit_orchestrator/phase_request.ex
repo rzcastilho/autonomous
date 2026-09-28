@@ -60,6 +60,10 @@ defmodule SpeckitOrchestrator.PhaseRequest do
       `/speckit.implement` prompt (contracts/chunk_session.md §1). `nil`/absent,
       `:whole_list`, or any non-`:implement` phase leaves the prompt
       byte-identical to today (SC-005).
+    * `:clarify_answers` — (029) the rendered "Operator answers" block for a
+      clarify re-run, appended after `:resume_prompt`'s section so both may
+      appear (contracts/needs-human-format.md Answer-folding instruction).
+      `nil`/absent leaves the prompt byte-identical to today (FR-002).
   """
   @spec build(Feature.t(), atom(), keyword()) :: RunRequest.t()
   def build(%Feature{} = feature, phase, opts \\ []) when is_atom(phase) do
@@ -70,7 +74,8 @@ defmodule SpeckitOrchestrator.PhaseRequest do
         feature
         |> prompt(phase, layout)
         |> apply_scope(phase, Keyword.get(opts, :scope))
-        |> append_resume_prompt(Keyword.get(opts, :resume_prompt)),
+        |> append_resume_prompt(Keyword.get(opts, :resume_prompt))
+        |> append_clarify_answers(Keyword.get(opts, :clarify_answers)),
       cwd: Keyword.get(opts, :cwd, Config.repo()),
       model: Config.model_for(phase)
     }
@@ -227,6 +232,15 @@ defmodule SpeckitOrchestrator.PhaseRequest do
 
   defp blank?(nil), do: true
   defp blank?(str) when is_binary(str), do: String.trim(str) == ""
+
+  # 029: `InteractiveClarify.AnswerSet.render/2` already carries its own
+  # leading "---" and full framing (contracts/needs-human-format.md), so this
+  # only appends it — kept as its own function, separate from
+  # `append_resume_prompt/2`, so both a resume note and an answer block can
+  # appear together on a resumed feature's re-run.
+  defp append_clarify_answers(prompt, answers) do
+    if blank?(answers), do: prompt, else: prompt <> "\n\n" <> answers
+  end
 
   # Worktree-relative (resolves analyze finding I1): a phase runs with
   # `cwd = <worktree>`, so this is joined onto the worktree by the CLI, never

@@ -34,6 +34,7 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
     Coordinator,
     Feature,
     Ledger,
+    NeedsHuman,
     Pipeline,
     RepoIdentity,
     SpecDir,
@@ -45,10 +46,6 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
   alias SpeckitOrchestrator.TaskPlan.TaskPhase
 
   @diverted_statuses [:escalated, :halted, :failed]
-
-  # Line-anchored, mirroring `RunFeaturePhase`'s clarify-gate marker — prose
-  # that merely *mentions* the heading must not be mistaken for it.
-  @needs_human_marker ~r/^\#\#[ \t]+NEEDS HUMAN[ \t]*$/m
 
   @impl true
   def mount(_params, _session, socket) do
@@ -62,7 +59,9 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
        page_title: "Escalations",
        current_path: "/escalations",
        selected_feature_id: nil,
-       remediation_models: Config.valid_models()
+       remediation_models: Config.valid_models(),
+       answer_error: nil,
+       answer_defaults: %{}
      )
      |> refresh()}
   end
@@ -81,7 +80,8 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
 
     assign(socket,
       run_id: run_id,
-      escalations: build_escalations(view, current_run_detail(run_id))
+      escalations: build_escalations(view, current_run_detail(run_id)),
+      awaiting: SpeckitOrchestrator.pending_questions()
     )
   end
 
@@ -246,10 +246,8 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
   defp extract_needs_human(nil), do: nil
 
   defp extract_needs_human(file) do
-    with {:ok, content} <- File.read(file),
-         [_before, after_marker] <- Regex.split(@needs_human_marker, content, parts: 2) do
-      after_marker |> String.split(~r/^\#\#[ \t]/m, parts: 2) |> List.first() |> String.trim()
-    else
+    case File.read(file) do
+      {:ok, content} -> NeedsHuman.extract(content)
       _ -> nil
     end
   end
@@ -305,6 +303,42 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
             {:noreply, put_flash(socket, :error, "Restart failed: #{inspect(reason)}")}
         end
     end
+  end
+
+  # 029, contracts/operator-surfaces.md Escalations view / facade-api.md
+  # `answer/3` — a freeform round's single field. `feature_id`/`seq` travel as
+  # hidden fields (never inferred from `@awaiting`, since the round this
+  # submit targets must be the one the operator actually saw).
+  def handle_event(
+        "answer",
+        %{"feature_id" => id, "seq" => seq_str, "answers" => answers},
+        socket
+      ) do
+    case Integer.parse(seq_str) do
+      {seq, _rest} ->
+        case SpeckitOrchestrator.answer(id, seq, answers, via: :console) do
+          :ok ->
+            {:noreply,
+             socket
+             |> assign(answer_error: nil)
+             |> put_flash(:info, "Answer submitted for #{id}")
+             |> refresh()}
+
+          {:error, reason} ->
+            {:noreply, assign(socket, answer_error: {id, format_answer_error(reason)})}
+        end
+
+      :error ->
+        {:noreply, socket}
+    end
+  end
+
+  # 029 US3 (contracts/operator-surfaces.md Escalations view) — fills the
+  # matching `Qn` textarea with its recommended text; purely a display
+  # convenience, since a blank field already takes the default at submit
+  # time (`AnswerSet.build/2`).
+  def handle_event("use_default", %{"feature_id" => id, "qid" => qid, "text" => text}, socket) do
+    {:noreply, update(socket, :answer_defaults, &Map.put(&1, {id, qid}, text))}
   end
 
   def handle_event("select_feature", %{"id" => id}, socket) do
@@ -425,6 +459,29 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
 
   defp format_resume_error(other), do: inspect(other)
 
+  # ---- awaiting answers (029) ----------------------------------------------
+
+  defp numbered_questions({:numbered, questions}), do: questions
+  defp numbered_questions({:freeform, _block}), do: nil
+
+  defp format_answer_error({:stale_round, outcome}), do: "no longer open — #{outcome}"
+  defp format_answer_error({:missing_answer, qid}), do: "#{qid} needs an answer"
+  defp format_answer_error(:empty_answer), do: "answer cannot be blank"
+  defp format_answer_error(:not_awaiting), do: "this feature is no longer awaiting answers"
+  defp format_answer_error(other), do: inspect(other)
+
+  defp answer_error_for({id, message}, id), do: message
+  defp answer_error_for(_other, _id), do: nil
+
+  defp elapsed_label(started_at), do: duration_label(DateTime.diff(DateTime.utc_now(), started_at))
+
+  defp remaining_label(deadline_at) do
+    duration_label(max(DateTime.diff(deadline_at, DateTime.utc_now()), 0))
+  end
+
+  defp duration_label(seconds) when seconds < 60, do: "#{seconds}s"
+  defp duration_label(seconds), do: "#{div(seconds, 60)}m"
+
   # See TriggerLive's `run_unlinked/1` for why: `run/1` (via `resume/2`)
   # `GenServer.start_link`s the Coordinator linked to its caller, and this
   # view's process outlives the call — an unlinked task decouples the
@@ -446,6 +503,119 @@ defmodule SpeckitOrchestrator.Web.EscalationsLive do
         <div class="escalations-sub">
           Each diverted feature wrote a checkpoint. Resume restarts at the checkpointed
           phase (keeps completed work); Full restart is a full restart from specify.
+        </div>
+      </div>
+
+      <div :if={@awaiting != []} class="escalations-intro" data-awaiting-answers>
+        <div class="escalations-title">Awaiting answers · interactive clarify</div>
+        <div class="escalations-sub">
+          The run stays live — answer to fold your response into the clarify re-run, in the
+          same run.
+        </div>
+      </div>
+
+      <div
+        :for={a <- @awaiting}
+        id={"awaiting-#{a.feature_id}"}
+        class="escalation-card"
+        data-awaiting={a.feature_id}
+      >
+        <div class="escalation-card-head">
+          <span class="escalation-title">
+            {a.feature_id} <span :if={a.spec_label}>· spec {a.spec_label}</span>
+            · round {a.round}/{a.max_rounds} · waited {elapsed_label(a.started_at)} · {remaining_label(
+              a.deadline_at
+            )} left
+          </span>
+        </div>
+
+        <div class="escalation-card-body">
+          <.form_refusal
+            :if={answer_error_for(@answer_error, a.feature_id)}
+            label="Answer refused"
+            data-error="answer"
+          >
+            {answer_error_for(@answer_error, a.feature_id)}
+          </.form_refusal>
+
+          <form
+            id={"answer-form-#{a.feature_id}"}
+            phx-submit="answer"
+            data-form="answer"
+            class="resume-form"
+          >
+            <input type="hidden" name="feature_id" value={a.feature_id} />
+            <input type="hidden" name="seq" value={a.seq} />
+
+            <div :if={numbered_questions(a.questions)} data-questions="numbered">
+              <div
+                :for={q <- numbered_questions(a.questions)}
+                class="clarify-question"
+                data-question={q.id}
+              >
+                <div class="clarify-question-text">{q.id}: {q.text}</div>
+                <div :if={q.context} class="clarify-question-context">{q.context}</div>
+                <div :if={q.options != []} class="clarify-question-options">
+                  <span :for={opt <- q.options} class="run-context-chip">{opt}</span>
+                </div>
+                <label class="field-label">
+                  Answer
+                  <textarea
+                    name={"answers[#{q.id}]"}
+                    phx-debounce="200"
+                    class="resume-textarea"
+                    data-field={"answer-#{q.id}"}
+                  >{Map.get(@answer_defaults, {a.feature_id, q.id}, "")}</textarea>
+                </label>
+                <div :if={q.recommended} class="clarify-question-recommended">
+                  <button
+                    type="button"
+                    phx-click="use_default"
+                    phx-value-feature_id={a.feature_id}
+                    phx-value-qid={q.id}
+                    phx-value-text={q.recommended}
+                    class="btn-secondary"
+                    data-action={"use-recommended-#{a.feature_id}-#{q.id}"}
+                  >
+                    Use recommended
+                  </button>
+                  <span class="action-hint">
+                    Recommended: {q.recommended} — a blank field takes this default
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div :if={!numbered_questions(a.questions)}>
+              <div class="clarify-block" data-clarify>
+                <pre>{a.questions_raw}</pre>
+              </div>
+              <label class="field-label">
+                Answer
+                <textarea
+                  name="answers[*]"
+                  phx-debounce="200"
+                  class="resume-textarea"
+                  data-field="answer"
+                ></textarea>
+              </label>
+            </div>
+
+            <div class="escalation-actions">
+              <div class="escalation-action">
+                <button
+                  type="submit"
+                  class="btn-primary"
+                  data-action={"answer-#{a.feature_id}"}
+                >
+                  answer/3
+                </button>
+                <span class="action-hint">
+                  re-runs clarify with this answer, in the same run
+                </span>
+              </div>
+            </div>
+          </form>
         </div>
       </div>
 

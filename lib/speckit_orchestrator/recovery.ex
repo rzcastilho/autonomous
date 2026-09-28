@@ -195,6 +195,11 @@ defmodule SpeckitOrchestrator.Recovery do
   def persisted_status({:resume, phase}), do: {:running, phase}
   def persisted_status(:pending), do: {:pending, nil}
   def persisted_status(:escalated), do: {:escalated, nil}
+  # 029: a reconciled `:awaiting_answers` -> `{:escalated, {:needs_human,
+  # :restart}}` maps onto the same `:escalated` feature status as every other
+  # escalation — the reason itself is persisted by `write_corrections/3`'s
+  # own `Writer.reconcile_awaiting_answers/2` call, not by this mapping.
+  def persisted_status({:escalated, _reason}), do: {:escalated, nil}
   def persisted_status(:halted), do: {:halted, nil}
   def persisted_status(:failed), do: {:failed, nil}
   def persisted_status({:conflict, _reason}), do: {:blocked, nil}
@@ -212,8 +217,20 @@ defmodule SpeckitOrchestrator.Recovery do
     writer = Keyword.get(opts, :writer, Writer)
 
     Enum.each(feature_rows, fn row ->
-      if row.reconciled == :done and row.recorded != :done do
-        writer.record_feature_terminal(run_key, row.id, :done, :reconciled_done_signal, [])
+      cond do
+        row.reconciled == :done and row.recorded != :done ->
+          writer.record_feature_terminal(run_key, row.id, :done, :reconciled_done_signal, [])
+
+        # 029, research.md R12: the only feature-level correction besides
+        # `:done` — a dead-worker `:awaiting_answers` row becomes an
+        # escalation, one transaction (round closed `:interrupted`, feature
+        # `:escalated`, escalation recorded with the questions preserved).
+        row.recorded == :awaiting_answers and
+            match?({:escalated, {:needs_human, :restart}}, row.reconciled) ->
+          writer.reconcile_awaiting_answers(run_key, row.id)
+
+        true ->
+          :ok
       end
     end)
   end

@@ -86,6 +86,18 @@ defmodule SpeckitOrchestrator.Workers do
   end
 
   @doc """
+  Called by a worker (owner-only) on entering, and on every tick of, an
+  interactive-clarify wait (029, research.md R4). Publishes a short rolling
+  deadline (`now + poll_ms`) rather than a session deadline — so
+  `Bound.wait_ms/3` for a waiting worker is `poll_ms + call_grace + 30s`,
+  independent of the operator's much longer answer timeout (SC-005). Same
+  underlying publish as `session_started/1`; kept as its own name because the
+  two mean different things to a reader (a running session vs. an idle wait).
+  """
+  @spec waiting(pos_integer()) :: :ok
+  def waiting(poll_ms) when is_integer(poll_ms) and poll_ms > 0, do: session_started(poll_ms)
+
+  @doc """
   The boundary predicate: `true` iff a drain request is currently latched
   against the calling process. Pure read — never consumes the latch.
   """

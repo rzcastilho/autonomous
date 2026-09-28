@@ -19,7 +19,7 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
 
   use SpeckitOrchestrator.Web, :live_view
 
-  alias SpeckitOrchestrator.{Backlog, Config, Remediation, Severity}
+  alias SpeckitOrchestrator.{Backlog, Config, InteractiveClarify, Remediation, Severity}
 
   @impl true
   def mount(_params, _session, socket) do
@@ -36,6 +36,10 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
        remediation_limit: to_string(Config.auto_remediation_attempt_limit()),
        remediation_exhaustion_policy: to_string(Config.auto_remediation_exhaustion_policy()),
        remediation_error: nil,
+       interactive_clarify?: Config.interactive_clarify?(),
+       clarify_timeout_min: to_string(div(Config.clarify_answer_timeout_s(), 60)),
+       clarify_rounds: to_string(Config.clarify_max_rounds()),
+       clarify_error: nil,
        description: "",
        preview: nil,
        field_error: nil,
@@ -89,6 +93,26 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
      )}
   end
 
+  # ---- interactive clarify controls (029, contracts/operator-surfaces.md Trigger form) ----
+
+  def handle_event("toggle_interactive_clarify", _params, socket) do
+    {:noreply,
+     assign(socket,
+       interactive_clarify?: not socket.assigns.interactive_clarify?,
+       clarify_error: nil
+     )}
+  end
+
+  def handle_event("update_clarify", params, socket) do
+    {:noreply,
+     assign(socket,
+       clarify_timeout_min:
+         Map.get(params, "answer_timeout_min", socket.assigns.clarify_timeout_min),
+       clarify_rounds: Map.get(params, "max_rounds", socket.assigns.clarify_rounds),
+       clarify_error: nil
+     )}
+  end
+
   def handle_event("select_package", %{"slug" => slug}, socket) do
     {:noreply, socket |> assign(selected_package: slug) |> refresh_backlog_preview()}
   end
@@ -121,8 +145,11 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
               {:noreply, assign(socket, start_error: format_start_error(reason))}
           end
 
-        {:error, remediation_error} ->
-          {:noreply, assign(socket, remediation_error: remediation_error)}
+        {:error, {:remediation, error}} ->
+          {:noreply, assign(socket, remediation_error: error)}
+
+        {:error, {:interactive_clarify, error}} ->
+          {:noreply, assign(socket, clarify_error: error)}
       end
     else
       {:noreply, socket}
@@ -154,8 +181,11 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
               {:noreply, assign(socket, start_error: format_start_error(reason))}
           end
 
-        {:error, remediation_error} ->
-          {:noreply, assign(socket, remediation_error: remediation_error)}
+        {:error, {:remediation, error}} ->
+          {:noreply, assign(socket, remediation_error: error)}
+
+        {:error, {:interactive_clarify, error}} ->
+          {:noreply, assign(socket, clarify_error: error)}
       end
     end
   end
@@ -194,12 +224,16 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
   # leaving the node's configured defaults untouched for the next mount
   # (FR-010f).
   defp start_opts(socket) do
-    with {:ok, settings} <- validate_remediation(socket) do
+    with {:ok, settings} <- tag_error(validate_remediation(socket), :remediation),
+         {:ok, clarify} <- tag_error(validate_interactive_clarify(socket), :interactive_clarify) do
       base = [
         auto_remediation: settings.enabled?,
         auto_remediation_threshold: settings.threshold,
         auto_remediation_attempt_limit: settings.attempt_limit,
-        auto_remediation_exhaustion_policy: settings.exhaustion_policy
+        auto_remediation_exhaustion_policy: settings.exhaustion_policy,
+        interactive_clarify: clarify.enabled?,
+        clarify_answer_timeout_s: clarify.answer_timeout_s,
+        clarify_max_rounds: clarify.max_rounds
       ]
 
       base = maybe_put_slug(base, socket.assigns[:selected_package])
@@ -210,6 +244,9 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
       end
     end
   end
+
+  defp tag_error({:ok, _} = ok, _tag), do: ok
+  defp tag_error({:error, error}, tag), do: {:error, {tag, error}}
 
   defp validate_remediation(socket) do
     input = %{
@@ -239,6 +276,38 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
          {"auto-remediation-exhaustion-policy", "Unrecognized exhaustion policy: #{value}"}}
     end
   end
+
+  # 029: `answer_timeout_min` is entered in minutes (1..1440) and converted to
+  # `InteractiveClarify.Settings`' seconds (60..86_400) before validation —
+  # the same range, just a friendlier unit for an operator typing it in.
+  defp validate_interactive_clarify(socket) do
+    input = %{
+      enabled?: socket.assigns.interactive_clarify?,
+      answer_timeout_s: parse_clarify_timeout_min(socket.assigns.clarify_timeout_min),
+      max_rounds: parse_limit(socket.assigns.clarify_rounds)
+    }
+
+    case InteractiveClarify.Settings.validate(input) do
+      {:ok, settings} ->
+        {:ok, settings}
+
+      {:error, {:invalid_answer_timeout, value}} ->
+        {:error,
+         {"clarify-timeout", "Answer timeout must be minutes 1–1440, got: #{inspect(value)}"}}
+
+      {:error, {:invalid_max_rounds, value}} ->
+        {:error, {"clarify-rounds", "Round limit must be a whole number 1–5, got: #{value}"}}
+    end
+  end
+
+  defp parse_clarify_timeout_min(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {min, ""} -> min * 60
+      _ -> value
+    end
+  end
+
+  defp parse_clarify_timeout_min(value), do: value
 
   # A number input still delivers a string, and a non-numeric one must reach
   # the validator as-is so it rejects rather than being silently defaulted.
@@ -503,6 +572,62 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
         data-error={elem(@remediation_error, 0)}
       >
         {elem(@remediation_error, 1)}
+      </.form_refusal>
+
+      <div class="pr-toggle-row interactive-clarify-row">
+        <label class="pr-toggle">
+          <input
+            type="checkbox"
+            phx-click="toggle_interactive_clarify"
+            checked={@interactive_clarify?}
+            class="switch-input"
+          />
+          <span class="switch-track"><span class="switch-knob"></span></span>
+          <span>Interactive clarify</span>
+        </label>
+        <span class="pr-hint" data-interactive-clarify={to_string(@interactive_clarify?)}>
+          {if @interactive_clarify?, do: "on", else: "off"}
+        </span>
+
+        <form
+          id="interactive-clarify-form"
+          phx-change="update_clarify"
+          class={not @interactive_clarify? && "controls-disabled"}
+        >
+          <label class="field-label-inline">
+            Answer timeout (min)
+            <input
+              type="number"
+              name="answer_timeout_min"
+              min="1"
+              max="1440"
+              value={@clarify_timeout_min}
+              data-clarify-timeout
+              disabled={not @interactive_clarify?}
+            />
+          </label>
+
+          <label class="field-label-inline">
+            Max rounds
+            <input
+              type="number"
+              name="max_rounds"
+              min="1"
+              max="5"
+              value={@clarify_rounds}
+              data-clarify-rounds
+              disabled={not @interactive_clarify?}
+            />
+          </label>
+        </form>
+      </div>
+
+      <.form_refusal
+        :if={@clarify_error}
+        label={"Refused: " <> elem(@clarify_error, 0)}
+        data-error={elem(@clarify_error, 0)}
+      >
+        {elem(@clarify_error, 1)}
       </.form_refusal>
 
       <button
