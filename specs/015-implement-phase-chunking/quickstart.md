@@ -23,7 +23,7 @@ For the live scenarios (S5–S7) you also need:
   and an `origin` remote — `../quickpoll` is the repo the 2026-07-25 failure was
   observed on;
 - `claude` on `PATH`, authenticated;
-- `config :speckit_orchestrator, repo: "../quickpoll"` (or the equivalent env
+- `config :autonomous, repo: "../quickpoll"` (or the equivalent env
   override in `config/runtime.exs`).
 
 ---
@@ -31,8 +31,8 @@ For the live scenarios (S5–S7) you also need:
 ## S1 — Unit suite (pure core)
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/task_plan_test.exs \
-                      test/speckit_orchestrator/chunking_test.exs
+mise exec -- mix test test/autonomous/task_plan_test.exs \
+                      test/autonomous/chunking_test.exs
 ```
 
 **Expect**: green. Covers the parser grammar
@@ -66,8 +66,8 @@ Coverage on the pure core stays >90% (constitution, Quality & Test Discipline);
 ## S3 — SC-005: unstructured task lists are untouched
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/phase_request_test.exs \
-                      test/speckit_orchestrator/web/
+mise exec -- mix test test/autonomous/phase_request_test.exs \
+                      test/autonomous/web/
 ```
 
 **Expect**: the `:whole_list` implement prompt is asserted **byte-identical** to
@@ -78,7 +78,7 @@ render — no `1/1`, no empty separator (FR-019).
 ## S4 — SC-002: every failure names exactly one cause
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/chunking_test.exs --only sc002
+mise exec -- mix test test/autonomous/chunking_test.exs --only sc002
 ```
 
 **Expect**: the four reasons — stuck task-phase, exhausted session budget,
@@ -98,9 +98,9 @@ mise exec -- iex -S mix
 ```
 
 ```elixir
-SpeckitOrchestrator.Telemetry.attach_default_logger()
-{:ok, _pid} = SpeckitOrchestrator.run(features: [feature_001])
-SpeckitOrchestrator.print_status()
+Autonomous.Telemetry.attach_default_logger()
+{:ok, _pid} = Autonomous.run(features: [feature_001])
+Autonomous.print_status()
 ```
 
 **Expect**:
@@ -161,7 +161,7 @@ entry says so (FR-025a).
 
 Pick a feature that previously completed `implement` in a single session. Run it
 before and after this change against the same target commit, and compare the
-`implement` spend reported by `SpeckitOrchestrator.print_status()` /
+`implement` spend reported by `Autonomous.print_status()` /
 `Ledger.snapshot/1`.
 
 **Expect**: post-change implement spend ≤ 1.20 × pre-change. Record both figures

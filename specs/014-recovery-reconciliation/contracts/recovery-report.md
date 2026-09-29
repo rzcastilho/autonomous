@@ -37,7 +37,7 @@ collector's fallback.
 
 ## Reconciled report (FR-015)
 
-Consumed by `Report`/`SpeckitOrchestrator.print_status`-style rendering; read-only
+Consumed by `Report`/`Autonomous.print_status`-style rendering; read-only
 whole-run picture the operator reviews before continuing.
 
 ```

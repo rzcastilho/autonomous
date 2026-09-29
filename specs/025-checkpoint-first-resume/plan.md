@@ -41,7 +41,7 @@ is system-provided). Every command runs through `mise exec --`.
 `Recovery.Reconcile`, `Recovery.Report`, `ChunkRunner`. `Jido`/`jido_harness`/
 `jido_claude` and Phoenix LiveView are untouched.
 
-**Storage**: Mnesia via `SpeckitOrchestrator.Store`. `speckit_checkpoint`'s
+**Storage**: Mnesia via `Autonomous.Store`. `speckit_checkpoint`'s
 `implement_chunk` column already exists (`store/schema.ex:142`) — **no schema
 change, no version bump**.
 
@@ -126,7 +126,7 @@ specs/025-checkpoint-first-resume/
 Single Elixir project. Files this feature changes, and nothing else:
 
 ```text
-lib/speckit_orchestrator/
+lib/autonomous/
 ├── recovery/
 │   ├── reconcile.ex        # CHANGED — checkpoint-first clause + resume_position/2 (the core)
 │   └── report.ex           # CHANGED — reason_label/1 + two existing call sites
@@ -138,9 +138,9 @@ lib/speckit_orchestrator/
 ├── release.ex              # UNCHANGED — :blocked already releases nothing
 ├── store/writer.ex         # UNCHANGED — record_phase_attempt/2 already writes payload[:checkpoint]
 ├── task_plan.ex            # UNCHANGED — locate/2 already handles nil + out-of-range
-└── speckit_orchestrator.ex # UNCHANGED — resolve_start_phase/2's `:from` now carries the right phase
+└── autonomous.ex # UNCHANGED — resolve_start_phase/2's `:from` now carries the right phase
 
-test/speckit_orchestrator/
+test/autonomous/
 ├── recovery/reconcile_test.exs    # the decision table + the FR-014 byte-identical guard
 ├── recovery_test.exs              # plan_run/reconcile_run wiring, statuses, conflicts, no-write
 ├── recovery/rebuild_test.exs      # FR-012 — the rebuild preview agrees

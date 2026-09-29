@@ -67,7 +67,7 @@ failure the wrapper notifies `:failed` with `{:worktree, reason}` exactly as
 `on_start` return, and opts passthrough (FR-008) are inherited unchanged.
 
 **Rationale**: This is the established, tested shape for "one feature, wrapped
-runner" (`speckit_orchestrator.ex:247-289`). Reusing it keeps resume consistent
+runner" (`autonomous.ex:247-289`). Reusing it keeps resume consistent
 with the rest of the operator surface and avoids re-implementing Coordinator
 wiring. A caller-supplied `:runner` (test seam) must still win, so the wrapper is
 only injected when the caller did not supply one — same guard `run_spec` uses.

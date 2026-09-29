@@ -1,0 +1,344 @@
+defmodule Autonomous.PhaseRequest do
+  @moduledoc """
+  Pure builder: `(feature, phase)` → `%Jido.Harness.RunRequest{}`.
+
+  Keeps request construction side-effect free (no IO, no CLI) so it is fully
+  unit-testable. The prompt invokes the Spec Kit command by its **slash name**
+  and lets the CLI's own discovery resolve it — paths to prompt files are never
+  hardcoded (they moved between Spec Kit 0.9 → 0.12). Phases without a native
+  Spec Kit command (`clarify` reviewer, `converge`) use the versioned prompt
+  packs in `priv/prompts/`.
+
+  Per-phase permissions are set as **first-class RunRequest fields**
+  (`permission_mode`, `allowed_tools`, `disallowed_tools`) — Phase 0 confirmed
+  the adapter forwards them. This is belt-and-suspenders with the committed
+  `.claude/settings.json` scope guard (Phase 5).
+  """
+
+  alias Jido.Harness.RunRequest
+  alias Autonomous.{Config, Containment, Feature, Layout, Prompts, Worktree}
+  alias Autonomous.TaskPlan.TaskPhase
+
+  @slash %{
+    specify: "/speckit.specify",
+    plan: "/speckit.plan",
+    tasks: "/speckit.tasks",
+    analyze: "/speckit.analyze",
+    implement: "/speckit.implement"
+  }
+
+  # Tools that must be pre-approved (via `--allowedTools`) so the headless CLI
+  # runs them non-interactively — Bash is required because the Spec Kit phase
+  # scripts (`.specify/scripts/*.sh`, e.g. setup-plan.sh) run under Bash; without
+  # this they hit "This command requires approval" and the phase produces no
+  # files (plan.md/tasks.md), silently no-opping everything downstream.
+  @write_bash_tools ~w(Read Write Edit Bash Grep Glob)
+
+  # Tools every headless phase must never reach, regardless of `allowed_tools`
+  # (which only pre-approves; it does not hide). `Agent`/`Task` background work
+  # into a subagent and let the model end its turn "waiting on results" —
+  # headless, ending the turn ends the session and the subagent dies with it
+  # (the incomplete-session gate then fails the phase). `ScheduleWakeup` is the
+  # interactive `/loop` scheduler, meaningless in a one-shot session.
+  @headless_disallowed ~w(Agent Task ScheduleWakeup)
+
+  # Full tool set under `permissive` (030, FR-005–FR-007) — `WebFetch`/`WebSearch`
+  # join the write/Bash set; the FR-008 exclusions (`Agent`/`Task`/`ScheduleWakeup`)
+  # are the only thing still disallowed.
+  @permissive_allowed_tools ~w(Read Write Edit MultiEdit NotebookEdit Bash Grep Glob WebFetch WebSearch)
+
+  @doc """
+  Build the RunRequest for `feature` at `phase`.
+
+  Options:
+    * `:cwd` — working directory (defaults to `Config.repo/0`; in a real run this
+      is the feature worktree, supplied by the runner in Phase 3).
+    * `:session_id` — resume an existing Claude session (nil = fresh).
+    * `:resume_prompt` — operator's free-text guidance for a resumed phase;
+      appended as a trailing section to the built prompt. `nil`/blank = no-op.
+    * `:layout` — the run's resolved `%Layout{}` (FR-011), used to resolve the
+      **worktree-relative** breakdown ref (`Layout.in_repo_rel/1` — resolves
+      analyze finding I1). `nil` (tests, non-layout callers) falls back to
+      `Config.breakdown_dir/0`, the pre-012 flat layout.
+    * `:scope` — a `ChunkScope.t()` (015), honoured **only** at `phase ==
+      :implement`: appends a task-phase or sweep scoping block to the bare
+      `/speckit.implement` prompt (contracts/chunk_session.md §1). `nil`/absent,
+      `:whole_list`, or any non-`:implement` phase leaves the prompt
+      byte-identical to today (SC-005).
+    * `:clarify_answers` — (029) the rendered "Operator answers" block for a
+      clarify re-run, appended after `:resume_prompt`'s section so both may
+      appear (contracts/needs-human-format.md Answer-folding instruction).
+      `nil`/absent leaves the prompt byte-identical to today (FR-002).
+    * `:containment` — (030) `"strict"` (default) or `"permissive"`. Under
+      `"strict"` the built request is byte-identical to today except for the
+      env markers now carried in `metadata["claude"][:env]`. Under
+      `"permissive"` every phase gets `:bypass_permissions` and the full tool
+      set (contracts/run-options.md).
+  """
+  @spec build(Feature.t(), atom(), keyword()) :: RunRequest.t()
+  def build(%Feature{} = feature, phase, opts \\ []) when is_atom(phase) do
+    layout = Keyword.get(opts, :layout)
+    containment = Keyword.get(opts, :containment, "strict")
+
+    %{
+      prompt:
+        feature
+        |> prompt(phase, layout)
+        |> apply_scope(phase, Keyword.get(opts, :scope))
+        |> append_resume_prompt(Keyword.get(opts, :resume_prompt))
+        |> append_clarify_answers(Keyword.get(opts, :clarify_answers)),
+      cwd: Keyword.get(opts, :cwd, Config.repo()),
+      model: Config.model_for(phase),
+      metadata: %{"claude" => %{env: Containment.session_env(containment)}}
+    }
+    |> maybe_put(:max_turns, max_turns(phase))
+    |> maybe_put(:session_id, Keyword.get(opts, :session_id))
+    |> Map.merge(permissions(phase, containment))
+    |> RunRequest.new!()
+  end
+
+  @doc """
+  Build the RunRequest for a pre-phase remediation step (feature 013) — a
+  discrete, write-capable execution that runs **before** the target phase on
+  resume, distinct from `build/3`'s per-phase prompts.
+
+  Options:
+    * `:cwd` — the feature worktree (defaults to `Config.repo/0`).
+    * `:layout` — the run's resolved `%Layout{}`, for the worktree-relative
+      breakdown ref (same as `build/3`).
+    * `:prompt` — the operator's verbatim remediation instruction, appended
+      after a short framing header.
+    * `:containment` — (030) `"strict"` (default) or `"permissive"`, same
+      effect as `build/3`.
+
+  No `session_id` (fresh session, like every phase).
+  """
+  @spec build_remediation(Feature.t(), String.t(), keyword()) :: RunRequest.t()
+  def build_remediation(%Feature{} = feature, model, opts \\ []) when is_binary(model) do
+    layout = Keyword.get(opts, :layout)
+    containment = Keyword.get(opts, :containment, "strict")
+
+    %{
+      prompt: remediation_prompt(feature, layout, Keyword.get(opts, :prompt)),
+      cwd: Keyword.get(opts, :cwd, Config.repo()),
+      model: model,
+      metadata: %{"claude" => %{env: Containment.session_env(containment)}}
+    }
+    |> Map.merge(remediation_permissions(containment))
+    |> RunRequest.new!()
+  end
+
+  defp remediation_prompt(feature, layout, prompt) do
+    "Remediation for feature #{feature.id} (#{feature.slug}), " <>
+      "#{breakdown_ref(feature, layout)}.\n\n---\n" <> (prompt || "")
+  end
+
+  # ---- prompt assembly ----------------------------------------------------
+
+  # Pins SPECIFY_FEATURE_DIRECTORY to specs/<id>-<slug> — the exact slug the
+  # worktree's branch (feature/<id>-<slug>) already carries — so specify's own
+  # short-name generation can never pick a *different* spec-dir slug than the
+  # branch. Left to its own heuristic, Claude may condense a description into a
+  # shorter/different slug (e.g. "list-all-previous-polls-result" vs
+  # "list-polls-results"); every later phase (plan/tasks/analyze/implement) is a
+  # bare slash command with no feature-specific text, resolved by the CLI via
+  # feature.json/branch-name — a divergent spec dir silently orphans it, so
+  # spec.md gets written but plan/tasks/implementation never do (see
+  # specs/001-single-spec-run — manual validation caught this in production).
+  defp prompt(feature, :specify, layout) do
+    "#{@slash.specify} Implement the feature specified in #{breakdown_ref(feature, layout)} " <>
+      "(id #{feature.id}, #{feature.slug}). Use SPECIFY_FEATURE_DIRECTORY=specs/#{Feature.spec_id(feature)}-#{feature.slug}. " <>
+      "Use GIT_BRANCH_NAME=#{Worktree.branch_name(feature)} — that branch already exists and is " <>
+      "checked out: reuse it (allow existing branch); never create or switch to another branch. " <>
+      "Follow the constitution."
+  end
+
+  defp prompt(feature, :clarify, layout) do
+    Prompts.load("clarify") <>
+      "\n\n---\nFeature under review: #{feature.id} #{feature.slug} " <>
+      "(#{breakdown_ref(feature, layout)})."
+  end
+
+  # The slash command alone is not a contract. `setup-plan.sh` puts the template
+  # on disk before the model does anything, so a session that ends its turn
+  # early — classically, having dispatched background subagents — leaves a file
+  # that looks like output and contains no plan. `priv/prompts/plan.md` states
+  # the completion conditions and names the gates that will check them.
+  defp prompt(feature, :plan, _layout) do
+    case Config.plan_stack() do
+      [] ->
+        "#{@slash.plan}\n\n" <> Prompts.load("plan")
+
+      stack ->
+        "#{@slash.plan} Preferred stack: #{Enum.join(stack, ", ")}. " <>
+          feature_tag(feature) <> "\n\n" <> Prompts.load("plan")
+    end
+  end
+
+  defp prompt(_feature, :tasks, _layout), do: @slash.tasks
+
+  defp prompt(_feature, :analyze, _layout), do: "#{@slash.analyze}\n\n" <> Prompts.load("analyze")
+
+  defp prompt(_feature, :implement, _layout), do: @slash.implement
+
+  defp prompt(feature, :converge, _layout),
+    do: Prompts.load("converge") <> "\n\n" <> feature_tag(feature)
+
+  defp prompt(feature, :describe, layout) do
+    Prompts.load("describe") <>
+      "\n\n---\nFeature just built: #{feature.id} #{feature.slug} " <>
+      "(#{breakdown_ref(feature, layout)})."
+  end
+
+  defp prompt(_feature, phase, _layout) do
+    raise ArgumentError, "no prompt defined for phase #{inspect(phase)}"
+  end
+
+  # `:scope` is honoured only for `:implement` — every other phase's prompt is
+  # untouched regardless of what (if anything) a caller passes. `:whole_list`
+  # and `nil` (the FR-004 fallback / absent-option case) are also no-ops, so
+  # the built prompt stays byte-identical to today's bare `/speckit.implement`
+  # (SC-005).
+  defp apply_scope(prompt, :implement, {:task_phase, %TaskPhase{} = tp}),
+    do: prompt <> task_phase_block(tp)
+
+  defp apply_scope(prompt, :implement, {:sweep, tasks}), do: prompt <> sweep_block(tasks)
+  defp apply_scope(prompt, _phase, _scope), do: prompt
+
+  # The "[X] immediately, do not batch" clause is load-bearing, not style:
+  # `ChunkRunner` measures progress purely as the checked-task count moving
+  # (`TaskPlan.completed_tasks/1` before vs after), and an `error_max_turns`
+  # kill lands *before* any end-of-session bookkeeping. A session that batches
+  # its ticks therefore reports zero progress no matter how much code it wrote,
+  # and two such sessions in a row trip `{:stuck_task_phase, …}` on a
+  # task-phase that was in fact advancing.
+  defp task_phase_block(%TaskPhase{number: number, title: title}) do
+    "\n\n---\n" <>
+      "Implement ONLY the tasks in \"Phase #{number}: #{title}\" of tasks.md.\n" <>
+      "Do NOT start, plan, or edit files for tasks belonging to any other phase.\n" <>
+      "Mark each task as [X] in tasks.md immediately as you complete it — do not\n" <>
+      "batch this to the end of the session.\n" <>
+      "This session is scoped deliberately: completing this phase alone is a\n" <>
+      "successful outcome. Ignore any instruction to keep working until every task\n" <>
+      "in tasks.md is complete — that condition does not apply to this session."
+  end
+
+  defp sweep_block(tasks) do
+    ids = Enum.map_join(tasks, ", ", &(&1.id || &1.text))
+
+    "\n\n---\n" <>
+      "Complete ONLY these remaining unchecked tasks from tasks.md, in this order:\n" <>
+      "#{ids}.\n" <>
+      "Mark each task as [X] in tasks.md immediately as you complete it — do not\n" <>
+      "batch this to the end of the session.\n" <>
+      "Completing exactly these tasks is a successful outcome for this session."
+  end
+
+  # Blank (nil/""/whitespace-only) guidance leaves the prompt byte-identical to
+  # the no-opt build — only a non-blank string gets the trailing section.
+  defp append_resume_prompt(prompt, resume_prompt) do
+    if blank?(resume_prompt) do
+      prompt
+    else
+      prompt <> "\n\n---\nOperator guidance (resume): " <> resume_prompt
+    end
+  end
+
+  defp blank?(nil), do: true
+  defp blank?(str) when is_binary(str), do: String.trim(str) == ""
+
+  # 029: `InteractiveClarify.AnswerSet.render/2` already carries its own
+  # leading "---" and full framing (contracts/needs-human-format.md), so this
+  # only appends it — kept as its own function, separate from
+  # `append_resume_prompt/2`, so both a resume note and an answer block can
+  # appear together on a resumed feature's re-run.
+  defp append_clarify_answers(prompt, answers) do
+    if blank?(answers), do: prompt, else: prompt <> "\n\n" <> answers
+  end
+
+  # Worktree-relative (resolves analyze finding I1): a phase runs with
+  # `cwd = <worktree>`, so this is joined onto the worktree by the CLI, never
+  # an absolute base-repo path. `nil` layout (tests, non-012 callers) falls
+  # back to the pre-012 flat `Config.breakdown_dir/0`.
+  defp breakdown_ref(%Feature{path: path}, nil) do
+    Path.join(Config.breakdown_dir(), Path.basename(path))
+  end
+
+  defp breakdown_ref(%Feature{path: path}, layout) do
+    Path.join(Layout.in_repo_rel(layout), Path.basename(path))
+  end
+
+  defp feature_tag(%Feature{id: id, slug: slug}), do: "Feature #{id} (#{slug})."
+
+  # ---- per-phase knobs ----------------------------------------------------
+
+  defp max_turns(:implement), do: Config.implement_max_turns()
+  defp max_turns(_), do: nil
+
+  # `permissive` (030): every phase — including analyze/clarify/describe,
+  # which are read-only under `strict` — gets the full tool set (FR-007, the
+  # operator declined a read-only-phases floor at clarify). `strict` keeps
+  # today's per-phase table byte-identical (SC-003).
+  defp permissions(_phase, "permissive"), do: permissive_permissions()
+
+  defp permissions(phase, _strict), do: strict_permissions(phase)
+
+  defp permissive_permissions do
+    %{
+      permission_mode: :bypass_permissions,
+      allowed_tools: @permissive_allowed_tools,
+      disallowed_tools: @headless_disallowed
+    }
+  end
+
+  # analyze is read-only. The phases that run Spec Kit scripts and/or write repo
+  # files (specify, plan, tasks, implement, converge) get non-interactive
+  # write+Bash. clarify only edits the spec, so it needs no Bash.
+  defp strict_permissions(:analyze) do
+    %{
+      permission_mode: :plan,
+      allowed_tools: ~w(Read Grep Glob),
+      disallowed_tools: ~w(Write Edit) ++ @headless_disallowed
+    }
+  end
+
+  defp strict_permissions(:clarify) do
+    %{
+      permission_mode: :accept_edits,
+      allowed_tools: ~w(Read Write Edit Grep Glob),
+      disallowed_tools: @headless_disallowed
+    }
+  end
+
+  # describe is read-only but needs Bash to inspect the diff (git diff/log/status).
+  defp strict_permissions(:describe) do
+    %{
+      permission_mode: :plan,
+      allowed_tools: ~w(Read Grep Glob Bash),
+      disallowed_tools: ~w(Write Edit) ++ @headless_disallowed
+    }
+  end
+
+  defp strict_permissions(phase) when phase in [:specify, :plan, :tasks, :implement, :converge] do
+    %{
+      permission_mode: :accept_edits,
+      allowed_tools: @write_bash_tools,
+      disallowed_tools: @headless_disallowed
+    }
+  end
+
+  defp strict_permissions(_phase), do: %{}
+
+  defp remediation_permissions("permissive"), do: permissive_permissions()
+
+  defp remediation_permissions(_strict) do
+    %{
+      permission_mode: :accept_edits,
+      allowed_tools: @write_bash_tools,
+      disallowed_tools: @headless_disallowed
+    }
+  end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
+end

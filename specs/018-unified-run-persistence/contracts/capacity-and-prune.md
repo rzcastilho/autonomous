@@ -49,7 +49,7 @@ Refusal message shape:
 run refused: store capacity headroom exhausted —
   used 1.42 GB of 1.50 GB (headroom 150 MB, short by 68 MB).
   Pruning runs older than <boundary> would reclaim 0.91 GB.
-  Nothing has been deleted; run SpeckitOrchestrator.prune_preview(before: …) to see what would go.
+  Nothing has been deleted; run Autonomous.prune_preview(before: …) to see what would go.
 ```
 
 Hitting the ceiling **mid-run** is not a refusal — it is a write failure, and

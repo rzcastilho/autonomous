@@ -1,7 +1,7 @@
 # Operator Control Plane — Design Constitution
 
 A binding visual + interaction contract for autonomous-system operator surfaces.
-Derived from the `speckit_orchestrator` control plane.
+Derived from the `autonomous` control plane.
 
 Language: **MUST** / **SHOULD** / **NEVER**. A design that violates a MUST is non-compliant.
 

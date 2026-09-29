@@ -2,7 +2,7 @@
 
 **Kind**: edge — `ChunkRunner` + extensions to `PhaseRequest`,
 `Actions.RunFeaturePhase`, `PhaseResult`, `Transcripts`, `Worktree` usage.
-**Files**: `lib/speckit_orchestrator/chunk_runner.ex` (new),
+**Files**: `lib/autonomous/chunk_runner.ex` (new),
 `phase_request.ex`, `actions/run_feature_phase.ex`, `phase_result.ex`,
 `transcripts.ex`, `feature_runner.ex`
 **Satisfies**: FR-002, FR-005, FR-006, FR-009, FR-010, FR-014, FR-023a, FR-023b,

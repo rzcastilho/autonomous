@@ -3,7 +3,7 @@
 Covers FR-001 – FR-005 and FR-003a. Internal Elixir API — the orchestrator
 exposes no external interface for this.
 
-## 1. Pure surface — `SpeckitOrchestrator.SpecNumber`
+## 1. Pure surface — `Autonomous.SpecNumber`
 
 No IO. Input is a list of bare directory names; the caller does the listing.
 
@@ -57,7 +57,7 @@ end
 `allocate/2` takes `slug` only so the error can be reported with the full
 intended directory name at the call site; it does not influence the number.
 
-## 2. IO surface — `SpeckitOrchestrator.Worktree.spec_dirs/2`
+## 2. IO surface — `Autonomous.Worktree.spec_dirs/2`
 
 ```elixir
 @spec spec_dirs(Path.t(), String.t()) :: {:ok, [String.t()]} | {:error, term()}
@@ -74,7 +74,7 @@ slash stripped, deduplicated.
 - `{:ok, []}` when `specs/` does not exist on the ref — git exits 0 with no
   output. Only a git invocation failure returns `{:error, _}`.
 
-## 3. Allocation flow (`SpeckitOrchestrator`, the executor seam)
+## 3. Allocation flow (`Autonomous`, the executor seam)
 
 Runs once per feature, before `Worktree.create/2`, in the runner task:
 
@@ -112,10 +112,10 @@ the write and allocates in memory; it still refuses on FR-003a.
 ## 4. Store surface
 
 ```elixir
-# SpeckitOrchestrator.Store
+# Autonomous.Store
 @spec spec_number(Writer.run_key() | nil, binary()) :: pos_integer() | nil
 
-# SpeckitOrchestrator.Store.Writer
+# Autonomous.Store.Writer
 @spec record_spec_number(run_key(), binary(), pos_integer()) :: :ok | {:error, term()}
 ```
 

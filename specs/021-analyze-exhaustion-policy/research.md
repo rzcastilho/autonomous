@@ -21,7 +21,7 @@ signals — `:exhausted?` (boolean) and `:exhaustion_policy`
 first and unconditional.
 
 **Rationale**: `Pipeline.next/3` is documented as "the whole decision surface"
-(CLAUDE.md, `lib/speckit_orchestrator/pipeline.ex:9`). The gate's outcome is
+(CLAUDE.md, `lib/autonomous/pipeline.ex:9`). The gate's outcome is
 exactly what this feature changes, so the change belongs there, expressed as
 data passed in — the same shape `gate_threshold` already took in feature 017.
 The alternative — having `AnalyzeRunner` set `high?: false` when the policy is
@@ -55,7 +55,7 @@ parallel code path.
 **Decision**: `FeatureRunner.gate_signals(:analyze, st, step_opts)` injects
 `:exhaustion_policy` from the run's `Remediation.Settings`, exactly as it
 already injects `:gate_threshold`
-(`lib/speckit_orchestrator/feature_runner.ex:691`). `AnalyzeRunner` supplies
+(`lib/autonomous/feature_runner.ex:691`). `AnalyzeRunner` supplies
 `:exhausted?` alongside the `:remediation` map it already writes on the
 exhaustion path (`exhaustion_signals/3`).
 
@@ -193,8 +193,8 @@ record of truth; the reason is the report's index into it.
 ## R7 — The pull request body (FR-008b, SC-008)
 
 **Decision**: a pure renderer, `Remediation.pr_note/1`, turns the stored
-annotation into a markdown section. `SpeckitOrchestrator.pr_text/2`
-(`speckit_orchestrator.ex:2171`) appends it to **both** branches — the
+annotation into a markdown section. `Autonomous.pr_text/2`
+(`autonomous.ex:2171`) appends it to **both** branches — the
 Claude-authored `pr_description` and the template fallback — reading the
 annotation from the same `Store.run/1` detail it already reads for
 `pr_description`.

@@ -6,7 +6,7 @@
 
 ## Summary
 
-`SpeckitOrchestrator.resume/2` today builds a **one-feature run**
+`Autonomous.resume/2` today builds a **one-feature run**
 (`Keyword.put(:features, [feature])`) and hands it to `run/1`, which begins with
 `RunManifest.clear/0`. The Coordinator — the manifest's single writer — then
 records that one feature as the whole run, destroying the record of every other
@@ -30,7 +30,7 @@ Three changes, in priority order:
    guarded chain.
 3. **Damaged records are repairable** (US3). A new `Recovery.Rebuild` computes a
    rebuild proposal from the surviving record ∪ the backlog on disk ∪ per-feature
-   evidence; `SpeckitOrchestrator.recover_record/1` previews it by default and
+   evidence; `Autonomous.recover_record/1` previews it by default and
    writes only on `confirm: true`.
 
 Approach per [research.md](./research.md) (D1–D10). No new dependency, no new
@@ -128,8 +128,8 @@ specs/016-resume-backlog-scope/
 ### Source Code (repository root)
 
 ```text
-lib/speckit_orchestrator/
-├── speckit_orchestrator.ex     # CHANGED — resume/2 restores the recorded set (US1);
+lib/autonomous/
+├── autonomous.ex     # CHANGED — resume/2 restores the recorded set (US1);
 │                               #   shared private continue_run/2 with resume_run/1;
 │                               #   run/1 gains :supersede; resume/2 gains :force;
 │                               #   NEW recover_record/1 (US3 preview/confirm)
@@ -150,7 +150,7 @@ lib/speckit_orchestrator/
     │                           #   render the {:active_run, pid} refusal (FR-010a)
     └── mission_control_live.ex # CHANGED (small) — every restored feature listed after a resume (FR-022)
 
-test/speckit_orchestrator/
+test/autonomous/
 ├── resume_scope_test.exs           # NEW — US1 at the seam level (S1, S2)
 ├── run_manifest_test.exs           # CHANGED — guard decision table + refusal event (S3)
 ├── telemetry_test.exs              # CHANGED — logger clause for the refusal (S4)
@@ -165,7 +165,7 @@ test/speckit_orchestrator/
 ```
 
 **Structure Decision**: Single Elixir project (Option 1), matching the existing
-`lib/speckit_orchestrator/` layout. The one new module lands in the existing
+`lib/autonomous/` layout. The one new module lands in the existing
 `recovery/` submodule beside `Reconcile`/`Evidence`, keeping the pure-core/edge
 split. No new supervision-tree child, no new public module namespace: the fix is
 a convergence of two existing paths plus a guard at the writer they share.

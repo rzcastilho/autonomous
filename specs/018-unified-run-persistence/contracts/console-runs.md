@@ -9,9 +9,9 @@ one.
 
 ## Hard rule (FR-030c)
 
-No module under `lib/speckit_orchestrator/web/` may reference `:mnesia`,
-`SpeckitOrchestrator.Store.Query`, or `SpeckitOrchestrator.Store.Writer`, or read
-a state file from disk. Every query goes through a `SpeckitOrchestrator.*`
+No module under `lib/autonomous/web/` may reference `:mnesia`,
+`Autonomous.Store.Query`, or `Autonomous.Store.Writer`, or read
+a state file from disk. Every query goes through a `Autonomous.*`
 facade function. Enforced by a test that greps the web tree (the same red-team
 style used for the scope-guard hook).
 
@@ -19,7 +19,7 @@ style used for the scope-guard hook).
 
 ### `/runs` — run history (FR-030b)
 
-Calls `SpeckitOrchestrator.run_history/1` only.
+Calls `Autonomous.run_history/1` only.
 
 - Rows: run id, state badge (in flight / completed / superseded), outcome,
   started, duration, spend, per-feature terminal status chips,
@@ -35,7 +35,7 @@ Calls `SpeckitOrchestrator.run_history/1` only.
 
 ### `/runs/:run_id` — run detail (FR-030b)
 
-Calls `SpeckitOrchestrator.run_detail/1`, and `transcript/1` **only** when the
+Calls `Autonomous.run_detail/1`, and `transcript/1` **only** when the
 operator opens a specific attempt.
 
 - Run header: settings in force, amendments with their effective point (FR-027),

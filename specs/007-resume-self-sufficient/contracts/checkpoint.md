@@ -1,4 +1,4 @@
-# Contract: `SpeckitOrchestrator.Checkpoint` (extended)
+# Contract: `Autonomous.Checkpoint` (extended)
 
 Extends the 002 checkpoint contract. Only the **write input**, the **persisted
 record**, and the **FeatureRunner integration** change. `read/1` and `delete/1`
@@ -16,7 +16,7 @@ def write(%{
   session_id: String.t() | nil,
   slug: String.t(),                       # NEW — identity (FR-001)
   path: String.t(),                       # NEW — identity (FR-001)
-  run_context: SpeckitOrchestrator.RunContext.t() | nil  # NEW — run shape (FR-006)
+  run_context: Autonomous.RunContext.t() | nil  # NEW — run shape (FR-006)
 })
 ```
 

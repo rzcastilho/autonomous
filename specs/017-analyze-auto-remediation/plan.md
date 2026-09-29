@@ -59,7 +59,7 @@ coverage behind `mix test --include integration`. `warnings_as_errors` is on;
 **Target Platform**: BEAM control plane on developer/CI machines (darwin +
 linux), driving the `claude` CLI against a target git repo.
 
-**Project Type**: single Elixir application (`speckit_orchestrator`) — OTP
+**Project Type**: single Elixir application (`autonomous`) — OTP
 control plane with an embedded Phoenix LiveView operator console.
 
 **Performance Goals**: SC-004 — a feature with only below-threshold findings
@@ -132,7 +132,7 @@ specs/017-analyze-auto-remediation/
 ### Source Code (repository root)
 
 ```text
-lib/speckit_orchestrator/
+lib/autonomous/
 ├── severity.ex                        # NEW — pure ordered vocabulary + at_or_above?/2
 ├── remediation.ex                     # NEW — pure next/2, Settings.validate/1,
 │                                      #       instruction/2, terminal_reason/2
@@ -154,7 +154,7 @@ lib/speckit_orchestrator/
     ├── live/escalations_live.ex       # attempt-history summary line
     └── components/core_components.ex  # analyze sub-label "attempt k/n" (rename chunk slot)
 
-lib/speckit_orchestrator.ex            # run/1 preflight validates the settings (FR-011)
+lib/autonomous.ex            # run/1 preflight validates the settings (FR-011)
 
 config/config.exs                      # + auto_remediation{,_threshold,_attempt_limit,_model};
                                        #   cost_estimates gains :auto_remediation and :remediation
@@ -164,7 +164,7 @@ priv/prompts/analyze_remediation.md    # NEW — corrective-instruction framing 
 .specify/memory/constitution.md        # AMENDED (FR-017) — 1.1.0 → 1.2.0
 CLAUDE.md                              # analyze-gate description gains the loop
 
-test/speckit_orchestrator/
+test/autonomous/
 ├── severity_test.exs                  # NEW
 ├── remediation_test.exs               # NEW — decision table, validate/1, instruction, reason
 ├── analyze_runner_test.exs            # NEW — scripted fake agent; attempt counts; transcripts

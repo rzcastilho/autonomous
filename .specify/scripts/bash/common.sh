@@ -421,10 +421,10 @@ resolve_template() {
             # The python3 call is wrapped in an if-condition so that set -e does not
             # abort the function when python3 exits non-zero (e.g. invalid JSON).
             local sorted_presets=""
-            if sorted_presets=$(SPECKIT_REGISTRY="$registry_file" python3 -c "
+            if sorted_presets=$(AUTONOMOUS_REGISTRY="$registry_file" python3 -c "
 import json, sys, os
 try:
-    with open(os.environ['SPECKIT_REGISTRY']) as f:
+    with open(os.environ['AUTONOMOUS_REGISTRY']) as f:
         data = json.load(f)
     presets = data.get('presets', {})
     for pid, meta in sorted(presets.items(), key=lambda x: x[1].get('priority', 10) if isinstance(x[1], dict) else 10):
@@ -509,10 +509,10 @@ resolve_template_content() {
         local registry_file="$presets_dir/.registry"
         local sorted_presets=""
         if [ -f "$registry_file" ] && command -v python3 >/dev/null 2>&1; then
-            if sorted_presets=$(SPECKIT_REGISTRY="$registry_file" python3 -c "
+            if sorted_presets=$(AUTONOMOUS_REGISTRY="$registry_file" python3 -c "
 import json, sys, os
 try:
-    with open(os.environ['SPECKIT_REGISTRY']) as f:
+    with open(os.environ['AUTONOMOUS_REGISTRY']) as f:
         data = json.load(f)
     presets = data.get('presets', {})
     for pid, meta in sorted(presets.items(), key=lambda x: x[1].get('priority', 10) if isinstance(x[1], dict) else 10):
@@ -533,7 +533,7 @@ except Exception:
                             local result
                             local py_stderr
                             py_stderr=$(mktemp)
-                            result=$(SPECKIT_MANIFEST="$manifest" SPECKIT_TMPL="$template_name" python3 -c "
+                            result=$(AUTONOMOUS_MANIFEST="$manifest" AUTONOMOUS_TMPL="$template_name" python3 -c "
 import sys, os
 try:
     import yaml
@@ -542,10 +542,10 @@ except ImportError:
     print('replace\t')
     sys.exit(0)
 try:
-    with open(os.environ['SPECKIT_MANIFEST']) as f:
+    with open(os.environ['AUTONOMOUS_MANIFEST']) as f:
         data = yaml.safe_load(f)
     for t in data.get('provides', {}).get('templates', []):
-        if t.get('name') == os.environ['SPECKIT_TMPL'] and t.get('type', 'template') == 'template':
+        if t.get('name') == os.environ['AUTONOMOUS_TMPL'] and t.get('type', 'template') == 'template':
             print(t.get('strategy', 'replace') + '\t' + t.get('file', ''))
             sys.exit(0)
     print('replace\t')

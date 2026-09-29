@@ -11,7 +11,7 @@ describes, so it can never go stale.
 
 ## Worker entry
 
-One per live worker process, held in `SpeckitOrchestrator.WorkerRegistry`
+One per live worker process, held in `Autonomous.WorkerRegistry`
 (`Registry`, `keys: :duplicate`). Registered by the worker itself, as the first
 act of its spawn helper; removed by `Registry` when the process exits for any
 reason.
@@ -35,7 +35,7 @@ dry runs). `deadline_at` is only ever written by the owning process
 
 ## Drain request
 
-A latch in a public ETS table owned by `SpeckitOrchestrator.Workers`.
+A latch in a public ETS table owned by `Autonomous.Workers`.
 
 | Field | Type | Notes |
 |-------|------|-------|

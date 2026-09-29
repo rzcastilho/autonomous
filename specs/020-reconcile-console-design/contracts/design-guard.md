@@ -10,15 +10,15 @@ line. The judgment half lives in `compliance-inventory.md`.
 
 ## 1. Placement and shape
 
-**Module**: `SpeckitOrchestrator.Web.DesignContract`
+**Module**: `Autonomous.Web.DesignContract`
 **File**: `test/support/design_contract.ex`
-**Driver**: `test/speckit_orchestrator/web/design_contract_test.exs`
+**Driver**: `test/autonomous/web/design_contract_test.exs`
 
 `test/support` is on `elixirc_paths` for `:test` only (`mix.exs:18`), so the lint
 ships **no runtime code** and adds **no dependency** *(SC-008)*.
 
 ```elixir
-defmodule SpeckitOrchestrator.Web.DesignContract do
+defmodule Autonomous.Web.DesignContract do
   defmodule Violation do
     @enforce_keys [:rule, :path, :line, :excerpt]
     defstruct [:rule, :path, :line, :excerpt]
@@ -63,12 +63,12 @@ end
 ```
 priv/static/assets/console.css
 priv/static/assets/app.js
-lib/speckit_orchestrator/web/components/core_components.ex
-lib/speckit_orchestrator/web/components/feature_drawer.ex
-lib/speckit_orchestrator/web/components/layouts.ex
-lib/speckit_orchestrator/web/components/layouts/app.html.heex
-lib/speckit_orchestrator/web/components/layouts/root.html.heex
-lib/speckit_orchestrator/web/live/*.ex          (8 views, enumerated not globbed)
+lib/autonomous/web/components/core_components.ex
+lib/autonomous/web/components/feature_drawer.ex
+lib/autonomous/web/components/layouts.ex
+lib/autonomous/web/components/layouts/app.html.heex
+lib/autonomous/web/components/layouts/root.html.heex
+lib/autonomous/web/live/*.ex          (8 views, enumerated not globbed)
 ```
 
 - **G-6** The list is **enumerated, not globbed**. A new console surface that is

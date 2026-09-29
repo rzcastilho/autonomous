@@ -1,6 +1,6 @@
 # Quickstart: Resume Facade
 
-Validates that `SpeckitOrchestrator.resume/2` restarts one feature at its
+Validates that `Autonomous.resume/2` restarts one feature at its
 checkpointed phase, honors overrides/guidance, and fails loud on every unsafe
 precondition. See [contracts/resume.md](./contracts/resume.md) for the full
 contract and [data-model.md](./data-model.md) for the resolution flow.
@@ -18,7 +18,7 @@ worktree, no git. This is the primary validation path (Constitution: pure/seam
 tests, >90% coverage).
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/resume_test.exs
+mise exec -- mix test test/autonomous/resume_test.exs
 ```
 
 Expected: all scenarios green, including —
@@ -67,7 +67,7 @@ Expected:
 
 ```elixir
 # after fixing the root cause on the feature branch and committing it:
-iex> SpeckitOrchestrator.resume("004-some-feature", prompt: "fixed the float in data-model.md, re-run analyze")
+iex> Autonomous.resume("004-some-feature", prompt: "fixed the float in data-model.md, re-run analyze")
 {:ok, #PID<…>}
-iex> SpeckitOrchestrator.print_status()   # shows the feature running from its checkpointed phase
+iex> Autonomous.print_status()   # shows the feature running from its checkpointed phase
 ```

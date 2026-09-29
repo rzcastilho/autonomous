@@ -20,7 +20,7 @@ description: "Task list for Control Plane UI Redesign"
 
 ## Path Conventions
 
-Single Elixir app. Web layer: `lib/speckit_orchestrator/web/`. Web tests: `test/speckit_orchestrator/web/`. New static assets: `priv/static/assets/`, `priv/static/fonts/`.
+Single Elixir app. Web layer: `lib/autonomous/web/`. Web tests: `test/autonomous/web/`. New static assets: `priv/static/assets/`, `priv/static/fonts/`.
 
 ---
 
@@ -29,9 +29,9 @@ Single Elixir app. Web layer: `lib/speckit_orchestrator/web/`. Web tests: `test/
 **Purpose**: Land the static asset pipeline the whole redesign depends on — no page can be restyled until `console.css` exists and is served, and fonts are self-hosted.
 
 - [X] T001 Download/vendor IBM Plex Sans (400/500/600/700) and IBM Plex Mono (400/500/600) `.woff2` files (OFL-1.1) into `priv/static/fonts/` (e.g. `ibm-plex-sans-400.woff2` … `ibm-plex-mono-600.woff2`)
-- [X] T002 [P] Extend `plug(Plug.Static, at: "/assets", ...)` `only:` list in `lib/speckit_orchestrator/web/endpoint.ex` from `~w(app.js)` to include `console.css`, and add a new `plug(Plug.Static, at: "/fonts", from: :speckit_orchestrator, only: ~w(<the woff2 filenames>))` mount
+- [X] T002 [P] Extend `plug(Plug.Static, at: "/assets", ...)` `only:` list in `lib/autonomous/web/endpoint.ex` from `~w(app.js)` to include `console.css`, and add a new `plug(Plug.Static, at: "/fonts", from: :autonomous, only: ~w(<the woff2 filenames>))` mount
 - [X] T003 Create `priv/static/assets/console.css` with the design-system tokens from contracts/design-system.md §1–§3: `:root` custom properties (`--bg`, `--panel`, `--border`, `--border-strong`, `--text`, `--muted`, `--accent`, `--accent-2`, `--link`, `--selection`), `@font-face` rules for all seven self-hosted woff2 weights, base resets, and the `App frame` / `Content column` / scrollbar rules from contracts/design-system.md §3
-- [X] T004 [US1] Update `lib/speckit_orchestrator/web/components/layouts/root.html.heex` to `<link rel="stylesheet" href="/assets/console.css">` and `<link rel="preload" as="font" type="font/woff2" crossorigin>` hints for the two hero weights (IBM Plex Sans 400, IBM Plex Mono 400), per contracts/design-system.md §5
+- [X] T004 [US1] Update `lib/autonomous/web/components/layouts/root.html.heex` to `<link rel="stylesheet" href="/assets/console.css">` and `<link rel="preload" as="font" type="font/woff2" crossorigin>` hints for the two hero weights (IBM Plex Sans 400, IBM Plex Mono 400), per contracts/design-system.md §5
 
 **Checkpoint**: `console.css` and fonts are served with zero external network calls (FR-021); no page markup changed yet.
 
@@ -43,10 +43,10 @@ Single Elixir app. Web layer: `lib/speckit_orchestrator/web/`. Web tests: `test/
 
 **⚠️ CRITICAL**: No user-story phase (3–8) may start until this phase is complete.
 
-- [X] T005 Replace the seven `@palette` entries in `lib/speckit_orchestrator/web/components/core_components.ex` with the reference `COLORS` values from data-model.md (`pending #64748b`, `blocked #475569`, `running #38bdf8`, `escalated #fbbf24`, `halted #fb7185`, `failed #f43f5e`, `done #34d399`), keeping the same atom keys and labels
-- [X] T006 Update `gauge_color/2` thresholds in `lib/speckit_orchestrator/web/components/core_components.ex` to source colors from the new palette family (`>= 90%` or `tripped?` → `#fb7185`/`#f43f5e` family, `70–90%` → `#fbbf24`, `< 70%` → `#34d399`) without changing the threshold percentages (FR-020); and render `reserved` spend as a **visually distinguished** segment in `cost_gauge/1` (FR-003) — the gauge currently lumps `committed + reserved` into one `cost-gauge-fill`, so split it into a committed fill plus a distinct reserved overlay/segment (e.g. `cost-gauge-reserved`) using the already-passed `committed`/`reserved`/`budget` attrs, keeping the existing `cost-gauge`/`cost-gauge-fill`/`cost-gauge-label` hooks intact
+- [X] T005 Replace the seven `@palette` entries in `lib/autonomous/web/components/core_components.ex` with the reference `COLORS` values from data-model.md (`pending #64748b`, `blocked #475569`, `running #38bdf8`, `escalated #fbbf24`, `halted #fb7185`, `failed #f43f5e`, `done #34d399`), keeping the same atom keys and labels
+- [X] T006 Update `gauge_color/2` thresholds in `lib/autonomous/web/components/core_components.ex` to source colors from the new palette family (`>= 90%` or `tripped?` → `#fb7185`/`#f43f5e` family, `70–90%` → `#fbbf24`, `< 70%` → `#34d399`) without changing the threshold percentages (FR-020); and render `reserved` spend as a **visually distinguished** segment in `cost_gauge/1` (FR-003) — the gauge currently lumps `committed + reserved` into one `cost-gauge-fill`, so split it into a committed fill plus a distinct reserved overlay/segment (e.g. `cost-gauge-reserved`) using the already-passed `committed`/`reserved`/`budget` attrs, keeping the existing `cost-gauge`/`cost-gauge-fill`/`cost-gauge-label` hooks intact
 - [X] T007 [P] Add `console.css` rules for `.status-pill`, `.phase-strip` / `.phase-cell` (per-state classes matching `phase_cell_state/2` output: `pending`, `active`, `completed`, `escalated`, `halted`, `failed`), `.cost-gauge` / `.cost-gauge-fill` / the distinguished reserved segment (`.cost-gauge-reserved`, FR-003) / `.cost-gauge-label`, `.badge` / `.badge-warn`, and `.toast` in `priv/static/assets/console.css`, preserving the existing class/`data-*` hooks in `core_components.ex` unchanged
-- [X] T008 Run `mise exec -- mix test test/speckit_orchestrator/web` and fix any assertion that hard-coded an old hex color; do not relax behavioral assertions (only literal color-value checks may need updating)
+- [X] T008 Run `mise exec -- mix test test/autonomous/web` and fix any assertion that hard-coded an old hex color; do not relax behavioral assertions (only literal color-value checks may need updating)
 
 **Checkpoint**: One palette drives every status color; shared primitives render in the reference colors. Per-page restyle can now begin.
 
@@ -60,10 +60,10 @@ Single Elixir app. Web layer: `lib/speckit_orchestrator/web/`. Web tests: `test/
 
 - [X] T009 [US1] Add `console.css` rules for the sidebar (`236px` fixed width, `--panel` background, `--border` right divider, `18px 14px` padding, full-height non-scrolling column), the gradient logo mark (`30×30`, `8px` radius, `linear-gradient(140deg, #7c5cff, #4b2fd6)`, inner rotated square, shadow per contracts/design-system.md §3), and nav-item styling (`.nav-active` = accent) in `priv/static/assets/console.css`
 - [X] T010 [US1] Add `console.css` rules for the top bar (run title/mode/concurrency layout, breaker chip states, live clock) matching the reference's top-bar structure in `priv/static/assets/console.css`
-- [X] T011 [US1] Rewrite `lib/speckit_orchestrator/web/components/layouts/app.html.heex` sidebar markup to the reference structure: logo mark, product name, `Layouts.context/0`-driven connection/target-repo status, `Layouts.nav_items/0`-driven links with nav glyphs (`◧ ⊟ ▷ ⚠ ≡ ⚙` per contracts/design-system.md §3) and `class="nav-active"` on the current route, and the Escalations link's `class="badge-warn"` count badge driven by `Layouts.escalations_count/0` — preserving all existing hooks (contracts/design-system.md §4)
-- [X] T012 [US1] Rewrite the top-bar markup in `lib/speckit_orchestrator/web/components/layouts/app.html.heex` to render `Layouts.run_view/0`'s run title/mode/concurrency, the `cost_gauge` component, breaker chip, and live clock, with the "No active run" state when `active? == false` (FR-004), preserving the `cost-gauge`/`cost-gauge-fill`/`cost-gauge-label` hooks
-- [X] T013 [US1] Update `test/speckit_orchestrator/web/layout_test.exs` in lockstep: keep all assertions on `nav-active`, `badge-warn`, `cost-gauge`/`cost-gauge-label`, and the "No active run"/"Active run"/"armed"/"tripped" text hooks (contracts/design-system.md §4); adjust only assertions that keyed off markup structure the rewrite changed
-- [X] T014 [US1] Run `mise exec -- mix test test/speckit_orchestrator/web/layout_test.exs` and `mise exec -- mix phx.server` to manually verify quickstart.md Scenario 1 (shell, badge, gauge, no-active-run state, no font-CDN request)
+- [X] T011 [US1] Rewrite `lib/autonomous/web/components/layouts/app.html.heex` sidebar markup to the reference structure: logo mark, product name, `Layouts.context/0`-driven connection/target-repo status, `Layouts.nav_items/0`-driven links with nav glyphs (`◧ ⊟ ▷ ⚠ ≡ ⚙` per contracts/design-system.md §3) and `class="nav-active"` on the current route, and the Escalations link's `class="badge-warn"` count badge driven by `Layouts.escalations_count/0` — preserving all existing hooks (contracts/design-system.md §4)
+- [X] T012 [US1] Rewrite the top-bar markup in `lib/autonomous/web/components/layouts/app.html.heex` to render `Layouts.run_view/0`'s run title/mode/concurrency, the `cost_gauge` component, breaker chip, and live clock, with the "No active run" state when `active? == false` (FR-004), preserving the `cost-gauge`/`cost-gauge-fill`/`cost-gauge-label` hooks
+- [X] T013 [US1] Update `test/autonomous/web/layout_test.exs` in lockstep: keep all assertions on `nav-active`, `badge-warn`, `cost-gauge`/`cost-gauge-label`, and the "No active run"/"Active run"/"armed"/"tripped" text hooks (contracts/design-system.md §4); adjust only assertions that keyed off markup structure the rewrite changed
+- [X] T014 [US1] Run `mise exec -- mix test test/autonomous/web/layout_test.exs` and `mise exec -- mix phx.server` to manually verify quickstart.md Scenario 1 (shell, badge, gauge, no-active-run state, no font-CDN request)
 
 **Checkpoint**: Shell (sidebar + top bar) matches the reference design system on every route. This is independently shippable and establishes the visual language for all remaining stories.
 
@@ -76,10 +76,10 @@ Single Elixir app. Web layer: `lib/speckit_orchestrator/web/`. Web tests: `test/
 **Independent Test**: With a run active, open Mission Control; status-count cards match live counts per status, backlog rows show live-updating phase progress/elapsed/spend, and the telemetry feed appends events without reload.
 
 - [X] T015 [US2] Add `console.css` rules for the status-count card grid, the backlog table (row coloring/labels, phase-progress cell layout), the telemetry feed panel, the two-column layout, and its `@media (max-width: 1120px)` single-column collapse (Edge Cases) in `priv/static/assets/console.css`
-- [X] T016 [US2] Rewrite `lib/speckit_orchestrator/web/live/mission_control_live.ex` templates: one summary card per lifecycle status with live count and palette color, a backlog table row per feature (id, slug, `status_pill`, `phase_strip`, elapsed, spend) that opens the feature drawer on click, and a scrollable live telemetry feed bounded to its fixed max entries — preserving all existing assigns/events (FR-020)
-- [X] T017 [US2] Add the styled empty state to `lib/speckit_orchestrator/web/live/mission_control_live.ex` for when no run is active, directing the operator to Trigger Run
-- [X] T018 [US2] Update `test/speckit_orchestrator/web/mission_control_live_test.exs` in lockstep: assert on `status_pill`/`data-status`, `phase_strip`/`data-phase`, and row-click-opens-drawer behavior rather than incidental table markup
-- [X] T019 [US2] Run `mise exec -- mix test test/speckit_orchestrator/web/mission_control_live_test.exs` and manually verify quickstart.md Scenario 2
+- [X] T016 [US2] Rewrite `lib/autonomous/web/live/mission_control_live.ex` templates: one summary card per lifecycle status with live count and palette color, a backlog table row per feature (id, slug, `status_pill`, `phase_strip`, elapsed, spend) that opens the feature drawer on click, and a scrollable live telemetry feed bounded to its fixed max entries — preserving all existing assigns/events (FR-020)
+- [X] T017 [US2] Add the styled empty state to `lib/autonomous/web/live/mission_control_live.ex` for when no run is active, directing the operator to Trigger Run
+- [X] T018 [US2] Update `test/autonomous/web/mission_control_live_test.exs` in lockstep: assert on `status_pill`/`data-status`, `phase_strip`/`data-phase`, and row-click-opens-drawer behavior rather than incidental table markup
+- [X] T019 [US2] Run `mise exec -- mix test test/autonomous/web/mission_control_live_test.exs` and manually verify quickstart.md Scenario 2
 
 **Checkpoint**: Mission Control (the primary landing view) is fully restyled and independently verifiable.
 
@@ -92,10 +92,10 @@ Single Elixir app. Web layer: `lib/speckit_orchestrator/web/`. Web tests: `test/
 **Independent Test**: Open Pipeline DAG with a multi-feature backlog; every feature is a node positioned by wave, edges connect to prerequisites, and the legend matches the shared status colors.
 
 - [X] T020 [US3] Add `console.css` rules for the SVG DAG canvas and the status legend (color swatch + label per status, using the shared palette) in `priv/static/assets/console.css`
-- [X] T021 [P] [US3] Extend `lib/speckit_orchestrator/web/live/pipeline_dag_layout.ex` (if needed) to expose explicit pixel coordinates per node so the template can draw bezier edges (`M x1,y1 C mx,y1 mx,y2 x2,y2`) without changing the existing wave/column math
-- [X] T022 [US3] Rewrite `lib/speckit_orchestrator/web/live/pipeline_dag_live.ex` to render an inline SVG: one node per feature (id, slug, `status_pill` color as fill/stroke, phase progress, spend) positioned by dependency wave, one bezier edge per prerequisite relationship, a status legend, and click-to-open-drawer behavior — preserving existing assigns/events
-- [X] T023 [US3] Update `test/speckit_orchestrator/web/pipeline_dag_live_test.exs` and `test/speckit_orchestrator/web/pipeline_dag_layout_test.exs` in lockstep to assert on the SVG node/edge/legend structure and the stable `data-status`/`data-phase` hooks rather than the prior unstyled listing markup
-- [X] T024 [US3] Run `mise exec -- mix test test/speckit_orchestrator/web/pipeline_dag_live_test.exs test/speckit_orchestrator/web/pipeline_dag_layout_test.exs` and manually verify quickstart.md Scenario 3
+- [X] T021 [P] [US3] Extend `lib/autonomous/web/live/pipeline_dag_layout.ex` (if needed) to expose explicit pixel coordinates per node so the template can draw bezier edges (`M x1,y1 C mx,y1 mx,y2 x2,y2`) without changing the existing wave/column math
+- [X] T022 [US3] Rewrite `lib/autonomous/web/live/pipeline_dag_live.ex` to render an inline SVG: one node per feature (id, slug, `status_pill` color as fill/stroke, phase progress, spend) positioned by dependency wave, one bezier edge per prerequisite relationship, a status legend, and click-to-open-drawer behavior — preserving existing assigns/events
+- [X] T023 [US3] Update `test/autonomous/web/pipeline_dag_live_test.exs` and `test/autonomous/web/pipeline_dag_layout_test.exs` in lockstep to assert on the SVG node/edge/legend structure and the stable `data-status`/`data-phase` hooks rather than the prior unstyled listing markup
+- [X] T024 [US3] Run `mise exec -- mix test test/autonomous/web/pipeline_dag_live_test.exs test/autonomous/web/pipeline_dag_layout_test.exs` and manually verify quickstart.md Scenario 3
 
 **Checkpoint**: Pipeline DAG renders the reference's node/edge/legend visualization.
 
@@ -108,10 +108,10 @@ Single Elixir app. Web layer: `lib/speckit_orchestrator/web/`. Web tests: `test/
 **Independent Test**: With ≥1 escalated feature, open Escalations; checkpoint fields, run-context values, and clarification question(s)/options render correctly, and resume/resolve trigger the existing underlying actions unchanged.
 
 - [X] T025 [US4] Add `console.css` rules for the escalation card layout (checkpoint field list, run-context value list, clarification question/options block, resume form, full-restart control) and the empty/success state in `priv/static/assets/console.css`
-- [X] T026 [US4] Rewrite `lib/speckit_orchestrator/web/live/escalations_live.ex` templates: one card per escalated/halted feature showing last phase, status, session id, reason, run-context values, and clarification question(s)/options (FR-011), a resume action (optional guidance text + start-phase override) and full-restart action invoking the existing handlers unchanged, plus a link to the relevant phase transcript
-- [X] T027 [US4] Add the styled empty/success state to `lib/speckit_orchestrator/web/live/escalations_live.ex` for zero open escalations (FR-013)
-- [X] T028 [US4] Update `test/speckit_orchestrator/web/escalations_live_test.exs` in lockstep to assert on the card's data hooks and unchanged resume/resolve event names rather than the prior unstyled listing markup
-- [X] T029 [US4] Run `mise exec -- mix test test/speckit_orchestrator/web/escalations_live_test.exs` and manually verify quickstart.md Scenario 4
+- [X] T026 [US4] Rewrite `lib/autonomous/web/live/escalations_live.ex` templates: one card per escalated/halted feature showing last phase, status, session id, reason, run-context values, and clarification question(s)/options (FR-011), a resume action (optional guidance text + start-phase override) and full-restart action invoking the existing handlers unchanged, plus a link to the relevant phase transcript
+- [X] T027 [US4] Add the styled empty/success state to `lib/autonomous/web/live/escalations_live.ex` for zero open escalations (FR-013)
+- [X] T028 [US4] Update `test/autonomous/web/escalations_live_test.exs` in lockstep to assert on the card's data hooks and unchanged resume/resolve event names rather than the prior unstyled listing markup
+- [X] T029 [US4] Run `mise exec -- mix test test/autonomous/web/escalations_live_test.exs` and manually verify quickstart.md Scenario 4
 
 **Checkpoint**: Escalations page fully restyled; the human-in-the-loop gate keeps its exact behavior.
 
@@ -124,8 +124,8 @@ Single Elixir app. Web layer: `lib/speckit_orchestrator/web/`. Web tests: `test/
 **Independent Test**: Open the drawer for features in different statuses (running, escalated, done); timeline, summary stats, and action set match that feature's actual state.
 
 - [X] T030 [US5] Add `console.css` rules for the drawer panel (timeline layout using the shared status palette, summary stat row, action button row) in `priv/static/assets/console.css`
-- [X] T031 [US5] Rewrite `lib/speckit_orchestrator/web/components/feature_drawer.ex` to render the phase-by-phase timeline (using `phase_strip`/palette coloring), elapsed/spend/prerequisite summary, and the context-appropriate action set (open transcript always; resume + open-escalation when escalated/halted; view-PR when done) — preserving existing assigns/events (FR-020)
-- [X] T032 [US5] Update drawer assertions in `test/speckit_orchestrator/web/pipeline_dag_live_test.exs` and `test/speckit_orchestrator/web/layout_test.exs` (wherever the drawer is currently exercised) in lockstep to assert on the timeline's status-color hooks and the correct action set per status
+- [X] T031 [US5] Rewrite `lib/autonomous/web/components/feature_drawer.ex` to render the phase-by-phase timeline (using `phase_strip`/palette coloring), elapsed/spend/prerequisite summary, and the context-appropriate action set (open transcript always; resume + open-escalation when escalated/halted; view-PR when done) — preserving existing assigns/events (FR-020)
+- [X] T032 [US5] Update drawer assertions in `test/autonomous/web/pipeline_dag_live_test.exs` and `test/autonomous/web/layout_test.exs` (wherever the drawer is currently exercised) in lockstep to assert on the timeline's status-color hooks and the correct action set per status
 - [X] T033 [US5] Run the affected test files and manually verify quickstart.md Scenario 5 across running/escalated/done features
 
 **Checkpoint**: Feature drawer restyled and consistent with Mission Control/DAG/Escalations status coloring.
@@ -139,11 +139,11 @@ Single Elixir app. Web layer: `lib/speckit_orchestrator/web/`. Web tests: `test/
 **Independent Test**: Open each of the three pages independently; existing functionality (start run in either mode, select feature/phase transcript, change model routing/budget/concurrency/PR toggle) still works with the new styled controls.
 
 - [X] T034 [P] [US6] Add `console.css` rules for tabs/mode-switch controls, forms, sliders, and toggles matching the reference in `priv/static/assets/console.css`
-- [X] T035 [P] [US6] Rewrite `lib/speckit_orchestrator/web/live/trigger_live.ex` templates: styled Backlog/Single-spec tab switch preserving existing start-run event handlers for each mode
-- [X] T036 [P] [US6] Rewrite `lib/speckit_orchestrator/web/live/transcripts_live.ex` templates: styled feature list + per-phase tabs, preserving existing selection events and transcript-body rendering
-- [X] T037 [P] [US6] Rewrite `lib/speckit_orchestrator/web/live/config_live.ex` templates: styled per-phase model routing controls, budget/concurrency controls, and PR-workflow toggle, preserving existing live-config update events
-- [X] T038 [US6] Update `test/speckit_orchestrator/web/trigger_live_test.exs`, `test/speckit_orchestrator/web/transcripts_live_test.exs`, and `test/speckit_orchestrator/web/config_live_test.exs` in lockstep to assert on unchanged event names/behavior rather than the prior unstyled markup
-- [X] T039 [US6] Run `mise exec -- mix test test/speckit_orchestrator/web/trigger_live_test.exs test/speckit_orchestrator/web/transcripts_live_test.exs test/speckit_orchestrator/web/config_live_test.exs` and manually verify quickstart.md Scenario 6
+- [X] T035 [P] [US6] Rewrite `lib/autonomous/web/live/trigger_live.ex` templates: styled Backlog/Single-spec tab switch preserving existing start-run event handlers for each mode
+- [X] T036 [P] [US6] Rewrite `lib/autonomous/web/live/transcripts_live.ex` templates: styled feature list + per-phase tabs, preserving existing selection events and transcript-body rendering
+- [X] T037 [P] [US6] Rewrite `lib/autonomous/web/live/config_live.ex` templates: styled per-phase model routing controls, budget/concurrency controls, and PR-workflow toggle, preserving existing live-config update events
+- [X] T038 [US6] Update `test/autonomous/web/trigger_live_test.exs`, `test/autonomous/web/transcripts_live_test.exs`, and `test/autonomous/web/config_live_test.exs` in lockstep to assert on unchanged event names/behavior rather than the prior unstyled markup
+- [X] T039 [US6] Run `mise exec -- mix test test/autonomous/web/trigger_live_test.exs test/autonomous/web/transcripts_live_test.exs test/autonomous/web/config_live_test.exs` and manually verify quickstart.md Scenario 6
 
 **Checkpoint**: All six console pages + shell + drawer now render the reference design system (SC-002).
 
@@ -154,7 +154,7 @@ Single Elixir app. Web layer: `lib/speckit_orchestrator/web/`. Web tests: `test/
 **Purpose**: Final verification that the redesign is complete, behavior-preserving, and free of external network dependencies.
 
 - [X] T040 Run `mise exec -- mix compile` and confirm zero warnings (`warnings_as_errors`)
-- [X] T041 Run `mise exec -- mix test` (full suite) and confirm all tests green, including `test/speckit_orchestrator/web/reconcile_test.exs`
+- [X] T041 Run `mise exec -- mix test` (full suite) and confirm all tests green, including `test/autonomous/web/reconcile_test.exs`
 - [X] T042 [P] Manually load the console with the browser network panel open (or offline) and confirm zero requests to `fonts.googleapis.com`/`fonts.gstatic.com` (INV-3/FR-021)
 - [X] T043 [P] Manually narrow the browser window below ~1120px and confirm Mission Control's two-column layout collapses to one column, long slugs/session ids truncate with ellipsis, and lists scroll within their container (Edge Cases)
 - [X] T044 Walk quickstart.md's full "Done when" checklist end-to-end and confirm every item
@@ -199,9 +199,9 @@ Single Elixir app. Web layer: `lib/speckit_orchestrator/web/`. Web tests: `test/
 
 ```bash
 # Launch all three page restyles together (different files, no dependencies):
-Task: "Rewrite lib/speckit_orchestrator/web/live/trigger_live.ex templates"
-Task: "Rewrite lib/speckit_orchestrator/web/live/transcripts_live.ex templates"
-Task: "Rewrite lib/speckit_orchestrator/web/live/config_live.ex templates"
+Task: "Rewrite lib/autonomous/web/live/trigger_live.ex templates"
+Task: "Rewrite lib/autonomous/web/live/transcripts_live.ex templates"
+Task: "Rewrite lib/autonomous/web/live/config_live.ex templates"
 ```
 
 ---

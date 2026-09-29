@@ -8,14 +8,14 @@ FR-032b, FR-032c, FR-029a, SC-016
 Exactly **one** file per run. Not a directory, not an archive, not a set of side
 files (FR-032a). JSON, UTF-8, produced by `Store.Export.encode/1` (pure — takes
 a loaded run detail plus its transcripts, returns iodata) and written by
-`SpeckitOrchestrator.export_run/3`.
+`Autonomous.export_run/3`.
 
 ```json
 {
   "format": "speckit.run-export",
   "format_version": 1,
   "exported_at": "2026-07-27T19:04:11.221Z",
-  "producer": {"app": "speckit_orchestrator", "version": "0.1.0", "schema_version": 1},
+  "producer": {"app": "autonomous", "version": "0.1.0", "schema_version": 1},
   "repository": {"repo_id": "o:ledgerlite-9f3a1c", "origin": "github.com/rzcastilho/ledgerlite"},
   "run": {
     "run_id": "r000004",

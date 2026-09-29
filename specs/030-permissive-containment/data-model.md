@@ -11,7 +11,7 @@ two existing free-form maps (`RunSettings.settings`, the checkpoint's
 | Form | Values | Where |
 |---|---|---|
 | string | `"strict"` \| `"permissive"` | `RunContext`, `RunSettings.settings`, checkpoint JSON, env var, agent state |
-| atom | `:strict` \| `:permissive` | `config :speckit_orchestrator, containment_profile:` and facade opts only |
+| atom | `:strict` \| `:permissive` | `config :autonomous, containment_profile:` and facade opts only |
 
 Rules:
 - Atom → string conversion only (`Atom.to_string/1`). Never string → atom.
@@ -20,10 +20,10 @@ Rules:
   maps an unknown env value to `strict` (it cannot refuse, only decide).
 - Default: `strict` at every layer.
 
-Pure helper module `SpeckitOrchestrator.Containment`:
+Pure helper module `Autonomous.Containment`:
 - `normalize/1 :: atom | String.t() -> {:ok, String.t()} | {:error, {:invalid_containment_profile, term}}`
 - `permissive?/1 :: String.t() | nil -> boolean` (`nil` → `false`)
-- `session_env/1 :: String.t() -> %{"SPECKIT_ORCHESTRATED" => "1", "SPECKIT_CONTAINMENT_PROFILE" => profile}`
+- `session_env/1 :: String.t() -> %{"AUTONOMOUS_ORCHESTRATED" => "1", "AUTONOMOUS_CONTAINMENT_PROFILE" => profile}`
 - `pr_note/1 :: String.t() | nil -> String.t()` (`""` unless permissive)
 - `report_line/1 :: String.t() | nil -> String.t() | nil` (`nil` unless permissive)
 
@@ -49,7 +49,7 @@ by `FeatureRunner` to `Describe.run/4`.
 
 | Origin | Detected when | Profile applied |
 |---|---|---|
-| `orchestrated` | env `SPECKIT_ORCHESTRATED == "1"` | env `SPECKIT_CONTAINMENT_PROFILE` if valid, else `strict` |
+| `orchestrated` | env `AUTONOMOUS_ORCHESTRATED == "1"` | env `AUTONOMOUS_CONTAINMENT_PROFILE` if valid, else `strict` |
 | `interactive` | marker absent **and** `CLAUDE_CODE_ENTRYPOINT ∈ {"cli"}` | none — pack adds no denial |
 | `undecided` | anything else | `strict` |
 

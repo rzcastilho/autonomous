@@ -12,7 +12,7 @@ the codebase map of the current recovery path.
 
 - **The blind reset.** `RunManifest.reconstruct_status/1`
   (`run_manifest.ex:202`) maps `"running" → :pending`; `resume_run/2`
-  (`speckit_orchestrator.ex:427`) consumes it and seeds the Coordinator with
+  (`autonomous.ex:427`) consumes it and seeds the Coordinator with
   those reconstructed statuses. No git, PR, transcript, or checkpoint evidence
   is consulted — a stale `running` for an already-finished feature becomes a
   full re-run. This is the exact defect FR-001…FR-006 target.

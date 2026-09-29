@@ -1,7 +1,7 @@
-# Contract: `SpeckitOrchestrator.TaskPlan`
+# Contract: `Autonomous.TaskPlan`
 
 **Kind**: pure core module (Constitution I) + one documented edge reader.
-**File**: `lib/speckit_orchestrator/task_plan.ex`
+**File**: `lib/autonomous/task_plan.ex`
 **Satisfies**: FR-001, FR-003, FR-004, FR-006, FR-007, FR-007a, FR-020a, FR-025
 
 ---

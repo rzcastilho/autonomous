@@ -8,7 +8,7 @@ file-backed (run manifest + per-feature checkpoint + durable transcripts).
 
 ---
 
-## E1 — Severity (`SpeckitOrchestrator.Severity`, pure)
+## E1 — Severity (`Autonomous.Severity`, pure)
 
 The ordered finding vocabulary, promoted from two special cases to a total
 order.
@@ -133,7 +133,7 @@ never restored from a checkpoint (FR-015).
 
 ## E5 — Analyze result (existing, extended)
 
-`SpeckitOrchestrator.AnalyzeResult` keeps every field and both booleans; it
+`Autonomous.AnalyzeResult` keeps every field and both booleans; it
 gains severity-ordered accessors.
 
 | Field | Change |
@@ -152,7 +152,7 @@ gains severity-ordered accessors.
 
 ## E6 — Run context (existing, extended)
 
-`SpeckitOrchestrator.RunContext` grows from six settings to ten.
+`Autonomous.RunContext` grows from six settings to ten.
 
 | New field | Type | Captured from |
 |---|---|---|

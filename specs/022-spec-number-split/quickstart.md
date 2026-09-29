@@ -33,7 +33,7 @@ with no IO); pure core stays above 90% overall.
 ## 3. Allocation (SC-002, SC-004, US1)
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/spec_number_test.exs
+mise exec -- mix test test/autonomous/spec_number_test.exs
 ```
 
 Covers, per `contracts/spec-number-allocation.md`:
@@ -50,8 +50,8 @@ Covers, per `contracts/spec-number-allocation.md`:
 ## 4. Reuse on resume (SC-004, US1 scenario 3)
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/store/writer_test.exs \
-                     test/speckit_orchestrator/recovery_test.exs
+mise exec -- mix test test/autonomous/store/writer_test.exs \
+                     test/autonomous/recovery_test.exs
 ```
 
 Expected:
@@ -64,9 +64,9 @@ Expected:
 ## 5. The two nets, each alone (SC-007)
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/spec_dir_test.exs \
-                     test/speckit_orchestrator/checkpoint_test.exs \
-                     test/speckit_orchestrator/feature_runner_test.exs
+mise exec -- mix test test/autonomous/spec_dir_test.exs \
+                     test/autonomous/checkpoint_test.exs \
+                     test/autonomous/feature_runner_test.exs
 ```
 
 **Net one alone** — `spec_dir_test.exs`: with two directories sharing a numeric
@@ -94,7 +94,7 @@ unchanged tree: the feature advances normally (US2 scenario 5).
 ## 6. Migration against a real store (SC-005)
 
 ```bash
-mise exec -- mix test --include integration test/speckit_orchestrator/store/migrations_test.exs
+mise exec -- mix test --include integration test/autonomous/store/migrations_test.exs
 ```
 
 Expected: a directory recorded at v4 boots to v5 with every row intact and each
@@ -104,7 +104,7 @@ directory still aborts by name (019's refusal migration is untouched).
 ## 7. Regression, end to end (FR-017, SC-001, SC-003)
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/spec_number_split_regression_test.exs
+mise exec -- mix test test/autonomous/spec_number_split_regression_test.exs
 ```
 
 Reproduces the production failure in one test: a feature whose **wave** number
@@ -127,9 +127,9 @@ Expected:
 ## 8. Both numbers on every surface (SC-006)
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/report_test.exs \
-                     test/speckit_orchestrator/web \
-                     test/speckit_orchestrator/design_contract_test.exs
+mise exec -- mix test test/autonomous/report_test.exs \
+                     test/autonomous/web \
+                     test/autonomous/design_contract_test.exs
 ```
 
 Expected: the run report line, `RunDetailLive`'s feature row, and the PR body
@@ -157,12 +157,12 @@ MIX_ENV=test mise exec -- iex -S mix
 ```
 
 ```elixir
-{:ok, entries} = SpeckitOrchestrator.Worktree.spec_dirs("#{tmp}", "HEAD")
+{:ok, entries} = Autonomous.Worktree.spec_dirs("#{tmp}", "HEAD")
 # => {:ok, ["001-alpha", "autonomous"]}   # "autonomous" is ignored, not fatal
 # (git tracks no empty directory — the .gitkeep above is only so "autonomous"
 # is present in the tree at all, to prove SpecNumber.parse/1 skips it rather
 # than raising on a non-conforming entry.)
-SpeckitOrchestrator.SpecNumber.allocate(entries, "billing")
+Autonomous.SpecNumber.allocate(entries, "billing")
 # => {:ok, 2}
 ```
 

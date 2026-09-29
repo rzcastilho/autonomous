@@ -48,7 +48,7 @@ regress.
 
 ## R2. The record already carries everything needed
 
-**Finding.** `SpeckitOrchestrator.run_detail/1` (→ `Store.Query.build_run_detail/1`)
+**Finding.** `Autonomous.run_detail/1` (→ `Store.Query.build_run_detail/1`)
 returns, per feature: `status`, `started_at`, `ended_at`, `pr_url`,
 `checkpoint` (struct or `nil`), `phase_attempts` (maps, sorted by
 `{step, started_at_unix, ordinal}` = execution order, each with `attempt_id`,

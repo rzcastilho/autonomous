@@ -352,11 +352,11 @@ Prior report (1.1.0):
 Prior report (1.0.0):
   Version change: (unversioned template) → 1.0.0
   Initial ratification — all placeholder tokens replaced with concrete,
-  project-specific principles for speckit_orchestrator. Added principles I–V;
+  project-specific principles for autonomous. Added principles I–V;
   added sections Quality & Test Discipline and Development Workflow.
 -->
 
-# speckit_orchestrator Constitution
+# autonomous Constitution
 
 ## Core Principles
 
@@ -892,12 +892,12 @@ four permitted keyframes.
 - Each feature runs in its own git worktree on a `feature/NNN-slug` branch, one
   feature at a time; the committed `.specify/`/`.claude/` scaffold MUST travel
   into each worktree, and `specify init` MUST NEVER be run inside a worktree.
-- The implementation plan (`docs/speckit-orchestrator-implementation-plan.md`) is
+- The implementation plan (`docs/autonomous-implementation-plan.md`) is
   the source of truth for scope, sequencing, and exit criteria.
 
 ## Governance
 
-This constitution supersedes ad-hoc practice for the speckit_orchestrator
+This constitution supersedes ad-hoc practice for the autonomous
 control plane and its enforcement pack. Amendments MUST be committed with a Sync
 Impact Report (prepended to this file) and a semantic version bump: MAJOR for a
 backward-incompatible governance or principle change, MINOR for a new principle

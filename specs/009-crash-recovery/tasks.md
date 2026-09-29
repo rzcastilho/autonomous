@@ -51,23 +51,23 @@ through `mise exec --` (see CLAUDE.md — `warnings_as_errors` is ON).
 **every** successful phase, not only on a gate divert. `Worktree.squash/3`
 collapses the per-phase commits into one clean commit at `:done`;
 `Worktree.restore/1` discards any uncommitted partial output before a resumed
-phase re-runs. `SpeckitOrchestrator.resume/2` (feature 007, unchanged signature)
+phase re-runs. `Autonomous.resume/2` (feature 007, unchanged signature)
 now restores the worktree before re-running the interrupted phase.
 
 **Independent Test**: Run a feature through `plan`, kill the process mid-`tasks`
 (leaving an uncommitted partial file in the worktree), call
-`SpeckitOrchestrator.resume(feature_id)`, and confirm it restarts at `tasks`, the
+`Autonomous.resume(feature_id)`, and confirm it restarts at `tasks`, the
 `specify…plan` artifacts are byte-unchanged, the partial file is gone, and the
 feature reaches a terminal state.
 
 ### Tests for User Story 1
 
-- [X] T001 [P] [US1] Extend `test/speckit_orchestrator/checkpoint_test.exs`:
+- [X] T001 [P] [US1] Extend `test/autonomous/checkpoint_test.exs`:
       `write/1` given `status: :in_progress` round-trips it through `read/1`
       unchanged (no schema change — the existing string-keyed record already
       accepts any status value) (contracts/checkpoint-progress.md — no signature
       change)
-- [X] T002 [P] [US1] Add test to `test/speckit_orchestrator/feature_runner_test.exs`:
+- [X] T002 [P] [US1] Add test to `test/autonomous/feature_runner_test.exs`:
       after each successful phase in `loop/7` (the `{:cont, next}` branch), a
       checkpoint exists with `last_phase ==` the just-completed phase,
       `status == "in_progress"`, and a `context` object; reading again after the
@@ -79,7 +79,7 @@ feature reaches a terminal state.
       only at the terminal) — after phase N a phase-boundary commit exists on the
       feature branch with message `"speckit: <id> checkpoint after <phase>"`
       (data-model.md Entity 2; quickstart Scenario A step 3)
-- [X] T004 [P] [US1] Add test to `test/speckit_orchestrator/worktree_test.exs`
+- [X] T004 [P] [US1] Add test to `test/autonomous/worktree_test.exs`
       (`@tag :integration`): `squash/3` — create a branch, make N per-phase
       commits, `squash/3` to the fork point →
       `git rev-list --count <base>..HEAD == 1`; `git diff <pre-squash-HEAD> HEAD`
@@ -100,7 +100,7 @@ feature reaches a terminal state.
       in place as the post-mortem trail — `squash/3` is **not** called (quickstart
       Scenario C step 3; data-model.md Entity 2 lifecycle) — depends on T004
 - [X] T008 [US1] Add test (`@tag :integration`) to
-      `test/speckit_orchestrator_test.exs` or a new `resume_crash_test.exs`: a
+      `test/autonomous_test.exs` or a new `resume_crash_test.exs`: a
       feature that completed `specify…plan` and then crashed mid-`tasks` (an
       `in_progress` checkpoint at `last_phase: "plan"`, plus an uncommitted
       partial file in the worktree) — `resume(feature_id)` restores the worktree
@@ -112,12 +112,12 @@ feature reaches a terminal state.
 
 - [X] T009 [US1] Thread a `run_context` parameter through
       `FeatureRunner.loop/7` and its recursive calls
-      (`lib/speckit_orchestrator/feature_runner.ex` ~lines 92, 128, 148) — today
+      (`lib/autonomous/feature_runner.ex` ~lines 92, 128, 148) — today
       `run_context` (already a local in `run/2`, line 74) is only passed to the
       terminal `checkpoint/5` call site; the per-phase write below needs it too —
       depends on T002
 - [X] T010 [US1] In `loop/7`'s `{:cont, next}` branch
-      (`lib/speckit_orchestrator/feature_runner.ex` ~lines 143–148), before
+      (`lib/autonomous/feature_runner.ex` ~lines 143–148), before
       recursing, call `Checkpoint.write/1` with `feature_id: feature.id,
       last_phase: phase, status: :in_progress, reason: nil, session_id:
       agent.state.session_id, slug: feature.slug, path: feature.path,
@@ -128,24 +128,24 @@ feature reaches a terminal state.
       #{phase}"`, guarded by `worktree != nil` (mirrors the existing
       `handle_worktree/3` nil-guard pattern at line 236) (FR-003) — depends on
       T010, T003
-- [X] T012 [US1] Add `squash/3` to `lib/speckit_orchestrator/worktree.ex`:
+- [X] T012 [US1] Add `squash/3` to `lib/autonomous/worktree.ex`:
       `git -C <path> reset --soft <base_ref>` (keeps working tree + index) then
       one commit with `message` using the existing orchestrator author (mirrors
       `commit/2`'s author flags); `:noop` when nothing is staged after the reset,
       `{:error, term}` on a git failure (contracts/worktree-squash-restore.md
       squash/3) — depends on T004
-- [X] T013 [US1] Add `restore/1` to `lib/speckit_orchestrator/worktree.ex`:
+- [X] T013 [US1] Add `restore/1` to `lib/autonomous/worktree.ex`:
       `git -C <path> reset --hard HEAD` then `git -C <path> clean -fd`
       (contracts/worktree-squash-restore.md restore/1) — depends on T005
 - [X] T014 [US1] In `FeatureRunner.handle_worktree/3`'s `:done` clause
-      (`lib/speckit_orchestrator/feature_runner.ex` ~lines 244–249), replace the
+      (`lib/autonomous/feature_runner.ex` ~lines 244–249), replace the
       terminal `Worktree.commit/2` call with `Worktree.squash/3`, computing
       `base_ref` via `git merge-base HEAD <ref>` against the branch's fork point
       (the ref the worktree was created from — `"HEAD"` default or the stacked
       workflow's `base`), reusing the existing `authored_or_template/2` message —
       depends on T012, T006
-- [X] T015 [US1] In `SpeckitOrchestrator`'s `resume_runner/3` and
-      `resume_executor/3` (`lib/speckit_orchestrator.ex` ~lines 324–374), call
+- [X] T015 [US1] In `Autonomous`'s `resume_runner/3` and
+      `resume_executor/3` (`lib/autonomous.ex` ~lines 324–374), call
       `Worktree.restore/1` on the located/recreated worktree **before** invoking
       `FeatureRunner.run/2`, discarding any uncommitted partial output the crash
       left behind (FR-003; quickstart Scenario B step 3) — depends on T013, T008
@@ -178,7 +178,7 @@ release in dependency order under the recorded cap.
 
 ### Tests for User Story 2
 
-- [X] T016 [P] [US2] Create `test/speckit_orchestrator/run_manifest_test.exs`:
+- [X] T016 [P] [US2] Create `test/autonomous/run_manifest_test.exs`:
       `write/1` persists `features`/`statuses`/`context`/`spend`/`updated_at`
       (string-keyed, atoms serialized via `Atom.to_string/1`); `read/0` is
       three-way — `{:ok, map}` / `{:error, :no_manifest}` (absent file) /
@@ -194,14 +194,14 @@ release in dependency order under the recorded cap.
       `:done`/`:escalated`/`:halted`/`:failed` kept as-is; `:running`/`:pending` →
       `:pending` (contracts/run_manifest.md reconstruct/1; data-model.md State
       transitions table)
-- [X] T019 [P] [US2] Extend `test/speckit_orchestrator/ledger_test.exs`:
+- [X] T019 [P] [US2] Extend `test/autonomous/ledger_test.exs`:
       `restore/2` sets `committed = max(committed, recorded)`; calling it twice
       (once with a lower value) never lowers committed (idempotent/monotonic);
       `restore(L, budget)` trips `breaker_tripped?/1` and a subsequent
       `reserve/2` returns `{:error, :budget_exceeded}` (contracts/ledger-restore.md
       test contract) — needed because `resume_run/1` (T033) calls
       `Ledger.restore/2` unconditionally
-- [X] T020 [P] [US2] Extend `test/speckit_orchestrator/coordinator_test.exs`: a
+- [X] T020 [P] [US2] Extend `test/autonomous/coordinator_test.exs`: a
       supplied `:statuses` init option seeds `state.statuses` instead of the
       all-`:pending` default — a feature seeded `:done` is never released even
       when its prereqs are also `:done`; a feature seeded `:pending` releases
@@ -213,7 +213,7 @@ release in dependency order under the recorded cap.
       `features`/`statuses`/`context`/`Ledger.spent/1`; the default seam (when
       `:manifest` is omitted) is `RunManifest` (contracts/resume_run.md
       Coordinator manifest seam)
-- [X] T022 [US2] Create `test/speckit_orchestrator/resume_run_test.exs`: a
+- [X] T022 [US2] Create `test/autonomous/resume_run_test.exs`: a
       mixed-state manifest (done/running/pending, fakes for runner/manifest/
       ledger) — `resume_run/1` does not re-run the `:done` feature, resumes the
       `:running` feature at its checkpointed next phase, and releases `:pending`
@@ -243,34 +243,34 @@ release in dependency order under the recorded cap.
 
 ### Implementation for User Story 2
 
-- [X] T028 [P] [US2] Add `restore/2` to `lib/speckit_orchestrator/ledger.ex`:
+- [X] T028 [P] [US2] Add `restore/2` to `lib/autonomous/ledger.ex`:
       client function `restore(server \\ __MODULE__, recorded)` +
       `handle_call({:restore, recorded}, _from, state)` setting
       `committed = max(state.committed, recorded)`, leaving `reservations`/
       `budget` untouched (contracts/ledger-restore.md) — depends on T019
-- [X] T029 [P] [US2] Create `lib/speckit_orchestrator/run_manifest.ex`: pure
+- [X] T029 [P] [US2] Create `lib/autonomous/run_manifest.ex`: pure
       module with `write/1`, `read/0`, `clear/0`, `resumable?/0`,
       `reconstruct/1` per contracts/run_manifest.md — string-keyed JSON at
       `<Config.transcript_root()>/run.json`, best-effort write (rescue → `:ok`),
       three-way read, never fabricates fields (mirrors `Checkpoint`'s
       conventions) — depends on T016–T018
 - [X] T030 [US2] Add a `:statuses` init option to `Coordinator.init/1`
-      (`lib/speckit_orchestrator/coordinator.ex` ~lines 87–102):
+      (`lib/autonomous/coordinator.ex` ~lines 87–102):
       `Keyword.get(opts, :statuses, Map.new(features, &{&1.id, :pending}))` —
       default unchanged so `run/1` behavior is identical — depends on T020
 - [X] T031 [US2] Add a `:manifest` seam to `Coordinator`
-      (`lib/speckit_orchestrator/coordinator.ex`): new struct field `manifest`
+      (`lib/autonomous/coordinator.ex`): new struct field `manifest`
       (default `RunManifest`), init option, and calls to `manifest.write/1`
       (passing `features`/current `statuses`/`context`/`Ledger.spent/1`) from
       `init/1` (before/alongside the `:continue, :release`), `spawn_feature/2`
       (~line 141), and `maybe_finish/1`'s `{:finished}` branch (~line 155) —
       best-effort, never affects wave logic — depends on T021, T029, T030
-- [X] T032 [US2] Add `resumable_run/0` to `lib/speckit_orchestrator.ex`:
+- [X] T032 [US2] Add `resumable_run/0` to `lib/autonomous.ex`:
       `RunManifest.read/0` → classify via `RunManifest.resumable?/0` → a summary
       map, `:none`, `{:error, :no_manifest}`, or `{:error, :corrupt_manifest}`;
       starts no work (contracts/resume_run.md resumable_run/0) — depends on T029,
       T026
-- [X] T033 [US2] Add `resume_run/1` to `lib/speckit_orchestrator.ex`
+- [X] T033 [US2] Add `resume_run/1` to `lib/autonomous.ex`
       implementing the 6-step contract: (1) guard an active `Coordinator` unless
       `opts[:force]`; (2) `RunManifest.read/0`, loud error on
       `:no_manifest`/`:corrupt`; (3) `RunManifest.reconstruct/1` →
@@ -280,7 +280,7 @@ release in dependency order under the recorded cap.
       the resume-aware runner (T034) (contracts/resume_run.md resume_run/1) —
       depends on T029, T028, T030, T031
 - [X] T034 [US2] Implement the resume-aware runner dispatched by `resume_run/1`'s
-      `:runner` (`lib/speckit_orchestrator.ex`): per released feature,
+      `:runner` (`lib/autonomous.ex`): per released feature,
       `Checkpoint.read/1` returning `{:ok, _}` routes through the existing
       `resume_runner/3`/`resume_executor/3` path (worktree reuse/recreate,
       `Worktree.restore/1` from T015, `start_phase:` = phase after
@@ -289,7 +289,7 @@ release in dependency order under the recorded cap.
       `Pipeline.first()`; the reapplied `pr_workflow` selects the plain-runner vs
       stacked-executor strategy exactly as `resume/2` already does — depends on
       T033, T015
-- [X] T035 [US2] In `SpeckitOrchestrator.run/1` (`lib/speckit_orchestrator.ex`
+- [X] T035 [US2] In `Autonomous.run/1` (`lib/autonomous.ex`
       ~lines 61–75), call `RunManifest.clear/0` before starting the run so the
       fresh `Coordinator`'s first manifest write supersedes any prior run
       (single-slot rule, FR-005) — depends on T029
@@ -335,7 +335,7 @@ budget releases no new work.
       implementation with no new production code; if the manifest's recorded
       `spend` is stale (e.g. Coordinator's `:manifest` seam in T031 records spend
       from before the last phase's cost was committed), fix the write-site
-      ordering in `lib/speckit_orchestrator/coordinator.ex` so `spend` reflects
+      ordering in `lib/autonomous/coordinator.ex` so `spend` reflects
       `Ledger.spent/1` at the time of each write — depends on T036, T037
       (verified: `write_manifest/1`'s `spend(state)` helper calls
       `Ledger.spent(ledger)` live at every write site — no staleness, no
@@ -357,7 +357,7 @@ never lets a resumed run silently exceed its original budget.
       reports → operator explicitly calls `resume_run/1`) — cross-reference
       feature 007's per-feature `resume/2` for the single-feature case
 - [X] T040 [P] Update moduledocs for `RunManifest`, `Ledger.restore/2`,
-      `Worktree.squash/3`/`restore/1`, and `SpeckitOrchestrator.resume_run/1`/
+      `Worktree.squash/3`/`restore/1`, and `Autonomous.resume_run/1`/
       `resumable_run/0` to cross-reference `specs/009-crash-recovery`
       (mirrors the existing `specs/002-resume-checkpoint`/
       `specs/007-resume-self-sufficient` cross-references in `checkpoint.ex`)
@@ -376,7 +376,7 @@ never lets a resumed run silently exceed its original budget.
       quickstart.md's Scenarios A–H end-to-end, confirming SC-001 through SC-006
       (verified: 424/425 pass; the one failure is
       `run_phase_test.exs`'s pre-existing paid opt-in LIVE test requiring
-      `SPECKIT_FIXTURE_REPO`, unrelated to this feature — Scenarios A–H each map
+      `AUTONOMOUS_FIXTURE_REPO`, unrelated to this feature — Scenarios A–H each map
       to passing tests in `checkpoint_test.exs`, `feature_runner_test.exs`,
       `worktree_test.exs`, `run_manifest_test.exs`, `ledger_test.exs`,
       `coordinator_test.exs`, and `resume_run_test.exs`)
@@ -435,8 +435,8 @@ Task: "run_manifest_test.exs — write/1, read/0, clear/0 three-way contract"
 Task: "run_manifest_test.exs — resumable?/0 classification"
 Task: "run_manifest_test.exs — reconstruct/1 crash→resume status mapping"
 Task: "ledger_test.exs — restore/2 idempotent/monotonic + breaker interaction"
-Task: "lib/speckit_orchestrator/run_manifest.ex — write/read/clear/resumable?/reconstruct"
-Task: "lib/speckit_orchestrator/ledger.ex — restore/2"
+Task: "lib/autonomous/run_manifest.ex — write/read/clear/resumable?/reconstruct"
+Task: "lib/autonomous/ledger.ex — restore/2"
 ```
 
 ---

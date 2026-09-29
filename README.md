@@ -1,4 +1,4 @@
-# speckit_orchestrator
+# autonomous
 
 An autonomous, spec-driven build pipeline on the BEAM. It drives the GitHub Spec
 Kit loop (`specify → clarify → plan → tasks → analyze → implement → converge`)
@@ -12,7 +12,7 @@ Control plane = Jido/OTP. Data plane = the `claude` CLI wrapped by the
 
 ## Status
 
-Phases 0–6 of `docs/speckit-orchestrator-implementation-plan.md` are built:
+Phases 0–6 of `docs/autonomous-implementation-plan.md` are built:
 pure core, harness data plane, feature vertical, control plane, enforcement, and
 observability. Phase 7 (the LedgerLite greenfield validation run, which needs a
 paid live CLI) is the remaining gate before fleet use.
@@ -34,8 +34,8 @@ paid live CLI) is the remaining gate before fleet use.
 
 ```elixir
 iex -S mix
-iex> {:ok, _} = SpeckitOrchestrator.run()
-iex> SpeckitOrchestrator.print_status()
+iex> {:ok, _} = Autonomous.run()
+iex> Autonomous.print_status()
 ```
 
 See **`docs/runbook.md`** to run, watch, and unblock a run (escalations, breaker,
@@ -43,7 +43,7 @@ See **`docs/runbook.md`** to run, watch, and unblock a run (escalations, breaker
 
 ## Configuration
 
-`config/config.exs`, under `:speckit_orchestrator`: `repo`, `breakdown_dir`,
+`config/config.exs`, under `:autonomous`: `repo`, `breakdown_dir`,
 `worktree_root`, per-phase `models` (aliases — see below), `max_concurrency`,
 `budget_usd`, `implement_max_turns`, `speckit_version`.
 
@@ -53,7 +53,7 @@ ClaudeAgentSDK catalog rejects `claude-opus-4-8`. Pin reproducibility with the
 
 ## Docs
 
-- `docs/speckit-orchestrator-implementation-plan.md` — the phased plan (source of truth).
+- `docs/autonomous-implementation-plan.md` — the phased plan (source of truth).
 - `docs/harness-contract.md` — observed jido_harness/jido_claude contract.
 - `docs/enforcement.md` — scope-guard pack, install, upgrade, container recipe.
 - `docs/breakdown-format.md` — the `NNN-*.md` backlog format the parser expects.

@@ -1,4 +1,4 @@
-defmodule SpeckitOrchestrator.Web.DesignContract do
+defmodule Autonomous.Web.DesignContract do
   @moduledoc """
   Pure mechanical guard for `docs/design-constitution.md` (constitution 2.2.0
   Principle VII / Operator Surface Design), per
@@ -36,19 +36,19 @@ defmodule SpeckitOrchestrator.Web.DesignContract do
   @surfaces [
     @css_path,
     "priv/static/assets/app.js",
-    "lib/speckit_orchestrator/web/components/core_components.ex",
-    "lib/speckit_orchestrator/web/components/feature_drawer.ex",
-    "lib/speckit_orchestrator/web/components/layouts.ex",
-    "lib/speckit_orchestrator/web/components/layouts/app.html.heex",
-    "lib/speckit_orchestrator/web/components/layouts/root.html.heex",
-    "lib/speckit_orchestrator/web/live/mission_control_live.ex",
-    "lib/speckit_orchestrator/web/live/pipeline_dag_live.ex",
-    "lib/speckit_orchestrator/web/live/trigger_live.ex",
-    "lib/speckit_orchestrator/web/live/escalations_live.ex",
-    "lib/speckit_orchestrator/web/live/runs_live.ex",
-    "lib/speckit_orchestrator/web/live/run_detail_live.ex",
-    "lib/speckit_orchestrator/web/live/transcripts_live.ex",
-    "lib/speckit_orchestrator/web/live/config_live.ex"
+    "lib/autonomous/web/components/core_components.ex",
+    "lib/autonomous/web/components/feature_drawer.ex",
+    "lib/autonomous/web/components/layouts.ex",
+    "lib/autonomous/web/components/layouts/app.html.heex",
+    "lib/autonomous/web/components/layouts/root.html.heex",
+    "lib/autonomous/web/live/mission_control_live.ex",
+    "lib/autonomous/web/live/pipeline_dag_live.ex",
+    "lib/autonomous/web/live/trigger_live.ex",
+    "lib/autonomous/web/live/escalations_live.ex",
+    "lib/autonomous/web/live/runs_live.ex",
+    "lib/autonomous/web/live/run_detail_live.ex",
+    "lib/autonomous/web/live/transcripts_live.ex",
+    "lib/autonomous/web/live/config_live.ex"
   ]
 
   @doc "Console surfaces the guard governs, repo-relative (G-6)."

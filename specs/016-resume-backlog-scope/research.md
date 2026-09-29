@@ -9,7 +9,7 @@ Ten decisions. Each names what was chosen, why, and what was rejected. No
 
 ## D1 — Per-feature resume becomes a whole-run continuation with one override
 
-**Decision**: `SpeckitOrchestrator.resume/2` stops building a one-feature run.
+**Decision**: `Autonomous.resume/2` stops building a one-feature run.
 It reads the single-slot run manifest, restores the **full recorded feature
 set**, reconciles every restored feature (D4), seeds the Coordinator with the
 reconciled statuses, and dispatches only what needs dispatching — exactly the
@@ -229,7 +229,7 @@ from three inputs — the (possibly narrowed) manifest record, the backlog on di
 `Recovery.Evidence`. It returns the union feature set, a per-feature reconciled
 status, and a `discrepancies` list (`:absent_from_backlog`,
 `:absent_from_record`, `:unreconcilable`). New facade verb
-`SpeckitOrchestrator.recover_record/1`:
+`Autonomous.recover_record/1`:
 
 - default — returns `{:ok, proposal}` and writes nothing (FR-019a);
 - `confirm: true` — writes the rebuilt record via `RunManifest.write/1` and

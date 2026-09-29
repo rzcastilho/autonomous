@@ -15,7 +15,7 @@ Unchanged view-models: [data-model.md](./data-model.md).
 
 ```bash
 mise exec -- mix compile                              # warnings_as_errors must pass
-mise exec -- mix test test/speckit_orchestrator/web   # all web LiveView tests
+mise exec -- mix test test/autonomous/web   # all web LiveView tests
 mise exec -- mix test                                 # full suite
 ```
 
@@ -31,7 +31,7 @@ mise exec -- mix phx.server        # binds loopback; open the printed URL
 
 ### Scenario 1 — Shell (US1 / FR-001..004, FR-019)
 1. Open any route. **Expect**: dark `#0b0d12` app, `236px` left sidebar with the
-   gradient logo mark + "speckit_orchestrator / CONTROL PLANE · v1", six nav items in
+   gradient logo mark + "autonomous / CONTROL PLANE · v1", six nav items in
    IBM Plex Sans, the current one marked active (`nav-active`).
 2. With escalations open. **Expect**: the Escalations nav item shows a `badge-warn`
    count badge; it disappears at zero (FR-002).

@@ -1,4 +1,4 @@
-# Contract: `SpeckitOrchestrator.ExecutionTime` (pure) + hydration/fold deltas
+# Contract: `Autonomous.ExecutionTime` (pure) + hydration/fold deltas
 
 **Feature**: `024-elapsed-execution-time` | **Status**: design
 

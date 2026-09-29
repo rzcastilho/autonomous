@@ -108,7 +108,7 @@ specs/022-spec-number-split/
 ### Source Code (repository root)
 
 ```text
-lib/speckit_orchestrator/
+lib/autonomous/
 ├── spec_number.ex                       # NEW — pure allocation decision table
 ├── checkpoint.ex                        # NEW — pure empty-checkpoint table
 ├── feature.ex                           # + :spec_number, spec_id/1, spec_label/1
@@ -132,9 +132,9 @@ lib/speckit_orchestrator/
 ├── web/live/
 │   ├── run_detail_live.ex               # both numbers, mono, "not allocated"
 │   └── escalations_live.ex              # hand-built %Feature{} carries spec_number
-└── ../speckit_orchestrator.ex           # allocation in the executor seam; PR body header
+└── ../autonomous.ex           # allocation in the executor seam; PR body header
 
-test/speckit_orchestrator/
+test/autonomous/
 ├── spec_number_test.exs                 # NEW
 ├── checkpoint_test.exs                  # NEW
 ├── spec_number_split_regression_test.exs # NEW — FR-017
@@ -153,7 +153,7 @@ CLAUDE.md                                # Feature/SpecDir/schema-version descri
 ```
 
 **Structure Decision**: single Elixir project, existing layout. Both new modules
-land in the pure core (`lib/speckit_orchestrator/`) beside `Pipeline`,
+land in the pure core (`lib/autonomous/`) beside `Pipeline`,
 `Release`, `Severity`, and `Remediation` — the established home for
 side-effect-free decision tables. No new directory, no new application, no new
 supervision child.

@@ -70,12 +70,12 @@ specs/004-resume-prompt-injection/
 ### Source Code (repository root)
 
 ```text
-lib/speckit_orchestrator/
+lib/autonomous/
 ├── phase_request.ex               # ADD :resume_prompt opt + append-only trailing section
 └── actions/
     └── run_feature_phase.ex       # PASS resume_prompt_for(state, phase) into build/3
 
-test/speckit_orchestrator/
+test/autonomous/
 ├── phase_request_test.exs         # ADD: append when non-blank; byte-identical when blank
 └── actions/
     └── run_feature_phase_test.exs # ADD: injected at resume_phase only; nil elsewhere

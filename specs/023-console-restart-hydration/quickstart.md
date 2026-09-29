@@ -19,7 +19,7 @@ target repo, no `claude` CLI.
 ## 1. Pure hydration (FR-012, SC-007)
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/console_hydration_test.exs
+mise exec -- mix test test/autonomous/console_hydration_test.exs
 ```
 
 Expected: green. The file builds `run_detail`-shaped maps by hand and asserts,
@@ -42,7 +42,7 @@ with a fixed `now`:
 ## 2. Read-model modes
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/console_read_model_test.exs
+mise exec -- mix test test/autonomous/console_read_model_test.exs
 ```
 
 Expected: green. `hydrate/3` fills coordinator-listed rows in live mode and
@@ -53,8 +53,8 @@ without blanking record cells.
 ## 3. Console pages (cold boot, live, resume)
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/web/mission_control_live_test.exs
-mise exec -- mix test test/speckit_orchestrator/web/pipeline_dag_live_test.exs
+mise exec -- mix test test/autonomous/web/mission_control_live_test.exs
+mise exec -- mix test test/autonomous/web/pipeline_dag_live_test.exs
 ```
 
 Expected: green. New cases record two `:done` features (seven attempts + cost
@@ -87,9 +87,9 @@ run), from `iex`:
 
 ```elixir
 mise exec -- iex -S mix
-iex> {:ok, d} = SpeckitOrchestrator.run_detail(SpeckitOrchestrator.current_run_id())
+iex> {:ok, d} = Autonomous.run_detail(Autonomous.current_run_id())
 iex> f = Enum.find(d.features, & &1.status == :done)
-iex> SpeckitOrchestrator.ConsoleHydration.from_record(f, d.cost_entries, DateTime.utc_now())
+iex> Autonomous.ConsoleHydration.from_record(f, d.cost_entries, DateTime.utc_now())
 ```
 
 Expected: `phases` has seven `:completed` cells with `cost`/`model` set,

@@ -1,6 +1,6 @@
 # Autonomous workflow
 
-End-to-end flow of the `speckit_orchestrator` autonomous, spec-driven build
+End-to-end flow of the `autonomous` autonomous, spec-driven build
 pipeline: operator → control plane (Coordinator + Ledger) → per-feature data
 plane (the 7-phase Spec Kit pipeline) → terminals → human-resolve loop, or the
 park/continue/end loop when the chain itself breaks.
@@ -14,7 +14,7 @@ breakdown file is inert prose.
 
 ```mermaid
 flowchart TB
-  OP([Operator · iex]) -->|SpeckitOrchestrator.run/1| BL[Load backlog<br/>docs/breakdown/NNN-*.md<br/>order by NNN ascending · raises only on<br/>numerically duplicate numbers]
+  OP([Operator · iex]) -->|Autonomous.run/1| BL[Load backlog<br/>docs/breakdown/NNN-*.md<br/>order by NNN ascending · raises only on<br/>numerically duplicate numbers]
   BL --> CO{{Coordinator · per-run GenServer}}
 
   subgraph CTRL[Control plane]
@@ -52,7 +52,7 @@ flowchart TB
   HALT -->|Worktree.commit → KEEP| KEPT
   FAIL(((failed))) -->|Worktree.commit → KEEP| KEPT
 
-  KEPT -->|human answers in<br/>breakdown Decisions<br/>commit on branch| RES[SpeckitOrchestrator.resolve/1<br/>frees worktree · keeps branch]
+  KEPT -->|human answers in<br/>breakdown Decisions<br/>commit on branch| RES[Autonomous.resolve/1<br/>frees worktree · keeps branch]
   RES -->|re-run reuses branch| CO
 
   ESC -->|nothing left in flight| PARK[[Run parked<br/>stopped_by = feature, status, reason]]
@@ -163,12 +163,12 @@ There is no `pr_workflow` toggle and no `max_concurrency` setting — this
 *is* the only run shape. Both are refused loudly at three independent edges,
 because each is read at a different time:
 
-- `config/runtime.exs` raises at config load if `SPECKIT_PR_WORKFLOW` or
-  `SPECKIT_MAX_CONCURRENCY` is set at all.
+- `config/runtime.exs` raises at config load if `AUTONOMOUS_PR_WORKFLOW` or
+  `AUTONOMOUS_MAX_CONCURRENCY` is set at all.
 - `Application.start/2` aborts boot if either app-env key is present.
 - `run/1`, `run_spec/2`, `resume/2`, `resume_run/1` refuse either key as a
   run-start option with `{:error, {:preflight, [{:retired_option, key}]}}`,
   before any side effect.
 
 See `docs/runbook.md` → "Parked runs" for the operator step-by-step and
-`docs/speckit-orchestrator-implementation-plan.md` for scope and rationale.
+`docs/autonomous-implementation-plan.md` for scope and rationale.

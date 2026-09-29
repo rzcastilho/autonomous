@@ -2,7 +2,7 @@
 
 **Feature**: `018-unified-run-persistence`
 
-The authoritative table definitions. `SpeckitOrchestrator.Store.Schema` holds
+The authoritative table definitions. `Autonomous.Store.Schema` holds
 this as data (a list of table specs); `Store.Boot` creates from it,
 `Store.Migrations` evolves it, and `Store.Mnesia` is the **only** module that
 calls `:mnesia`.

@@ -46,7 +46,7 @@ one optional `implement_chunk` key; the run manifest is unchanged.
 **Target Platform**: BEAM control plane on developer/CI machines (darwin +
 linux), driving the `claude` CLI against a target git repo.
 
-**Project Type**: single Elixir application (`speckit_orchestrator`) — OTP
+**Project Type**: single Elixir application (`autonomous`) — OTP
 control plane with an embedded Phoenix LiveView operator console.
 
 **Performance Goals**: SC-003 — a task-phase boundary is visible in the console
@@ -107,7 +107,7 @@ specs/015-implement-phase-chunking/
 ### Source Code (repository root)
 
 ```text
-lib/speckit_orchestrator/
+lib/autonomous/
 ├── task_plan.ex                  # NEW — pure parser + derived counts + locate/2
 ├── chunking.ex                   # NEW — pure decision surface (Chunking.next/2)
 ├── chunk_runner.ex               # NEW — edge: drives the loop, one session per chunk
@@ -128,7 +128,7 @@ config/config.exs                 # + implement_no_progress_limit,
                                   #   implement_sessions_per_task_phase,
                                   #   implement_sessions_headroom
 
-test/speckit_orchestrator/
+test/autonomous/
 ├── task_plan_test.exs            # NEW
 ├── chunking_test.exs             # NEW
 ├── chunk_runner_test.exs         # NEW (fake agent seam + tmp git repo)

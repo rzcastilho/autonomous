@@ -1,6 +1,6 @@
-# Contract: `SpeckitOrchestrator.WaveHistory` (pure)
+# Contract: `Autonomous.WaveHistory` (pure)
 
-`SpeckitOrchestrator.WaveHistory` is a pure core module. It must not depend
+`Autonomous.WaveHistory` is a pure core module. It must not depend
 on Mnesia, `Coordinator`, `Ledger`, PubSub, or LiveView. Every input is an
 argument. Every public function carries an `@spec`.
 
@@ -16,7 +16,7 @@ argument. Every public function carries an `@spec`.
 @spec source_for(String.t(), {:ok, [map()]} | {:error, term()}) :: source()
 ```
 
-`history` is the direct return of `SpeckitOrchestrator.run_history/1`, a list
+`history` is the direct return of `Autonomous.run_history/1`, a list
 ordered most recent first.
 
 The rules are evaluated in order, and the first match wins:

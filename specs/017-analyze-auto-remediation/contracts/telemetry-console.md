@@ -98,7 +98,7 @@ Behaviour:
   switch is off — the settings are meaningless then, and FR-010's promise is
   that off is exactly today's behaviour.
 - On start, the three values go through `Remediation.Settings.validate/1`
-  **before** `SpeckitOrchestrator.run/1` is called. An error assigns a
+  **before** `Autonomous.run/1` is called. An error assigns a
   field-level message naming the offending setting
   (`data-error="auto-remediation-limit"` / `="auto-remediation-threshold"`) and
   **no run starts** (FR-010e).

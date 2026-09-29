@@ -139,7 +139,7 @@ Documented in `docs/runbook.md` as part of this feature:
 ```bash
 # 1. Export anything worth keeping from the v1 store, BEFORE upgrading.
 mise exec -- iex -S mix
-iex> SpeckitOrchestrator.export_run("r000007", "/tmp/r000007.json")
+iex> Autonomous.export_run("r000007", "/tmp/r000007.json")
 
 # 2. Upgrade, then remove the v1 store directory.
 rm -rf ~/.autonomous/mnesia

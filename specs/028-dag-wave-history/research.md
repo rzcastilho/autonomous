@@ -5,12 +5,12 @@ All Technical Context items were resolved from the code itself. No
 
 ## R1 — Root cause of the leak
 
-**Finding.** `PipelineDagLive` (`lib/speckit_orchestrator/web/live/pipeline_dag_live.ex`)
+**Finding.** `PipelineDagLive` (`lib/autonomous/web/live/pipeline_dag_live.ex`)
 has two faults that combine.
 
 1. **The gate fails open.** `run_package/1` reads the scope from
    `current_run_detail/0`, which resolves through
-   `SpeckitOrchestrator.current_run_id/0` → `Store.current_run_key/1` →
+   `Autonomous.current_run_id/0` → `Store.current_run_key/1` →
    `Query.in_flight_run/1`. That call only ever finds an `:in_flight` run.
    Once a run is `:completed`, `:parked` or `:superseded`, `run_package` is
    `nil`, and `drawing_run_package?(%{run_package: nil})` returns `true`. So
@@ -42,7 +42,7 @@ has two faults that combine.
 ## R2 — Which run supplies a wave's state
 
 **Decision.** Add a pure `WaveHistory.source_for(slug, summaries)` over
-`SpeckitOrchestrator.run_history/1`. The summaries come from `Store.runs/2`
+`Autonomous.run_history/1`. The summaries come from `Store.runs/2`
 and carry `run_id`, `state`, `scope` and `started_at`, sorted by `run_id`
 descending. `run_id` is allocated from a monotonic per-repo sequence
 (`Ids.run_id/1`), so descending `run_id` means most recently started first.
@@ -71,7 +71,7 @@ budget (20 waves, under 1 s) is met by one index read.
 ## R3 — How a past run's state is drawn
 
 **Decision.** For `{:recorded, s}`:
-1. Call `SpeckitOrchestrator.run_detail(s.run_id)`.
+1. Call `Autonomous.run_detail(s.run_id)`.
 2. Pass the result to `ConsoleReadModel.hydrate/3` over a fresh inactive view
    (`%{active?: false, per_feature: %{}, observed: %{}}`).
 3. Pass that through `WaveHistory.interrupt/2` (R4).

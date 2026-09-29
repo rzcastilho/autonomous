@@ -1,4 +1,4 @@
-# Contract: `SpeckitOrchestrator.Checkpoint`
+# Contract: `Autonomous.Checkpoint`
 
 The module's public surface. This is an internal Elixir API contract (the project
 is an OTP control plane, not a network service), consumed at the `FeatureRunner`

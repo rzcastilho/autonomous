@@ -5,8 +5,8 @@ Pack contract 2 (feature 030). Decision order:
 
   1. Unparseable stdin -> deny, every origin, every profile.
   2. Resolve origin from the environment:
-       SPECKIT_ORCHESTRATED == "1" -> orchestrated; profile from
-         SPECKIT_CONTAINMENT_PROFILE (anything but "strict"/"permissive" -> strict).
+       AUTONOMOUS_ORCHESTRATED == "1" -> orchestrated; profile from
+         AUTONOMOUS_CONTAINMENT_PROFILE (anything but "strict"/"permissive" -> strict).
        else CLAUDE_CODE_ENTRYPOINT == "cli" -> interactive (human), no denial.
        else -> undecided -> strict.
   3. profile == "permissive" -> allow. No rule list (no floor).
@@ -66,8 +66,8 @@ def within(root, path):
 
 
 def resolve_origin_profile(env):
-    if env.get("SPECKIT_ORCHESTRATED") == "1":
-        profile = env.get("SPECKIT_CONTAINMENT_PROFILE")
+    if env.get("AUTONOMOUS_ORCHESTRATED") == "1":
+        profile = env.get("AUTONOMOUS_CONTAINMENT_PROFILE")
         if profile not in PROFILES:
             profile = "strict"
         return "orchestrated", profile

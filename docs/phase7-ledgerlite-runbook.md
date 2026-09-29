@@ -4,7 +4,7 @@ Gate before fleet mode. This runbook takes the prepared **LedgerLite** target
 (sibling `../ledgerlite`, already scaffolded + committed) through the live
 orchestrator run, exercises the seeded traps, and checks the exit criteria.
 
-Plan source of truth: `docs/speckit-orchestrator-implementation-plan.md` §7.
+Plan source of truth: `docs/autonomous-implementation-plan.md` §7.
 Operator surface: `docs/runbook.md`.
 
 ## 0. Precondition — what's already prepared
@@ -13,7 +13,7 @@ The target repo `../ledgerlite` exists and its preflight passes:
 
 ```bash
 mise exec -- mix run --no-start -e \
-  'IO.inspect(SpeckitOrchestrator.TargetPack.verify("../ledgerlite"))'
+  'IO.inspect(Autonomous.TargetPack.verify("../ledgerlite"))'
 # => :ok
 ```
 
@@ -24,14 +24,14 @@ It carries: `specify init` scaffold (`.specify/`, Spec Kit skills under
 
 ## 1. Point the orchestrator at the target
 
-Set `config :speckit_orchestrator, repo:` to the target path. Do NOT hardcode a
+Set `config :autonomous, repo:` to the target path. Do NOT hardcode a
 second copy of the breakdown — the orchestrator reads
 `repo/docs/breakdown` (`Config.repo() |> Path.join(Config.breakdown_dir())`).
 
 For the run, override in `config/runtime.exs` or an env-specific config:
 
 ```elixir
-config :speckit_orchestrator,
+config :autonomous,
   repo: "/Users/castilho/code/github.com/rzcastilho/ledgerlite"
   # worktree_root defaults to "../.speckit-worktrees" relative to repo →
   #   /Users/castilho/code/github.com/rzcastilho/.speckit-worktrees
@@ -53,8 +53,8 @@ Confirms 001 → 002 end-to-end before any parallelism.
 
 ```elixir
 # iex -S mix, with max_concurrency temporarily 1 and budget ~2 features (~9.40)
-{:ok, _} = SpeckitOrchestrator.run(features: seq_subset)  # 001, 002 only
-SpeckitOrchestrator.print_status()
+{:ok, _} = Autonomous.run(features: seq_subset)  # 001, 002 only
+Autonomous.print_status()
 ```
 
 Expect: 001 (solo wave) → `:done`, worktree removed; 002 releases after 001,
@@ -64,8 +64,8 @@ transcripts under `<worktree>/.speckit_logs/NN-<phase>.md`.
 ### 2b. Full backlog — `max_concurrency: 2`
 
 ```elixir
-{:ok, _coord} = SpeckitOrchestrator.run()   # loads all 7 from breakdown
-SpeckitOrchestrator.print_status()          # re-run to watch waves
+{:ok, _coord} = Autonomous.run()   # loads all 7 from breakdown
+Autonomous.print_status()          # re-run to watch waves
 ```
 
 **Expected wave shape** (cap 2):
@@ -81,7 +81,7 @@ SpeckitOrchestrator.print_status()          # re-run to watch waves
 | 1 | **Clarify** | `007-recurring-expenses.md` — month-end/proration/edit semantics unspecified | Opus clarify reviewer emits `## NEEDS HUMAN` → feature `:escalated`, **worktree kept** for inspection | 007 status `:escalated`; `## NEEDS HUMAN` in its clarify transcript. If it invents an answer instead → **rubber-stamp risk measured; record it.** |
 | 2 | **Analyze** | Constitution Principle 1 (integer cents) | A floating-point money path in spec/plan/tasks → Critical finding → feature `:halted` | Analyze gate halts at least once. If no natural violation, **inject** a planted `float` money path on a fixture branch (see §4) and re-run that feature to prove the gate fires. |
 | 3 | **Breaker** | `budget_usd` set to ~5 features' worth | Breaker trips mid-run; in-flight features **drain** (finish current phase, then halt), not killed; final report accounts done/halted/blocked | Per-feature estimate ≈ **$14.82** (sum of `cost_estimates`, recalibrated 2026-07-15 from a live smoke — `specify` measured at $0.63, rest scaled ×3.15, provisional). `budget_usd` defaults to **$74.0** (~5 features) so the 6th can't reserve. Verify drain-not-kill + correct final tallies. |
-| 4 | **Blocking** (optional 2nd run) | Move the 007 ambiguity into **002** | 003, 004, 006 all **block** behind the escalation; `resolve/1` releases them after human resolution | After escalating 002: dependents `:blocked`. Then `SpeckitOrchestrator.resolve("002")` + re-run → they release. |
+| 4 | **Blocking** (optional 2nd run) | Move the 007 ambiguity into **002** | 003, 004, 006 all **block** behind the escalation; `resolve/1` releases them after human resolution | After escalating 002: dependents `:blocked`. Then `Autonomous.resolve("002")` + re-run → they release. |
 
 ## 4. Injecting the analyze trap (if no natural violation)
 

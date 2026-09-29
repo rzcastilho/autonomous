@@ -12,8 +12,8 @@ run through mise (pinned toolchain).
 
 ```bash
 mise exec -- mix compile          # MUST be clean under warnings_as_errors
-mise exec -- mix test test/speckit_orchestrator/pipeline_test.exs
-mise exec -- mix test test/speckit_orchestrator/feature_runner_test.exs
+mise exec -- mix test test/autonomous/pipeline_test.exs
+mise exec -- mix test test/autonomous/feature_runner_test.exs
 mise exec -- mix test             # full suite green
 ```
 

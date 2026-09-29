@@ -21,7 +21,7 @@ opt-in.
 Proves a per-feature resume keeps the whole recorded set.
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/resume_scope_test.exs
+mise exec -- mix test test/autonomous/resume_scope_test.exs
 ```
 
 Setup: a manifest recording `001 → 002 → 003` with `001` halted, a checkpoint for
@@ -46,7 +46,7 @@ dispatched; only `001` runs.
 ## S3 — The narrowing guard (US2, SC-004)
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/run_manifest_test.exs
+mise exec -- mix test test/autonomous/run_manifest_test.exs
 ```
 
 Against a temp `autonomous_root`:
@@ -71,8 +71,8 @@ assert_receive {[:speckit, :run, :scope_narrowing_refused], _ref,
 ## S4 — Refusal reaches the operator (US2, FR-012)
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/console_read_model_test.exs
-mise exec -- mix test test/speckit_orchestrator/telemetry_test.exs
+mise exec -- mix test test/autonomous/console_read_model_test.exs
+mise exec -- mix test test/autonomous/telemetry_test.exs
 ```
 
 Expect: folding the refusal event pushes one `:warn` feed entry with
@@ -82,8 +82,8 @@ untouched; the default logger emits one warning line.
 ## S5 — Record recovery, preview then confirm (US3, SC-006)
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/recovery/rebuild_test.exs
-mise exec -- mix test test/speckit_orchestrator/record_recovery_test.exs
+mise exec -- mix test test/autonomous/recovery/rebuild_test.exs
+mise exec -- mix test test/autonomous/record_recovery_test.exs
 ```
 
 Setup: a record narrowed to `001` (`:done`) beside a three-feature backlog on
@@ -104,7 +104,7 @@ Expect:
 ## S6 — End-to-end regression (SC-003) *(opt-in)*
 
 ```bash
-mise exec -- mix test --include integration test/speckit_orchestrator/resume_backlog_e2e_test.exs
+mise exec -- mix test --include integration test/autonomous/resume_backlog_e2e_test.exs
 ```
 
 A temp git target repo seeded with a three-feature chained backlog, driven by
@@ -116,7 +116,7 @@ the whole feature.
 ## S7 — Operator surface (FR-021/022)
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/web
+mise exec -- mix test test/autonomous/web
 ```
 
 Expect: the escalations resume panel states that resuming continues the whole

@@ -28,13 +28,13 @@ mise exec -- mix test --include integration # real-harness, costs money
 Targeted:
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/store/records_test.exs      # pure, async
-mise exec -- mix test test/speckit_orchestrator/store/prune_test.exs        # pure, async
-mise exec -- mix test test/speckit_orchestrator/store/capacity_test.exs     # pure, async
-mise exec -- mix test test/speckit_orchestrator/store/export_test.exs       # pure, async
-mise exec -- mix test test/speckit_orchestrator/store/mnesia_test.exs       # schema, async: false
-mise exec -- mix test test/speckit_orchestrator/store/boot_test.exs         # schema ownership + migrations
-mise exec -- mix test test/speckit_orchestrator/persistence_failure_test.exs
+mise exec -- mix test test/autonomous/store/records_test.exs      # pure, async
+mise exec -- mix test test/autonomous/store/prune_test.exs        # pure, async
+mise exec -- mix test test/autonomous/store/capacity_test.exs     # pure, async
+mise exec -- mix test test/autonomous/store/export_test.exs       # pure, async
+mise exec -- mix test test/autonomous/store/mnesia_test.exs       # schema, async: false
+mise exec -- mix test test/autonomous/store/boot_test.exs         # schema ownership + migrations
+mise exec -- mix test test/autonomous/persistence_failure_test.exs
 ```
 
 ## 2. Store boots and refuses a foreign schema (FR-009, R2, R13)
@@ -44,7 +44,7 @@ mise exec -- iex -S mix
 ```
 
 ```elixir
-SpeckitOrchestrator.Store.Query.capacity()
+Autonomous.Store.Query.capacity()
 # %{used_bytes: _, transcript_bytes: _, capacity_bytes: 1_500_000_000, status: :ok, ...}
 ```
 
@@ -59,7 +59,7 @@ schema created in its place:
 
 ```elixir
 # start a run against the target repo
-{:ok, _pid} = SpeckitOrchestrator.run()
+{:ok, _pid} = Autonomous.run()
 
 # interrupt it: Ctrl-C twice, or kill the OS process mid-phase
 ```
@@ -67,13 +67,13 @@ schema created in its place:
 Restart and ask what is resumable — **no work starts**:
 
 ```elixir
-{:ok, r} = SpeckitOrchestrator.resumable()
+{:ok, r} = Autonomous.resumable()
 r.run_id            # same id as before the crash (FR-020)
 r.statuses          # terminal features kept, interrupted ones :pending
 r.resume_phases     # each incomplete feature's checkpointed phase
 r.gap_possible?     # false for a plain crash; true after a persistence-failure halt
 
-SpeckitOrchestrator.resume_run()
+Autonomous.resume_run()
 ```
 
 Verify: completed features are not re-run (FR-017); the resumed run uses the
@@ -85,18 +85,18 @@ interruption at every phase boundary and asserts a reader observes either the
 complete pre-update or the complete post-update state — never a mixture.
 
 Two-repository isolation (US1 acceptance 5): run against repo A and repo B, then
-`SpeckitOrchestrator.resumable(repo: path_a)` — only A's rows are read or
+`Autonomous.resumable(repo: path_a)` — only A's rows are read or
 written.
 
 ## 4. US2 — Run history (P2)
 
 ```elixir
-{:ok, runs} = SpeckitOrchestrator.run_history()
+{:ok, runs} = Autonomous.run_history()
 Enum.map(runs, &{&1.run_id, &1.state, &1.outcome, &1.spend_usd})
 # most recent first; every prior run still present
 
-SpeckitOrchestrator.run_history(outcome: [:halted, :escalated])
-SpeckitOrchestrator.run_history(feature: "003")
+Autonomous.run_history(outcome: [:halted, :escalated])
+Autonomous.run_history(feature: "003")
 ```
 
 Verify: starting a new run destroys nothing (SC-004); the prior in-flight run is
@@ -111,7 +111,7 @@ volume.
 ## 5. US3 — Full detail of one run (P3)
 
 ```elixir
-{:ok, d} = SpeckitOrchestrator.run_detail("r000004")
+{:ok, d} = Autonomous.run_detail("r000004")
 
 f = Enum.find(d.features, & &1.feature_id == "003")
 f.phase_attempts       # execution order, with outcome/model/cost/duration
@@ -120,7 +120,7 @@ f.remediation_attempts # each attempt, with the limit and threshold in force
 
 # transcripts survive worktree removal (SC-006)
 attempt = List.first(f.phase_attempts)
-{:ok, t} = SpeckitOrchestrator.transcript(attempt.transcript_ref)
+{:ok, t} = Autonomous.transcript(attempt.transcript_ref)
 byte_size(t.body)
 ```
 
@@ -128,7 +128,7 @@ byte_size(t.body)
 
 ```elixir
 # with a run in flight, make the store unwritable (chmod the store dir)
-SpeckitOrchestrator.Store.Health.status()
+Autonomous.Store.Health.status()
 # {:failed, reason, at}
 ```
 
@@ -142,18 +142,18 @@ appears as a `Recovery.Report` conflict rather than being resolved silently.
 ## 7. Capacity and pruning (FR-031*, SC-014, SC-015)
 
 ```elixir
-SpeckitOrchestrator.store_capacity()
+Autonomous.store_capacity()
 # %{status: :refusing, shortfall_bytes: _, reclaimable_bytes: _} when headroom is gone
 
-SpeckitOrchestrator.run()
+Autonomous.run()
 # {:error, {:preflight, [{:store_capacity, %{shortfall_bytes: _, reclaimable_bytes: _}}]}}
 
-{:ok, plan} = SpeckitOrchestrator.prune_preview(before: ~U[2026-06-01 00:00:00Z])
+{:ok, plan} = Autonomous.prune_preview(before: ~U[2026-06-01 00:00:00Z])
 plan.removable          # what would go
 plan.retained           # in-flight / resumable runs, each with a reason
 plan.bytes_reclaimable
 
-{:ok, res} = SpeckitOrchestrator.prune(before: ~U[2026-06-01 00:00:00Z], confirm: true)
+{:ok, res} = Autonomous.prune(before: ~U[2026-06-01 00:00:00Z], confirm: true)
 ```
 
 Verify: under a refusal, history, detail, transcript retrieval, export and prune
@@ -165,7 +165,7 @@ removals, SC-014).
 ## 8. Export (FR-032*, SC-016)
 
 ```elixir
-{:ok, path} = SpeckitOrchestrator.export_run("r000004", "/tmp/r000004.json")
+{:ok, path} = Autonomous.export_run("r000004", "/tmp/r000004.json")
 ```
 
 Verify: exactly one file; `format` / `format_version` present; every feature,
@@ -187,7 +187,7 @@ mise exec -- mix phx.server
 - Existing views (`/`, pipeline DAG, escalations, transcripts) render the same
   facts, now sourced from the facade.
 
-Grep test (SC-007): no module under `lib/speckit_orchestrator/web/` references
+Grep test (SC-007): no module under `lib/autonomous/web/` references
 `:mnesia`, `Store.Query`, or `Store.Writer`, and no state file is read from
 disk.
 

@@ -78,8 +78,8 @@ specs/013-resume-pre-phase-prompt/
 ### Source Code (repository root)
 
 ```text
-lib/speckit_orchestrator/
-├── speckit_orchestrator.ex        # resume/2: + :remediation_prompt / :remediation_model
+lib/autonomous/
+├── autonomous.ex        # resume/2: + :remediation_prompt / :remediation_model
 │                                  #   opts; thread through resume_runner/4 & resume_executor/4
 ├── phase_request.ex               # + build_remediation/3 (pure builder: model, write perms,
 │                                  #   operator-prompt framing)
@@ -93,7 +93,7 @@ lib/speckit_orchestrator/
 └── config.ex                      # remediation model resolution + validation; cost estimate
                                    #   for the :remediation step
 
-test/speckit_orchestrator/
+test/autonomous/
 ├── phase_request_test.exs         # build_remediation/3: model, perms, prompt framing, blank
 ├── run_remediation_test.exs       # NEW — action folds cost/history; error outcome on failure
 ├── feature_runner_test.exs        # step runs once, before phase; blank = no step; failure

@@ -4,7 +4,7 @@ Covers FR-012 – FR-015 (net two). A phase whose contract is to produce a named
 file, that starts with that file absent and commits nothing at its boundary,
 fails at that phase.
 
-## 1. Pure surface — `SpeckitOrchestrator.Checkpoint`
+## 1. Pure surface — `Autonomous.Checkpoint`
 
 ```elixir
 @armed_phases [:specify, :plan, :tasks]

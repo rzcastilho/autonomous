@@ -30,11 +30,11 @@ hooks the existing LiveView tests assert on.
 
 **Storage**: N/A — console reads live in-memory state from `Coordinator`, `Ledger`, `Config`; no persistence added.
 
-**Testing**: ExUnit + `Phoenix.LiveViewTest` (`mise exec -- mix test`). Existing web tests under `test/speckit_orchestrator/web/` must stay green.
+**Testing**: ExUnit + `Phoenix.LiveViewTest` (`mise exec -- mix test`). Existing web tests under `test/autonomous/web/` must stay green.
 
 **Target Platform**: Desktop-width browsers pointed at the loopback-bound Bandit endpoint (`mix phx.server`).
 
-**Project Type**: Web application — single Elixir app with an embedded Phoenix LiveView console under `lib/speckit_orchestrator/web/`.
+**Project Type**: Web application — single Elixir app with an embedded Phoenix LiveView console under `lib/autonomous/web/`.
 
 **Performance Goals**: Live updates continue to arrive over the existing LiveView socket without full page reload (SC-004). No new performance budget; the redesign must not add an asset build step or a runtime external network call (FR-021).
 
@@ -90,7 +90,7 @@ specs/011-control-plane-ui-redesign/
 ### Source Code (repository root)
 
 ```text
-lib/speckit_orchestrator/web/
+lib/autonomous/web/
 ├── endpoint.ex                       # +Plug.Static routes for console.css and /fonts
 ├── router.ex                         # unchanged (FR-020)
 ├── web.ex                            # unchanged (shared imports already in place)
@@ -118,13 +118,13 @@ priv/static/
     ├── ibm-plex-sans-*.woff2         # NEW — self-hosted IBM Plex Sans (400/500/600/700)
     └── ibm-plex-mono-*.woff2         # NEW — self-hosted IBM Plex Mono (400/500/600)
 
-test/speckit_orchestrator/web/        # existing tests must stay green; update only the
+test/autonomous/web/        # existing tests must stay green; update only the
                                       #   markup-structure assertions the restyle changes
 ```
 
 **Structure Decision**: Single Elixir app with an embedded Phoenix LiveView console
 (the "web application" project type realized in-tree, not a separate frontend/ dir).
-All work lives under the existing `lib/speckit_orchestrator/web/` tree plus new static
+All work lives under the existing `lib/autonomous/web/` tree plus new static
 assets under `priv/static/`. No new routes, LiveViews, or backend modules are created
 (FR-020) — the redesign is a markup + stylesheet + palette-token layer over the shipped
 `008-control-plane` views.

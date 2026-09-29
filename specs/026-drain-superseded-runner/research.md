@@ -13,8 +13,8 @@ the new run must wait on. Every finding is from the code on this branch
 ## R1. What exactly is "the worker", and why nothing stops it
 
 **Finding.** Every feature is driven by a `Task.Supervisor.start_child(
-SpeckitOrchestrator.RunnerSup, fn -> … FeatureRunner.run(…) end)` child. Five
-spawn sites in `lib/speckit_orchestrator.ex` create one: `default_executor/5`,
+Autonomous.RunnerSup, fn -> … FeatureRunner.run(…) end)` child. Five
+spawn sites in `lib/autonomous.ex` create one: `default_executor/5`,
 `seed_executor/3`, `resume_executor/8`, `resume_run_executor/5`, and
 `split_resume_executor/6` (the non-target branch). The child is not linked to
 the Coordinator — deliberately (see the comment on `start_coordinator/1`: a
@@ -59,7 +59,7 @@ worker would otherwise already be racing on the same branch.
 ## R2. Process lookup: `Registry`, keyed by repository
 
 **Decision.** A `Registry` (`keys: :duplicate`, name
-`SpeckitOrchestrator.WorkerRegistry`) under the application supervisor,
+`Autonomous.WorkerRegistry`) under the application supervisor,
 started before `RunnerSup`. Key = `repo_id` (the partition already used as the
 first element of every `run_key`); value = the worker's
 [entry](./data-model.md#worker-entry) (`feature_id`, `run_id`, `deadline_at`).
@@ -106,7 +106,7 @@ yielding a distinct reason `:superseded`. The drainer sets the request; the
 worker observes it at its next boundary and stops *there*, never mid-session.
 
 The request is held in a public ETS table owned by the registry's module
-(`SpeckitOrchestrator.Workers`), keyed by worker pid, deleted by the drainer
+(`Autonomous.Workers`), keyed by worker pid, deleted by the drainer
 once the worker is down. Not a mailbox message: the worker only reads its
 mailbox selectively inside `AgentServer.call`, and the three boundary checks
 live in three modules; a latched lookup is idempotent across them where a
@@ -235,7 +235,7 @@ returns `:ok` immediately.
   refusal, not the drain"). Drain timeout surfaces as
   `{:error, {:drain_timeout, stuck}}` and starts nothing.
 
-**FR-013.** `SpeckitOrchestrator.workers/0` (and `/1` for an explicit repo)
+**FR-013.** `Autonomous.workers/0` (and `/1` for an explicit repo)
 returns the registered entries — read-only, no side effect. `status/0` is left
 alone (it is the Coordinator's snapshot and returns nothing when no
 Coordinator lives — precisely the state this feature is about).

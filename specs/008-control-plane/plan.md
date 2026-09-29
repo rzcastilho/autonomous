@@ -6,14 +6,14 @@
 
 ## Summary
 
-Build an operator-facing web console for `speckit_orchestrator` that replaces the
+Build an operator-facing web console for `autonomous` that replaces the
 `iex` workflow (`run/1`, `run_spec/2`, `status/0`, `resume/2`, `resolve/1`) with a
 single live screen. Six views behind a fixed left nav — Mission Control, Pipeline
 DAG, Trigger Run, Escalations, Transcripts, Configuration — plus a persistent
 status bar with the cost-breaker gauge, a slide-in feature drawer, and toast
 confirmations.
 
-**Technical approach**: A Phoenix LiveView app (`SpeckitOrchestrator.Web`) added
+**Technical approach**: A Phoenix LiveView app (`Autonomous.Web`) added
 to the existing OTP application as a **presentation/control layer** over the
 existing facade and runtime — it reimplements no pipeline logic (Constitution I).
 Live updates flow from the existing `:telemetry` phase events through a new
@@ -52,7 +52,7 @@ HTTP server bound to `127.0.0.1` (or a configured trusted interface), one truste
 operator, no login.
 
 **Project Type**: Web console added to the existing single Mix project — a new
-`lib/speckit_orchestrator/web/` tree (endpoint, router, LiveViews, components)
+`lib/autonomous/web/` tree (endpoint, router, LiveViews, components)
 alongside the existing pure core and runtime. Not a separate app.
 
 **Performance Goals**: Reflect a phase transition on screen within 5 s (SC-002);
@@ -110,7 +110,7 @@ specs/008-control-plane/
 ### Source Code (repository root)
 
 ```text
-lib/speckit_orchestrator/
+lib/autonomous/
 ├── web/                          # NEW — the console (presentation/control layer)
 │   ├── endpoint.ex               # Bandit endpoint, loopback bind, LiveView socket
 │   ├── router.ex                 # Routes for the six views (no auth pipeline)
@@ -134,7 +134,7 @@ lib/speckit_orchestrator/
 ├── application.ex                # + PubSub, ConsoleProjection, Endpoint in the supervision tree
 └── … (existing pure core + runtime unchanged)
 
-test/speckit_orchestrator/
+test/autonomous/
 ├── console_read_model_test.exs   # pure fold unit tests (no CLI/LiveView)
 ├── live_config_test.exs          # forward-only apply semantics
 └── web/
@@ -147,7 +147,7 @@ test/speckit_orchestrator/
 ```
 
 **Structure Decision**: Single Mix project. The console lives under
-`lib/speckit_orchestrator/web/` as a self-contained boundary, mirroring how the
+`lib/autonomous/web/` as a self-contained boundary, mirroring how the
 CLI/harness adapter is isolated from the pure core. The only backend touches are
 additive: an endpoint/PubSub/projection in the supervision tree, and two small
 runtime setters (`Coordinator` cap, `Ledger` budget) that the live-config contract

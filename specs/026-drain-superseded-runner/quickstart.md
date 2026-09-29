@@ -16,17 +16,17 @@ mise exec -- mix compile          # warnings_as_errors
 
 ```bash
 # pure rows: drain? signal in Chunking/Remediation, Bound.wait_ms/3
-mise exec -- mix test test/speckit_orchestrator/chunking_test.exs \
-                      test/speckit_orchestrator/remediation_test.exs \
-                      test/speckit_orchestrator/workers/bound_test.exs
+mise exec -- mix test test/autonomous/chunking_test.exs \
+                      test/autonomous/remediation_test.exs \
+                      test/autonomous/workers/bound_test.exs
 
 # registry + drain against stub worker processes
-mise exec -- mix test test/speckit_orchestrator/workers_test.exs
+mise exec -- mix test test/autonomous/workers_test.exs
 
 # facade: supersession ordering, guard, :force, timeout
-mise exec -- mix test test/speckit_orchestrator/supersession_drain_test.exs \
-                      test/speckit_orchestrator/resume_test.exs \
-                      test/speckit_orchestrator/resume_run_test.exs
+mise exec -- mix test test/autonomous/supersession_drain_test.exs \
+                      test/autonomous/resume_test.exs \
+                      test/autonomous/resume_run_test.exs
 
 mise exec -- mix test             # full suite stays green
 ```
@@ -47,8 +47,8 @@ mise exec -- mix test             # full suite stays green
 ## Manual live check (optional, real CLI)
 
 Against a scratch target repo, start a run, wait until
-`SpeckitOrchestrator.workers()` shows the first feature mid-phase, then call
-`SpeckitOrchestrator.run()` again from another `iex` / the console Trigger:
+`Autonomous.workers()` shows the first feature mid-phase, then call
+`Autonomous.run()` again from another `iex` / the console Trigger:
 
 1. the second call blocks until the first feature's current phase ends;
 2. `ps aux | grep claude` shows exactly one session at every moment;

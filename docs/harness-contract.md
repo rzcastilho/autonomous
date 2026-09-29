@@ -96,7 +96,7 @@ Consequences for later phases:
   hard cancel.
 - **`resume?: true`** → session resume is available (session ids in the Claude
   signals) — enables mid-pipeline escalation resume (shipped via
-  `SpeckitOrchestrator.resume/2`).
+  `Autonomous.resume/2`).
 
 ### Runtime contract (`Jido.Claude.Adapter.runtime_contract/0`)
 

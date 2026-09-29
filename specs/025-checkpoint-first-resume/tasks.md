@@ -26,8 +26,8 @@ the report rendering for US3).
 
 ## Path Conventions
 
-Single Elixir project, repository root. `lib/speckit_orchestrator/` and
-`test/speckit_orchestrator/` — no new files, no new directories (plan.md
+Single Elixir project, repository root. `lib/autonomous/` and
+`test/autonomous/` — no new files, no new directories (plan.md
 Project Structure).
 
 ---
@@ -46,8 +46,8 @@ Project Structure).
 
 **⚠️ CRITICAL**: No user story work can begin until this phase is complete
 
-- [X] T002 Implement `Reconcile.resume_position/2` in `lib/speckit_orchestrator/recovery/reconcile.ex` per `contracts/reconcile-checkpoint-first.md` §2 — no-checkpoint → `:no_position` (§2.1), damaged checkpoint → `{:conflict, {:damaged_checkpoint, %{phase:, last_completed_phase:}}}` (§2.2), `last_completed_phase == :converge` → `:no_position` (§2.3), `completed_through/1`/`predecessor/1` derivation (§2.4), and the ahead/tie/behind verdict against `last_boundary_phase` (§2.5)
-- [X] T003 Wire `resume_position/2` into `Reconcile.status/3`'s `recorded in [:running, :pending]` clause in `lib/speckit_orchestrator/recovery/reconcile.ex` as clause 4b (checkpoint-first, ahead of the existing clause 5 trail fallback) and clause 6b (`not branch_committed? and not is_nil(checkpoint)` → `{:conflict, :checkpoint_without_branch}`, ahead of clause 7's `:pr_without_branch`), via a private `checkpoint_position/2` that returns `false` instead of `:no_position` so the `cond` falls through — per contract §3 (depends on T002; same file)
+- [X] T002 Implement `Reconcile.resume_position/2` in `lib/autonomous/recovery/reconcile.ex` per `contracts/reconcile-checkpoint-first.md` §2 — no-checkpoint → `:no_position` (§2.1), damaged checkpoint → `{:conflict, {:damaged_checkpoint, %{phase:, last_completed_phase:}}}` (§2.2), `last_completed_phase == :converge` → `:no_position` (§2.3), `completed_through/1`/`predecessor/1` derivation (§2.4), and the ahead/tie/behind verdict against `last_boundary_phase` (§2.5)
+- [X] T003 Wire `resume_position/2` into `Reconcile.status/3`'s `recorded in [:running, :pending]` clause in `lib/autonomous/recovery/reconcile.ex` as clause 4b (checkpoint-first, ahead of the existing clause 5 trail fallback) and clause 6b (`not branch_committed? and not is_nil(checkpoint)` → `{:conflict, :checkpoint_without_branch}`, ahead of clause 7's `:pr_without_branch`), via a private `checkpoint_position/2` that returns `false` instead of `:no_position` so the `cond` falls through — per contract §3 (depends on T002; same file)
 
 **Checkpoint**: `Reconcile.status/3`'s full clause order (1–7 plus 4b/6b) compiles and every existing test still passes. Foundation ready — story work can begin.
 
@@ -61,16 +61,16 @@ Project Structure).
 
 ### Tests for User Story 1
 
-- [X] T004 [P] [US1] Add cases to `test/speckit_orchestrator/recovery/reconcile_test.exs` for worked cases 1 (the defect: checkpoint `:implement`/`last_completed_phase: :analyze` vs trail `:tasks` → `{:resume, :implement}`), 2 (agreeing checkpoint/trail → unchanged), and 6 (checkpoint names `:converge` as next phase, `last_completed_phase: :implement` → `{:resume, :converge}`) per `contracts/reconcile-checkpoint-first.md` §4
-- [X] T005 [P] [US1] Add a case to `test/speckit_orchestrator/resume_run_test.exs` asserting a whole-run resume of a feature interrupted during implement dispatches `:implement`, not `:analyze` (SC-001, the reproduced `r000002`/`mod-player`/`001` shape from spec.md Context)
-- [X] T006 [P] [US1] Add cases to `test/speckit_orchestrator/resume_test.exs` asserting `resume/2` and `resume_run/1` resolve the identical phase for the same feature record and evidence, across every phase the pipeline can be interrupted in (FR-003, SC-002). Not duplicated into `resume_scope_test.exs`: every fixture there passes a top-level `:runner` override, which bypasses `resolve_start_phase`/`dispatch_resume` for every feature (target and restored alike) — there is no real phase resolution left to observe on that path.
-- [X] T007 [P] [US1] Add a mid-implement crash case to `test/speckit_orchestrator/resume_crash_test.exs`: checkpoint ahead of the trail and carrying a task-phase position, resumed feature re-enters `ChunkRunner` at that position
+- [X] T004 [P] [US1] Add cases to `test/autonomous/recovery/reconcile_test.exs` for worked cases 1 (the defect: checkpoint `:implement`/`last_completed_phase: :analyze` vs trail `:tasks` → `{:resume, :implement}`), 2 (agreeing checkpoint/trail → unchanged), and 6 (checkpoint names `:converge` as next phase, `last_completed_phase: :implement` → `{:resume, :converge}`) per `contracts/reconcile-checkpoint-first.md` §4
+- [X] T005 [P] [US1] Add a case to `test/autonomous/resume_run_test.exs` asserting a whole-run resume of a feature interrupted during implement dispatches `:implement`, not `:analyze` (SC-001, the reproduced `r000002`/`mod-player`/`001` shape from spec.md Context)
+- [X] T006 [P] [US1] Add cases to `test/autonomous/resume_test.exs` asserting `resume/2` and `resume_run/1` resolve the identical phase for the same feature record and evidence, across every phase the pipeline can be interrupted in (FR-003, SC-002). Not duplicated into `resume_scope_test.exs`: every fixture there passes a top-level `:runner` override, which bypasses `resolve_start_phase`/`dispatch_resume` for every feature (target and restored alike) — there is no real phase resolution left to observe on that path.
+- [X] T007 [P] [US1] Add a mid-implement crash case to `test/autonomous/resume_crash_test.exs`: checkpoint ahead of the trail and carrying a task-phase position, resumed feature re-enters `ChunkRunner` at that position
 
 ### Implementation for User Story 1
 
-- [X] T008 [US1] Add `chunk_checkpoint/4` to `lib/speckit_orchestrator/chunk_runner.ex` per `contracts/implement-chunk-checkpoint-write.md` §3: full checkpoint map (`phase: :implement`, `last_completed_phase` = predecessor of `:implement`, `status: :in_progress`, carried `analyze_remediation`, `implement_chunk: %{ordinal, number, title, total, sessions_used, scope: :task_phase}`) for a `{:task_phase, tp}` `:ok` boundary, `nil` otherwise; thread the checkpoint row `run/1` already loads (`checkpoint_record/3`) onto `ctx` beside `:baseline_sessions_used`; pass `checkpoint: chunk_checkpoint(ctx, state1, scope, outcome)` into `record_chunk_attempt/6`'s `Writer.record_phase_attempt/2` payload, ordered after `maybe_commit_boundary/4` (already the case)
-- [X] T009 [P] [US1] Add cases to `test/speckit_orchestrator/chunk_runner_test.exs`: a `{:task_phase, tp}` `:ok` boundary writes a full `implement_chunk` (ordinal/number/title/total/sessions_used), `:sweep`/`:whole_list`/non-`:ok` write `nil` (no-op, prior row intact), and `analyze_remediation` survives the write (SC-006, FR-007)
-- [X] T010 [P] [US1] Add a case to `test/speckit_orchestrator/store/writer_test.exs` confirming `implement_chunk` round-trips through `record_phase_attempt/2`'s transaction
+- [X] T008 [US1] Add `chunk_checkpoint/4` to `lib/autonomous/chunk_runner.ex` per `contracts/implement-chunk-checkpoint-write.md` §3: full checkpoint map (`phase: :implement`, `last_completed_phase` = predecessor of `:implement`, `status: :in_progress`, carried `analyze_remediation`, `implement_chunk: %{ordinal, number, title, total, sessions_used, scope: :task_phase}`) for a `{:task_phase, tp}` `:ok` boundary, `nil` otherwise; thread the checkpoint row `run/1` already loads (`checkpoint_record/3`) onto `ctx` beside `:baseline_sessions_used`; pass `checkpoint: chunk_checkpoint(ctx, state1, scope, outcome)` into `record_chunk_attempt/6`'s `Writer.record_phase_attempt/2` payload, ordered after `maybe_commit_boundary/4` (already the case)
+- [X] T009 [P] [US1] Add cases to `test/autonomous/chunk_runner_test.exs`: a `{:task_phase, tp}` `:ok` boundary writes a full `implement_chunk` (ordinal/number/title/total/sessions_used), `:sweep`/`:whole_list`/non-`:ok` write `nil` (no-op, prior row intact), and `analyze_remediation` survives the write (SC-006, FR-007)
+- [X] T010 [P] [US1] Add a case to `test/autonomous/store/writer_test.exs` confirming `implement_chunk` round-trips through `record_phase_attempt/2`'s transaction
 
 **Checkpoint**: User Story 1 is independently functional — a mid-implement crash whole-run-resumes at `:implement`, agrees with single-feature resume, and continues implementation without repeating completed task-phases.
 
@@ -84,8 +84,8 @@ Project Structure).
 
 ### Tests for User Story 2
 
-- [X] T011 [P] [US2] Add cases to `test/speckit_orchestrator/recovery/reconcile_test.exs` for worked case 3 (`checkpoint: nil`, trail `:tasks` → `{:resume, :analyze}`, unchanged) and a record with neither checkpoint nor any artifact → `:pending` (FR-002, FR-009)
-- [X] T012 [P] [US2] Add a case to `test/speckit_orchestrator/recovery_test.exs` (or `recovery_quickpoll_test.exs`) for a persistence-failure drain — one feature's checkpoint write lost — still resuming from the commit trail with `gap_possible?: true` reported, as it is today
+- [X] T011 [P] [US2] Add cases to `test/autonomous/recovery/reconcile_test.exs` for worked case 3 (`checkpoint: nil`, trail `:tasks` → `{:resume, :analyze}`, unchanged) and a record with neither checkpoint nor any artifact → `:pending` (FR-002, FR-009)
+- [X] T012 [P] [US2] Add a case to `test/autonomous/recovery_test.exs` (or `recovery_quickpoll_test.exs`) for a persistence-failure drain — one feature's checkpoint write lost — still resuming from the commit trail with `gap_possible?: true` reported, as it is today
 
 **No implementation tasks**: clause 5 (trail fallback) and clause 6 (`:pending`) of `Reconcile.status/3` are untouched by T003 — this phase is regression verification only.
 
@@ -101,15 +101,15 @@ Project Structure).
 
 ### Implementation for User Story 3
 
-- [X] T013 [US3] Widen `Recovery.Report`'s `@type conflict_reason` and `conflict_row` to `atom() | {atom(), map()}` in `lib/speckit_orchestrator/recovery/report.ex` per `contracts/report-discrepancy.md` §2
-- [X] T014 [US3] Add `Recovery.Report.reason_label/1` (pure; bare atom → `to_string/1` unchanged, `{tag, detail}` → `"<tag> (k: v, k: v)"` with insertion-sorted keys) and rewire `reconciled_label/1` and `note/4`'s `"CONFLICT — …"` branch to call it, in `lib/speckit_orchestrator/recovery/report.ex` per `contracts/report-discrepancy.md` §3–4 (depends on T013; same file)
+- [X] T013 [US3] Widen `Recovery.Report`'s `@type conflict_reason` and `conflict_row` to `atom() | {atom(), map()}` in `lib/autonomous/recovery/report.ex` per `contracts/report-discrepancy.md` §2
+- [X] T014 [US3] Add `Recovery.Report.reason_label/1` (pure; bare atom → `to_string/1` unchanged, `{tag, detail}` → `"<tag> (k: v, k: v)"` with insertion-sorted keys) and rewire `reconciled_label/1` and `note/4`'s `"CONFLICT — …"` branch to call it, in `lib/autonomous/recovery/report.ex` per `contracts/report-discrepancy.md` §3–4 (depends on T013; same file)
 
 ### Tests for User Story 3
 
-- [X] T015 [P] [US3] Add cases to `test/speckit_orchestrator/recovery/reconcile_test.exs` for worked cases 4 (`checkpoint_behind_trail`), 7 (`last_completed_phase: :converge` falls through to `:no_position`), 8 (`{:damaged_checkpoint, …}` for an unrecognised phase), and 9 (`checkpoint_without_branch` when `branch_committed?: false`) per `contracts/reconcile-checkpoint-first.md` §4
-- [X] T016 [P] [US3] Add cases to `test/speckit_orchestrator/recovery/report_test.exs` for `reason_label/1`'s full table (bare atoms unchanged, `checkpoint_behind_trail`, `damaged_checkpoint` with a garbled string value rendered via `inspect/1`) per `contracts/report-discrepancy.md` §3
-- [X] T017 [P] [US3] Add a case to `test/speckit_orchestrator/recovery_test.exs`: `plan_run/2` puts a checkpoint-behind-trail feature in `report.conflicts`, maps it to `:blocked` in `statuses`, gives it no `resume_phases` entry, `Release.next/3` never releases it and never reports it `{:stopped, _, _}`, and `Report.format/1` renders `CONFLICT — checkpoint_behind_trail (checkpoint: plan, trail: analyze); human resolve` (SC-005, SC-003)
-- [X] T018 [P] [US3] Add a case to `test/speckit_orchestrator/recovery/rebuild_test.exs` confirming `Rebuild.propose/3`'s preview carries the same widened conflict reason for an `:unreconcilable` feature (FR-012)
+- [X] T015 [P] [US3] Add cases to `test/autonomous/recovery/reconcile_test.exs` for worked cases 4 (`checkpoint_behind_trail`), 7 (`last_completed_phase: :converge` falls through to `:no_position`), 8 (`{:damaged_checkpoint, …}` for an unrecognised phase), and 9 (`checkpoint_without_branch` when `branch_committed?: false`) per `contracts/reconcile-checkpoint-first.md` §4
+- [X] T016 [P] [US3] Add cases to `test/autonomous/recovery/report_test.exs` for `reason_label/1`'s full table (bare atoms unchanged, `checkpoint_behind_trail`, `damaged_checkpoint` with a garbled string value rendered via `inspect/1`) per `contracts/report-discrepancy.md` §3
+- [X] T017 [P] [US3] Add a case to `test/autonomous/recovery_test.exs`: `plan_run/2` puts a checkpoint-behind-trail feature in `report.conflicts`, maps it to `:blocked` in `statuses`, gives it no `resume_phases` entry, `Release.next/3` never releases it and never reports it `{:stopped, _, _}`, and `Report.format/1` renders `CONFLICT — checkpoint_behind_trail (checkpoint: plan, trail: analyze); human resolve` (SC-005, SC-003)
+- [X] T018 [P] [US3] Add a case to `test/autonomous/recovery/rebuild_test.exs` confirming `Rebuild.propose/3`'s preview carries the same widened conflict reason for an `:unreconcilable` feature (FR-012)
 
 **Checkpoint**: User Story 3 is independently verified — a genuine contradiction is named, reported before any spend, and blocks its feature without stopping other features from resuming.
 
@@ -119,7 +119,7 @@ Project Structure).
 
 **Purpose**: Prove nothing that resumes correctly today changed (SC-004/FR-014), then run the full gate
 
-- [X] T019 [P] Add byte-identical regression cases across `test/speckit_orchestrator/recovery_quickpoll_test.exs`, `test/speckit_orchestrator/record_recovery_test.exs`, and `test/speckit_orchestrator/web/reconcile_test.exs` covering both existing-record shapes — `checkpoint: nil` and the agreeing checkpoint a writer would have produced at the same boundary — asserting zero new conflicts and identical resume phases (SC-004, FR-014)
+- [X] T019 [P] Add byte-identical regression cases across `test/autonomous/recovery_quickpoll_test.exs`, `test/autonomous/record_recovery_test.exs`, and `test/autonomous/web/reconcile_test.exs` covering both existing-record shapes — `checkpoint: nil` and the agreeing checkpoint a writer would have produced at the same boundary — asserting zero new conflicts and identical resume phases (SC-004, FR-014)
 - [X] T020 Run `mise exec -- mix test --cover` and confirm pure-core coverage stays >90% (plan.md Testing)
 - [X] T021 Run `mise exec -- mix format --check-formatted && mise exec -- mix test`, then walk `quickstart.md` Scenarios 1–6 end-to-end (including the `resumable_run/0` preview showing zero spend change) as the final gate
 
@@ -157,12 +157,12 @@ Project Structure).
 
 ```bash
 # Once T002/T003/T008 land, launch US1's test tasks together:
-Task: "Add worked-case coverage to test/speckit_orchestrator/recovery/reconcile_test.exs"
-Task: "Add whole-run defect coverage to test/speckit_orchestrator/resume_run_test.exs"
-Task: "Add resume-path parity coverage to test/speckit_orchestrator/resume_test.exs and resume_scope_test.exs"
-Task: "Add mid-implement crash coverage to test/speckit_orchestrator/resume_crash_test.exs"
-Task: "Add chunk-write coverage to test/speckit_orchestrator/chunk_runner_test.exs"
-Task: "Add implement_chunk round-trip coverage to test/speckit_orchestrator/store/writer_test.exs"
+Task: "Add worked-case coverage to test/autonomous/recovery/reconcile_test.exs"
+Task: "Add whole-run defect coverage to test/autonomous/resume_run_test.exs"
+Task: "Add resume-path parity coverage to test/autonomous/resume_test.exs and resume_scope_test.exs"
+Task: "Add mid-implement crash coverage to test/autonomous/resume_crash_test.exs"
+Task: "Add chunk-write coverage to test/autonomous/chunk_runner_test.exs"
+Task: "Add implement_chunk round-trip coverage to test/autonomous/store/writer_test.exs"
 ```
 
 ---

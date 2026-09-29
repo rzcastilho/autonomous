@@ -1,6 +1,6 @@
 # Contract: Facade API (iex + console entry points)
 
-The public surface lives on `SpeckitOrchestrator`. Every console action goes
+The public surface lives on `Autonomous`. Every console action goes
 through these same functions (one path, Principle VII "show the receipt").
 
 ## Run options (FR-001, FR-017)

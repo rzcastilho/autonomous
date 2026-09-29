@@ -6,7 +6,7 @@
 
 **Status**: Draft
 
-**Input**: User description: "Resume must preserve the run's full backlog scope. Today `SpeckitOrchestrator.resume/2` replaces the run's feature set with only the resumed feature, then starts a Coordinator seeded with that single feature. Because the Coordinator is the run manifest's single writer and the manifest is single-slot-per-repo, the narrowed run overwrites the original run record — permanently destroying the record of every other feature in the backlog. Observed live against `../quickpoll`. `resume_run/1` already does the right thing; `resume/2` should reuse that machinery. Additionally the manifest write path should fail loud rather than silently shrink a run's feature set. Include recovery for already-clobbered manifests if feasible."
+**Input**: User description: "Resume must preserve the run's full backlog scope. Today `Autonomous.resume/2` replaces the run's feature set with only the resumed feature, then starts a Coordinator seeded with that single feature. Because the Coordinator is the run manifest's single writer and the manifest is single-slot-per-repo, the narrowed run overwrites the original run record — permanently destroying the record of every other feature in the backlog. Observed live against `../quickpoll`. `resume_run/1` already does the right thing; `resume/2` should reuse that machinery. Additionally the manifest write path should fail loud rather than silently shrink a run's feature set. Include recovery for already-clobbered manifests if feasible."
 
 ## Context: the observed failure
 

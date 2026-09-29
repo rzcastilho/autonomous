@@ -25,8 +25,8 @@ its lifetime (resume/continue never renegotiate it):
 
 The operator's own **interactive** Claude Code session in a target repo is
 never denied by the pack, under either profile — origin (human vs.
-orchestrated) is resolved from `SPECKIT_ORCHESTRATED`/
-`SPECKIT_CONTAINMENT_PROFILE` env markers the orchestrator sets on every
+orchestrated) is resolved from `AUTONOMOUS_ORCHESTRATED`/
+`AUTONOMOUS_CONTAINMENT_PROFILE` env markers the orchestrator sets on every
 session it starts, falling back to `CLAUDE_CODE_ENTRYPOINT=cli` to detect a
 human shell. Anything undecided resolves to `strict`'s rule set (fail closed).
 A permissive run is visible everywhere it applies — the final report, the
@@ -69,19 +69,19 @@ specify init . --integration claude --integration-options="--skills"
 # 2. Install the orchestrator enforcement pack (settings.json + hook; installs a
 #    template constitution only if none exists — never clobbers yours)
 #    from iex against the repo path:
-SpeckitOrchestrator.TargetPack.install("/path/to/target/repo")
+Autonomous.TargetPack.install("/path/to/target/repo")
 
 # 3. Write a real constitution with checkable MUSTs, then commit everything
 git add .specify .claude && git commit -m "spec kit + enforcement pack"
 
 # 4. Preflight (fails while the template constitution marker is present, or if
 #    the constitution is uncommitted / scaffold missing)
-SpeckitOrchestrator.TargetPack.verify("/path/to/target/repo")  # => :ok
+Autonomous.TargetPack.verify("/path/to/target/repo")  # => :ok
 
 # 4a. A run that will use `containment_profile: :permissive` additionally
 #     requires the committed pack to be at contract 2 (this hook + this
 #     settings.json, both committed) — verify explicitly:
-SpeckitOrchestrator.TargetPack.verify("/path/to/target/repo", profile: "permissive")  # => :ok
+Autonomous.TargetPack.verify("/path/to/target/repo", profile: "permissive")  # => :ok
 ```
 
 ## Upgrade procedure (reconcile with Spec Kit)

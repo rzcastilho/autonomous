@@ -111,7 +111,7 @@ specs/029-interactive-clarify/
 ### Source Code (repository root)
 
 ```text
-lib/speckit_orchestrator/
+lib/autonomous/
 ├── needs_human.ex                      # NEW pure: marker/present?/extract/parse_questions + Question
 ├── interactive_clarify.ex              # NEW pure: decide/3, on_exit/1, Settings, AnswerSet
 ├── run_context.ex                      # +3 keys (interactive_clarify, clarify_answer_timeout_s, clarify_max_rounds)
@@ -133,13 +133,13 @@ lib/speckit_orchestrator/
 └── web/
     ├── components/core_components.ex   # label/status_class/statuses
     └── live/{escalations,trigger,run_detail,mission_control}_live.ex
-lib/speckit_orchestrator.ex             # opts preflight, pending_questions/0,1, answer/3,4, guard, resume reuse of unapplied answers, export/prune include rounds
+lib/autonomous.ex             # opts preflight, pending_questions/0,1, answer/3,4, guard, resume reuse of unapplied answers, export/prune include rounds
 priv/prompts/clarify.md                 # numbered question format section
 priv/static/assets/console.css          # --awaiting token + [data-status] block
 docs/design-constitution.md             # eighth status colour (governed amendment)
 docs/runbook.md, CLAUDE.md              # FR-020
 
-test/speckit_orchestrator/
+test/autonomous/
 ├── needs_human_test.exs, interactive_clarify_test.exs          # NEW pure
 ├── feature_runner_clarify_wait_test.exs                        # NEW seam-injected wait
 ├── store/clarify_round_test.exs                                # NEW transactions + migration v6

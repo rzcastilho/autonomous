@@ -1,7 +1,7 @@
 # Contract: checkpoint-first resume position
 
 **Kind**: pure decision-table extension (Principle I — no I/O).
-**Module**: `SpeckitOrchestrator.Recovery.Reconcile`
+**Module**: `Autonomous.Recovery.Reconcile`
 **Supersedes for clause 5**: `specs/014-recovery-reconciliation/contracts/reconcile.md`
 **Satisfies**: FR-001, FR-002, FR-003, FR-004, FR-005, FR-009a, FR-010,
 FR-011, FR-012, FR-013, FR-014
@@ -111,7 +111,7 @@ Let `trail = last_boundary_phase`.
 already the *next* phase (`FeatureRunner.checkpoint_for/3` records the next
 phase at `{:cont, _}` and the diverted phase itself at a gate), so no
 `Pipeline.next/3` re-derivation happens here. This is the same value
-`SpeckitOrchestrator.resolve_start_phase/2` uses for a single-feature
+`Autonomous.resolve_start_phase/2` uses for a single-feature
 `resume/2`, which is what makes FR-003 hold.
 
 When `cp.phase` is not a recognised phase but `completed_through` was derived

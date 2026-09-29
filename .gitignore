@@ -24,7 +24,7 @@ MnesiaCore.*
 *.ez
 
 # Ignore package tarball (built via "mix hex.build").
-speckit_orchestrator-*.tar
+autonomous-*.tar
 
 
 # Playwright MCP session scratch (traces, screenshots) — driven by the browser

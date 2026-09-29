@@ -6,7 +6,7 @@
 
 ## Summary
 
-Make a crashed `speckit_orchestrator` run resumable at the phase boundary, using
+Make a crashed `autonomous` run resumable at the phase boundary, using
 only git commits and small JSON files — no datastore. Three additions, each
 extending existing machinery rather than replacing it:
 
@@ -94,7 +94,7 @@ specs/009-crash-recovery/
 ### Source Code (repository root)
 
 ```text
-lib/speckit_orchestrator/
+lib/autonomous/
 ├── run_manifest.ex          # NEW — single-slot run.json write/read/clear/resumable?
 ├── checkpoint.ex            # EXTEND — per-phase in_progress write (last completed phase)
 ├── worktree.ex              # EXTEND — squash/3 (FR-004), restore/1 (FR-003)
@@ -103,10 +103,10 @@ lib/speckit_orchestrator/
 ├── coordinator.ex           # EXTEND — :statuses init opt (reconstructed);
 │                            #          :manifest seam; write manifest on state change
 ├── ledger.ex                # EXTEND — restore/2 (set committed from recorded spend)
-├── speckit_orchestrator.ex  # EXTEND — resume_run/1, resumable_run/0, manifest lifecycle
+├── autonomous.ex  # EXTEND — resume_run/1, resumable_run/0, manifest lifecycle
 └── application.ex           # (unchanged — Ledger + RunnerSup already supervised)
 
-test/speckit_orchestrator/
+test/autonomous/
 ├── run_manifest_test.exs        # NEW — write/read/clear/corrupt/single-slot
 ├── checkpoint_test.exs          # EXTEND — per-phase in_progress record
 ├── worktree_test.exs            # EXTEND (integration) — squash & restore against real git
@@ -116,7 +116,7 @@ test/speckit_orchestrator/
 └── resume_run_test.exs          # NEW — facade resume_run/resumable_run + guards
 ```
 
-**Structure Decision**: Single Elixir app, existing `lib/speckit_orchestrator/`
+**Structure Decision**: Single Elixir app, existing `lib/autonomous/`
 flat module layout. One new module (`RunManifest`) alongside the existing
 `Checkpoint`/`RunContext` pointer modules; every other change extends an existing
 module in place. No new supervision tree — the app-level `Ledger` and

@@ -1,6 +1,6 @@
 # Contract: `Worktree.squash/3` and `Worktree.restore/1` (extensions)
 
-Two new functions on `SpeckitOrchestrator.Worktree`. Both operate only on the
+Two new functions on `Autonomous.Worktree`. Both operate only on the
 feature's own worktree/branch and use the existing private `git/2` plumbing.
 
 ## `squash/3` — collapse per-phase commits at completion (FR-004)

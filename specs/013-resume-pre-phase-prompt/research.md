@@ -7,7 +7,7 @@ why, and the rejected alternative.
 
 ## D1 — Where the remediation step executes
 
-**Decision**: A new Jido action `SpeckitOrchestrator.Actions.RunRemediation`,
+**Decision**: A new Jido action `Autonomous.Actions.RunRemediation`,
 routed by a new `"remediation.run"` signal on `FeatureAgent`, driven **once** by
 `FeatureRunner.run/1` *before* the phase loop (after `feature.init`, before the
 first `loop/…` call).

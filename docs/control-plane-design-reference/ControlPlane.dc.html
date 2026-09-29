@@ -42,7 +42,7 @@
         <div style="width:12px;height:12px;border:2px solid #fff;border-radius:3px;transform:rotate(45deg)"></div>
       </div>
       <div>
-        <div style="font-size:13px;font-weight:700;letter-spacing:.2px;line-height:1.1">speckit_orchestrator</div>
+        <div style="font-size:13px;font-weight:700;letter-spacing:.2px;line-height:1.1">autonomous</div>
         <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:#5a6274;letter-spacing:.5px">CONTROL PLANE · v1</div>
       </div>
     </div>
@@ -228,7 +228,7 @@
       <sc-if value="{{ isTrigger }}" hint-placeholder-val="{{ true }}">
       <div style="padding:22px;max-width:760px">
         <div style="font-size:15px;font-weight:600;margin-bottom:4px">Trigger a run</div>
-        <div style="font-size:12px;color:#8b93a7;margin-bottom:18px">Replaces <span style="font-family:'IBM Plex Mono',monospace;color:#a78bfa">SpeckitOrchestrator.run/0</span> and <span style="font-family:'IBM Plex Mono',monospace;color:#a78bfa">run_spec/2</span>.</div>
+        <div style="font-size:12px;color:#8b93a7;margin-bottom:18px">Replaces <span style="font-family:'IBM Plex Mono',monospace;color:#a78bfa">Autonomous.run/0</span> and <span style="font-family:'IBM Plex Mono',monospace;color:#a78bfa">run_spec/2</span>.</div>
 
         <div style="display:flex;gap:8px;margin-bottom:20px;background:#0e1016;border:1px solid #232936;border-radius:10px;padding:5px;width:fit-content">
           <button onClick="{{ setBacklog }}" style="{{ tabBacklog }}">Backlog run</button>
@@ -384,7 +384,7 @@
       <sc-if value="{{ isConfig }}" hint-placeholder-val="{{ true }}">
       <div style="padding:22px;max-width:820px">
         <div style="font-size:15px;font-weight:600;margin-bottom:4px">Configuration</div>
-        <div style="font-size:12px;color:#8b93a7;margin-bottom:20px"><span style="font-family:'IBM Plex Mono',monospace;color:#a78bfa">config :speckit_orchestrator</span> · changes apply to the live run.</div>
+        <div style="font-size:12px;color:#8b93a7;margin-bottom:20px"><span style="font-family:'IBM Plex Mono',monospace;color:#a78bfa">config :autonomous</span> · changes apply to the live run.</div>
 
         <div style="background:#12151d;border:1px solid #232936;border-radius:12px;padding:20px;margin-bottom:18px">
           <div style="font-size:13px;font-weight:600;margin-bottom:14px">Per-phase model routing</div>

@@ -112,13 +112,13 @@ specs/014-recovery-reconciliation/
 ### Source Code (repository root)
 
 ```text
-lib/speckit_orchestrator/
+lib/autonomous/
 ├── recovery/
 │   ├── reconcile.ex        # NEW — pure: recorded × evidence × shape → reconciled status
 │   └── evidence.ex         # NEW — edge: gather %Evidence{} per feature (pr.json, git, checkpoint, transcript); remote seam
 ├── recovery.ex             # NEW — thin orchestrator: collect → reconcile → rewrite manifest → report
 ├── run_manifest.ex         # CHANGED — keep reconstruct/1 as dumb parser; expose corrected-status write path
-├── speckit_orchestrator.ex # CHANGED — resume_run/2 & resumable_run/0 call Recovery instead of raw reconstruct
+├── autonomous.ex # CHANGED — resume_run/2 & resumable_run/0 call Recovery instead of raw reconstruct
 ├── report.ex               # CHANGED — render reconciled whole-run picture (per-feature corrected status + next runnable)
 ├── worktree.ex             # CHANGED (small) — git-log boundary-commit read helper for the last committed phase
 ├── checkpoint.ex           # reused as-is (read/2 three-way)
@@ -126,7 +126,7 @@ lib/speckit_orchestrator/
 ├── coordinator.ex          # reused — :statuses seam receives reconciled statuses
 └── feature.ex              # reused — :blocked status carries the conflict-held state
 
-test/speckit_orchestrator/
+test/autonomous/
 ├── recovery/
 │   ├── reconcile_test.exs  # NEW — pure decision table, hermetic, >90%
 │   └── evidence_test.exs   # NEW — collector over tmp fixtures + fake git log + remote-off
@@ -135,7 +135,7 @@ test/speckit_orchestrator/
 ```
 
 **Structure Decision**: Single Elixir project (Option 1), matching the existing
-`lib/speckit_orchestrator/` layout. New code lands in a `recovery/` submodule
+`lib/autonomous/` layout. New code lands in a `recovery/` submodule
 folder mirroring the pure-core/edge split used elsewhere (pure `Reconcile` beside
 edge `Evidence`, thin top-level `Recovery` orchestrator), reusing the existing
 `Checkpoint`/`Describe`/`Worktree`/`Coordinator`/`Feature`/`RunManifest` surfaces

@@ -16,13 +16,13 @@ Each story is independently shippable per plan.md's Sequencing note
 
 - **[P]**: Can run in parallel (different files, no dependencies)
 - **[Story]**: Which user story this task belongs to (US1–US3)
-- Paths are repo-root relative, matching `lib/speckit_orchestrator/` /
-  `test/speckit_orchestrator/` (plan.md "Project Structure")
+- Paths are repo-root relative, matching `lib/autonomous/` /
+  `test/autonomous/` (plan.md "Project Structure")
 
 ## Path Conventions
 
-Single Elixir project (Option 1). Source: `lib/speckit_orchestrator/`. Tests:
-`test/speckit_orchestrator/`. No new top-level module namespace — this feature
+Single Elixir project (Option 1). Source: `lib/autonomous/`. Tests:
+`test/autonomous/`. No new top-level module namespace — this feature
 adds one file to the existing `recovery/` submodule and otherwise edits files
 already in the tree.
 
@@ -52,8 +52,8 @@ write is ever observable.
 complete (US1's and US2's *unit-level* tests can still be drafted against the
 contract in parallel).
 
-- [X] T002 Add a `:supersede` option to `SpeckitOrchestrator.run/1`
-      (`lib/speckit_orchestrator.ex`), default `true`: when `true`, keep
+- [X] T002 Add a `:supersede` option to `Autonomous.run/1`
+      (`lib/autonomous.ex`), default `true`: when `true`, keep
       today's unconditional `RunManifest.clear/0` at the top of `run/1`
       (FR-013 — a fresh run still supersedes); when `false`, skip the clear
       entirely so `run/1` writes into whatever record already exists at the
@@ -81,7 +81,7 @@ action (quickstart.md S1/S2).
 
 ### Tests for User Story 1
 
-- [X] T003 [P] [US1] `test/speckit_orchestrator/resume_scope_test.exs`:
+- [X] T003 [P] [US1] `test/autonomous/resume_scope_test.exs`:
       quickstart.md **S1** — fake `:runner`/`:manifest` seams on the
       Coordinator; a manifest recording `001 (halted) → 002 (pending) → 003
       (pending)` with a checkpoint for `001`; call `resume("001", ...)`; assert
@@ -91,28 +91,28 @@ action (quickstart.md S1/S2).
       runner reports `001 :done` — `002` then `003` dispatch in turn, with the
       final report's `done` list holding all three (FR-001, FR-003, FR-004,
       FR-007).
-- [X] T004 [P] [US1] `test/speckit_orchestrator/resume_scope_test.exs`:
+- [X] T004 [P] [US1] `test/autonomous/resume_scope_test.exs`:
       quickstart.md **S2** — same fixture shape but `002: :done` and `003:
       :escalated`; resume `001`; assert `002` is never dispatched and `003`
       stays `:escalated` and is never dispatched (FR-002, FR-005, FR-006).
-- [X] T005 [P] [US1] `test/speckit_orchestrator/resume_test.exs`: SC-005
+- [X] T005 [P] [US1] `test/autonomous/resume_test.exs`: SC-005
       no-regression — (a) a genuinely single-feature run resumes and dispatches
       identically to pre-016 `resume/2`; (b) a missing/corrupt manifest falls
       back to today's single-feature path unchanged (FR-009). Diff against the
       pre-existing assertions in this file rather than duplicating them.
-- [X] T006 [P] [US1] `test/speckit_orchestrator/resume_test.exs`: FR-010a — a
+- [X] T006 [P] [US1] `test/autonomous/resume_test.exs`: FR-010a — a
       live unfinished Coordinator causes `resume/2` to return
       `{:error, {:active_run, pid}}` and start no work; `force: true`
       proceeds anyway, matching `resume_run/1`'s existing `guard_active_run/1`
       contract.
-- [X] T007 [US1] `test/speckit_orchestrator/resume_run_test.exs`: regression —
+- [X] T007 [US1] `test/autonomous/resume_run_test.exs`: regression —
       `resume_run/1`'s own dispatch, statuses, and report are unaffected by the
       shared continuation path introduced in T009 (same inputs, same outputs
       as before this feature).
 
 ### Implementation for User Story 1
 
-- [X] T008 [US1] In `lib/speckit_orchestrator.ex`, extract the restored-run
+- [X] T008 [US1] In `lib/autonomous.ex`, extract the restored-run
       assembly both `resume/2` and `resume_run/1` need into one private
       helper (e.g. `restore_run_scope/2`, per data-model.md Entity 2):
       given a read manifest `record` and opts, return
@@ -121,7 +121,7 @@ action (quickstart.md S1/S2).
       `RunContext.merge/2` + `Ledger.restore/2` — this is `resume_run/1`'s
       existing steps 1–4 (lines ~442-460), lifted out so `resume/2` can call
       the identical path (research.md D1).
-- [X] T009 [US1] In `lib/speckit_orchestrator.ex`, implement the target merge
+- [X] T009 [US1] In `lib/autonomous.ex`, implement the target merge
       (data-model.md Entity 2/3, contracts/resume-scope.md steps 8–9): given
       the restored `{features, statuses, resume_phases}` from T008 and the
       target feature/start_phase/prompt/remediation opts, (a) append the
@@ -130,15 +130,15 @@ action (quickstart.md S1/S2).
       `resume_phases` so the operator's resolved start phase (from today's
       `resolve_start_phase/2`) governs instead of the reconciled one
       (research.md D2).
-- [X] T010 [US1] In `lib/speckit_orchestrator.ex`, implement the per-feature
+- [X] T010 [US1] In `lib/autonomous.ex`, implement the per-feature
       runner split (contracts/resume-scope.md "Dispatch matrix"): a `:runner`
       (or `:executor`, per `pr_workflow?`) that dispatches the target feature
       through today's `resume_runner/7`/`resume_executor/7` unchanged (G5 —
       byte-identical target dispatch), and every other feature through
       `resume_run/1`'s existing `dispatch_resume/6` (checkpoint-driven for a
       mid-run feature, `Worktree.create` fresh for a never-started one).
-- [X] T011 [US1] Rewrite `SpeckitOrchestrator.resume/2` in
-      `lib/speckit_orchestrator.ex` to the order in
+- [X] T011 [US1] Rewrite `Autonomous.resume/2` in
+      `lib/autonomous.ex` to the order in
       `contracts/resume-scope.md` "Order of operations": live-run guard
       (T013) → layout → checkpoint read → identity → start phase → model
       validation → run context → **scope restore via T008** (or the
@@ -147,8 +147,8 @@ action (quickstart.md S1/S2).
       Preserve every existing behaviour the contract lists as unchanged
       (identity recovery, `:from` precedence, remediation, `:from_task_phase`,
       `reset_implement_sessions: true` for the target only).
-- [X] T012 [US1] Update `SpeckitOrchestrator.resume_run/1` in
-      `lib/speckit_orchestrator.ex` to call `run(supersede: false, …)` (it
+- [X] T012 [US1] Update `Autonomous.resume_run/1` in
+      `lib/autonomous.ex` to call `run(supersede: false, …)` (it
       already restores the full set — no behavioural change, just routes
       through the new option added in T002) and to use T008's extracted
       helper internally so both callers share one implementation
@@ -157,20 +157,20 @@ action (quickstart.md S1/S2).
       reuse the existing `guard_active_run/1` (already implemented for
       `resume_run/1`) as the first step, before any manifest/checkpoint read
       (FR-010a).
-- [X] T014 [US1] Update `lib/speckit_orchestrator/web/live/escalations_live.ex`
+- [X] T014 [US1] Update `lib/autonomous/web/live/escalations_live.ex`
       copy (FR-021) to state that resuming continues the whole run, not only
       the selected feature, and add a `format_resume_error/1` clause (or
       extend the existing one) rendering `{:active_run, pid}` with a hint that
       a run is already live for this repository.
 - [X] T015 [US1] Verify (and adjust the template only if needed)
-      `lib/speckit_orchestrator/web/live/mission_control_live.ex` renders
+      `lib/autonomous/web/live/mission_control_live.ex` renders
       every feature in `Coordinator.status/0`'s `per_feature` map after a
       resume, including ones still `:pending` on prerequisites (FR-022) — the
       Coordinator's state already carries the full restored set post-T011, so
       this is a verification pass over the existing render, not new state.
 
 **Checkpoint**: User Story 1 is independently functional — `mise exec -- mix
-test test/speckit_orchestrator/resume_scope_test.exs` passes, and the exact
+test test/autonomous/resume_scope_test.exs` passes, and the exact
 reported `quickpoll` defect no longer reproduces at the seam level (SC-001,
 SC-002).
 
@@ -189,7 +189,7 @@ is untouched, and the refusal is surfaced (quickstart.md S3/S4).
 
 ### Tests for User Story 2
 
-- [X] T016 [P] [US2] `test/speckit_orchestrator/run_manifest_test.exs`:
+- [X] T016 [P] [US2] `test/autonomous/run_manifest_test.exs`:
       quickstart.md **S3** decision table against a temp `autonomous_root` —
       `[001,002,003] → [001]` refused (file still names three);
       `[001,002,003] → [001,002,004]` refused (identity swap, not a count
@@ -198,35 +198,35 @@ is untouched, and the refusal is surfaced (quickstart.md S3/S4).
       supersedes, FR-013); a same-ids progress-only write (new statuses) is
       allowed (FR-014 unaffected). Every case returns `:ok` regardless of
       outcome.
-- [X] T017 [P] [US2] `test/speckit_orchestrator/run_manifest_test.exs`:
+- [X] T017 [P] [US2] `test/autonomous/run_manifest_test.exs`:
       refusal telemetry — via `:telemetry_test.attach_event_handlers/2`,
       assert `[:speckit, :run, :scope_narrowing_refused]` fires with
       `measurements.dropped_count == 2` and `metadata.dropped == ["002",
       "003"]` (sorted) on the shrinking-write case; assert it does **not**
       fire on any allowed write.
-- [X] T018 [P] [US2] `test/speckit_orchestrator/telemetry_test.exs`: extend the
+- [X] T018 [P] [US2] `test/autonomous/telemetry_test.exs`: extend the
       `attach_default_logger` coverage (same `capture_log` pattern as the
       existing phase/chunk assertions) with
       `:telemetry.execute([:speckit, :run, :scope_narrowing_refused], %{dropped_count: 2}, %{segment: "seg", recorded: ["001","002","003"], attempted: ["001"], dropped: ["002","003"]})`
       and assert the log line names the dropped ids.
-- [X] T019 [P] [US2] `test/speckit_orchestrator/console_read_model_test.exs`:
+- [X] T019 [P] [US2] `test/autonomous/console_read_model_test.exs`:
       fold the refusal event and assert one `:warn` feed entry with
       `feature_id: nil` naming the dropped ids is pushed, and `model.features`
       is unchanged (FR-012).
-- [X] T020 [US2] `test/speckit_orchestrator/web/mission_control_live_test.exs`:
-      extend using the existing `Phoenix.PubSub.broadcast(SpeckitOrchestrator.PubSub, ConsoleProjection.topic(), …)`
+- [X] T020 [US2] `test/autonomous/web/mission_control_live_test.exs`:
+      extend using the existing `Phoenix.PubSub.broadcast(Autonomous.PubSub, ConsoleProjection.topic(), …)`
       pattern already in this file — broadcast the refusal's feed entry and
       assert the activity feed renders it, with no feature row affected.
 
 ### Implementation for User Story 2
 
 - [X] T021 [US2] Add `[:speckit, :run, :scope_narrowing_refused]` to
-      `lib/speckit_orchestrator/telemetry.ex`'s `@events` list per
+      `lib/autonomous/telemetry.ex`'s `@events` list per
       `contracts/manifest-guard.md` — no other change to `Telemetry` needed
       for the event to reach `ConsoleProjection` (it attaches to
       `Telemetry.events/0` wholesale).
 - [X] T022 [US2] Implement the guard in `RunManifest.write/1`
-      (`lib/speckit_orchestrator/run_manifest.ex`) per
+      (`lib/autonomous/run_manifest.ex`) per
       `contracts/manifest-guard.md` "Decision table": before
       `File.mkdir_p!`/`File.write!`, read the record currently at the resolved
       `manifest_path(segment)`; if it parses and
@@ -237,16 +237,16 @@ is untouched, and the refusal is surfaced (quickstart.md S3/S4).
       existing `rescue _ -> :ok` so a guard-read failure degrades to
       "write proceeds," never a raise.
 - [X] T023 [US2] Add a `Telemetry.handle_event/4` clause in
-      `lib/speckit_orchestrator/telemetry.ex` for
+      `lib/autonomous/telemetry.ex` for
       `[:speckit, :run, :scope_narrowing_refused]`:
       `Logger.warning("run scope narrowing refused: dropped=#{inspect dropped} recorded=#{inspect recorded} segment=#{segment}")`.
 - [X] T024 [US2] Add an `apply_event/4` clause in
-      `lib/speckit_orchestrator/console_read_model.ex` for the refusal event:
+      `lib/autonomous/console_read_model.ex` for the refusal event:
       push `entry(nil, nil, :warn, "scope narrowing refused — would drop
       #{Enum.join(dropped, ", ")}")` via the existing `push_feed/2`; do not
       touch `model.features`.
 - [X] T025 [US2] Add a `broadcast_diff/4` clause in
-      `lib/speckit_orchestrator/console_projection.ex` for
+      `lib/autonomous/console_projection.ex` for
       `[:speckit, :run, :scope_narrowing_refused]`: broadcast
       `{:console, :feed, latest}` only (no `:feature_updated` — this is
       run-level, per `contracts/manifest-guard.md` "Consumers").
@@ -276,7 +276,7 @@ existing record unchanged until confirmed (quickstart.md S5).
 
 ### Tests for User Story 3
 
-- [X] T027 [P] [US3] `test/speckit_orchestrator/recovery/rebuild_test.exs`:
+- [X] T027 [P] [US3] `test/autonomous/recovery/rebuild_test.exs`:
       union rule — backlog `[001,002,003]`, record `[001]`; assert the
       proposal's `features` lists all three in backlog order; per-feature
       status mapping table from `contracts/record-recovery.md` (both-present
@@ -285,27 +285,27 @@ existing record unchanged until confirmed (quickstart.md S5).
       `:absent_from_record`); a restored feature naming a prereq outside the
       union → `:prereq_missing` discrepancy and `propose/3` returns
       `{:error, {:inconsistent, _}}`.
-- [X] T028 [P] [US3] `test/speckit_orchestrator/record_recovery_test.exs`:
+- [X] T028 [P] [US3] `test/autonomous/record_recovery_test.exs`:
       quickstart.md S5.1 — the `../quickpoll`-shaped fixture from
       `contracts/record-recovery.md` "Worked example" (record `001: done`
       only, backlog `001 → 002 → 003`, evidence corroborating `001`); call
-      `SpeckitOrchestrator.recover_record/1` with no `:confirm`; assert the
+      `Autonomous.recover_record/1` with no `:confirm`; assert the
       returned proposal matches the worked example table and the manifest
       file on disk is **byte-identical** before and after the call (FR-019a).
-- [X] T029 [P] [US3] `test/speckit_orchestrator/record_recovery_test.exs`:
+- [X] T029 [P] [US3] `test/autonomous/record_recovery_test.exs`:
       quickstart.md S5.2 — `recover_record(confirm: true)` on the same
       fixture; assert `{:ok, :written, proposal}`, the manifest now names all
       three features with the proposal's statuses, and a subsequent
       `resume_run/1` (fake runner) dispatches `002` and `003` but never
       re-dispatches `001` (SC-006).
-- [X] T030 [P] [US3] `test/speckit_orchestrator/record_recovery_test.exs`:
+- [X] T030 [P] [US3] `test/autonomous/record_recovery_test.exs`:
       quickstart.md S5.3 — an unloadable backlog (dangling prereq or missing
       directory) yields `{:error, {:backlog, reason}}` with no write.
-- [X] T031 [P] [US3] `test/speckit_orchestrator/record_recovery_test.exs`:
+- [X] T031 [P] [US3] `test/autonomous/record_recovery_test.exs`:
       quickstart.md S5.4 — a proposal containing a `:prereq_missing`
       discrepancy yields `{:error, {:inconsistent, discrepancies}}` with no
       write (FR-020).
-- [X] T032 [US3] `test/speckit_orchestrator/recovery_test.exs`: the
+- [X] T032 [US3] `test/autonomous/recovery_test.exs`: the
       `plan_run/2`/`reconcile_run/2` split — `plan_run/2` returns the same
       `{:ok, %{statuses, resume_phases, report}}` shape as before but performs
       **no** `RunManifest.write/1` call (assert via a fake `:manifest` seam
@@ -316,14 +316,14 @@ existing record unchanged until confirmed (quickstart.md S5).
 ### Implementation for User Story 3
 
 - [X] T033 [US3] Split `Recovery.reconcile_run/2`
-      (`lib/speckit_orchestrator/recovery.ex`) into `Recovery.plan_run/2` (all
+      (`lib/autonomous/recovery.ex`) into `Recovery.plan_run/2` (all
       of today's collect-and-reconcile logic, **no** `rewrite_manifest/5`
       call) and `reconcile_run/2` (`plan_run/2` then the existing
       `rewrite_manifest/5`) per research.md D4. Existing callers
       (`resume_run/1`, `resumable_run/0`, and T011/T012's new call sites) keep
       calling `reconcile_run/2` unchanged.
-- [X] T034 [US3] Implement `SpeckitOrchestrator.Recovery.Rebuild.propose/3` in
-      `lib/speckit_orchestrator/recovery/rebuild.ex` per
+- [X] T034 [US3] Implement `Autonomous.Recovery.Rebuild.propose/3` in
+      `lib/autonomous/recovery/rebuild.ex` per
       `contracts/record-recovery.md`: union the record's features with
       `backlog` (backlog order first, then record-only features appended),
       reuse `Recovery.Evidence.collect/3` + `Recovery.Reconcile.status/3` for
@@ -331,13 +331,13 @@ existing record unchanged until confirmed (quickstart.md S5).
       `discrepancies` list (data-model.md Entity 6), and refuse
       (`{:error, {:inconsistent, _}}`) when any `:prereq_missing` discrepancy
       exists.
-- [X] T035 [US3] Extend `SpeckitOrchestrator.Recovery.Report`
-      (`lib/speckit_orchestrator/recovery/report.ex`) or its `format/1` to
+- [X] T035 [US3] Extend `Autonomous.Recovery.Report`
+      (`lib/autonomous/recovery/report.ex`) or its `format/1` to
       render discrepancy rows (`:absent_from_backlog` /
       `:absent_from_record` / `:unreconcilable` as a `Note` suffix) matching
       `contracts/record-recovery.md` "Worked example" output.
-- [X] T036 [US3] Implement `SpeckitOrchestrator.recover_record/1` in
-      `lib/speckit_orchestrator.ex` per `contracts/record-recovery.md`: read
+- [X] T036 [US3] Implement `Autonomous.recover_record/1` in
+      `lib/autonomous.ex` per `contracts/record-recovery.md`: read
       the manifest (`{:error, :no_manifest | :corrupt_manifest}` propagate
       unchanged), load the backlog via `Backlog.load!/1` over the rebuilt
       layout's `breakdown_root` (or `:backlog_root` opt), catching
@@ -359,7 +359,7 @@ existing record unchanged until confirmed (quickstart.md S5).
 is fixed end-to-end, operator-surface coverage spanning all three stories, and
 the final quality gate.
 
-- [X] T037 [P] `test/speckit_orchestrator/resume_backlog_e2e_test.exs`,
+- [X] T037 [P] `test/autonomous/resume_backlog_e2e_test.exs`,
       `@tag :integration`: quickstart.md **S6** — a temp git target repo
       seeded with a three-feature chained backlog, driven by FakeSDK (same
       tmp-dir + `async: false` conventions as
@@ -368,12 +368,12 @@ the final quality gate.
       :done` with a final report counting three (SC-003). This is the exact
       `../quickpoll` failure from the spec's "Context" section, reproduced
       and proven fixed.
-- [X] T038 [P] `test/speckit_orchestrator/web/escalations_live_test.exs`:
+- [X] T038 [P] `test/autonomous/web/escalations_live_test.exs`:
       quickstart.md **S7** — the resume panel's copy states that resuming
       continues the whole run (FR-021); a resume attempted while another run
       is live renders the `{:active_run, pid}` refusal instead of starting
       work (FR-010a, T014).
-- [X] T039 [P] `test/speckit_orchestrator/web/mission_control_live_test.exs`:
+- [X] T039 [P] `test/autonomous/web/mission_control_live_test.exs`:
       quickstart.md **S7** — after a resume, every feature in the restored
       run is listed, including ones still waiting on prerequisites (FR-022,
       T015).
@@ -458,10 +458,10 @@ the final quality gate.
 
 ```bash
 # All four independent test files, once T002 (Foundational) lands:
-Task: "Guard decision table in test/speckit_orchestrator/run_manifest_test.exs"
-Task: "Refusal telemetry assertion in test/speckit_orchestrator/run_manifest_test.exs"
-Task: "Default-logger clause in test/speckit_orchestrator/telemetry_test.exs"
-Task: "Console fold in test/speckit_orchestrator/console_read_model_test.exs"
+Task: "Guard decision table in test/autonomous/run_manifest_test.exs"
+Task: "Refusal telemetry assertion in test/autonomous/run_manifest_test.exs"
+Task: "Default-logger clause in test/autonomous/telemetry_test.exs"
+Task: "Console fold in test/autonomous/console_read_model_test.exs"
 ```
 
 ---
@@ -477,7 +477,7 @@ Task: "Console fold in test/speckit_orchestrator/console_read_model_test.exs"
    the seam level (SC-001, SC-002, SC-003 partially — full SC-003 needs the
    Phase 6 e2e regression, but the mechanism is proven by T003/T004).
 4. **STOP and VALIDATE**: `mise exec -- mix test
-   test/speckit_orchestrator/resume_scope_test.exs` green.
+   test/autonomous/resume_scope_test.exs` green.
 
 ### Incremental Delivery
 
@@ -508,5 +508,5 @@ With two contributors, after Phase 2:
 - Commit after each task or logical group.
 - Stop at any checkpoint to validate a story independently.
 - No new dependency, no datastore, no new process — every task edits or adds
-  files inside `lib/speckit_orchestrator/` and `test/speckit_orchestrator/`
+  files inside `lib/autonomous/` and `test/autonomous/`
   only (plan.md Constitution Check, Technology Stack).

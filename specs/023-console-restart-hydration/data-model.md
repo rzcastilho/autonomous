@@ -4,7 +4,7 @@
 
 No durable entity is added or changed (FR-015). This document names the
 **inputs** the pure hydration consumes (all pre-existing, read through
-`SpeckitOrchestrator.run_detail/1`) and the **derived** shapes it produces,
+`Autonomous.run_detail/1`) and the **derived** shapes it produces,
 which are view state only.
 
 ## Inputs (existing, read-only)

@@ -6,8 +6,8 @@ purge, so the implementation phase writes prose against facts, not guesses.
 
 ## Decision 1: Authoritative `resume/2` surface to document
 
-**Decision**: Document `SpeckitOrchestrator.resume(feature_id, opts \\ [])` exactly
-as defined in `lib/speckit_orchestrator.ex` (@doc/@spec ~lines 138–162):
+**Decision**: Document `Autonomous.resume(feature_id, opts \\ [])` exactly
+as defined in `lib/autonomous.ex` (@doc/@spec ~lines 138–162):
 
 - Default: restarts at the feature's **checkpointed phase** (`record.last_phase`).
 - `:from` — overrides the start phase; **takes precedence** over the checkpoint's
@@ -59,7 +59,7 @@ resume is v2 / v2 concern / (future) resume". Current on-disk matches:
   "v2 concern"; it omits `resume/2` entirely. FR-006 fix = add a shipped-`resume/2`
   sentence, not delete a phrase.
 
-**Out of scope (confirmed)**: `lib/speckit_orchestrator.ex:121-122` `resolve/1`
+**Out of scope (confirmed)**: `lib/autonomous.ex:121-122` `resolve/1`
 docstring "mid-pipeline resume is v2" — source-code docstring, excluded by the
 clarify-session ruling and FR-007. Leaving it does not violate SC-003 (search is
 `.md`-only).
@@ -77,7 +77,7 @@ have edited a non-existent CLAUDE.md phrase and possibly missed runbook:281.
 **Decision**:
 - **SC-003**: `grep -rniE 'mid-pipeline resume is v2|v2 concern|resume.*(is|a) (future|v2)' --include='*.md' .` (excluding `specs/`) returns zero → pass.
 - **SC-002**: diff each documented `resume(...)` call and error tuple against the
-  `@spec` in `lib/speckit_orchestrator.ex` — names/arity/opts must match.
+  `@spec` in `lib/autonomous.ex` — names/arity/opts must match.
 - **SC-001**: operator dry-read of the new runbook section performs the escalate →
   fix → resume loop using only its `iex` snippets.
 

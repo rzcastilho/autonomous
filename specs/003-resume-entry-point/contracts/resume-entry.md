@@ -3,7 +3,7 @@
 Internal Elixir function contracts (this is a library; the "interface" is the
 public function surface of `Pipeline` and `FeatureRunner`).
 
-## `SpeckitOrchestrator.Pipeline.step_of/1`
+## `Autonomous.Pipeline.step_of/1`
 
 ```elixir
 @spec step_of(phase()) :: pos_integer()
@@ -29,7 +29,7 @@ def step_of(phase)
   out of scope; caller guarantees membership.
 - **Property**: `step_of(first()) == 1`; `step_of(List.last(phases())) == length(phases())`.
 
-## `SpeckitOrchestrator.FeatureRunner.run/2` (extended)
+## `Autonomous.FeatureRunner.run/2` (extended)
 
 ```elixir
 @spec run(Feature.t(), keyword()) :: result() | {:error, term()}
@@ -51,7 +51,7 @@ Behavioral contract:
 4. `resume_phase` state field equals `:start_phase` at init and remains fixed as
    the loop advances `phase`.
 
-## `SpeckitOrchestrator.Actions.InitFeature` (extended schema)
+## `Autonomous.Actions.InitFeature` (extended schema)
 
 Adds `phase: [type: :atom, default: Pipeline.first()]` and
 `resume_prompt: [type: :string, default: nil]`. Seeds `phase`, `resume_phase`

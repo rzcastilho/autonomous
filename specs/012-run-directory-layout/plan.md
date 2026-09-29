@@ -105,7 +105,7 @@ specs/012-run-directory-layout/
 ### Source Code (repository root)
 
 ```text
-lib/speckit_orchestrator/
+lib/autonomous/
 ├── repo_identity.ex          # NEW — pure canonicalize/1, segment/1; IO resolve/1
 ├── layout.ex                 # NEW — %Layout{}, build/3, ensure/1, in_repo_rel/1 (FR-011)
 ├── config.ex                 # + autonomous_root/0, specs_root/0; retire old root defaults
@@ -123,10 +123,10 @@ lib/speckit_orchestrator/
     ├── pipeline_dag_live.ex  # per-package breakdown/<slug>; overlay on segment-match (FR-012)
     └── trigger_live.ex       # select breakdown package by slug (FR-012)
 
-lib/speckit_orchestrator.ex   # run/1 & run_spec/1: resolve identity + Layout at
+lib/autonomous.ex   # run/1 & run_spec/1: resolve identity + Layout at
                               # preflight; select package by slug; ad-hoc seed → ad_hoc_root
 
-test/speckit_orchestrator/
+test/autonomous/
 ├── repo_identity_test.exs    # NEW — pure canonicalize/segment; resolve (integration)
 ├── layout_test.exs           # NEW — build/ensure, reserved-slug, home-unavailable
 └── …                         # update path assertions in existing writer tests

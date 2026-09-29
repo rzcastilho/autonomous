@@ -13,8 +13,8 @@ Other fields are ignored.
 
 | Variable | Set by | Meaning |
 |---|---|---|
-| `SPECKIT_ORCHESTRATED` | orchestrator (`Containment.session_env/1`) | `"1"` ⇒ orchestrated session |
-| `SPECKIT_CONTAINMENT_PROFILE` | orchestrator | `"strict"` \| `"permissive"` |
+| `AUTONOMOUS_ORCHESTRATED` | orchestrator (`Containment.session_env/1`) | `"1"` ⇒ orchestrated session |
+| `AUTONOMOUS_CONTAINMENT_PROFILE` | orchestrator | `"strict"` \| `"permissive"` |
 | `CLAUDE_CODE_ENTRYPOINT` | Claude Code | `"cli"` for an interactive session |
 
 ## Decision order
@@ -22,8 +22,8 @@ Other fields are ignored.
 1. stdin is not JSON → **deny** `unparseable`. Every origin, every profile
    (FR-010).
 2. Resolve origin and profile:
-   - `SPECKIT_ORCHESTRATED == "1"` → orchestrated; profile from
-     `SPECKIT_CONTAINMENT_PROFILE`, anything else → `strict`.
+   - `AUTONOMOUS_ORCHESTRATED == "1"` → orchestrated; profile from
+     `AUTONOMOUS_CONTAINMENT_PROFILE`, anything else → `strict`.
    - else `CLAUDE_CODE_ENTRYPOINT == "cli"` → interactive → **allow**.
    - else → undecided → `strict`.
 3. `permissive` → **allow**. No rule list (FR-006).
@@ -65,7 +65,7 @@ and matches are listed in [research.md](../research.md) R4. Tools
 ## Test obligations
 
 - `scope_guard_test.exs` runs the real hook with a **pinned** environment
-  (`SPECKIT_*` and `CLAUDE_CODE_ENTRYPOINT` cleared). That is the undecided
+  (`AUTONOMOUS_*` and `CLAUDE_CODE_ENTRYPOINT` cleared). That is the undecided
   origin, which resolves to `strict`. Every existing case and assertion stays
   as it is (SC-003). Only the helper's env is pinned, so the suite does not
   flip when run from inside a Claude Code shell.

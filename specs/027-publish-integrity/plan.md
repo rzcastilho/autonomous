@@ -78,7 +78,7 @@ specs/027-publish-integrity/
 ### Source Code (repository root)
 
 ```text
-lib/speckit_orchestrator/
+lib/autonomous/
 ├── branch_guard.ex                 # NEW: pure check/2 (US2)
 ├── publish_outcome.ex              # NEW: pure describe/1 + normalize helpers (US1, surfaces)
 ├── worktree.ex                     # current_branch/1, commits_beyond/3, branch_name/1 (locate uses it)
@@ -94,11 +94,11 @@ lib/speckit_orchestrator/
 ├── report.ex                       # format_reason → PublishOutcome.describe
 ├── telemetry.ex                    # publish.failed logger uses describe; kind in metadata
 └── web/live/{mission_control,run_detail,runs}_live.ex   # describe-or-inspect
-lib/speckit_orchestrator.ex         # publish_feature/3 (pr_url short-circuit, empty check,
+lib/autonomous.ex         # publish_feature/3 (pr_url short-circuit, empty check,
                                     #   normalized errors), pr_notify/5 (chain stop),
                                     #   resume/2 publish-only route, stack_seed/1 spec_id fix
 
-test/speckit_orchestrator/
+test/autonomous/
 ├── branch_guard_test.exs           # NEW
 ├── publish_outcome_test.exs        # NEW
 ├── worktree_test.exs, run_feature_phase_test.exs, phase_step_test.exs,

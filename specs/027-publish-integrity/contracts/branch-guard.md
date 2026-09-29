@@ -1,6 +1,6 @@
 # Contract: Branch-drift gate (US2)
 
-## 1. Pure decision: `SpeckitOrchestrator.BranchGuard`
+## 1. Pure decision: `Autonomous.BranchGuard`
 
 ```elixir
 @spec check(expected :: String.t(), observed :: String.t() | {:detached, String.t()}) ::

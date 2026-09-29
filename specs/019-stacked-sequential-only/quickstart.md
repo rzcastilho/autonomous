@@ -39,8 +39,8 @@ a temp dir (Quality & Test Discipline).
 prerequisites inert.
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/release_test.exs
-mise exec -- mix test test/speckit_orchestrator/backlog_test.exs
+mise exec -- mix test test/autonomous/release_test.exs
+mise exec -- mix test test/autonomous/backlog_test.exs
 ```
 
 Expected:
@@ -61,7 +61,7 @@ Expected:
 the report names the stopper.
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/coordinator_test.exs
+mise exec -- mix test test/autonomous/coordinator_test.exs
 ```
 
 Expected, with a seven-feature backlog whose `002` is forced to escalate through
@@ -86,28 +86,28 @@ Repeat with `:halted` and `:failed` — identical shape, different status. No
 **Proves**: refusal, not silent acceptance, on all three surfaces.
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/retired_settings_test.exs
+mise exec -- mix test test/autonomous/retired_settings_test.exs
 ```
 
 Expected:
 
 ```elixir
-SpeckitOrchestrator.run(pr_workflow: true)
+Autonomous.run(pr_workflow: true)
 #=> {:error, {:preflight, [{:retired_option, :pr_workflow}]}}
 
-SpeckitOrchestrator.run(max_concurrency: 4)
+Autonomous.run(max_concurrency: 4)
 #=> {:error, {:preflight, [{:retired_option, :max_concurrency}]}}
 
-SpeckitOrchestrator.run_spec("anything", pr_workflow: false)
+Autonomous.run_spec("anything", pr_workflow: false)
 #=> {:error, {:preflight, [{:retired_option, :pr_workflow}]}}
 ```
 
 Environment surface, checked manually once:
 
 ```bash
-SPECKIT_PR_WORKFLOW=true mise exec -- mix run -e ':ok'
+AUTONOMOUS_PR_WORKFLOW=true mise exec -- mix run -e ':ok'
 # expect: raise naming the retired setting, non-zero exit
-SPECKIT_MAX_CONCURRENCY=4 mise exec -- mix run -e ':ok'
+AUTONOMOUS_MAX_CONCURRENCY=4 mise exec -- mix run -e ':ok'
 # expect: raise naming the retired setting, non-zero exit
 ```
 
@@ -126,33 +126,33 @@ grep -rn "pr_workflow\|max_concurrency" lib config | grep -v retired
 **Proves**: the parked lifecycle and the refusal of new work.
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/parked_run_test.exs
+mise exec -- mix test test/autonomous/parked_run_test.exs
 ```
 
 Expected sequence:
 
 ```elixir
 # run stops at 002
-{:ok, detail} = SpeckitOrchestrator.run_detail(run_id)
+{:ok, detail} = Autonomous.run_detail(run_id)
 detail.run.state       #=> :parked
 detail.run.stopped_by  #=> "002"
 
 # new work is refused while parked
-SpeckitOrchestrator.run([])
+Autonomous.run([])
 #=> {:error, {:parked_run, "r000001", [:continue, :end]}}
-SpeckitOrchestrator.run_spec("a one-off")
+Autonomous.run_spec("a one-off")
 #=> {:error, {:parked_run, "r000001", [:continue, :end]}}
 
 # resolving without a decision changes nothing
-SpeckitOrchestrator.resolve("002")
+Autonomous.resolve("002")
 #=> {:error, :decision_required}
 
 # continue: same run_id, 002 re-runs, 003.. follow in order
-SpeckitOrchestrator.resolve("002", decision: :continue)
-SpeckitOrchestrator.current_run_id()   #=> "r000001"   (unchanged)
+Autonomous.resolve("002", decision: :continue)
+Autonomous.current_run_id()   #=> "r000001"   (unchanged)
 
 # or end: closes out, never-started recorded as such
-SpeckitOrchestrator.resolve("002", decision: :end)
+Autonomous.resolve("002", decision: :end)
 detail.run.state    #=> :completed
 detail.run.outcome  #=> :ended_by_operator
 # every unattempted feature: status :never_started
@@ -169,8 +169,8 @@ was the last feature reaches the same closed-out result via either decision.
 **Proves**: separate group, creation-time order, base-branch neutrality.
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/single_spec_test.exs
-mise exec -- mix test test/speckit_orchestrator/release_test.exs
+mise exec -- mix test test/autonomous/single_spec_test.exs
+mise exec -- mix test test/autonomous/release_test.exs
 ```
 
 Expected:
@@ -189,7 +189,7 @@ Expected:
 **Proves**: zero run-shape decisions at start; no mode label anywhere.
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/web/
+mise exec -- mix test test/autonomous/web/
 ```
 
 Expected:
@@ -223,8 +223,8 @@ mise exec -- iex -S mix
 
 ```elixir
 # no run-shape options exist to pass
-{:ok, _pid} = SpeckitOrchestrator.run()
-SpeckitOrchestrator.print_status()
+{:ok, _pid} = Autonomous.run()
+Autonomous.print_status()
 ```
 
 Observe:

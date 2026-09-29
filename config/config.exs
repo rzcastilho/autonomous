@@ -10,7 +10,7 @@ if config_env() == :test do
   # machine-global base for the new Layout-resolved worktree/transcript roots —
   # pin it too, or every facade-preflight test would create real dirs under the
   # developer's actual `~/.autonomous`.
-  config :speckit_orchestrator,
+  config :autonomous,
     transcript_root: Path.join(System.tmp_dir!(), "speckit_test_transcripts"),
     autonomous_root: Path.join(System.tmp_dir!(), "speckit_test_autonomous")
 end
@@ -23,14 +23,14 @@ end
 # without binding a port, so the console never competes for 4000 during the
 # hermetic test suite.
 # ---------------------------------------------------------------------------
-config :speckit_orchestrator, SpeckitOrchestrator.Web.Endpoint,
+config :autonomous, Autonomous.Web.Endpoint,
   adapter: Bandit.PhoenixAdapter,
   url: [host: "localhost"],
   http: [ip: {127, 0, 0, 1}, port: 4000],
   secret_key_base: "d95b33a1423f921b332c4b90b63972ea850e12e0a70ad8a467c73d6b59453320d95b33a",
   live_view: [signing_salt: "sO2z3sYqCPqm9k1r"],
-  pubsub_server: SpeckitOrchestrator.PubSub,
-  render_errors: [formats: [html: SpeckitOrchestrator.Web.ErrorHTML], layout: false],
+  pubsub_server: Autonomous.PubSub,
+  render_errors: [formats: [html: Autonomous.Web.ErrorHTML], layout: false],
   # quickstart.md tells the operator to open http://127.0.0.1:<port>/, but
   # `url: [host: "localhost"]` alone makes Phoenix's default check_origin
   # reject the LiveView socket's Origin header on that host — the page loads
@@ -56,7 +56,7 @@ config :jido_harness,
 # ---------------------------------------------------------------------------
 # jido_action execution guards — BOTH deliberately disabled.
 #
-# The phase deadline lives in `SpeckitOrchestrator.PhaseSession`, inside the
+# The phase deadline lives in `Autonomous.PhaseSession`, inside the
 # action, where it can be sized per scope (a 23-task implement chunk is not a
 # 6-task one) and where it can shut the CLI subprocess down cleanly. jido_action's
 # own guards fight that:
@@ -80,13 +80,13 @@ config :jido_harness,
 config :jido_action, default_timeout: 0, default_max_retries: 0
 
 # ---------------------------------------------------------------------------
-# speckit_orchestrator — orchestrator configuration (Phase 1 consumes these
-# via SpeckitOrchestrator.Config). Model values are FULL model strings, not
+# autonomous — orchestrator configuration (Phase 1 consumes these
+# via Autonomous.Config). Model values are FULL model strings, not
 # CLI aliases, for reproducibility (user decision). Placeholders below are
 # documented as such — verify against the org allowlist in the Phase 2 spike:
 #   claude --model <string> -p "print your model id"
 # ---------------------------------------------------------------------------
-config :speckit_orchestrator,
+config :autonomous,
   # Path to the repo the orchestrator drives (the target Spec Kit repo).
   repo: ".",
   # Where NNN-*.md feature breakdown files live, relative to :repo.
@@ -114,13 +114,13 @@ config :speckit_orchestrator,
   # derives the stack from the target's own constitution and manifest
   # (mix.exs/package.json/…). Set it only for a target that genuinely cannot be
   # derived — e.g. the LedgerLite spec deliberately delegates language/format to
-  # plan, so that run sets SPECKIT_PLAN_STACK="Python 3 (standard library only:
+  # plan, so that run sets AUTONOMOUS_PLAN_STACK="Python 3 (standard library only:
   # argparse, unittest; no third-party dependencies)".
   #
   # A stack that contradicts the target (the old hardcoded Python default against
   # an Elixir/Phoenix target) makes plan REFUSE and ask which to use — an
   # unanswerable question in a headless run, so plan writes no plan.md and every
-  # later phase silently no-ops. See config/runtime.exs → SPECKIT_PLAN_STACK.
+  # later phase silently no-ops. See config/runtime.exs → AUTONOMOUS_PLAN_STACK.
   plan_stack: [],
   # Root base branch for the first feature's PR; later features stack on the prior.
   pr_base: "main",

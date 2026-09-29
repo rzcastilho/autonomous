@@ -39,7 +39,7 @@ re-enters `loop/12` at `:clarify`.
 
 ## R2 — Pure decision surface
 
-**Decision**: A new pure module `SpeckitOrchestrator.InteractiveClarify`. Its
+**Decision**: A new pure module `Autonomous.InteractiveClarify`. Its
 decision function is:
 
 ```elixir
@@ -206,7 +206,7 @@ every re-run.
 
 ## R8 — Single NEEDS HUMAN rule and question format (FR-012, FR-013, FR-018)
 
-**Decision**: A new pure module `SpeckitOrchestrator.NeedsHuman`:
+**Decision**: A new pure module `Autonomous.NeedsHuman`:
 
 - `present?/1`: the one regex, `~r/^\#\#[ \t]+NEEDS HUMAN[ \t]*$/m`.
 - `extract/1`: the block text up to the next `## ` heading. This is today's
@@ -342,7 +342,7 @@ table's rows. Question text is short, so it is not bulk content, and
     "use recommended" button that fills the field, and `data-question="Qn"`
   - or a single textarea for freeform
   - a hidden `seq`, submitted via `phx-submit="answer"` →
-    `SpeckitOrchestrator.answer/3`
+    `Autonomous.answer/3`
   - stale/refusal errors render through the existing `<.form_refusal>`
 - **Trigger form.** A switch plus timeout (minutes) and rounds inputs, copying
   the auto-remediation block (`trigger_live.ex:430-497`), all `disabled`
@@ -361,10 +361,10 @@ table's rows. Question text is short, so it is not bulk content, and
 
 **Decision**: New facade functions:
 
-- `SpeckitOrchestrator.pending_questions/0,1`: a list of `%{feature_id,
+- `Autonomous.pending_questions/0,1`: a list of `%{feature_id,
   spec_label, round, max_rounds, seq, questions, started_at, deadline_at}` for
   the current repo.
-- `SpeckitOrchestrator.answer/3`: `answer(feature_id, seq, answers)`, where
+- `Autonomous.answer/3`: `answer(feature_id, seq, answers)`, where
   `answers` is `%{"Q1" => "…"}`, a keyword list, or a string (freeform). It
   returns `:ok | {:error, {:stale_round, current} | {:missing_answer, qid} |
   :empty_answer | :not_awaiting}`.

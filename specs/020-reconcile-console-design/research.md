@@ -253,7 +253,7 @@ preference costs nothing new.
 ### 3a. `scBlink`'s live referent
 
 The transcripts view reads durable transcripts from the store
-(`SpeckitOrchestrator.run_detail/1`); it is not an incrementally-streamed
+(`Autonomous.run_detail/1`); it is not an incrementally-streamed
 socket. **Decision:** the live indicator is bound to *the attempt not having
 terminated* — a transcript whose phase attempt has no finish record is live and
 blinks; a finished one does not. That is recorded state (FR-020), not a timer,
@@ -367,8 +367,8 @@ and the divergence is recorded rather than argued each time.
 ## 6. Verification split: mechanical guard vs compliance inventory
 
 **Decision.** A pure scanner module at `test/support/design_contract.ex`
-(`SpeckitOrchestrator.Web.DesignContract`), driven by
-`test/speckit_orchestrator/web/design_contract_test.exs`.
+(`Autonomous.Web.DesignContract`), driven by
+`test/autonomous/web/design_contract_test.exs`.
 
 - **Location.** `test/support` is on `elixirc_paths` for `:test` only
   (`mix.exs:18`), so the lint ships no runtime code and adds no dependency

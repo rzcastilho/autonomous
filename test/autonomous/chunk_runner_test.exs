@@ -1,0 +1,933 @@
+defmodule Autonomous.ChunkRunnerTest do
+  # async: false — swaps the global :jido_claude sdk_module.
+  use ExUnit.Case, async: false
+
+  alias Jido.{AgentServer, Signal}
+  alias Autonomous.{ChunkRunner, Feature, FeatureAgent, Ledger, Worktree}
+
+  # Fake SDK that inspects the scoped prompt for "Phase <n>:" and checks off
+  # that task-phase's own task in the real tasks.md — a stand-in for the
+  # agent actually doing the scoped work, so the chunk loop's cursor genuinely
+  # advances the same way it would against a real CLI. Each dispatched action
+  # runs in its own process (not the test process), so captured prompts are
+  # recorded into a shared `Agent` (named via app env) rather than sent to
+  # `self()`.
+  defmodule FakeSDK do
+    alias ClaudeAgentSDK.Message
+
+    def query(prompt, options) do
+      capture_prompt(prompt)
+      cwd = Map.get(options, :cwd)
+
+      case scenario() do
+        {:no_progress, n} -> exhausted_no_progress(cwd, prompt, n)
+        {:exhaust_then_succeed, n} -> exhaust_then_succeed(cwd, prompt, n)
+        {:always_exhaust, n} -> always_exhaust(cwd, prompt, n)
+        :checkpoint_only -> checkpoint_only(cwd, prompt)
+        :terminal_error -> terminal_error_messages()
+        :branch_drift -> branch_drift_messages(cwd)
+        _ -> mark_and_succeed(cwd, prompt)
+      end
+    end
+
+    # A stand-in for the mod-player incident's target-side hook: the session
+    # itself moves HEAD off the orchestrator's branch (027, US2), then reports
+    # a perfectly successful transcript — exactly the shape the drift gate
+    # exists to catch regardless of what the transcript claims.
+    defp branch_drift_messages(cwd) do
+      System.cmd("git", ["checkout", "-b", "other"], cd: cwd)
+      success_messages()
+    end
+
+    defp mark_and_succeed(cwd, prompt) do
+      check_off_scoped_task(prompt, cwd)
+      success_messages()
+    end
+
+    # Ticks the scoped task-phase's task but writes NO source file — a task
+    # phase whose tasks are all manual checkpoints, or a re-run of one whose
+    # code another session already committed. Everything it touches lives under
+    # the excluded `specs/` prefix.
+    defp checkpoint_only(cwd, prompt) do
+      case Regex.run(~r/Implement ONLY the tasks in "Phase (\d+):/, prompt) do
+        [_, n] -> tick_only(cwd, n)
+        nil -> :ok
+      end
+
+      success_messages()
+    end
+
+    defp tick_only(cwd, n) do
+      path = Path.join(cwd, "specs/001-fake/tasks.md")
+
+      content =
+        path
+        |> File.read!()
+        |> String.split("\n")
+        |> Enum.map(&check_line(&1, n))
+        |> Enum.join("\n")
+
+      File.write!(path, content)
+    end
+
+    # Always exhausts on the given task-phase number, never checking anything
+    # off — used to exercise the stuck_task_phase failure.
+    defp exhausted_no_progress(cwd, prompt, n) do
+      if String.contains?(prompt, ~s(Phase #{n}:)) do
+        exhausted_messages()
+      else
+        mark_and_succeed(cwd, prompt)
+      end
+    end
+
+    # Marks exactly one of the target task-phase's remaining unchecked tasks
+    # per call; exhausts while any remain, succeeds once none do — a
+    # made-progress-every-attempt scope (FR-011: exhaustion with progress
+    # continues in a fresh session rather than failing).
+    defp exhaust_then_succeed(cwd, prompt, n) do
+      if String.contains?(prompt, ~s(Phase #{n}:)) do
+        if mark_first_unchecked(cwd) > 0, do: exhausted_messages(), else: success_messages()
+      else
+        mark_and_succeed(cwd, prompt)
+      end
+    end
+
+    # Marks one task per call (so the caller sees real progress) but never
+    # reports success on the target task-phase — used to drive
+    # `sessions_used` straight into the session ceiling (FR-013a) without
+    # ever tripping the separate no-progress bound (FR-012/FR-013).
+    defp always_exhaust(cwd, prompt, n) do
+      if String.contains?(prompt, ~s(Phase #{n}:)) do
+        mark_first_unchecked(cwd)
+        exhausted_messages()
+      else
+        mark_and_succeed(cwd, prompt)
+      end
+    end
+
+    # Checks off the first remaining unchecked task line in the whole file
+    # (only ever one task-phase is "in play" at a time in these fixtures) and
+    # drops a fake source-file edit so the artifact gate (research R10) sees a
+    # real implementation change. Returns the unchecked-line count afterward.
+    defp mark_first_unchecked(cwd) do
+      path = Path.join(cwd, "specs/001-fake/tasks.md")
+
+      {new_lines, marked?} =
+        path
+        |> File.read!()
+        |> String.split("\n")
+        |> Enum.map_reduce(false, fn line, done? ->
+          if not done? and String.contains?(line, "- [ ]") do
+            {String.replace(line, "[ ]", "[X]", global: false), true}
+          else
+            {line, done?}
+          end
+        end)
+
+      File.write!(path, Enum.join(new_lines, "\n"))
+
+      if marked? do
+        impl_path = Path.join(cwd, "lib/fake_progress_#{System.unique_integer([:positive])}.ex")
+        File.mkdir_p!(Path.dirname(impl_path))
+        File.write!(impl_path, "defmodule FakeProgress do\nend\n")
+      end
+
+      Enum.count(new_lines, &String.contains?(&1, "- [ ]"))
+    end
+
+    defp check_off_scoped_task(prompt, cwd) when is_binary(cwd) do
+      case Regex.run(~r/Implement ONLY the tasks in "Phase (\d+):/, prompt) do
+        [_, n] -> check_off(cwd, n)
+        nil -> :ok
+      end
+    end
+
+    defp check_off_scoped_task(_prompt, _cwd), do: :ok
+
+    # Also writes a fake source file outside specs/ — the artifact gate
+    # (research R10) looks for exactly this: a real implementation change, not
+    # just an edited tasks.md (which lives under the excluded specs/ prefix).
+    defp check_off(cwd, n) do
+      path = Path.join(cwd, "specs/001-fake/tasks.md")
+
+      content =
+        path
+        |> File.read!()
+        |> String.split("\n")
+        |> Enum.map(&check_line(&1, n))
+        |> Enum.join("\n")
+
+      File.write!(path, content)
+
+      impl_path = Path.join(cwd, "lib/fake_phase_#{n}.ex")
+      File.mkdir_p!(Path.dirname(impl_path))
+      File.write!(impl_path, "defmodule FakePhase#{n} do\nend\n")
+    end
+
+    defp check_line(line, n) do
+      if String.contains?(line, "T00#{n} "), do: String.replace(line, "[ ]", "[X]"), else: line
+    end
+
+    defp success_messages do
+      [
+        %Message{type: :system, subtype: :init, data: %{session_id: "s"}, raw: %{}},
+        %Message{
+          type: :result,
+          subtype: :success,
+          data: %{
+            session_id: "s",
+            result: "done",
+            num_turns: 3,
+            is_error: false,
+            total_cost_usd: 0.1,
+            usage: %{input_tokens: 0, output_tokens: 0}
+          },
+          raw: %{}
+        }
+      ]
+    end
+
+    defp exhausted_messages do
+      [
+        %Message{type: :system, subtype: :init, data: %{session_id: "s"}, raw: %{}},
+        %Message{
+          type: :result,
+          subtype: :error_max_turns,
+          data: %{session_id: "s", result: "hit max turns", is_error: true, total_cost_usd: 0.1},
+          raw: %{}
+        }
+      ]
+    end
+
+    # A clean, deterministic (non-transient) failure — no known transient
+    # marker in the text — used to prove the pre-existing transient-vs-terminal
+    # ladder (`PhaseResult.transient?/1`, unmodified per FR-014) still governs
+    # non-exhaustion errors even though `:implement` now routes exclusively
+    # through `ChunkRunner`/`Chunking.next/2`, not the phase-level retry wrapper.
+    defp terminal_error_messages do
+      [
+        %Message{type: :system, subtype: :init, data: %{session_id: "s"}, raw: %{}},
+        %Message{
+          type: :result,
+          subtype: :error_during_execution,
+          data: %{
+            session_id: "s",
+            result: "invalid tool arguments for Edit",
+            is_error: true,
+            total_cost_usd: 0.1
+          },
+          raw: %{}
+        }
+      ]
+    end
+
+    defp scenario, do: Application.get_env(:autonomous, :chunk_runner_test_scenario)
+
+    defp capture_prompt(prompt) do
+      case Application.get_env(:autonomous, :chunk_runner_test_prompts_agent) do
+        nil -> :ok
+        agent -> Agent.update(agent, &[prompt | &1])
+      end
+    end
+  end
+
+  setup do
+    original = Application.get_env(:jido_claude, :sdk_module)
+    Application.put_env(:jido_claude, :sdk_module, FakeSDK)
+
+    {:ok, prompts_agent} = Agent.start_link(fn -> [] end)
+    Application.put_env(:autonomous, :chunk_runner_test_prompts_agent, prompts_agent)
+
+    on_exit(fn ->
+      if original,
+        do: Application.put_env(:jido_claude, :sdk_module, original),
+        else: Application.delete_env(:jido_claude, :sdk_module)
+
+      Application.delete_env(:autonomous, :chunk_runner_test_scenario)
+      Application.delete_env(:autonomous, :chunk_runner_test_prompts_agent)
+    end)
+
+    root = Path.join(System.tmp_dir!(), "chunk_runner_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(root)
+    System.cmd("git", ["init"], cd: root)
+    System.cmd("git", ["config", "user.email", "t@t"], cd: root)
+    System.cmd("git", ["config", "user.name", "t"], cd: root)
+
+    tasks_path = Path.join(root, "specs/001-fake/tasks.md")
+    File.mkdir_p!(Path.dirname(tasks_path))
+
+    File.write!(tasks_path, """
+    # Tasks: Fake
+
+    ## Phase 1: Setup
+
+    - [ ] T001 first thing
+
+    ## Phase 2: Core
+
+    - [ ] T002 second thing
+
+    ## Phase 3: Polish
+
+    - [ ] T003 third thing
+    """)
+
+    System.cmd("git", ["add", "-A"], cd: root)
+    System.cmd("git", ["commit", "-m", "seed"], cd: root)
+    # A real `main` plus a real feature branch forked from it: the roll-up
+    # artifact gate anchors on `merge-base(branch, pr_base)`, so a fictional
+    # branch name would silently exercise only its fallback.
+    System.cmd("git", ["branch", "-M", "main"], cd: root)
+    System.cmd("git", ["checkout", "-q", "-b", "feature/001-fake"], cd: root)
+
+    on_exit(fn -> File.rm_rf(root) end)
+
+    feature = %Feature{id: "001", number: 1, slug: "fake", path: "specs/001-fake/spec.md"}
+    worktree = %Worktree{path: root, branch: "feature/001-fake", repo: root, feature_id: "001"}
+
+    {:ok, pid} =
+      AgentServer.start_link(
+        agent: FeatureAgent,
+        id: "chunkrunner-test-#{System.unique_integer([:positive])}",
+        register_global: false
+      )
+
+    {:ok, _} =
+      AgentServer.call(
+        pid,
+        Signal.new!(
+          "feature.init",
+          %{
+            feature: feature,
+            worktree: worktree,
+            ledger: nil,
+            layout: nil,
+            phase: :implement,
+            resume_prompt: nil,
+            remediation_prompt: nil,
+            remediation_model: nil
+          }
+        ),
+        5_000
+      )
+
+    %{root: root, feature: feature, worktree: worktree, pid: pid, prompts_agent: prompts_agent}
+  end
+
+  defp ctx(vals), do: Map.merge(%{layout: nil, timeout: 5_000, step: 6, ledger: nil}, vals)
+
+  defp captured_prompts(prompts_agent), do: prompts_agent |> Agent.get(& &1) |> Enum.reverse()
+
+  # A standalone repo + agent for tests that need a task-phase shape the
+  # shared `setup` fixture doesn't have (multiple tasks in one task-phase) —
+  # deliberately not reusing the outer `setup`'s single-task-per-phase fixture
+  # so those tests stay unaffected.
+  defp start_custom_repo(tasks_md) do
+    root = Path.join(System.tmp_dir!(), "chunk_runner_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(root)
+    System.cmd("git", ["init"], cd: root)
+    System.cmd("git", ["config", "user.email", "t@t"], cd: root)
+    System.cmd("git", ["config", "user.name", "t"], cd: root)
+
+    tasks_path = Path.join(root, "specs/001-fake/tasks.md")
+    File.mkdir_p!(Path.dirname(tasks_path))
+    File.write!(tasks_path, tasks_md)
+
+    System.cmd("git", ["add", "-A"], cd: root)
+    System.cmd("git", ["commit", "-m", "seed"], cd: root)
+    System.cmd("git", ["branch", "-M", "main"], cd: root)
+    System.cmd("git", ["checkout", "-q", "-b", "feature/001-fake"], cd: root)
+
+    on_exit(fn -> File.rm_rf(root) end)
+
+    feature = %Feature{id: "001", number: 1, slug: "fake", path: "specs/001-fake/spec.md"}
+    worktree = %Worktree{path: root, branch: "feature/001-fake", repo: root, feature_id: "001"}
+
+    {:ok, pid} =
+      AgentServer.start_link(
+        agent: FeatureAgent,
+        id: "chunkrunner-test-#{System.unique_integer([:positive])}",
+        register_global: false
+      )
+
+    {:ok, _} =
+      AgentServer.call(
+        pid,
+        Signal.new!("feature.init", %{
+          feature: feature,
+          worktree: worktree,
+          ledger: nil,
+          layout: nil,
+          phase: :implement,
+          resume_prompt: nil,
+          remediation_prompt: nil,
+          remediation_model: nil
+        }),
+        5_000
+      )
+
+    %{root: root, feature: feature, worktree: worktree, pid: pid}
+  end
+
+  defp three_phase_tasks_md(phase1_task_count) do
+    phase1_tasks =
+      for n <- 1..phase1_task_count, into: "", do: "- [ ] T01#{n} phase-1 task #{n}\n"
+
+    """
+    # Tasks: Fake
+
+    ## Phase 1: Setup
+
+    #{phase1_tasks}
+    ## Phase 2: Core
+
+    - [ ] T002 second thing
+
+    ## Phase 3: Polish
+
+    - [ ] T003 third thing
+    """
+  end
+
+  test "dispatches one scoped session per task-phase, in order, and completes",
+       %{root: root, feature: feature, worktree: worktree, pid: pid, prompts_agent: prompts_agent} do
+    agent = ChunkRunner.run(ctx(%{pid: pid, feature: feature, worktree: worktree}))
+
+    assert agent.state.last_outcome == :ok
+    assert agent.state.terminal_reason == nil
+    assert agent.state.last_signals == %{}
+
+    prompts = captured_prompts(prompts_agent)
+    assert length(prompts) == 3
+    assert Enum.at(prompts, 0) =~ ~s(Phase 1: Setup)
+    assert Enum.at(prompts, 1) =~ ~s(Phase 2: Core)
+    assert Enum.at(prompts, 2) =~ ~s(Phase 3: Polish)
+
+    content = File.read!(Path.join(root, "specs/001-fake/tasks.md"))
+    assert content =~ "[X] T001"
+    assert content =~ "[X] T002"
+    assert content =~ "[X] T003"
+
+    {log, 0} = System.cmd("git", ["-C", root, "log", "--format=%s"])
+    subjects = String.split(log, "\n", trim: true)
+    assert "speckit: 001 implement task-phase 1/3 Setup" in subjects
+    assert "speckit: 001 implement task-phase 2/3 Core" in subjects
+    assert "speckit: 001 implement task-phase 3/3 Polish" in subjects
+
+    # task-phase commits must never look like Recovery.Evidence's phase-boundary
+    # commits (research R5) — see recovery/evidence_test.exs for the direct
+    # regex assertion against Evidence itself.
+    refute Enum.any?(subjects, &Regex.match?(~r/^speckit: \S+ checkpoint after \w+$/, &1))
+  end
+
+  test "branch drift (027, US2): a drifted chunk session is neither boundary-committed nor continued",
+       %{root: root, feature: feature, worktree: worktree, pid: pid} do
+    Application.put_env(:autonomous, :chunk_runner_test_scenario, :branch_drift)
+
+    {before_sha, 0} = System.cmd("git", ["rev-parse", "feature/001-fake"], cd: root)
+
+    agent = ChunkRunner.run(ctx(%{pid: pid, feature: feature, worktree: worktree}))
+
+    assert agent.state.last_outcome == :error
+
+    assert {:failed,
+            {:branch_drift, :implement,
+             %{expected: "feature/001-fake", observed: "other"}}} = agent.state.terminal_reason
+
+    # Neither branch moved: no boundary commit landed on the stray branch, and
+    # the orchestrator's own branch is exactly where it started.
+    {after_sha, 0} = System.cmd("git", ["rev-parse", "feature/001-fake"], cd: root)
+    assert after_sha == before_sha
+
+    {stray_sha, 0} = System.cmd("git", ["rev-parse", "other"], cd: root)
+    assert stray_sha == before_sha
+
+    {log, 0} = System.cmd("git", ["-C", root, "log", "--all", "--format=%s"])
+    refute String.contains?(log, "implement task-phase")
+  end
+
+  test "each chunk session is recorded in the store, without double-counting its cost",
+       %{feature: feature, worktree: worktree, pid: pid} do
+    # Regression for mod-player 003: a 7-chunk implement left NO trace in the
+    # store until the whole step failed — the operator could not tell which
+    # session went wrong. Now every dispatched chunk is its own
+    # `:implement_chunk` phase_attempt (ordinal = run-wide sessions_used) with
+    # its transcript, while the run's spend still comes from the roll-up
+    # alone (the chunk rows write no cost_entry).
+    repo_id = "o:chunk-runner-test-#{System.unique_integer([:positive])}"
+
+    {:ok, run_id} =
+      Autonomous.Store.Writer.open_run(repo_id, %{
+        features: [
+          %{
+            feature_id: "001",
+            slug: "fake",
+            path: "specs/001-fake",
+            number: 1,
+            group: :backlog,
+            created_at: nil
+          }
+        ],
+        settings: %{},
+        scope: :ad_hoc,
+        layout: %{}
+      })
+
+    run_key = {repo_id, run_id}
+
+    agent =
+      ChunkRunner.run(ctx(%{pid: pid, feature: feature, worktree: worktree, run_key: run_key}))
+
+    assert agent.state.last_outcome == :ok
+
+    {:ok, detail} = Autonomous.Store.run(run_key)
+    attempts = detail.features |> hd() |> Map.fetch!(:phase_attempts)
+    chunks = Enum.filter(attempts, &(&1.phase == :implement_chunk))
+
+    assert Enum.map(chunks, & &1.ordinal) == [1, 2, 3]
+
+    assert Enum.map(chunks, & &1.label) == [
+             "chunk 1/3 Setup",
+             "chunk 2/3 Core",
+             "chunk 3/3 Polish"
+           ]
+
+    assert Enum.all?(chunks, &(&1.outcome == :ok and &1.step == 6))
+
+    assert %{scope: :task_phase, ordinal: 2, total: 3, number: "2", title: "Core", attempt: 1} =
+             Enum.at(chunks, 1).substep
+
+    assert {:ok, %{body: body}} =
+             Autonomous.Store.transcript(Enum.at(chunks, 1).attempt_id)
+
+    assert is_binary(body)
+
+    # No per-chunk cost entries — the roll-up (recorded by FeatureRunner) is
+    # the single row that feeds the run's spend.
+    assert detail.cost_entries == []
+
+    # The roll-up carries the step's actual summed cost (3 sessions x $0.10 in
+    # this fake), so it is booked as :actual rather than the flat estimate.
+    assert {cost, :actual} =
+             Autonomous.Cost.for_phase(:implement, agent.state.last_result)
+
+    assert_in_delta cost, 0.30, 0.001
+  end
+
+  test "a breaker tripped between task-phases halts the run (drain, don't kill)",
+       %{feature: feature, worktree: worktree, pid: pid, prompts_agent: prompts_agent} do
+    {:ok, ledger} =
+      Ledger.start_link(budget: 0.0, name: :"ledger_test_#{System.unique_integer([:positive])}")
+
+    Ledger.record(ledger, nil, 1.0)
+    assert Ledger.breaker_tripped?(ledger)
+
+    agent =
+      ChunkRunner.run(ctx(%{pid: pid, feature: feature, worktree: worktree, ledger: ledger}))
+
+    assert agent.state.terminal_reason == {:halted, :breaker}
+
+    # drain, don't kill: the first task-phase's session still ran to
+    # completion before the halt took effect at the next boundary.
+    assert length(captured_prompts(prompts_agent)) == 1
+  end
+
+  # The roll-up artifact gate used to anchor on the worktree's HEAD when the
+  # invocation started. That is only the branch's fork point on a feature's
+  # FIRST implement invocation; on a resume every earlier task-phase boundary
+  # commit already sits below it, so the gate judged the feature on the resumed
+  # slice alone. A slice that legitimately writes no code then failed a fully
+  # implemented feature with `missing_artifact: "implementation changes"`,
+  # while its implementation sat committed on the branch one commit down.
+  test "a resumed invocation whose slice writes no code passes on the branch's already-committed implementation",
+       %{feature: feature, worktree: worktree, pid: pid} do
+    # First invocation: every task phase runs and commits real source files.
+    agent = ChunkRunner.run(ctx(%{pid: pid, feature: feature, worktree: worktree}))
+    assert agent.state.last_signals == %{}
+    assert File.exists?(Path.join(worktree.path, "lib/fake_phase_3.ex"))
+
+    # The branch carries the implementation as commits, not as a dirty tree.
+    assert {"", 0} = System.cmd("git", ["status", "--porcelain"], cd: worktree.path)
+
+    # Resume onto task-phase 3 with a session that only ticks tasks.md.
+    Application.put_env(:autonomous, :chunk_runner_test_scenario, :checkpoint_only)
+
+    resumed =
+      ChunkRunner.run(ctx(%{pid: pid, feature: feature, worktree: worktree, start_task_phase: 3}))
+
+    assert resumed.state.last_outcome == :ok
+    assert resumed.state.last_signals == %{}
+  end
+
+  test "with an unresolvable fork point the gate falls back to HEAD-at-start rather than failing",
+       %{feature: feature, worktree: worktree, pid: pid} do
+    # A branch `merge-base` cannot resolve against `pr_base` — the fallback
+    # path. A first invocation still sees its own boundary commits.
+    worktree = %{worktree | branch: "feature/999-never-created"}
+
+    agent = ChunkRunner.run(ctx(%{pid: pid, feature: feature, worktree: worktree}))
+
+    assert agent.state.last_outcome == :ok
+    assert agent.state.last_signals == %{}
+  end
+
+  test "a task-phase stuck in a no-progress loop fails as :stuck_task_phase",
+       %{feature: feature, worktree: worktree, pid: pid} do
+    Application.put_env(:autonomous, :chunk_runner_test_scenario, {:no_progress, 1})
+
+    agent = ChunkRunner.run(ctx(%{pid: pid, feature: feature, worktree: worktree}))
+
+    limit = Autonomous.Config.implement_no_progress_limit()
+    assert {:failed, {:stuck_task_phase, ref, ^limit}} = agent.state.terminal_reason
+    assert ref.number == "1"
+    assert agent.state.last_outcome == :error
+  end
+
+  test "exhaustion with progress dispatches fresh sessions on the same task-phase and completes" do
+    %{feature: feature, worktree: worktree, pid: pid} =
+      start_custom_repo(three_phase_tasks_md(3))
+
+    Application.put_env(
+      :autonomous,
+      :chunk_runner_test_scenario,
+      {:exhaust_then_succeed, 1}
+    )
+
+    agent = ChunkRunner.run(ctx(%{pid: pid, feature: feature, worktree: worktree}))
+
+    # 3 tasks in phase 1 ⇒ 2 exhausted-with-progress folds + 1 success before
+    # the cursor advances, then phases 2 and 3 dispatch and succeed normally —
+    # never a failure, per FR-011 ("a steadily progressing task-phase is not
+    # killed").
+    assert agent.state.last_outcome == :ok
+    assert agent.state.terminal_reason == nil
+
+    content = File.read!(Path.join(worktree.path, "specs/001-fake/tasks.md"))
+    refute content =~ "[ ]"
+  end
+
+  test "the session ceiling fails distinctly from a stuck task-phase" do
+    %{feature: feature, worktree: worktree, pid: pid} =
+      start_custom_repo(three_phase_tasks_md(3))
+
+    original_per_phase =
+      Application.get_env(:autonomous, :implement_sessions_per_task_phase)
+
+    original_headroom = Application.get_env(:autonomous, :implement_sessions_headroom)
+    Application.put_env(:autonomous, :implement_sessions_per_task_phase, 1)
+    Application.put_env(:autonomous, :implement_sessions_headroom, 0)
+
+    on_exit(fn ->
+      if original_per_phase,
+        do:
+          Application.put_env(
+            :autonomous,
+            :implement_sessions_per_task_phase,
+            original_per_phase
+          ),
+        else: Application.delete_env(:autonomous, :implement_sessions_per_task_phase)
+
+      if original_headroom,
+        do:
+          Application.put_env(
+            :autonomous,
+            :implement_sessions_headroom,
+            original_headroom
+          ),
+        else: Application.delete_env(:autonomous, :implement_sessions_headroom)
+    end)
+
+    # ceiling = 1 * 3 task-phases + 0 headroom = 3. Each of the 3 dispatched
+    # sessions makes progress (marks one of phase 1's 3 tasks) but never
+    # reports success, so the ceiling — not the no-progress bound — is what
+    # stops the loop.
+    Application.put_env(:autonomous, :chunk_runner_test_scenario, {:always_exhaust, 1})
+
+    agent = ChunkRunner.run(ctx(%{pid: pid, feature: feature, worktree: worktree}))
+
+    assert {:failed, {:session_ceiling, 3}} = agent.state.terminal_reason
+    assert agent.state.last_outcome == :error
+  end
+
+  test "a non-exhaustion transient session error retries, a terminal one fails as :session_error" do
+    %{feature: feature, worktree: worktree, pid: pid} = start_custom_repo(three_phase_tasks_md(1))
+
+    Application.put_env(:autonomous, :chunk_runner_test_scenario, :terminal_error)
+
+    agent = ChunkRunner.run(ctx(%{pid: pid, feature: feature, worktree: worktree}))
+
+    assert {:failed, {:session_error, _reason}} = agent.state.terminal_reason
+    assert agent.state.last_outcome == :error
+  end
+
+  # T043 (feature 022, net one / US3): a stacked worktree carrying two
+  # directories that share this feature's numeric prefix is FR-010's
+  # ambiguous case — `SpecDir.file/3` must resolve `nil`, never settle on
+  # either one. Silently adopting `specs/001-alpha`'s *already-complete* list
+  # would make the chunk loop skip every task-phase and dispatch nothing; the
+  # correct outcome is the FR-004 unstructured fallback, which dispatches the
+  # whole (empty-on-disk) list as a single `:whole_list` session instead.
+  test "an ambiguous spec dir falls back to the unstructured plan, never an inherited completed list",
+       %{prompts_agent: prompts_agent} do
+    root = Path.join(System.tmp_dir!(), "chunk_runner_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(root)
+    System.cmd("git", ["init"], cd: root)
+    System.cmd("git", ["config", "user.email", "t@t"], cd: root)
+    System.cmd("git", ["config", "user.name", "t"], cd: root)
+
+    # Two directories sharing the "001-" numeric prefix, neither an exact
+    # match for this feature's own slug ("orphan") — FR-010 ambiguity.
+    alpha = Path.join(root, "specs/001-alpha")
+    File.mkdir_p!(alpha)
+    File.write!(Path.join(alpha, "tasks.md"), "# Tasks\n\n## Phase 1: Done\n\n- [X] T001 done\n")
+    File.mkdir_p!(Path.join(root, "specs/001-beta"))
+
+    System.cmd("git", ["add", "-A"], cd: root)
+    System.cmd("git", ["commit", "-m", "seed"], cd: root)
+    System.cmd("git", ["branch", "-M", "main"], cd: root)
+    System.cmd("git", ["checkout", "-q", "-b", "feature/001-orphan"], cd: root)
+
+    on_exit(fn -> File.rm_rf(root) end)
+
+    feature = %Feature{id: "001", number: 1, slug: "orphan", path: "specs/001-orphan/spec.md"}
+    worktree = %Worktree{path: root, branch: "feature/001-orphan", repo: root, feature_id: "001"}
+
+    {:ok, pid} =
+      AgentServer.start_link(
+        agent: FeatureAgent,
+        id: "chunkrunner-test-#{System.unique_integer([:positive])}",
+        register_global: false
+      )
+
+    {:ok, _} =
+      AgentServer.call(
+        pid,
+        Signal.new!("feature.init", %{
+          feature: feature,
+          worktree: worktree,
+          ledger: nil,
+          layout: nil,
+          phase: :implement,
+          resume_prompt: nil,
+          remediation_prompt: nil,
+          remediation_model: nil
+        }),
+        5_000
+      )
+
+    agent = ChunkRunner.run(ctx(%{pid: pid, feature: feature, worktree: worktree}))
+
+    # One `:whole_list` session dispatched, not zero — proof the loop never
+    # saw `specs/001-alpha/tasks.md` as its own, already-satisfied list.
+    assert length(captured_prompts(prompts_agent)) == 1
+    assert agent.state.last_outcome == :ok
+    assert agent.state.terminal_reason == nil
+  end
+
+  # 025 (contracts/implement-chunk-checkpoint-write.md §3): each successfully
+  # completed task-phase writes a full `implement_chunk` checkpoint —
+  # previously no producer ever set this column (research R4).
+  test "each successful task-phase boundary writes a full implement_chunk checkpoint",
+       %{feature: feature, worktree: worktree, pid: pid} do
+    repo_id = "o:chunk-runner-checkpoint-#{System.unique_integer([:positive])}"
+
+    {:ok, run_id} =
+      Autonomous.Store.Writer.open_run(repo_id, %{
+        features: [
+          %{
+            feature_id: "001",
+            slug: "fake",
+            path: "specs/001-fake",
+            number: 1,
+            group: :backlog,
+            created_at: nil
+          }
+        ],
+        settings: %{},
+        scope: :ad_hoc,
+        layout: %{}
+      })
+
+    run_key = {repo_id, run_id}
+
+    agent =
+      ChunkRunner.run(ctx(%{pid: pid, feature: feature, worktree: worktree, run_key: run_key}))
+
+    assert agent.state.last_outcome == :ok
+
+    # The final checkpoint reflects the last task-phase written (before
+    # `FeatureRunner`'s own end-of-phase checkpoint would supersede it in the
+    # real pipeline, which this direct `ChunkRunner.run/1` call never reaches).
+    assert {:ok, checkpoint} = Autonomous.Store.checkpoint(run_key, "001")
+    assert checkpoint.phase == :implement
+    assert checkpoint.last_completed_phase == :analyze
+    assert checkpoint.status == :in_progress
+
+    ceiling =
+      Autonomous.Config.implement_sessions_per_task_phase() * 3 +
+        Autonomous.Config.implement_sessions_headroom()
+
+    assert checkpoint.implement_chunk == %{
+             ordinal: 3,
+             number: "3",
+             title: "Polish",
+             total: 3,
+             sessions_used: 3,
+             ceiling: ceiling,
+             scope: :task_phase
+           }
+  end
+
+  # A `:sweep`/`:whole_list` boundary, or a non-`:ok` outcome, has no
+  # task-phase identity to record — the checkpoint write is a no-op, leaving
+  # whatever row already existed (`write_checkpoint/3`'s `nil` clause).
+  test "a non-task-phase boundary writes no checkpoint (nil is a no-op, prior row intact)",
+       %{feature: feature, worktree: worktree, pid: pid} do
+    repo_id = "o:chunk-runner-checkpoint-noop-#{System.unique_integer([:positive])}"
+
+    {:ok, run_id} =
+      Autonomous.Store.Writer.open_run(repo_id, %{
+        features: [
+          %{
+            feature_id: "001",
+            slug: "fake",
+            path: "specs/001-fake",
+            number: 1,
+            group: :backlog,
+            created_at: nil
+          }
+        ],
+        settings: %{},
+        scope: :ad_hoc,
+        layout: %{}
+      })
+
+    run_key = {repo_id, run_id}
+
+    # Seed a prior checkpoint row directly — a `nil` write must leave it
+    # untouched rather than clearing it.
+    :ok =
+      Autonomous.Store.Writer.record_checkpoint(run_key, "001", %{
+        phase: :tasks,
+        last_completed_phase: :plan,
+        status: :in_progress
+      })
+
+    Application.put_env(:autonomous, :chunk_runner_test_scenario, :terminal_error)
+
+    agent =
+      ChunkRunner.run(ctx(%{pid: pid, feature: feature, worktree: worktree, run_key: run_key}))
+
+    assert {:failed, {:session_error, _reason}} = agent.state.terminal_reason
+
+    assert {:ok, checkpoint} = Autonomous.Store.checkpoint(run_key, "001")
+    assert checkpoint.phase == :tasks
+    assert checkpoint.last_completed_phase == :plan
+    assert checkpoint.implement_chunk == nil
+  end
+
+  # `analyze_remediation` must survive a mid-implement checkpoint write — it
+  # is read back by `resume/2`'s context restore (contracts/
+  # implement-chunk-checkpoint-write.md §3.1) — carried from the checkpoint
+  # row `run/1` already loaded, never dropped by a chunk write.
+  test "analyze_remediation survives a mid-implement chunk checkpoint write",
+       %{feature: feature, worktree: worktree, pid: pid} do
+    repo_id = "o:chunk-runner-checkpoint-remediation-#{System.unique_integer([:positive])}"
+
+    {:ok, run_id} =
+      Autonomous.Store.Writer.open_run(repo_id, %{
+        features: [
+          %{
+            feature_id: "001",
+            slug: "fake",
+            path: "specs/001-fake",
+            number: 1,
+            group: :backlog,
+            created_at: nil
+          }
+        ],
+        settings: %{},
+        scope: :ad_hoc,
+        layout: %{}
+      })
+
+    run_key = {repo_id, run_id}
+
+    :ok =
+      Autonomous.Store.Writer.record_checkpoint(run_key, "001", %{
+        phase: :implement,
+        last_completed_phase: :analyze,
+        status: :in_progress,
+        analyze_remediation: %{attempts_used: 1, limit: 2}
+      })
+
+    agent =
+      ChunkRunner.run(ctx(%{pid: pid, feature: feature, worktree: worktree, run_key: run_key}))
+
+    assert agent.state.last_outcome == :ok
+
+    assert {:ok, checkpoint} = Autonomous.Store.checkpoint(run_key, "001")
+    assert checkpoint.analyze_remediation == %{attempts_used: 1, limit: 2}
+  end
+
+  @tag :integration
+  test "LIVE: runs one real chunked implement session against a fixture target repo (paid, opt-in)",
+       %{prompts_agent: _prompts_agent} do
+    repo =
+      System.get_env("AUTONOMOUS_FIXTURE_REPO") ||
+        flunk(
+          "set AUTONOMOUS_FIXTURE_REPO to a repo path with a structured tasks.md ready for /speckit.implement"
+        )
+
+    # This test exercises the real `claude` CLI, not the file's FakeSDK — undo
+    # the module-wide sdk_module override for just this test.
+    Application.delete_env(:jido_claude, :sdk_module)
+
+    feature = %Feature{
+      id: "001",
+      number: 1,
+      slug: "smoke",
+      path: Path.join(repo, "specs/001-smoke/spec.md")
+    }
+
+    worktree = %Worktree{path: repo, branch: "main", repo: repo, feature_id: "001"}
+    timeout = :timer.minutes(50)
+
+    {:ok, pid} =
+      AgentServer.start_link(
+        agent: FeatureAgent,
+        id: "chunkrunner-live-#{System.unique_integer([:positive])}",
+        register_global: false
+      )
+
+    {:ok, _} =
+      AgentServer.call(
+        pid,
+        Signal.new!("feature.init", %{
+          feature: feature,
+          worktree: worktree,
+          ledger: nil,
+          layout: nil,
+          phase: :implement,
+          resume_prompt: nil,
+          remediation_prompt: nil,
+          remediation_model: nil
+        }),
+        timeout
+      )
+
+    agent =
+      ChunkRunner.run(%{
+        pid: pid,
+        feature: feature,
+        worktree: worktree,
+        layout: nil,
+        timeout: timeout,
+        step: 6,
+        ledger: nil
+      })
+
+    assert agent.state.last_outcome in [:ok, :error]
+    assert agent.state.history != []
+  end
+end

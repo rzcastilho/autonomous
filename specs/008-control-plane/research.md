@@ -29,7 +29,7 @@ push is `Coordinator`'s `{:run_complete, report}` to its `:owner`, and only at
 end-of-run. `Coordinator.status/0` is a synchronous poll. However, rich phase
 signals already exist as `:telemetry` events emitted by `FeatureRunner`:
 `[:speckit, :phase, :start|:stop|:exception]` and `[:speckit, :feature, :terminal]`
-(`SpeckitOrchestrator.Telemetry.events/0`).
+(`Autonomous.Telemetry.events/0`).
 
 **Decision**: Introduce a boot-started `ConsoleProjection` GenServer that:
 1. attaches a `:telemetry` handler to `Telemetry.events/0` at startup;
@@ -81,7 +81,7 @@ forward-only for free. But `max_concurrency` is captured into `Coordinator` stat
 alone does not retune a running Coordinator/Ledger.
 
 **Decision**: Split by mechanism, all forward-only:
-- **Model routing** → `Application.put_env(:speckit_orchestrator, :models, …)`.
+- **Model routing** → `Application.put_env(:autonomous, :models, …)`.
   Effect is inherently forward-only (next `model_for/1` call). No running-process
   change needed.
 - **Max concurrency** → add `Coordinator.set_cap/2` (a `GenServer.call` that
@@ -105,7 +105,7 @@ defaults (violates FR-037's "not persisted").
 
 ## R5. Transcript reading
 
-**Finding**: `SpeckitOrchestrator.Transcripts` is **write-only** — it has no
+**Finding**: `Autonomous.Transcripts` is **write-only** — it has no
 list/read function. Durable transcripts live at
 `<Config.transcript_root()>/<feature_id>/NN-<phase>.md` (the copy that survives
 worktree teardown).

@@ -11,7 +11,7 @@ contract: `advanced-record.md`.
 
 ## 1. The setting
 
-### 1.1 `SpeckitOrchestrator.Remediation.Settings`
+### 1.1 `Autonomous.Remediation.Settings`
 
 ```elixir
 @type policy :: :escalate | :proceed
@@ -31,7 +31,7 @@ defstruct enabled?: true,
       }
 ```
 
-### 1.2 `SpeckitOrchestrator.Config`
+### 1.2 `Autonomous.Config`
 
 ```elixir
 @doc "The default exhaustion policy for a run that does not choose one (FR-002)."
@@ -43,7 +43,7 @@ def auto_remediation_exhaustion_policy,
 `config/config.exs` documents the key alongside the other three
 `auto_remediation*` keys. The shipped value is `:escalate`.
 
-### 1.3 `SpeckitOrchestrator.RunContext`
+### 1.3 `Autonomous.RunContext`
 
 Ninth field, string-valued in the manifest:
 
@@ -64,7 +64,7 @@ passes through, `nil` stays `nil`. Only ever atom → string, never the reverse.
 ### 1.4 `run/1` option
 
 ```elixir
-SpeckitOrchestrator.run(auto_remediation_exhaustion_policy: :proceed)
+Autonomous.run(auto_remediation_exhaustion_policy: :proceed)
 ```
 
 Accepted as an atom or a string; documented in the facade's option list beside

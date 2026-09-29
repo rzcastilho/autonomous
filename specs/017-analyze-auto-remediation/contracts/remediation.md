@@ -1,4 +1,4 @@
-# Contract: `SpeckitOrchestrator.Remediation` (pure decision surface)
+# Contract: `Autonomous.Remediation` (pure decision surface)
 
 Pure module, the analyze-loop analogue of `Pipeline.next/3` and
 `Chunking.next/2`. No IO, no harness, no process state. Every signal it reads is
@@ -7,7 +7,7 @@ extracted upstream by `AnalyzeRunner` and passed in as an argument (Principle I)
 ## 1. Settings
 
 ```elixir
-defmodule SpeckitOrchestrator.Remediation.Settings do
+defmodule Autonomous.Remediation.Settings do
   defstruct enabled?: true, threshold: :high, attempt_limit: 2, model: nil
 
   @type t :: %__MODULE__{

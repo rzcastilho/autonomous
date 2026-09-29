@@ -18,7 +18,7 @@ border, `--text`, `--r-chip`, mono font) with the machine value in mono:
 | Run Detail | `RunDetailLive` | `CONTAINMENT` block: `containment_profile: permissive`, plus a hint to the enforcement guide | `run_detail_live_test` |
 | Run Detail SETTINGS chips | `RunDetailLive` | shows `containment_profile: permissive` | the chip list **skips** `containment_profile` when `strict` |
 | Configuration | `ConfigLive` | row `containment_profile default: permissive` (when the default is permissive) and the live run's profile (when a live run is permissive) | `config_live_test` |
-| PR body | `pr_text/2` in `lib/speckit_orchestrator.ex` | body `<> Remediation.pr_note(…) <> Containment.pr_note(profile)` | `pull_request_test` |
+| PR body | `pr_text/2` in `lib/autonomous.ex` | body `<> Remediation.pr_note(…) <> Containment.pr_note(profile)` | `pull_request_test` |
 
 `Containment.pr_note("permissive")`:
 

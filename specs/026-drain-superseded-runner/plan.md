@@ -97,7 +97,7 @@ specs/026-drain-superseded-runner/
 ### Source Code (repository root)
 
 ```text
-lib/speckit_orchestrator/
+lib/autonomous/
 ├── workers.ex                  # NEW — spawn/3, session_started/1, drain_requested?/0,
 │                               #       in_flight/1, drain/1; owns ETS drain table
 ├── workers/bound.ex            # NEW — pure wait_ms/3
@@ -109,10 +109,10 @@ lib/speckit_orchestrator/
 ├── remediation.ex              # + optional drain? signal, {:halted, :superseded, _} row
 ├── telemetry.ex                # log [:speckit, :feature, :drained], [:speckit, :drain, *]
 └── web/live/escalations_live.ex (+ trigger error formatting)  # {:drain_timeout, _} wording
-lib/speckit_orchestrator.ex     # 5 spawn sites → Workers.spawn/3; run/1 steps 7–8;
+lib/autonomous.ex     # 5 spawn sites → Workers.spawn/3; run/1 steps 7–8;
                                 # guard_active_run/1 worker check + :force drain; workers/0,1
 
-test/speckit_orchestrator/
+test/autonomous/
 ├── workers_test.exs            # NEW — registry scoping, drain ok/timeout/no-op/dead pid
 ├── workers/bound_test.exs      # NEW — pure bound
 ├── supersession_drain_test.exs # NEW — facade ordering, record outcome, timeout starts nothing

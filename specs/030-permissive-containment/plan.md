@@ -23,8 +23,8 @@ The approach (see [research.md](research.md)):
    The hook takes over the union of the old settings rules and the old hook
    rules, with the same decision for every input under `strict` (R4).
 2. **Origin comes from the environment.** The orchestrator marks every
-   session it starts with `SPECKIT_ORCHESTRATED=1` and
-   `SPECKIT_CONTAINMENT_PROFILE`, passed through `RunRequest.metadata`.
+   session it starts with `AUTONOMOUS_ORCHESTRATED=1` and
+   `AUTONOMOUS_CONTAINMENT_PROFILE`, passed through `RunRequest.metadata`.
    A session is treated as human only when there is no marker and
    `CLAUDE_CODE_ENTRYPOINT=cli`. Anything else resolves to `strict` (R3).
 3. **Per-phase permissions follow the profile.** The real SDK path passes
@@ -134,7 +134,7 @@ specs/030-permissive-containment/
 priv/target_pack/.claude/
 ├── settings.json                          # drop permissions.deny; widen matcher (+WebFetch|WebSearch)
 └── hooks/scope_guard.py                   # origin/profile decision, strict union rules, PACK_CONTRACT=2, --contract, FR-016 reasons
-lib/speckit_orchestrator/
+lib/autonomous/
 ├── containment.ex                         # NEW pure: normalize/1, permissive?/1, session_env/1, pr_note/1, report_line/1
 ├── config.ex                              # containment_profile/0 (default :strict)
 ├── run_context.ex                         # 13th key; from_map missing ⇒ "strict"
@@ -152,11 +152,11 @@ lib/speckit_orchestrator/
 └── web/
     ├── components/layouts.ex              # topbar chip (permissive only)
     └── live/{trigger,run_detail,config,mission_control}_live.ex
-lib/speckit_orchestrator.ex                # run/1 preflight (invalid value, pack contract), resume/continue lock, pr_text note
+lib/autonomous.ex                # run/1 preflight (invalid value, pack contract), resume/continue lock, pr_text note
 priv/static/assets/console.css             # chip rule using existing tokens only
 docs/enforcement.md, docs/runbook.md, docs/harness-contract.md, CLAUDE.md   # FR-017
 
-test/speckit_orchestrator/
+test/autonomous/
 ├── containment_test.exs                   # NEW pure
 ├── scope_guard_test.exs                   # pinned env helper; origin×profile matrix; settings-deny parity; SC-002 probe
 ├── phase_request_test.exs, run_context_test.exs, target_pack_test.exs

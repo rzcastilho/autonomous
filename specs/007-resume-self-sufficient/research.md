@@ -130,7 +130,7 @@ stronger than a denylist and cannot drift.
 **Decision**: `slug`/`path` are plain strings — no atom conversion. `context`
 booleans/numbers/string-lists decode directly from JSON. The only atom on the read
 path stays `last_phase`, already guarded by `String.to_existing_atom` +
-`Pipeline.phase?/1` (`speckit_orchestrator.ex:211-215`). `pr_workflow` decodes as a
+`Pipeline.phase?/1` (`autonomous.ex:211-215`). `pr_workflow` decodes as a
 JSON boolean, not an atom.
 
 **Rationale**: Preserves the existing atom-table-exhaustion protection; a

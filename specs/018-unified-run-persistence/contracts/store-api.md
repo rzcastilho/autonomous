@@ -8,9 +8,9 @@ renders these functions and holds no query logic of its own (FR-030c).
 
 Two layers:
 
-- **`SpeckitOrchestrator.*`** — the operator-facing facade (iex, scripts, the
+- **`Autonomous.*`** — the operator-facing facade (iex, scripts, the
   console). Stable names, tagged-tuple returns.
-- **`SpeckitOrchestrator.Store.{Writer,Query}`** — the internal persistence API
+- **`Autonomous.Store.{Writer,Query}`** — the internal persistence API
   the orchestrator writes through. Not an operator surface.
 
 ---
@@ -172,7 +172,7 @@ capacity()                      :: capacity
    `:mnesia` — enforced by a test that greps those modules.
 2. No LiveView references `:mnesia`, `Store.Query`, or `Store.Writer` — the
    console calls facade functions only (FR-030c) — enforced by a test that greps
-   `lib/speckit_orchestrator/web/`.
+   `lib/autonomous/web/`.
 3. `Store.Mnesia` is the only module that calls `:mnesia`.
 4. Every capability above is exercised by a test that runs with no endpoint and
    no LiveView mounted (SC-007a).

@@ -29,7 +29,7 @@ branch `feature/001-…` whose newest boundary commit is `after converge`.
 Validate:
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/recovery_quickpoll_test.exs
+mise exec -- mix test test/autonomous/recovery_quickpoll_test.exs
 ```
 
 **Expected**: `001` reconciled `done`; manifest rewritten with `001: done`;
@@ -55,7 +55,7 @@ held (not advanced); `done`-with-evidence stays `done`; `done`-without-branch/PR
 → `conflict` (held, dependents blocked, rest of run releases).
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/recovery/reconcile_test.exs
+mise exec -- mix test test/autonomous/recovery/reconcile_test.exs
 ```
 
 ## Scenario 4 — Both run shapes (SC-005, US4)
@@ -74,15 +74,15 @@ dependents on continuation.
   is `:unknown`; no recovery failure attributable to the remote.
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/recovery/evidence_test.exs
-mise exec -- mix test test/speckit_orchestrator/recovery_test.exs
+mise exec -- mix test test/autonomous/recovery/evidence_test.exs
+mise exec -- mix test test/autonomous/recovery_test.exs
 ```
 
 ## Full validation
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/recovery/          # pure + collector
-mise exec -- mix test test/speckit_orchestrator/recovery_test.exs  # orchestration + manifest rewrite
+mise exec -- mix test test/autonomous/recovery/          # pure + collector
+mise exec -- mix test test/autonomous/recovery_test.exs  # orchestration + manifest rewrite
 mise exec -- mix test --cover                                      # core >90%
 mise exec -- mix test                                              # full suite green (warnings-as-errors)
 ```
@@ -91,11 +91,11 @@ mise exec -- mix test                                              # full suite 
 
 ```elixir
 # read-only reconciled preview — starts no work, spends no budget
-SpeckitOrchestrator.resumable_run()
+Autonomous.resumable_run()
 #=> {:ok, %{report: <reconciled whole-run picture>, ...}}
 
 # continue from the reconciled state (done features skipped, resume at boundary)
-SpeckitOrchestrator.resume_run()
+Autonomous.resume_run()
 ```
 
 **Success**: for the reproduced `quickpoll` state, `resumable_run/0` shows `001:

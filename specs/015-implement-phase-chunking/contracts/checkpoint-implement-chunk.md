@@ -1,7 +1,7 @@
 # Contract: checkpoint extension + chunk-level resume
 
 **Kind**: durable-state extension (existing `Checkpoint`) + facade/UI resume path.
-**Files**: `checkpoint.ex`, `speckit_orchestrator.ex` (`resume/2`),
+**Files**: `checkpoint.ex`, `autonomous.ex` (`resume/2`),
 `web/live/escalations_live.ex`, `chunk_runner.ex`
 **Satisfies**: FR-013b, FR-020, FR-020a, FR-021, FR-022, FR-023, FR-024, FR-025,
 FR-025a
@@ -85,13 +85,13 @@ when both hold:
 | default | the recorded task-phase, resolved via `TaskPlan.locate/2` |
 | weaker-than-number match | an inline note: `matched by title — the task list was renumbered` (FR-025a) |
 | no `implement_chunk` / unstructured | select is **not rendered**; resume behaves exactly as today (FR-019 spirit, SC-005) |
-| submitted value | `:from_task_phase` on `SpeckitOrchestrator.resume/2` |
+| submitted value | `:from_task_phase` on `Autonomous.resume/2` |
 
 The plan is read from the feature's kept worktree via `TaskPlan.load/1`, using
 the same `Worktree.locate/2` + glob path the view already uses for the clarify
 `## NEEDS HUMAN` block.
 
-`SpeckitOrchestrator.resume/2` gains:
+`Autonomous.resume/2` gains:
 
 - `:from_task_phase` — ordinal (integer) or `TaskPhaseRef.t()`; ignored unless
   the resolved `start_phase == :implement`;

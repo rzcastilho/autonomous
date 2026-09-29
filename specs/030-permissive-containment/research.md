@@ -86,14 +86,14 @@ state the observed behaviour.
 **Decision**: The hook reads its process environment (inherited from the
 `claude` process that runs it) and decides origin in this order:
 
-1. `SPECKIT_ORCHESTRATED=1` is set → **orchestrated**. The profile is
-   `SPECKIT_CONTAINMENT_PROFILE`. Any value other than `strict` or
+1. `AUTONOMOUS_ORCHESTRATED=1` is set → **orchestrated**. The profile is
+   `AUTONOMOUS_CONTAINMENT_PROFILE`. Any value other than `strict` or
    `permissive` (including unset) → `strict`.
 2. Else `CLAUDE_CODE_ENTRYPOINT` is in the human allowlist (`{"cli"}`) →
    **interactive**. The pack adds no denial.
 3. Else → **undecided** → `strict`.
 
-The orchestrator sets both `SPECKIT_*` variables on every headless session it
+The orchestrator sets both `AUTONOMOUS_*` variables on every headless session it
 starts, through `RunRequest.metadata["claude"][:env]`. The adapter's
 `build_options/2` merges `metadata["claude"]` keys found in `@option_keys`,
 and `:env` is one of them. `ClaudeAgentSDK.Process.build_env_vars/1` layers
@@ -105,13 +105,13 @@ that map over the BEAM's own environment for the subprocess.
   operator starts `iex -S mix` from inside a Claude Code shell, the BEAM
   inherits `CLAUDE_CODE_ENTRYPOINT=cli` and `put_new` keeps it. So
   entrypoint alone would mark a headless phase as human. The explicit
-  `SPECKIT_ORCHESTRATED` marker closes that hole, and rule 1 is checked
+  `AUTONOMOUS_ORCHESTRATED` marker closes that hole, and rule 1 is checked
   before rule 2.
 - Human detection is **positive** too. A session is only treated as human on
   a known interactive entrypoint (observed `CLAUDE_CODE_ENTRYPOINT=cli` in an
   interactive Claude Code 2.1.284 session). An unknown or missing entrypoint
   falls to `strict`. That is FR-012's "fail toward strict".
-- A leaked `SPECKIT_ORCHESTRATED` in a human shell makes that human session
+- A leaked `AUTONOMOUS_ORCHESTRATED` in a human shell makes that human session
   strict. That is the safe direction.
 - A subprocess `claude` started by a phase's Bash inherits the markers and
   stays under the run's profile.

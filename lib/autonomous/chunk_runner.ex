@@ -1,0 +1,559 @@
+defmodule Autonomous.ChunkRunner do
+  @moduledoc """
+  Edge module that drives the `:implement` step's chunk loop.
+
+  Wraps `Chunking.next/2` (the pure decision surface) and dispatches one
+  `"phase.run"` signal per chunk — one harness session per task-phase/sweep
+  attempt — so the existing per-action timeout, telemetry span shape, and
+  per-session transcript/cost accounting all keep their meaning (research R3).
+  Not a process: called synchronously from the same supervised `Task`
+  `FeatureRunner` already runs in.
+
+  See `specs/015-implement-phase-chunking/contracts/chunk_session.md` §2-4, §6
+  and `specs/015-implement-phase-chunking/contracts/checkpoint-implement-chunk.md`
+  §3 for the resume resolution this module performs at step start.
+  """
+
+  require Logger
+
+  alias Jido.{AgentServer, Signal}
+
+  alias Autonomous.Actions.RunFeaturePhase
+
+  alias Autonomous.{
+    Chunking,
+    Config,
+    Cost,
+    Ledger,
+    PhaseResult,
+    PhaseSession,
+    PhaseStep,
+    Pipeline,
+    Store,
+    TaskPhaseRef,
+    TaskPlan,
+    Telemetry,
+    Worktree,
+    Workers
+  }
+
+  alias Autonomous.Store.Writer
+
+  @type opts :: %{
+          required(:pid) => pid(),
+          required(:feature) => Autonomous.Feature.t(),
+          required(:worktree) => Worktree.t() | nil,
+          required(:layout) => Autonomous.Layout.t() | nil,
+          # The per-session deadline floor (`Config.phase_timeout/0` unless the
+          # operator overrode `:phase_timeout`); each chunk's own deadline is
+          # `Chunking.deadline_ms/2`, and the `AgentServer.call` timeout is
+          # derived from that (`PhaseSession.call_timeout/1`) — never this value.
+          required(:timeout) => timeout(),
+          required(:step) => pos_integer(),
+          required(:ledger) => pid() | nil,
+          optional(:start_task_phase) => TaskPhaseRef.t() | pos_integer() | nil,
+          optional(:reset_implement_sessions) => boolean(),
+          optional(:stack_base) => String.t() | nil
+        }
+
+  @doc """
+  Drive the implement step to completion for one feature, returning the
+  `AgentServer`-shaped `agent` `FeatureRunner` expects — the same shape a
+  normal (non-chunked) phase call returns, plus `state.terminal_reason` set
+  when the step ended in a chunking-specific halt/failure that `Pipeline.next/3`
+  has no vocabulary for (contracts/chunk_session.md §6).
+
+  Resolves the loop's starting position (checkpoint-implement-chunk.md §3):
+  an explicit `:start_task_phase` (an operator override, threaded down from
+  `Autonomous.resume/2`) wins over the checkpoint's own recorded
+  `implement_chunk`, which wins over the FR-025 fallback (first incomplete
+  task-phase). `sessions_used` carries over from the checkpoint unless
+  `:reset_implement_sessions` is true (FR-013b — an explicit grant of more
+  budget). A match weaker than `:number` is reported once, before the first
+  dispatch (FR-025a).
+  """
+  @spec run(opts()) :: struct()
+  def run(%{pid: pid, worktree: worktree, feature: feature, layout: layout} = ctx) do
+    plan = TaskPlan.load(worktree_path(worktree), feature)
+    record = checkpoint_record(Map.get(ctx, :run_key), feature, layout)
+
+    {ref, override?} = start_ref(ctx, record)
+    sessions_used = start_sessions_used(ctx, record)
+
+    {from_ordinal, resolution} = resolve_position(plan, ref)
+    report_resolution(feature, resolution, ref, override?)
+
+    state = Chunking.start(plan, from_ordinal: from_ordinal, sessions_used: sessions_used)
+    {:ok, %{agent: agent}} = AgentServer.state(pid)
+
+    ctx =
+      ctx
+      |> Map.put(:start_ref, base_ref(ctx))
+      |> Map.put(:baseline_sessions_used, sessions_used)
+      |> Map.put(:cost_at_start, agent.state.cost_total || 0.0)
+      |> Map.put(:checkpoint_record, record)
+
+    loop(ctx, state, %{}, agent)
+  end
+
+  # ---- resume resolution (checkpoint-implement-chunk.md §3) ------------------
+
+  # `nil` for a caller with no store-backed run (a unit test calling this
+  # module directly) — resolves as "no checkpoint", same as a genuine miss.
+  defp checkpoint_record(nil, _feature, _layout), do: nil
+
+  defp checkpoint_record(run_key, feature, _layout) do
+    case Store.checkpoint(run_key, feature.id) do
+      {:ok, record} -> record
+      _ -> nil
+    end
+  end
+
+  defp start_ref(ctx, record) do
+    case Map.get(ctx, :start_task_phase) do
+      nil -> {ref_from_record(record), false}
+      %TaskPhaseRef{} = ref -> {ref, true}
+      ordinal when is_integer(ordinal) -> {%TaskPhaseRef{ordinal: ordinal}, true}
+    end
+  end
+
+  defp ref_from_record(%{implement_chunk: %{} = chunk}) do
+    %TaskPhaseRef{
+      ordinal: Map.get(chunk, :ordinal),
+      number: Map.get(chunk, :number),
+      title: Map.get(chunk, :title)
+    }
+  end
+
+  defp ref_from_record(_record), do: nil
+
+  defp start_sessions_used(ctx, record) do
+    if Map.get(ctx, :reset_implement_sessions, false) do
+      0
+    else
+      case record do
+        %{implement_chunk: %{sessions_used: n}} when is_integer(n) -> n
+        _ -> 0
+      end
+    end
+  end
+
+  defp resolve_position(plan, ref) do
+    case TaskPlan.locate(plan, ref) do
+      {:ok, tp, match_kind} -> {tp.ordinal, {tp, match_kind}}
+      {:error, :unstructured} -> {1, nil}
+    end
+  end
+
+  defp report_resolution(_feature, nil, _ref, _override?), do: :ok
+  defp report_resolution(_feature, {_tp, :number}, _ref, _override?), do: :ok
+
+  defp report_resolution(feature, {tp, match_kind}, ref, override?) do
+    Logger.info(
+      "feature #{feature.id} implement resume: task-phase located by #{match_kind}" <>
+        if(override?, do: " (explicit override)", else: "")
+    )
+
+    :telemetry.execute(
+      [:speckit, :chunk, :resolved],
+      %{},
+      %{
+        feature_id: feature.id,
+        match_kind: match_kind,
+        ordinal: tp.ordinal,
+        number: tp.number,
+        title: tp.title,
+        requested: ref
+      }
+    )
+  end
+
+  # ---- loop -----------------------------------------------------------------
+
+  defp loop(ctx, state, signals, agent) do
+    case Chunking.next(state, signals) do
+      {:dispatch, scope, state1} ->
+        {agent1, next_signals} = dispatch(ctx, state1, scope, agent)
+        loop(ctx, state1, next_signals, agent1)
+
+      {:skip, _tp, state1} ->
+        loop(ctx, state1, %{}, agent)
+
+      {:done, _state1} ->
+        finish(ctx, agent)
+
+      {:halted, :breaker, _state1} ->
+        halt(ctx, agent, :breaker)
+
+      {:halted, :superseded, _state1} ->
+        halt(ctx, agent, :superseded)
+
+      {:failed, reason, _state1} ->
+        fail(ctx, agent, reason)
+    end
+  end
+
+  # ---- one chunk session ------------------------------------------------------
+
+  defp dispatch(ctx, state1, scope, agent0) do
+    before_count = TaskPlan.completed_tasks(state1.plan)
+    first_chunk? = state1.sessions_used == ctx.baseline_sessions_used + 1
+    meta = chunk_meta(ctx, state1, scope)
+    # Sized per scope (Chunking.deadline_ms/2), never the flat `ctx.timeout`
+    # — the operator's `:phase_timeout` override still lifts the floor
+    # through `Config.phase_timeout/0`'s caller, so honour it as a minimum.
+    deadline_ms = max(Chunking.deadline_ms(scope, state1.plan), ctx.timeout)
+    started_at = DateTime.utc_now()
+
+    Telemetry.chunk_span()
+    |> :telemetry.span(meta, fn ->
+      signal =
+        Signal.new!(
+          "phase.run",
+          %{phase: :implement, scope: scope, first_chunk: first_chunk?, deadline_ms: deadline_ms},
+          source: "/chunk_runner"
+        )
+
+      Workers.session_started(deadline_ms)
+      {:ok, agent1} = AgentServer.call(ctx.pid, signal, PhaseSession.call_timeout(deadline_ms))
+      agent1 = PhaseStep.ensure_recorded(agent0, agent1, :implement)
+      result = agent1.state.last_result
+
+      {outcome, transient?} = classify_outcome(result)
+      after_plan = TaskPlan.load(worktree_path(ctx.worktree), ctx.feature)
+      after_count = TaskPlan.completed_tasks(after_plan)
+      progress? = after_count > before_count
+      drift = agent1.state.last_signals[:branch_drift]
+
+      # 027, US2: a drifted session never gets a boundary commit — its write
+      # already landed on the wrong branch, so committing here would only
+      # compound it.
+      if is_nil(drift), do: maybe_commit_boundary(ctx, scope, outcome, after_plan)
+      record_chunk_attempt(ctx, state1, scope, outcome, started_at, agent1)
+
+      signals =
+        %{
+          outcome: outcome,
+          progress?: progress?,
+          plan: after_plan,
+          breaker?: breaker_tripped?(ctx.ledger),
+          drain?: Workers.drain_requested?(),
+          transient?: transient?,
+          error: result && result.error
+        }
+        |> maybe_put_drift(drift)
+
+      stop_meta =
+        Map.merge(meta, %{
+          outcome: outcome,
+          cost: (result && result.cost_usd) || 0.0,
+          completed_before: before_count,
+          completed_after: after_count
+        })
+
+      {{agent1, signals}, stop_meta}
+    end)
+  end
+
+  # Telemetry start metadata (contracts/telemetry-chunk.md §1). `ordinal`/
+  # `total`/`number`/`title` are `nil` for `:sweep`/`:whole_list`; `remaining`
+  # (not part of the documented table) carries the sweep's leftover-task count
+  # so the feed/strip can render "sweep · N left" without re-deriving it from
+  # the plan at fold time.
+  defp chunk_meta(ctx, state1, scope) do
+    {scope_atom, ordinal, total, number, title, remaining} = scope_fields(scope, state1.plan)
+
+    %{
+      feature_id: ctx.feature.id,
+      phase: :implement,
+      scope: scope_atom,
+      ordinal: ordinal,
+      total: total,
+      number: number,
+      title: title,
+      attempt: state1.attempt,
+      sessions_used: state1.sessions_used,
+      ceiling: state1.ceiling,
+      remaining: remaining,
+      model: Config.model_for(:implement)
+    }
+  end
+
+  defp scope_fields({:task_phase, tp}, plan),
+    do: {:task_phase, tp.ordinal, TaskPlan.task_phase_count(plan), tp.number, tp.title, nil}
+
+  defp scope_fields({:sweep, tasks}, _plan), do: {:sweep, nil, nil, nil, nil, length(tasks)}
+  defp scope_fields(:whole_list, _plan), do: {:whole_list, nil, nil, nil, nil, nil}
+
+  # Fixed classification order (contracts/chunk_session.md §3): exhaustion is
+  # checked before the transient-vs-terminal split, so a max-turns result is
+  # never mistaken for a server/API drop or folded into a flat "error".
+  @spec classify_outcome(PhaseResult.t() | nil) :: {Chunking.outcome(), boolean()}
+  defp classify_outcome(result) do
+    cond do
+      PhaseResult.exhausted?(result) -> {:exhausted, false}
+      match?(%PhaseResult{status: :ok}, result) -> {:ok, false}
+      PhaseResult.transient?(result) -> {:error, true}
+      true -> {:error, false}
+    end
+  end
+
+  defp maybe_put_drift(signals, nil), do: signals
+  defp maybe_put_drift(signals, drift), do: Map.put(signals, :branch_drift, drift)
+
+  # ---- per-chunk store record --------------------------------------------------
+
+  # One `phase_attempt` row per dispatched chunk session (`phase:
+  # :implement_chunk`, ordinal = the run-wide `sessions_used`, which is unique
+  # per feature run and survives resumes), so a chunk that fails, times out or
+  # stalls is visible post-mortem — the roll-up alone told an operator nothing
+  # about *which* session of a 7-chunk implement went wrong (mod-player 003:
+  # no implement row at all until the whole step failed). Deliberately writes
+  # no `cost_entry`: the roll-up carries the step's actual summed cost (see
+  # `rollup/4`) and is the one row that feeds the run's spend, so per-chunk
+  # entries would double-count. The chunk's own cost sits on its row, and its
+  # transcript is stored under its `attempt_id`, for inspection only.
+  defp record_chunk_attempt(%{run_key: run_key} = ctx, state1, scope, outcome, started_at, agent)
+       when not is_nil(run_key) do
+    result = agent.state.last_result
+    ended_at = DateTime.utc_now()
+    {cost_amount, cost_kind} = Cost.for_phase(:implement, result || %PhaseResult{})
+    {scope_atom, ordinal, total, number, title, remaining} = scope_fields(scope, state1.plan)
+
+    _ =
+      Writer.record_phase_attempt(run_key, %{
+        attempt: %{
+          feature_id: ctx.feature.id,
+          phase: :implement_chunk,
+          ordinal: state1.sessions_used,
+          step: ctx.step,
+          label: chunk_label(scope_atom, ordinal, total, title),
+          substep: %{
+            scope: scope_atom,
+            ordinal: ordinal,
+            total: total,
+            number: number,
+            title: title,
+            remaining: remaining,
+            attempt: state1.attempt
+          },
+          started_at: started_at,
+          ended_at: ended_at,
+          duration_ms: DateTime.diff(ended_at, started_at, :millisecond),
+          outcome: outcome,
+          model: Config.model_for(:implement),
+          cost_usd: cost_amount,
+          cost_kind: cost_kind,
+          session_id: agent.state.session_id,
+          error: result && result.error
+        },
+        transcript: result && result.final_text,
+        checkpoint:
+          chunk_checkpoint(
+            Map.put(ctx, :session_id, agent.state.session_id),
+            state1,
+            scope,
+            outcome
+          )
+      })
+
+    :ok
+  end
+
+  defp record_chunk_attempt(_ctx, _state1, _scope, _outcome, _started_at, _agent), do: :ok
+
+  # ---- per-task-phase checkpoint write (015 contract, closed by 025) --------
+  #
+  # `implement_chunk` is read by `ChunkRunner`, persisted by
+  # `Store.Writer.write_checkpoint/3`, and rendered by `ConsoleHydration` —
+  # but until 025 no producer ever set it. Writes the *whole* checkpoint map,
+  # not just the new key: `write_checkpoint/3` replaces every column it is
+  # given, so a partial map would null `phase`/`last_completed_phase` mid-run.
+  # `nil` is a no-op (`write_checkpoint/3`'s own `nil` clause leaves the
+  # previous row intact) for any boundary that completed nothing recordable.
+  @spec chunk_checkpoint(map(), Chunking.state(), Chunking.scope(), atom()) :: map() | nil
+  defp chunk_checkpoint(ctx, state1, {:task_phase, tp}, :ok) do
+    %{
+      phase: :implement,
+      last_completed_phase: predecessor_of(:implement),
+      status: :in_progress,
+      reason: nil,
+      session_id: Map.get(ctx, :session_id),
+      analyze_remediation: carried_analyze_remediation(ctx),
+      implement_chunk: %{
+        ordinal: tp.ordinal,
+        number: tp.number,
+        title: tp.title,
+        total: TaskPlan.task_phase_count(state1.plan),
+        sessions_used: state1.sessions_used,
+        ceiling: state1.ceiling,
+        scope: :task_phase
+      }
+    }
+  end
+
+  defp chunk_checkpoint(_ctx, _state1, _scope, _outcome), do: nil
+
+  # `analyze_remediation` must survive a mid-implement checkpoint write — it
+  # is read back by `resume/2`'s context restore — so it is carried from the
+  # checkpoint row `run/1` already loaded, never dropped by this write.
+  defp carried_analyze_remediation(%{checkpoint_record: %{analyze_remediation: value}}), do: value
+  defp carried_analyze_remediation(_ctx), do: nil
+
+  defp predecessor_of(phase) do
+    phases = Pipeline.phases()
+
+    case Enum.find_index(phases, &(&1 == phase)) do
+      0 -> nil
+      idx -> Enum.at(phases, idx - 1)
+    end
+  end
+
+  defp chunk_label(:task_phase, ordinal, total, title), do: "chunk #{ordinal}/#{total} #{title}"
+  defp chunk_label(:sweep, _ordinal, _total, _title), do: "chunk sweep"
+  defp chunk_label(:whole_list, _ordinal, _total, _title), do: "chunk whole-list"
+
+  # ---- per-task-phase boundary commit (FR-023a) ------------------------------
+
+  defp maybe_commit_boundary(%{worktree: nil}, _scope, _outcome, _after_plan), do: :ok
+
+  defp maybe_commit_boundary(ctx, {:task_phase, tp}, :ok, after_plan) do
+    total = TaskPlan.task_phase_count(after_plan)
+    message = "speckit: #{ctx.feature.id} implement task-phase #{tp.ordinal}/#{total} #{tp.title}"
+    Worktree.commit(ctx.worktree, message)
+  end
+
+  defp maybe_commit_boundary(_ctx, _scope, _outcome, _after_plan), do: :ok
+
+  # ---- terminal handling -------------------------------------------------------
+
+  # The artifact gate (research R10) is evaluated exactly once here, on the
+  # roll-up — never per chunk — so `Pipeline.next/3` still sees exactly the
+  # `:implement` signal map it understands today (FR-008).
+  defp finish(ctx, agent) do
+    artifact =
+      RunFeaturePhase.missing_implement_artifact(ctx.worktree, since: ctx[:start_ref])
+
+    signals = if artifact, do: %{missing_artifact: artifact}, else: %{}
+    result = rollup(:ok, signals, nil, step_cost(ctx, agent))
+
+    patch(agent,
+      last_outcome: :ok,
+      last_signals: signals,
+      last_result: result,
+      terminal_reason: nil
+    )
+  end
+
+  # A halt/failure below has no `Pipeline.next/3` vocabulary of its own
+  # (FR-008: `Pipeline.next/3` stays untouched) — `terminal_reason` is the
+  # existing `FeatureAgent` field the runner reads to short-circuit straight
+  # to the specific SC-002 reason (or the breaker halt) instead of the
+  # generic `{:implement, :error}` `Pipeline.next/3` would otherwise produce.
+  defp halt(ctx, agent, reason) do
+    result = rollup(:halted, %{}, reason, step_cost(ctx, agent))
+
+    patch(agent,
+      last_outcome: :error,
+      last_result: result,
+      terminal_reason: {:halted, reason}
+    )
+  end
+
+  defp fail(ctx, agent, reason) do
+    result = rollup(:error, %{}, reason, step_cost(ctx, agent))
+
+    patch(agent,
+      last_outcome: :error,
+      last_result: result,
+      terminal_reason: {:failed, reason}
+    )
+  end
+
+  defp patch(agent, kvs), do: %{agent | state: Map.merge(agent.state, Map.new(kvs))}
+
+  # The roll-up becomes this feature run's durable `:implement` phase attempt
+  # (018) — the caller (`FeatureRunner`) persists `agent.state.last_result`
+  # via `Store.Writer.record_phase_attempt/2`. It carries the step's **actual**
+  # summed cost (every chunk's `Cost.for_phase/2` amount, as accumulated on
+  # the agent's `cost_total`), so `Cost.for_phase(:implement, rollup)` records
+  # it as `:actual` instead of falling back to the flat per-phase estimate —
+  # an implement that ran 7 sessions used to be booked at the price of one.
+  # Each chunk's own row is `record_chunk_attempt/6`, without a cost entry.
+  defp rollup(status, signals, reason, cost_usd) do
+    %PhaseResult{
+      status: status,
+      final_text: rollup_text(status, signals, reason),
+      error: reason,
+      cost_usd: cost_usd
+    }
+  end
+
+  # `nil` (not `0.0`) when nothing was spent, so `Cost.for_phase/2` keeps its
+  # estimate fallback for a step that never dispatched a session.
+  defp step_cost(ctx, agent) do
+    case (agent.state.cost_total || 0.0) - Map.get(ctx, :cost_at_start, 0.0) do
+      spent when spent > 0 -> spent
+      _ -> nil
+    end
+  end
+
+  defp rollup_text(:ok, %{missing_artifact: artifact}, _reason),
+    do: "implement step complete, but missing: #{artifact}"
+
+  defp rollup_text(:ok, _signals, _reason),
+    do: "implement step complete — every task-phase dispatched"
+
+  defp rollup_text(:halted, _signals, :breaker),
+    do: "implement step halted — cost breaker tripped at a task-phase boundary"
+
+  defp rollup_text(:halted, _signals, :superseded),
+    do: "implement step drained — superseded by a new run at a task-phase boundary"
+
+  defp rollup_text(:error, _signals, reason), do: "implement step failed: #{inspect(reason)}"
+
+  # ---- misc -------------------------------------------------------------------
+
+  defp worktree_path(%Worktree{path: path}), do: path
+  defp worktree_path(_), do: Autonomous.Config.repo()
+
+  # Captured once at implement-step start so the roll-up's artifact-gate check
+  # can see changes already committed at task-phase boundaries (FR-023a), not
+  # just what's still dirty in the tree.
+  # The roll-up artifact gate's anchor: the commit this feature's branch forked
+  # from its stack base — NOT the worktree's HEAD when this invocation started.
+  #
+  # HEAD is only correct the *first* time implement runs. On a resume — or any
+  # re-entry after a per-chunk failure — every earlier task phase's boundary
+  # commit already sits below it, so the gate sees only the slice this
+  # invocation produced. A slice that legitimately writes no code (a re-run of
+  # an already-satisfied task phase, a phase whose tasks are all manual
+  # checkpoints) then failed the whole feature with `missing_artifact:
+  # "implementation changes"` while the implementation sat committed on the
+  # branch one commit down. The fork point is stable across every session,
+  # chunk, retry and resume that contributed to the branch.
+  #
+  # When the fork point can't be resolved (absent/misconfigured base ref,
+  # unrelated histories) fall back to HEAD-at-start — the pre-fix anchor. It is
+  # wrong on a resume, but it is right on a first invocation and it still sees
+  # this invocation's boundary commits, so the fallback is never worse than the
+  # behaviour it replaces.
+  defp base_ref(%{worktree: %Worktree{} = worktree} = ctx) do
+    case Worktree.fork_point(worktree, ctx[:stack_base] || Config.pr_base()) do
+      {:ok, sha} -> sha
+      {:error, _reason} -> git_head(worktree)
+    end
+  end
+
+  defp base_ref(_ctx), do: nil
+
+  defp git_head(%Worktree{path: path}) do
+    case System.cmd("git", ["-C", path, "rev-parse", "HEAD"], stderr_to_stdout: true) do
+      {out, 0} -> String.trim(out)
+      _ -> nil
+    end
+  end
+
+  defp breaker_tripped?(nil), do: false
+  defp breaker_tripped?(ledger), do: Ledger.breaker_tripped?(ledger)
+end

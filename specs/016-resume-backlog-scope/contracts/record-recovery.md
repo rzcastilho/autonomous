@@ -5,7 +5,7 @@
 A repair tool for records already narrowed by this defect. Operator-invoked
 only; never part of an ordinary resume (FR-019).
 
-## `SpeckitOrchestrator.recover_record/1`
+## `Autonomous.recover_record/1`
 
 ```elixir
 @spec recover_record(keyword()) ::

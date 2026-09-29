@@ -86,7 +86,7 @@ are clean and the crash happened before the next one.
 
 ## D4 — Run manifest: new `RunManifest` module, single slot (FR-005 / FR-008)
 
-**Decision**: New pure module `SpeckitOrchestrator.RunManifest` writing one JSON
+**Decision**: New pure module `Autonomous.RunManifest` writing one JSON
 file at `<Config.transcript_root()>/run.json`:
 
 - `write/1` — persist `%{features: [...], statuses: %{id => status}, context:

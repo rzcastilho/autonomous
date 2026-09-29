@@ -53,7 +53,7 @@ through `mise exec --` (bare PATH is a stale 1.19.5). `warnings_as_errors: true`
 feature reads no state it does not already read and writes none (SC-009).
 
 **Testing**: ExUnit. One new hermetic test
-(`test/speckit_orchestrator/web/design_contract_test.exs`) over a new pure module
+(`test/autonomous/web/design_contract_test.exs`) over a new pure module
 (`test/support/design_contract.ex`, test-env-only via `mix.exs:18`). Existing
 console tests are updated where structure changes; **zero** of them currently pin
 a color, glyph, or inline style (measured — `grep -rn '#[0-9a-f]\{6\}\|style=' test/`
@@ -142,7 +142,7 @@ priv/static/assets/
 ├── console.css                  # REWRITTEN: single :root token block + role-repointed rules
 └── app.js                       # UNCHANGED (7 lines, 0 literals) — in the guard's input domain
 
-lib/speckit_orchestrator/web/
+lib/autonomous/web/
 ├── components/
 │   ├── core_components.ex       # @palette loses colors → label/1 + status_class/1;
 │   │                            #   status_pill → status-chip w/ data-status;
@@ -168,7 +168,7 @@ lib/speckit_orchestrator/web/
 test/
 ├── support/
 │   └── design_contract.ex       # NEW: pure scanner (test env only, mix.exs:18)
-└── speckit_orchestrator/web/
+└── autonomous/web/
     ├── design_contract_test.exs # NEW: clean tree, coverage, doc transcription, 4 injections
     └── *_live_test.exs          # UPDATED where structure changed (FR-025)
 

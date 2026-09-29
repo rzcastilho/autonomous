@@ -26,7 +26,7 @@ exact `iex` calls, and the codebase guide reflects shipped reality.
 
 - `docs/runbook.md`: add the resume flow beside `resolve/1` — resolve the cause
   on the feature branch (edit + commit the artifacts), then
-  `SpeckitOrchestrator.resume(id, prompt: "...")`. Explain restart-at-halted-phase
+  `Autonomous.resume(id, prompt: "...")`. Explain restart-at-halted-phase
   semantics and when to reach for `:from` to override the start phase.
 - `CLAUDE.md`: update the observability/operability paragraph — mid-pipeline
   resume is shipped (drop the old deferred-implementation framing).

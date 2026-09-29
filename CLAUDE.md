@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`speckit_orchestrator` — an autonomous, spec-driven build pipeline on the BEAM.
+`autonomous` — an autonomous, spec-driven build pipeline on the BEAM.
 It drives the GitHub Spec Kit loop (`/speckit.specify → clarify → plan → tasks →
 analyze → implement → converge`) feature-by-feature through the Claude Code CLI.
 Control plane = Jido/OTP; data plane = the `claude` CLI wrapped by the
@@ -12,7 +12,7 @@ Control plane = Jido/OTP; data plane = the `claude` CLI wrapped by the
 standing in for the human at `clarify`, a deterministic `analyze` gate, a
 stacked sequential run over one feature at a time, and a cost circuit breaker.
 
-Build follows a phased plan: **`docs/speckit-orchestrator-implementation-plan.md`**
+Build follows a phased plan: **`docs/autonomous-implementation-plan.md`**
 is the source of truth for scope, sequencing, and exit criteria. As of now
 **Phases 0–6 are done** (env + harness contract, pure core, real harness
 `RunPhase`, feature vertical, Coordinator control plane, enforcement pack, and
@@ -81,8 +81,8 @@ mise exec -- mix deps.get
 mise exec -- mix compile
 mise exec -- mix test                                   # full suite
 mise exec -- mix test --cover                           # coverage (target >90% on core)
-mise exec -- mix test test/speckit_orchestrator/pipeline_test.exs        # one file
-mise exec -- mix test test/speckit_orchestrator/pipeline_test.exs:42     # one test by line
+mise exec -- mix test test/autonomous/pipeline_test.exs        # one file
+mise exec -- mix test test/autonomous/pipeline_test.exs:42     # one test by line
 mise exec -- mix test --include integration             # opt-in real-harness tests (Phase 2+)
 ```
 
@@ -93,7 +93,7 @@ Prefix git/gh/etc. with `rtk` per the global RTK convention (e.g. `rtk git statu
 The design deliberately isolates all fast-moving external contracts so the pure
 logic never depends on guesses.
 
-**Pure core (Phase 1, `lib/speckit_orchestrator/`)** — no CLI/harness/Jido
+**Pure core (Phase 1, `lib/autonomous/`)** — no CLI/harness/Jido
 dependency, fully unit-testable:
 
 - `Feature` — the work-unit struct + lifecycle status (`:pending → :running →`
@@ -108,7 +108,7 @@ dependency, fully unit-testable:
   `number`'s `id` string when unallocated) and `spec_label/1` (`nil` when
   unallocated, for operator surfaces), governs only the spec directory, the
   branch name, and artifact resolution.
-- `Config` — typed accessors over `config :speckit_orchestrator`. Model routing
+- `Config` — typed accessors over `config :autonomous`. Model routing
   uses **CLI aliases** (`opus`/`sonnet`) — the pinned ClaudeAgentSDK catalog
   rejects full strings like `claude-opus-4-8`; pin reproducibility via
   `ANTHROPIC_DEFAULT_*_MODEL` env. `model_for/1` raises on an unrouted phase.
@@ -172,7 +172,7 @@ dependency, fully unit-testable:
   advance is never a new terminal status, only a decoration on `:done`.
   Disabling the loop, or leaving the policy at `:escalate`, restores today's
   fail-fast behaviour byte-for-byte. Every attempt is Ledger-accounted and
-  individually recorded — see `docs/speckit-orchestrator-implementation-plan.md`,
+  individually recorded — see `docs/autonomous-implementation-plan.md`,
   `specs/017-analyze-auto-remediation/` (the loop), and
   `specs/021-analyze-exhaustion-policy/` (the policy).
 - `Ledger` — cost circuit-breaker `GenServer`. `reserve` is rejected once
@@ -217,7 +217,7 @@ in `mix.exs` with `override: true` on the harness. Re-check Hex monthly; bump
 SHAs deliberately.
 
 **Console (Phase 8, feature 020 reconciliation).** A Phoenix LiveView operator
-console (`lib/speckit_orchestrator/web/`) — Mission Control, Pipeline Chain,
+console (`lib/autonomous/web/`) — Mission Control, Pipeline Chain,
 Escalations, Runs/Run Detail, Transcripts, Trigger, Configuration — served
 alongside the control plane, hand-authored CSS with no Node/npm/bundler
 (constitution Technology Stack → Frontend). Every color, radius, font-size,
@@ -238,10 +238,10 @@ judgment calls (mono-vs-sans role, recovery-path ranking, empty-state wording,
 `[:speckit, :feature, :terminal]`; `Telemetry.attach_default_logger/0` logs them.
 `Transcripts` writes `<worktree>/.speckit_logs/NN-<phase>.md` per phase.
 `Coordinator` tracks per-feature start times; `Report.format_status/1` renders
-the snapshot as an iex table (`SpeckitOrchestrator.print_status/0`).
-`SpeckitOrchestrator.resolve/1` frees a kept worktree so a human-resolved feature
+the snapshot as an iex table (`Autonomous.print_status/0`).
+`Autonomous.resolve/1` frees a kept worktree so a human-resolved feature
 re-runs on its existing branch (`Worktree.create` reuses an existing branch).
-`SpeckitOrchestrator.resume/2` is the shipped checkpoint-driven restart path —
+`Autonomous.resume/2` is the shipped checkpoint-driven restart path —
 resumes a halted/escalated feature at its checkpointed phase (or an earlier
 `:from` phase), optionally injecting operator `:prompt` guidance — for the local,
 single-phase-fix case; `resolve/1` remains the tool when upstream artifacts must
@@ -256,8 +256,8 @@ genuine per-phase permissions, not a substitute for CLI prompts the CLI never
 actually skips. Every run picks a containment profile — `strict` (default,
 byte-identical to pre-030) or `permissive` (opt-in, per run, locked at start,
 never renegotiated by resume/continue). `scope_guard.py` is a PreToolUse hook
-that resolves session origin (`SPECKIT_ORCHESTRATED`/
-`SPECKIT_CONTAINMENT_PROFILE` env markers the orchestrator sets on every
+that resolves session origin (`AUTONOMOUS_ORCHESTRATED`/
+`AUTONOMOUS_CONTAINMENT_PROFILE` env markers the orchestrator sets on every
 session it starts, vs. an interactive human session detected by their
 absence plus `CLAUDE_CODE_ENTRYPOINT=cli`) and denies out-of-tree writes and
 dangerous Bash only for an orchestrator-driven `strict` session — a human's own
@@ -279,7 +279,7 @@ topbar/Run Detail/Configuration, and the PR body — so a `strict` run's output
 stays byte-identical (`contracts/operator-surfaces.md`). Red-teamed by
 `scope_guard_test` running the real hook across the origin × profile matrix.
 
-**Control plane (Phase 4).** `SpeckitOrchestrator.run/1` (facade) loads the
+**Control plane (Phase 4).** `Autonomous.run/1` (facade) loads the
 backlog and starts a per-run `Coordinator`; `status/0` reports it. The
 `Coordinator` is a **plain GenServer** (deliberate deviation from the plan's
 "Jido agent" — it supervises Task-based runners reacting to async finish
@@ -298,15 +298,15 @@ the real runner. A tripped `Ledger` breaker releases nothing new and
 App tree: `Ledger` + `{Task.Supervisor, RunnerSup}`; the Coordinator is
 per-run. A parked run refuses new work for that repository until an operator
 resolves it with an explicit `:continue` or `:end` decision
-(`SpeckitOrchestrator.continue_run/1` / `end_run/1`) — see `docs/runbook.md`.
+(`Autonomous.continue_run/1` / `end_run/1`) — see `docs/runbook.md`.
 **Supersession drain (Phase 8, feature 026).** Stopping a prior run's
 Coordinator never touched the `RunnerSup` task actually driving a feature — a
 live `claude` session, mid-worktree-write — so a fresh `run/1` could release
 the same feature into the same worktree while the old session was still
 writing (incident `r000002`). Every `RunnerSup` child now registers itself
-(as its first act, via `Workers.spawn/3`) in `SpeckitOrchestrator.WorkerRegistry`
+(as its first act, via `Workers.spawn/3`) in `Autonomous.WorkerRegistry`
 (`Registry`, `keys: :duplicate`, keyed by repository), started under the app
-supervisor before `RunnerSup` alongside `SpeckitOrchestrator.Workers` (the
+supervisor before `RunnerSup` alongside `Autonomous.Workers` (the
 process-layer module owning that registration plus a public ETS
 drain-request table). `Workers.drain_requested?/0` is the boundary predicate
 every session-driving site (phase, chunk, remediation) consults immediately
@@ -319,7 +319,7 @@ only then supersedes the prior record — a drain timeout starts nothing
 untouched. `guard_active_run/1` (behind `continue_run/1`/`resume/2`/
 `resume_run/1`) treats a live registered worker as an active run too, even
 with no live Coordinator; `:force` drains rather than bypasses.
-`SpeckitOrchestrator.workers/0,1` is the read-only "what's in flight"
+`Autonomous.workers/0,1` is the read-only "what's in flight"
 surface. See `specs/026-drain-superseded-runner/` and `docs/runbook.md`.
 
 **Publish integrity (feature 027).** A 2026-09-23 incident chained two failures

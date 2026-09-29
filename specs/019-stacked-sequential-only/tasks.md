@@ -26,8 +26,8 @@ Coordinator, then the console, then docs).
 
 ## Path Conventions
 
-Single Elixir/OTP application. Source under `lib/speckit_orchestrator/`, tests
-under `test/speckit_orchestrator/` (mirroring structure), config under
+Single Elixir/OTP application. Source under `lib/autonomous/`, tests
+under `test/autonomous/` (mirroring structure), config under
 `config/`, docs under `docs/`.
 
 ---
@@ -54,19 +54,19 @@ no project init (existing app).
 **⚠️ CRITICAL**: No user story work can begin until this phase compiles clean
 under `warnings_as_errors`.
 
-- [X] T003 Rewrite `lib/speckit_orchestrator/feature.ex`: remove `prereqs` and
+- [X] T003 Rewrite `lib/autonomous/feature.ex`: remove `prereqs` and
       the `:blocked` status; add `number :: pos_integer()` (parsed from the
       `NNN` filename prefix, compared numerically), `group ::
       :backlog | :ad_hoc` (default `:backlog`), `created_at :: DateTime.t() |
       nil` (non-nil only for `:ad_hoc`)
-- [X] T004 Rewrite `lib/speckit_orchestrator/backlog.ex` (depends on T003):
+- [X] T004 Rewrite `lib/autonomous/backlog.ex` (depends on T003):
       delete `extract_prereqs/1`, `dependents/1`, `validate_prereqs!/1`,
       `detect_cycles!/1`, `topo_resolve/3`, `MissingPrereqError`,
       `CycleError`; add `Backlog.DuplicateNumberError` raised when two files'
       numbers are numerically equal, naming every conflicting file; `load!/1`
       returns features sorted by `number` ascending, all `group: :backlog`; a
       `## Prerequisites` section becomes inert prose
-- [X] T005 Rewrite `lib/speckit_orchestrator/release.ex` (depends on T003):
+- [X] T005 Rewrite `lib/autonomous/release.ex` (depends on T003):
       replace `next_wave/4`, `releasable?/2`, `blocked?/2`,
       `sequential_order/1` with `order/1` (backlog by `number` ascending, then
       ad-hoc by `{created_at, number}` ascending) and `next/3` returning
@@ -75,25 +75,25 @@ under `warnings_as_errors`.
       non-done terminal ⇒ `{:stopped, id, status}`; any `:running` ⇒ `:none`;
       lowest-ordered `:pending` ⇒ `{:release, feature}`; otherwise `:none`) —
       no `cap` parameter anywhere
-- [X] T006 [P] Edit `lib/speckit_orchestrator/run_context.ex`: delete
+- [X] T006 [P] Edit `lib/autonomous/run_context.ex`: delete
       `pr_workflow` and `max_concurrency` fields, `stacked?/1`, and
       `effective_max_concurrency/2`; keep `capture/1`/`to_map/1`/`from_map/1`/
       `merge/2` shapes and precedence for the remaining eight fields
-- [X] T007 Edit `lib/speckit_orchestrator/store/schema.ex`: `speckit_run`
+- [X] T007 Edit `lib/autonomous/store/schema.ex`: `speckit_run`
       gains `state: :parked` (union becomes `:in_flight | :parked |
       :completed | :superseded`), `stopped_by`, `stopped_reason`, and
       `outcome: :ended_by_operator`; `speckit_feature` loses `prereqs`, gains
       `number`, `group`, `created_at`, and status union loses `:blocked`
       gains `:never_started`
-- [X] T008 [P] Edit `lib/speckit_orchestrator/store/records.ex`: update the
+- [X] T008 [P] Edit `lib/autonomous/store/records.ex`: update the
       state/outcome/status typespecs and any record-shape helpers to match
       schema v2 (T007)
-- [X] T009 Edit `lib/speckit_orchestrator/store/migrations.ex`: bump
+- [X] T009 Edit `lib/autonomous/store/migrations.ex`: bump
       `current_version/0` to `2`; register version 2 as a refusal migration
       (`fn -> {:error, {:incompatible_record, 1}} end`) in the same ordered
       list as every other migration, naming the incompatibility on a v1
       directory at boot
-- [X] T010 Edit `lib/speckit_orchestrator/store/writer.ex` (depends on T007):
+- [X] T010 Edit `lib/autonomous/store/writer.ex` (depends on T007):
       add `park_run(run_key, %{stopped_by:, status:, reason:})`
       (`:in_flight → :parked`, one transaction), `continue_run(run_key)`
       (`:parked → :in_flight`, clears `stopped_by`/`stopped_reason`),
@@ -102,32 +102,32 @@ under `warnings_as_errors`.
       give `open_run/2`'s `supersede_in_flight!/2` a guard that aborts the
       transaction with `{:parked_run, run_id}` when `Query.parked_run/1` finds
       one, instead of superseding it
-- [X] T011 [P] Edit `lib/speckit_orchestrator/store/query.ex` (depends on
+- [X] T011 [P] Edit `lib/autonomous/store/query.ex` (depends on
       T007): add `parked_run/1`, mirroring `in_flight_run/1`
-- [X] T012 [P] Edit `lib/speckit_orchestrator/store/export.ex`: update
+- [X] T012 [P] Edit `lib/autonomous/store/export.ex`: update
       exported fields for the schema-v2 attribute changes (T007)
-- [X] T013 [P] Rewrite `test/speckit_orchestrator/release_test.exs` for
+- [X] T013 [P] Rewrite `test/autonomous/release_test.exs` for
       `next/3` + `order/1` per contracts/release-policy.md's Test
       obligations: ascending order over a gapped backlog (001/005/020); any
       `:running` feature ⇒ always `:none`; stop on each of `:escalated`,
       `:halted`, `:failed`; breaker tripped ⇒ `:none` even with releasable
       features; `order/1` independent of input list order; a fixture's prose
       `## Prerequisites` has no effect on order
-- [X] T014 [P] Rewrite `test/speckit_orchestrator/backlog_test.exs`: drop the
+- [X] T014 [P] Rewrite `test/autonomous/backlog_test.exs`: drop the
       dangling-prereq/cycle cases; add numerically-equal duplicates (using
       T001's fixture, including differing zero-padding e.g. `002` vs `0002`)
       and gapped-numbering (legal, no error) cases
-- [X] T015 [P] Extend `test/speckit_orchestrator/store/migrations_test.exs`
+- [X] T015 [P] Extend `test/autonomous/store/migrations_test.exs`
       for the v2 refusal migration: fresh directory boots at v2 (run number
       one); a recorded v1 aborts startup naming the incompatibility; `> 2`
       still aborts (unchanged)
-- [X] T016 [P] Extend `test/speckit_orchestrator/store/writer_test.exs` and
-      `test/speckit_orchestrator/store/query_test.exs` for `park_run/2`,
+- [X] T016 [P] Extend `test/autonomous/store/writer_test.exs` and
+      `test/autonomous/store/query_test.exs` for `park_run/2`,
       `continue_run/1`, `end_run/2`, `parked_run/1`, and the `open_run/2`
       parked-guard abort (race-free: two concurrent `open_run/2` calls against
       a parked run both fail)
-- [X] T017 Rename `test/speckit_orchestrator/pr_workflow_test.exs` to
-      `test/speckit_orchestrator/stacked_run_test.exs`, dropping the
+- [X] T017 Rename `test/autonomous/pr_workflow_test.exs` to
+      `test/autonomous/stacked_run_test.exs`, dropping the
       toggle-off cases and keeping the stacked-always assertions
 
 **Checkpoint**: `mise exec -- mix compile` is clean; `Feature`, `Backlog`,
@@ -146,59 +146,59 @@ repo; observe it preflights the PR remote, releases one feature at a time,
 and refuses `:pr_workflow`/`:max_concurrency` on every surface — with no
 setting anywhere that could have produced different behaviour.
 
-- [X] T018 [US1] Edit `lib/speckit_orchestrator/config.ex`: delete
+- [X] T018 [US1] Edit `lib/autonomous/config.ex`: delete
       `pr_workflow?/0` and `max_concurrency/0`
 - [X] T019 [US1] Edit `config/config.exs`: delete the `:pr_workflow` and
       `:max_concurrency` keys
-- [X] T020 [US1] Edit `config/runtime.exs`: delete the `SPECKIT_PR_WORKFLOW`
-      and `SPECKIT_MAX_CONCURRENCY` mappings; `raise` at config load when
+- [X] T020 [US1] Edit `config/runtime.exs`: delete the `AUTONOMOUS_PR_WORKFLOW`
+      and `AUTONOMOUS_MAX_CONCURRENCY` mappings; `raise` at config load when
       either environment variable is set at all, naming the retired setting
-- [X] T021 [US1] Edit `lib/speckit_orchestrator/application.ex`: add a
+- [X] T021 [US1] Edit `lib/autonomous/application.ex`: add a
       boot-time check, before the supervision tree's first child, that reads
       `Application.get_env` for `:pr_workflow` and `:max_concurrency` and
       aborts startup naming the retired setting when either is present
-- [X] T022 [US1] Edit `lib/speckit_orchestrator.ex`: add a `@retired_opts`
+- [X] T022 [US1] Edit `lib/autonomous.ex`: add a `@retired_opts`
       allow-list check on `run/1`, `run_spec/2`, `resume/2`, `resume_run/1`
       that refuses `:pr_workflow`/`:max_concurrency` with
       `{:error, {:preflight, [{:retired_option, key}]}}` (and any other
       unknown key with `{:retired_option: key}` per contracts/run-start.md)
       before any side effect — before the remediation preflight, the layout
       resolution, and the store run opening
-- [X] T023 [US1] Edit `lib/speckit_orchestrator.ex` (depends on T022): make
+- [X] T023 [US1] Edit `lib/autonomous.ex` (depends on T022): make
       the `TargetPack.verify(repo, check_remote: pr_remote)` preflight step
       unconditional rather than gated on `Config.pr_workflow?/0`, for both
       `run/1` and `run_spec/2`; skip only when a `:runner`/`:executor` seam is
       injected (test mode), unchanged
-- [X] T024 [US1] Edit `lib/speckit_orchestrator/live_config.ex`: delete
+- [X] T024 [US1] Edit `lib/autonomous/live_config.ex`: delete
       `pr_workflow` and `max_concurrency` from the live-config change type,
       validation, and dispatch
-- [X] T025 [P] [US1] Edit `lib/speckit_orchestrator/web/components/layouts.ex`:
+- [X] T025 [P] [US1] Edit `lib/autonomous/web/components/layouts.ex`:
       delete `run_mode/1` and `run_cap/1` and their call sites in the status
       bar — no mode label, no cap number
-- [X] T026 [P] [US1] Edit `lib/speckit_orchestrator/web/live/trigger_live.ex`:
+- [X] T026 [P] [US1] Edit `lib/autonomous/web/live/trigger_live.ex`:
       remove the stacked-PR toggle and the effective-concurrency line; render
       the run-shape summary as static descriptive text
-- [X] T027 [P] [US1] Edit `lib/speckit_orchestrator/web/live/config_live.ex`:
+- [X] T027 [P] [US1] Edit `lib/autonomous/web/live/config_live.ex`:
       remove the concurrency slider and the PR-workflow toggle; keep
       `pr_base`, `pr_remote`, budget, and models editable
-- [X] T028 [US1] Edit `lib/speckit_orchestrator/coordinator.ex`: delete the
+- [X] T028 [US1] Edit `lib/autonomous/coordinator.ex`: delete the
       `cap` field and `set_cap/2` — no live operation may change how many
       features run at once
-- [X] T029 [P] [US1] New `test/speckit_orchestrator/retired_settings_test.exs`:
+- [X] T029 [P] [US1] New `test/autonomous/retired_settings_test.exs`:
       assert `run/1`, `run_spec/2` refuse `:pr_workflow`/`:max_concurrency`
       with `{:error, {:preflight, [{:retired_option, key}]}}`; assert the
       `Application.start/2` boot check aborts when either app-env key is
       present
-- [X] T030 [P] [US1] Update `test/speckit_orchestrator/web/trigger_live_test.exs`:
+- [X] T030 [P] [US1] Update `test/autonomous/web/trigger_live_test.exs`:
       assert zero run-shape inputs render on the trigger screen (SC-001)
-- [X] T031 [P] [US1] Update `test/speckit_orchestrator/web/config_live_test.exs`:
+- [X] T031 [P] [US1] Update `test/autonomous/web/config_live_test.exs`:
       assert no concurrency slider or PR-workflow toggle renders
-- [X] T032 [P] [US1] Update `test/speckit_orchestrator/web/layout_test.exs`:
+- [X] T032 [P] [US1] Update `test/autonomous/web/layout_test.exs`:
       assert the status bar renders no mode label and no cap
 - [X] T033 [US1] Grep verification (quickstart Scenario 3): confirm
       `grep -rn "pr_workflow\|max_concurrency" lib config | grep -v retired`
       returns nothing outside the refusal paths in T018–T024; fold the check
-      into `test/speckit_orchestrator/stacked_run_test.exs` (T017) or a CI
+      into `test/autonomous/stacked_run_test.exs` (T017) or a CI
       script
 
 **Checkpoint**: US1 is independently testable — no run-shape setting exists
@@ -217,42 +217,42 @@ creation time and stays chain-neutral.
 ascending numeric order, never more than one in flight, regardless of any
 prose prerequisite declaration.
 
-- [X] T034 [US2] Edit `lib/speckit_orchestrator/single_spec.ex`:
+- [X] T034 [US2] Edit `lib/autonomous/single_spec.ex`:
       `SingleSpec.build/3` stamps `group: :ad_hoc` and
       `created_at: DateTime.utc_now()` on every ad-hoc feature
-- [X] T035 [US2] Edit `lib/speckit_orchestrator/stack_tracker.ex`: doc-only
+- [X] T035 [US2] Edit `lib/autonomous/stack_tracker.ex`: doc-only
       change — the tracker is advanced only by a `:done` **backlog** feature;
       an ad-hoc feature reads `Config.pr_base()` directly and never calls
       `set_top/2` (FR-028, R6)
-- [X] T036 [P] [US2] Edit `lib/speckit_orchestrator/console_read_model.ex`:
+- [X] T036 [P] [US2] Edit `lib/autonomous/console_read_model.ex`:
       remove the `prereqs` projection; add `group`; project the two ordered
       groups (numbered backlog by `number`, Ad-hoc by `created_at`)
-- [X] T037 [P] [US2] Rewrite `lib/speckit_orchestrator/web/live/pipeline_dag_live.ex`:
+- [X] T037 [P] [US2] Rewrite `lib/autonomous/web/live/pipeline_dag_live.ex`:
       replace the dependency-depth DAG with a linear chain view — one column
       per group (numbered backlog, Ad-hoc), features in `Release.order/1`
       order, each rendered as a chain link with its base branch (FR-027)
-- [X] T038 [US2] Delete `lib/speckit_orchestrator/web/live/pipeline_dag_layout.ex`
+- [X] T038 [US2] Delete `lib/autonomous/web/live/pipeline_dag_layout.ex`
       — its subject (prerequisite depth) no longer exists
 - [X] T039 [P] [US2] Edit `docs/breakdown-format.md`: document the numbering
       contract (FR-013) per contracts/backlog-order.md — the number
       determines order, renumbering changes it, gaps are legal, numeric
       equality (not string equality) defines a duplicate, and prose
       `## Prerequisites` sections are inert
-- [X] T040 [P] [US2] Rewrite `test/speckit_orchestrator/single_spec_test.exs`:
+- [X] T040 [P] [US2] Rewrite `test/autonomous/single_spec_test.exs`:
       assert `group: :ad_hoc` with a non-nil `created_at` on every built
       ad-hoc feature
-- [X] T041 [US2] Extend `test/speckit_orchestrator/release_test.exs` (T013)
+- [X] T041 [US2] Extend `test/autonomous/release_test.exs` (T013)
       with ad-hoc ordering: backlog features first by `number`, then ad-hoc
       by `{created_at, number}`; two ad-hoc features sharing a timestamp
       order by `number` (stable, total order)
-- [X] T042 [US2] Extend `test/speckit_orchestrator/single_spec_test.exs` or
-      `test/speckit_orchestrator/coordinator_test.exs`: via the injected
+- [X] T042 [US2] Extend `test/autonomous/single_spec_test.exs` or
+      `test/autonomous/coordinator_test.exs`: via the injected
       `:publisher` seam, assert an ad-hoc feature branches from
       `Config.pr_base()` and the stack top is unchanged after it reaches
       `:done`
-- [X] T043 [P] [US2] Update `test/speckit_orchestrator/web/pipeline_dag_live_test.exs`:
+- [X] T043 [P] [US2] Update `test/autonomous/web/pipeline_dag_live_test.exs`:
       assert two ordered groups render (numbered backlog, Ad-hoc), not a
-      dependency graph; delete `test/speckit_orchestrator/web/pipeline_dag_layout_test.exs`
+      dependency graph; delete `test/autonomous/web/pipeline_dag_layout_test.exs`
       to match T038
 
 **Checkpoint**: US2 is independently testable — ordering is numeric and
@@ -272,28 +272,28 @@ when publication fails.
 forced to escalate; confirm the run stops after it, 003–007 are reported
 `not_started`, and the report names `002` and its reason.
 
-- [X] T044 [US3] Edit `lib/speckit_orchestrator/coordinator.ex` (depends on
+- [X] T044 [US3] Edit `lib/autonomous/coordinator.ex` (depends on
       T005, T010, T028): add a `stopped_by` field
       (`{feature_id, status, reason} | nil`); when `Release.next/3` returns
       `{:stopped, id, status}` and `inflight` is empty, call
       `Store.Writer.park_run/2`, set `stopped_by`, and notify the owner
       instead of draining silently
-- [X] T045 [US3] Edit `lib/speckit_orchestrator/report.ex`: remove `blocked`
+- [X] T045 [US3] Edit `lib/autonomous/report.ex`: remove `blocked`
       from `build_report/1`'s iex table; add `stopped_by`
       (`%{feature_id:, status:, reason:} | nil`); `not_started` means every
       `:pending` feature at drain
-- [X] T046 [P] [US3] Edit `lib/speckit_orchestrator/recovery/reconcile.ex`:
+- [X] T046 [P] [US3] Edit `lib/autonomous/recovery/reconcile.ex`:
       drop `:blocked` handling
-- [X] T047 [P] [US3] Edit `lib/speckit_orchestrator/recovery/rebuild.ex`:
+- [X] T047 [P] [US3] Edit `lib/autonomous/recovery/rebuild.ex`:
       drop the prereq consistency check
-- [X] T048 [P] [US3] Edit `lib/speckit_orchestrator/recovery/report.ex`:
+- [X] T048 [P] [US3] Edit `lib/autonomous/recovery/report.ex`:
       remove `:blocked`
 - [X] T049 [US3] Verify FR-018 at the chain-base resolution call site (where
       the Coordinator/executor picks the next feature's base branch): a
       completed feature's local branch becomes the next base even when its
       PR publication fails, and the publication failure is recorded on the
       run rather than swallowed
-- [X] T050 [P] [US3] Rewrite `test/speckit_orchestrator/coordinator_test.exs`:
+- [X] T050 [P] [US3] Rewrite `test/autonomous/coordinator_test.exs`:
       stop-on-first-failure for `:escalated`/`:halted`/`:failed` over a
       seven-feature backlog (002 forced to fail via the injected `:runner`
       seam); assert the report shape
@@ -325,7 +325,7 @@ it choosing `:continue` and confirm 002 re-runs and 003 onward follow in
 order; repeat choosing `:end` and confirm nothing further is released and
 never-started features are recorded.
 
-- [X] T053 [US4] Edit `lib/speckit_orchestrator.ex` (depends on T010, T044):
+- [X] T053 [US4] Edit `lib/autonomous.ex` (depends on T010, T044):
       implement `continue_run/1` — guard a live unfinished Coordinator
       (`{:error, {:active_run, pid}}` unless `:force`); locate the
       repository's `:parked` run (`{:error, :no_parked_run}` if none); store
@@ -335,36 +335,36 @@ never-started features are recorded.
       `StackTracker` from the branch of the highest-ordered `:done` backlog
       feature (falling back to `Config.pr_base()`); start the Coordinator
       with the same `run_key` and restored context
-- [X] T054 [US4] Edit `lib/speckit_orchestrator.ex`: implement `end_run/1` —
+- [X] T054 [US4] Edit `lib/autonomous.ex`: implement `end_run/1` —
       one transaction via `Store.Writer.end_run/2`
       (`:parked → :completed`, `outcome: :ended_by_operator`, every
       still-`:pending` feature written `:never_started`, `stopped_by`/
       `stopped_reason` retained); returns the final report; releases nothing
-- [X] T055 [US4] Edit `lib/speckit_orchestrator.ex` (depends on T053, T054):
+- [X] T055 [US4] Edit `lib/autonomous.ex` (depends on T053, T054):
       `resolve/2` gains a required `:decision` option (`:continue | :end`)
       when the repository has a parked run — frees the feature's worktree and
       records the escalation resolution, then dispatches to `continue_run/1`
       or `end_run/1`; absent decision ⇒ `{:error, :decision_required}`,
       nothing changes; with no parked run, `resolve/1` behaves exactly as
       today
-- [X] T056 [US4] Edit `lib/speckit_orchestrator.ex`: `run/1` and
+- [X] T056 [US4] Edit `lib/autonomous.ex`: `run/1` and
       `run_spec/2` surface `{:error, {:parked_run, run_id, [:continue, :end]}}`
       from the `open_run/2` guard (T010) as preflight step 3, before layout
       resolution (FR-020a, FR-020b)
-- [X] T057 [P] [US4] Edit `lib/speckit_orchestrator/console_read_model.ex`
+- [X] T057 [P] [US4] Edit `lib/autonomous/console_read_model.ex`
       (depends on T036): add the parked-run projection — `state`,
       `stopped_by`, `stopped_reason`
-- [X] T058 [P] [US4] Edit `lib/speckit_orchestrator/web/live/mission_control_live.ex`:
+- [X] T058 [P] [US4] Edit `lib/autonomous/web/live/mission_control_live.ex`:
       add the parked banner — stopping feature, its status, its reason, and
       both `continue`/`end` actions (FR-019, SC-008)
-- [X] T059 [P] [US4] Edit `lib/speckit_orchestrator/web/live/runs_live.ex` and
-      `lib/speckit_orchestrator/web/live/run_detail_live.ex`: render
+- [X] T059 [P] [US4] Edit `lib/autonomous/web/live/runs_live.ex` and
+      `lib/autonomous/web/live/run_detail_live.ex`: render
       `:parked` distinctly from `:in_flight`/`:completed`; show `stopped_by`/
       `stopped_reason` and list never-started features as such (SC-004)
 - [X] T060 [P] [US4] Edit `docs/runbook.md`: document the parked-run
       lifecycle (park/continue/end) and the store-reset procedure for schema
       v2 (contracts/store-schema-v2.md §6)
-- [X] T061 [P] [US4] New `test/speckit_orchestrator/parked_run_test.exs`: full
+- [X] T061 [P] [US4] New `test/autonomous/parked_run_test.exs`: full
       lifecycle — park at stop; `run/1` and `run_spec/2` refused while
       parked; `resolve/1` without `:decision` returns `{:error,
       :decision_required}`; `resolve(id, decision: :continue)` re-runs the
@@ -375,11 +375,11 @@ never-started features are recorded.
       time with the new reason recorded distinctly; a parked run whose
       stopper was the last feature reaches the same closed-out result via
       either decision
-- [X] T062 [P] [US4] Update `test/speckit_orchestrator/web/mission_control_live_test.exs`:
+- [X] T062 [P] [US4] Update `test/autonomous/web/mission_control_live_test.exs`:
       assert the parked banner renders with both actions when the run is
       parked
-- [X] T063 [P] [US4] Update `test/speckit_orchestrator/web/runs_live_test.exs`
-      and `test/speckit_orchestrator/web/run_detail_live_test.exs`: assert
+- [X] T063 [P] [US4] Update `test/autonomous/web/runs_live_test.exs`
+      and `test/autonomous/web/run_detail_live_test.exs`: assert
       `:parked` renders distinctly and never-started features are listed
 
 **Checkpoint**: All four user stories are independently functional — single
@@ -396,11 +396,11 @@ fixture/assertion cleanup the plan calls out as touching ~40 further files.
 - [X] T064 [P] Update `CLAUDE.md`: `Release`/`Backlog`/`Feature` descriptions,
       the single run shape, no worktree parallelism across features
 - [X] T065 [P] Update `docs/workflow.md`: one run shape — a chain, not a DAG
-- [X] T066 [P] Update `docs/speckit-orchestrator-implementation-plan.md`:
+- [X] T066 [P] Update `docs/autonomous-implementation-plan.md`:
       record feature 019 as done
 - [X] T067 Sweep the remaining test files for `prereqs`/`cap`/`pr_workflow`
       fixtures and assertions and drop them (e.g.
-      `test/speckit_orchestrator/feature_test.exs`,
+      `test/autonomous/feature_test.exs`,
       `run_context_test.exs`, `console_read_model_test.exs`,
       `record_recovery_test.exs`, `recovery_test.exs`,
       `recovery/reconcile_test.exs`, `store_capacity_test.exs`,
@@ -472,9 +472,9 @@ fixture/assertion cleanup the plan calls out as touching ~40 further files.
 
 ```bash
 # Launch the three recovery edits together (different files):
-Task: "Edit lib/speckit_orchestrator/recovery/reconcile.ex — drop :blocked handling"
-Task: "Edit lib/speckit_orchestrator/recovery/rebuild.ex — drop prereq consistency check"
-Task: "Edit lib/speckit_orchestrator/recovery/report.ex — remove :blocked"
+Task: "Edit lib/autonomous/recovery/reconcile.ex — drop :blocked handling"
+Task: "Edit lib/autonomous/recovery/rebuild.ex — drop prereq consistency check"
+Task: "Edit lib/autonomous/recovery/report.ex — remove :blocked"
 
 # Launch the three coordinator test additions together (different assertions,
 # same file — run sequentially against coordinator_test.exs, or split into
@@ -493,7 +493,7 @@ Task: "Publication fails for a completed feature"
 1. Complete Phase 1: Setup
 2. Complete Phase 2: Foundational (CRITICAL — blocks everything)
 3. Complete Phase 3: User Story 1
-4. **STOP and VALIDATE**: `mise exec -- mix test test/speckit_orchestrator/retired_settings_test.exs test/speckit_orchestrator/stacked_run_test.exs`
+4. **STOP and VALIDATE**: `mise exec -- mix test test/autonomous/retired_settings_test.exs test/autonomous/stacked_run_test.exs`
 5. This alone delivers SC-001 and SC-005 — zero run-shape decisions, no
    surface accepts a retired setting.
 

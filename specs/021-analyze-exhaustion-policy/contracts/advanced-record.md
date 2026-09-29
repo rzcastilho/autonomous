@@ -282,7 +282,7 @@ follows):
 
 ## Advanced with unresolved analyze findings
 
-This branch was built by `speckit_orchestrator` with
+This branch was built by `autonomous` with
 `auto_remediation_exhaustion_policy: proceed`. Auto-remediation used 2 of 2
 attempts and did not clear the findings below; the analyze gate was permitted to
 advance instead of escalating to a human. **These findings are unresolved in this
@@ -298,7 +298,7 @@ Pure and total: `nil` ⇒ `""`, so the call site is unconditional.
 
 ### 5.2 Call site
 
-`SpeckitOrchestrator.pr_text/2` appends it to **both** branches — the
+`Autonomous.pr_text/2` appends it to **both** branches — the
 Claude-authored `pr_description` and the template fallback — reading the
 annotation from the same `Store.run/1` detail it already reads for
 `pr_description`:

@@ -12,13 +12,13 @@ Context entry remains `NEEDS CLARIFICATION`.
 
 **Decision**: The disagreement is one line, and it is in the pure layer.
 
-Both paths converge on `SpeckitOrchestrator.run/1` with an injected executor,
+Both paths converge on `Autonomous.run/1` with an injected executor,
 but they resolve the start phase from different sources:
 
 | Path | Entry | Start phase comes from |
 |---|---|---|
-| single feature | `SpeckitOrchestrator.resume/2` (`lib/speckit_orchestrator.ex:638`) | `resolve_start_phase(feature_record.checkpoint, opts)` — the **checkpoint** |
-| whole run | `SpeckitOrchestrator.resume_run/1` → `dispatch_resume/7` (`lib/speckit_orchestrator.ex:1495`) | `resume_phases[feature.id]`, passed as `from:` into the *same* `resolve_start_phase/2` — and `:from` **wins over** the checkpoint (`lib/speckit_orchestrator.ex:1645`) |
+| single feature | `Autonomous.resume/2` (`lib/autonomous.ex:638`) | `resolve_start_phase(feature_record.checkpoint, opts)` — the **checkpoint** |
+| whole run | `Autonomous.resume_run/1` → `dispatch_resume/7` (`lib/autonomous.ex:1495`) | `resume_phases[feature.id]`, passed as `from:` into the *same* `resolve_start_phase/2` — and `:from` **wins over** the checkpoint (`lib/autonomous.ex:1645`) |
 
 `resume_phases` is built by `Recovery.plan_run/2` from
 `Reconcile.status/3` clause 5:
@@ -257,7 +257,7 @@ never-started) needs no change at all.
 ## R7 — Best practice for the regression guard FR-014/SC-004 demands
 
 **Decision**: assert byte-identical reconciliation over the existing
-`test/speckit_orchestrator/recovery/reconcile_test.exs` corpus by running
+`test/autonomous/recovery/reconcile_test.exs` corpus by running
 every existing case a second time with `checkpoint: nil` *and* with the
 checkpoint the writer would have produced at that same boundary, and
 asserting both give today's answer.

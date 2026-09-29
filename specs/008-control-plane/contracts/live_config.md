@@ -10,7 +10,7 @@ the drain-don't-kill invariants (Constitution IV).
 
 | Setting | Mechanism | Forward-only because | Reflected in |
 |---------|-----------|----------------------|--------------|
-| Per-phase model (`opus`/`sonnet`) | `Application.put_env(:speckit_orchestrator, :models, updated)` | `Config.model_for/1` is read per phase inside `FeatureRunner` at phase start | Config view; next phase's `[:phase, :start]` `meta.model` |
+| Per-phase model (`opus`/`sonnet`) | `Application.put_env(:autonomous, :models, updated)` | `Config.model_for/1` is read per phase inside `FeatureRunner` at phase start | Config view; next phase's `[:phase, :start]` `meta.model` |
 | Budget (USD) | **`Ledger.set_budget(server, amount)`** (new) — `GenServer.call` updating `state.budget` | breaker decisions (`reserve`, `breaker_tripped?`) read `state.budget` on the next call | status-bar gauge, `Ledger.snapshot/1` |
 | Max concurrency | **`Coordinator.set_cap(server, n)`** (new) — `GenServer.call` updating `state.cap`; also mirror to app env | `Release.next_wave` reads `state.cap` at the next wave computation | status bar, next wave size |
 | PR workflow on/off | `Application.put_env(:pr_workflow, bool)` | consulted at run start / release strategy | forces **effective cap 1** (surfaced) |

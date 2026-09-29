@@ -1,0 +1,499 @@
+defmodule Autonomous.Web.RunDetailLive do
+  @moduledoc """
+  US3 — Run Detail (`/runs/:run_id`, 018 contracts/console-runs.md): one
+  run's full record — settings, amendments, and per feature its phase
+  attempts (execution order), escalations, remediation attempts, and
+  checkpoint — from one place, without hunting across worktree/transcript
+  directories. Calls `Autonomous.run_detail/2` and, only when the
+  operator opens a specific attempt, `transcript/1` (FR-036, SC-009) — no
+  query logic of its own (FR-030c).
+
+  Actions: export the run (`export_run/3`, written under
+  `<autonomous_root>/exports/`) and annotate an open escalation
+  (`resolve_escalation/2`, FR-026 — records a resolution, never deletes the
+  entry). Recovery itself is *not* an action here: a diverted feature's
+  checkpoint links to `/escalations`, which owns `resume/2` and full restart.
+  """
+
+  use Autonomous.Web, :live_view
+
+  alias Autonomous.{Config, Containment, ConsoleProjection, PublishOutcome}
+
+  @impl true
+  def mount(%{"run_id" => run_id}, _session, socket) do
+    if connected?(socket) do
+      Phoenix.PubSub.subscribe(Autonomous.PubSub, ConsoleProjection.topic())
+    end
+
+    {:ok,
+     socket
+     |> assign(
+       page_title: "Run #{run_id}",
+       current_path: "/runs",
+       run_id: run_id,
+       transcript: nil
+     )
+     |> refresh()}
+  end
+
+  @impl true
+  def handle_info({:console, _kind, _payload}, socket), do: {:noreply, refresh(socket)}
+
+  defp refresh(socket) do
+    case Autonomous.run_detail(socket.assigns.run_id) do
+      {:ok, detail} -> assign(socket, detail: detail, error: nil)
+      {:error, reason} -> assign(socket, detail: nil, error: reason)
+    end
+  end
+
+  @impl true
+  # The row's Transcript button is a disclosure, not a one-way open: clicking
+  # the attempt whose transcript is already showing collapses it. The panel
+  # therefore needs no close affordance of its own — the control that opened it
+  # is the control that closes it, and it stays on the row it belongs to.
+  def handle_event("toggle_transcript", %{"ref" => ref}, socket) do
+    if showing?(socket, ref) do
+      {:noreply, assign(socket, transcript: nil)}
+    else
+      attempt_id = decode_attempt_ref(socket.assigns.run_id, ref)
+
+      transcript =
+        case Autonomous.transcript(attempt_id) do
+          {:ok, t} -> Map.from_struct(t)
+          {:error, reason} -> %{error: reason}
+        end
+
+      {:noreply, assign(socket, transcript: Map.put(transcript, :ref, ref))}
+    end
+  end
+
+  def handle_event("resolve_escalation", %{"ref" => ref} = params, socket) do
+    escalation_id = decode_escalation_ref(socket.assigns.run_id, ref)
+    note = blank_to_nil(Map.get(params, "note"))
+
+    case Autonomous.resolve_escalation(escalation_id, note: note) do
+      :ok ->
+        {:noreply, socket |> put_flash(:info, "Escalation resolved") |> refresh()}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Resolve failed: #{inspect(reason)}")}
+    end
+  end
+
+  def handle_event("export", _params, socket) do
+    dir = Path.join(Config.autonomous_root(), "exports")
+    File.mkdir_p!(dir)
+    path = Path.join(dir, "#{socket.assigns.run_id}-#{System.system_time(:second)}.json")
+
+    case Autonomous.export_run(socket.assigns.run_id, path) do
+      {:ok, path} ->
+        {:noreply, put_flash(socket, :info, "Exported to #{path}")}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Export failed: #{inspect(reason)}")}
+    end
+  end
+
+  defp blank_to_nil(nil), do: nil
+  defp blank_to_nil(s), do: if(String.trim(s) == "", do: nil, else: s)
+
+  # ---- attempt / escalation ref encoding -----------------------------------
+  #
+  # `attempt_id`/escalation `id` are repo-scoped tuples; the page already
+  # knows `repo_id`/`run_id` (they're this page's own scope), so the wire
+  # format carries only the parts a click can't already supply.
+
+  defp attempt_ref(attempt),
+    do: "#{attempt.feature_key |> elem(2)}::#{attempt.phase}::#{attempt.ordinal}"
+
+  defp decode_attempt_ref(run_id, ref) do
+    [feature_id, phase, ordinal] = String.split(ref, "::", parts: 3)
+    {repo_id(), run_id, feature_id, safe_atom(phase), String.to_integer(ordinal)}
+  end
+
+  defp escalation_ref(escalation), do: "#{escalation.feature_id}::#{escalation.id |> elem(3)}"
+
+  defp decode_escalation_ref(run_id, ref) do
+    [feature_id, ordinal] = String.split(ref, "::", parts: 2)
+    {repo_id(), run_id, feature_id, String.to_integer(ordinal)}
+  end
+
+  # One transcript is open at a time, keyed by its attempt ref — the same
+  # predicate the row's disclosure state and the toggle handler both read, so
+  # the button's `aria-expanded` cannot drift from what is actually rendered.
+  defp showing?(%{assigns: assigns}, ref), do: showing?(assigns, ref)
+  defp showing?(%{transcript: %{ref: ref}}, ref), do: true
+  defp showing?(_assigns, _ref), do: false
+
+  defp repo_id, do: Autonomous.RepoIdentity.partition(Config.repo())
+
+  defp safe_atom(s), do: String.to_existing_atom(s)
+
+  # ---- resolution + recovery affordances ------------------------------------
+
+  # `resolve_escalation/2` (FR-026) records `by` and `note` alongside
+  # `resolved_at`, but only the timestamp was ever rendered — the operator's
+  # own account of *why* they closed the escalation was reachable nowhere but
+  # `Store.Export`'s JSON. Surfaced here so the console shows what it stores.
+  defp resolution_detail(%{resolution: %{} = resolution}) do
+    for key <- [:by, :note],
+        value = blank_to_nil(to_string(Map.get(resolution, key) || "")),
+        do: {key, value}
+  end
+
+  defp resolution_detail(_escalation), do: []
+
+  # This page is the post-mortem, not a control surface: recovery forms live
+  # once, on `/escalations` (018, T046-T050). A diverted feature's checkpoint
+  # links out to them rather than duplicating `resume/2`'s guidance,
+  # start-phase override, and task-phase picker in a second LiveView —
+  # `FeatureDrawerComponent` links out from the drawer for the same reason.
+  defp diverted?(%{status: status}), do: status in [:escalated, :halted, :failed]
+  defp diverted?(_feature), do: false
+
+  # ---- advanced-with-findings (021, contracts/advanced-record.md §4.2) ------
+
+  defp finding_severity(finding), do: Map.get(finding, "severity", "unknown")
+
+  defp finding_text(finding),
+    do: Map.get(finding, "title") || Map.get(finding, "detail") || inspect(finding)
+
+  # ---- interactive clarify round history (029, FR-015) -----------------------
+
+  defp clarify_answer_text({:typed, text}), do: text
+  defp clarify_answer_text({:default, text}), do: text
+  defp clarify_answer_text(_other), do: ""
+
+  defp clarify_outcome_label(:timed_out), do: "timed out"
+  defp clarify_outcome_label(:breaker), do: "breaker"
+  defp clarify_outcome_label(:drained), do: "drained"
+  defp clarify_outcome_label(:interrupted), do: "interrupted"
+  defp clarify_outcome_label(other), do: to_string(other)
+
+  defp clarify_exhausted_evidence(f) do
+    Enum.find_value(f.escalations, fn
+      %{reason: {:needs_human, :rounds_exhausted}, evidence: evidence} -> evidence
+      _ -> nil
+    end)
+  end
+
+  defp clarify_exhausted_label(f) do
+    max_rounds = f.clarify_rounds |> List.last() |> Map.get(:max_rounds)
+    "rounds exhausted — #{clarify_exhausted_evidence(f).rounds_used} of #{max_rounds} used"
+  end
+
+  # ---- render ---------------------------------------------------------------
+
+  @impl true
+  def render(assigns) do
+    ~H"""
+    <div class="view-run-detail" data-view="run-detail">
+      <p :if={@error} class="field-error" data-error={inspect(@error)}>
+        Run {@run_id} unavailable ({inspect(@error)}).
+      </p>
+
+      <div :if={@detail} data-run-detail={@run_id}>
+        <.run_header run={@detail.run} settings={@detail.settings} amendments={@detail.amendments} />
+
+        <div class="run-detail-actions">
+          <button type="button" phx-click="export" class="btn-secondary" data-action="export">
+            Export run
+          </button>
+        </div>
+
+        <div :for={f <- @detail.features} class="escalation-card" data-feature={f.feature_id}>
+          <div class="escalation-card-head">
+            <span class="escalation-title">
+              {f.feature_id} · {f.slug} · spec {spec_label(f.spec_number)}
+            </span>
+            <.status_pill status={f.status} />
+            <span :if={f.terminal_reason} class="escalation-reason">
+              reason: {format_reason(f.terminal_reason)}
+            </span>
+          </div>
+
+          <div class="escalation-card-body">
+            <table class="backlog-table" data-table="phase-attempts">
+              <thead>
+                <tr>
+                  <th>Phase</th>
+                  <th>Outcome</th>
+                  <th>Model</th>
+                  <th>Cost</th>
+                  <th>Duration</th>
+                  <th>Started</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                <%= for a <- f.phase_attempts do %>
+                  <tr data-attempt={attempt_ref(a)}>
+                    <td>{a.phase} #{pad_ordinal(a.ordinal)}</td>
+                    <td>{a.outcome}</td>
+                    <td>{a.model}</td>
+                    <td>${format_money(a.cost_usd)}</td>
+                    <td>{format_elapsed(a.duration_ms)}</td>
+                    <td>{format_datetime(a.started_at)}</td>
+                    <td>
+                      <button
+                        type="button"
+                        phx-click="toggle_transcript"
+                        phx-value-ref={attempt_ref(a)}
+                        class="btn-secondary"
+                        data-action={"transcript-#{attempt_ref(a)}"}
+                        aria-expanded={to_string(showing?(assigns, attempt_ref(a)))}
+                      >
+                        Transcript
+                      </button>
+                    </td>
+                  </tr>
+                  <tr
+                    :if={@transcript && @transcript.ref == attempt_ref(a)}
+                    class="transcript-row"
+                    data-transcript-row={attempt_ref(a)}
+                  >
+                    <td colspan="7">
+                      <div class="transcript-panel" data-transcript={@transcript.ref}>
+                        <div class="checkpoint-box-label">TRANSCRIPT</div>
+                        <p :if={@transcript[:error]} class="field-error">
+                          {inspect(@transcript.error)}
+                        </p>
+                        <pre :if={@transcript[:body]} class="transcript-body">{@transcript.body}</pre>
+                      </div>
+                    </td>
+                  </tr>
+                <% end %>
+              </tbody>
+            </table>
+
+            <div :if={f.checkpoint} class="checkpoint-box" data-checkpoint="ok">
+              <div class="checkpoint-box-label"><span class="checkpoint-dot"></span> CHECKPOINT</div>
+              <dl class="checkpoint-fields">
+                <dt>phase</dt>
+                <dd>{f.checkpoint.phase}</dd>
+                <dt>status</dt>
+                <dd>{f.checkpoint.status}</dd>
+                <dt>reason</dt>
+                <dd>{inspect(f.checkpoint.reason)}</dd>
+              </dl>
+              <a
+                :if={diverted?(f)}
+                href={"/escalations#escalation-#{f.feature_id}"}
+                class="btn-secondary"
+                data-action="run-detail-resume"
+              >
+                resume/2 from checkpoint
+              </a>
+            </div>
+
+            <div :if={f.remediation_attempts != []} data-remediation-attempts>
+              <div class="run-context-label">REMEDIATION ATTEMPTS</div>
+              <div :for={r <- f.remediation_attempts} class="run-context" data-remediation={r.ordinal}>
+                <span class="run-context-chip">
+                  #{pad_ordinal(r.ordinal)} severity=<span>{r.max_severity}</span>
+                  outcome=<span>{r.outcome}</span>
+                  limit=<span>{r.attempt_limit}</span>
+                  threshold=<span>{r.threshold}</span>
+                  cost=<span>${format_money(r.cost_usd)}</span>
+                </span>
+              </div>
+            </div>
+
+            <div :if={f.clarify_rounds != []} data-clarify-rounds>
+              <div class="run-context-label">INTERACTIVE CLARIFY</div>
+              <div :for={r <- f.clarify_rounds} class="clarify-block" data-round={r.round}>
+                <div>
+                  round {r.round}/{r.max_rounds} · asked {format_datetime(r.started_at)}
+                </div>
+                <details>
+                  <summary>questions</summary>
+                  <pre>{r.questions_raw}</pre>
+                </details>
+                <div :if={r.outcome == :answered}>
+                  <div :for={{qid, ans} <- r.answers || %{}} class="run-context">
+                    <span class="run-context-chip">
+                      {qid}: {clarify_answer_text(ans)}
+                      <span :if={match?({:default, _}, ans)}>(accepted recommended)</span>
+                    </span>
+                  </div>
+                  <div class="field-hint">
+                    answered {format_datetime(r.answered_at)} via {r.answered_via}
+                  </div>
+                </div>
+                <span :if={r.outcome not in [:answered, :open]} class="badge badge-neutral">
+                  {clarify_outcome_label(r.outcome)}
+                </span>
+              </div>
+
+              <div :if={clarify_exhausted_evidence(f)} class="clarify-block" data-round="exhausted">
+                {clarify_exhausted_label(f)}
+              </div>
+            </div>
+
+            <div :if={f.advanced_with_findings} data-advanced-with-findings>
+              <div class="run-context-label">ADVANCED WITH UNRESOLVED FINDINGS</div>
+              <div class="run-context">
+                <span class="run-context-chip">
+                  auto_remediation_exhaustion_policy: {f.advanced_with_findings.policy}
+                </span>
+                <span class="run-context-chip">
+                  attempts: {f.advanced_with_findings.attempts_used}/{f.advanced_with_findings.attempt_limit}
+                </span>
+                <span class="run-context-chip">threshold: {f.advanced_with_findings.threshold}</span>
+              </div>
+              <div
+                :for={finding <- f.advanced_with_findings.findings}
+                class="run-context"
+                data-severity={finding_severity(finding)}
+              >
+                <span class="run-context-chip">
+                  {finding_severity(finding)} — {finding_text(finding)}
+                </span>
+              </div>
+            </div>
+
+            <div :if={f.escalations != []} data-escalations>
+              <div class="run-context-label">ESCALATIONS</div>
+              <div
+                :for={e <- f.escalations}
+                class="clarify-block"
+                data-escalation={escalation_ref(e)}
+              >
+                <div>
+                  {e.kind} at {e.phase}
+                  <span :if={e.severity}>· severity {e.severity}</span>
+                  <span :if={e.resolution} class="badge badge-neutral" data-marker="resolved">
+                    resolved {format_datetime(e.resolution[:resolved_at])}
+                  </span>
+                </div>
+                <pre>reason: {inspect(e.reason)} / evidence: {inspect(e.evidence)}</pre>
+
+                <div
+                  :if={resolution_detail(e) != []}
+                  class="run-context"
+                  data-resolution={escalation_ref(e)}
+                >
+                  <span :for={{label, value} <- resolution_detail(e)} class="run-context-chip">
+                    {label}: <span>{value}</span>
+                  </span>
+                </div>
+
+                <form
+                  :if={!e.resolution}
+                  phx-submit="resolve_escalation"
+                  class="resume-form"
+                  data-form={"resolve-#{escalation_ref(e)}"}
+                >
+                  <input type="hidden" name="ref" value={escalation_ref(e)} />
+                  <label class="field-label">
+                    Note
+                    <textarea name="note" phx-debounce="200" class="resume-textarea"></textarea>
+                  </label>
+                  <button type="submit" class="btn-primary" data-action={"resolve-#{escalation_ref(e)}"}>
+                    &check; resolve_escalation/2
+                  </button>
+                  <span class="action-hint">
+                    records this note against the escalation — does not restart the feature
+                  </span>
+                </form>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    """
+  end
+
+  attr(:run, :map, required: true)
+  attr(:settings, :map, required: true)
+  attr(:amendments, :list, required: true)
+
+  # 030, contracts/operator-surfaces.md: the generic SETTINGS chip list skips
+  # `containment_profile` when strict — a dedicated CONTAINMENT block covers
+  # the permissive case, so the strict view stays byte-identical to pre-030.
+  # Recorded settings carry string keys in production (`RunContext.to_map/1`)
+  # but existing tests seed this map with atom keys, so both are checked.
+  defp settings_chips(settings) do
+    if Containment.permissive?(containment_profile(settings)) do
+      settings
+    else
+      settings |> Map.delete("containment_profile") |> Map.delete(:containment_profile)
+    end
+  end
+
+  defp containment_profile(settings) do
+    Map.get(settings, "containment_profile") || Map.get(settings, :containment_profile)
+  end
+
+  defp run_header(assigns) do
+    ~H"""
+    <div class="escalations-intro" data-run-header>
+      <div class="escalations-title">
+        Run {@run.run_id}
+        <span :if={not @run.record_complete?} class="badge badge-warn" data-marker="incomplete">
+          incomplete
+        </span>
+      </div>
+      <div class="escalations-sub">
+        {@run.state} · {@run.outcome || "—"} · started {format_datetime(@run.started_at)}
+        · {format_elapsed(@run.duration_ms)} · ${format_money(@run.spend_usd)}
+        <span :if={@run.halt_reason}>· halted: {inspect(@run.halt_reason)}</span>
+        <span :if={@run.stopped_by} data-marker="stopped-by">
+          · stopped at {@run.stopped_by} ({format_reason(@run.stopped_reason)})
+        </span>
+      </div>
+
+      <div class="run-context-label">SETTINGS</div>
+      <div class="run-context">
+        <span :for={{k, v} <- settings_chips(@settings)} class="run-context-chip">
+          {k}=<span>{inspect(v)}</span>
+        </span>
+      </div>
+
+      <div :if={Containment.permissive?(containment_profile(@settings))} data-containment>
+        <div class="run-context-label">CONTAINMENT</div>
+        <div class="run-context">
+          <span class="run-context-chip">
+            containment_profile=<span>permissive</span>
+          </span>
+        </div>
+        <div class="escalations-sub">
+          See docs/enforcement.md for what the permissive profile relaxes.
+        </div>
+      </div>
+
+      <div :if={@amendments != []} data-amendments>
+        <div class="run-context-label">AMENDMENTS</div>
+        <div :for={a <- @amendments} class="run-context" data-amendment={a.ordinal}>
+          <span class="run-context-chip">
+            #{pad_ordinal(a.ordinal)} {format_datetime(a.effective_at)} after=<span>{inspect(a.effective_after)}</span>
+            changes=<span>{inspect(a.changes)}</span>
+          </span>
+        </div>
+      </div>
+    </div>
+    """
+  end
+
+  defp format_datetime(nil), do: "—"
+  defp format_datetime(%DateTime{} = dt), do: Calendar.strftime(dt, "%Y-%m-%d %H:%M:%S")
+
+  # Same zero-padding as `Feature.spec_label/1` — this feature row comes from
+  # a store query (a plain map), not a `%Feature{}` struct, so the accessor
+  # itself doesn't apply here. "not allocated" before the feature has run its
+  # first phase (022).
+  defp spec_label(nil), do: "not allocated"
+  defp spec_label(n) when is_integer(n), do: String.pad_leading(Integer.to_string(n), 3, "0")
+
+  # `{:empty_checkpoint, phase}` (net two) reads distinctly from
+  # `{:missing_artifact, phase, artifact}` — same phase, different failure:
+  # the phase committed no change at all, vs. it wrote something that isn't
+  # the named artifact. A publish-failed/branch-drift reason (027) renders via
+  # `PublishOutcome.describe/1`, tried first. Every other reason renders as
+  # before (FR-013).
+  defp format_reason(reason), do: PublishOutcome.describe(reason) || format_legacy_reason(reason)
+
+  defp format_legacy_reason({:empty_checkpoint, phase}), do: "#{phase} committed no change"
+  defp format_legacy_reason(reason), do: inspect(reason)
+end

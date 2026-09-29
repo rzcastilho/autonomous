@@ -1,4 +1,4 @@
-# Contract: `SpeckitOrchestrator.resume/2`
+# Contract: `Autonomous.resume/2`
 
 The operator entry point that restarts one halted/escalated feature at its
 checkpointed phase. CLI/facade contract (this project exposes an `iex` operator

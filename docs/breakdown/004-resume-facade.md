@@ -2,14 +2,14 @@
 
 ## Summary
 
-Add the operator entry point `SpeckitOrchestrator.resume/2` that restarts a
+Add the operator entry point `Autonomous.resume/2` that restarts a
 halted/escalated feature at its checkpointed phase, reusing the feature branch
 and the human's committed fix, with an optional guidance prompt.
 
 ## Context
 
-`SpeckitOrchestrator.resolve/1` only removes the kept worktree, so the next
-`run/1` re-runs the whole pipeline from `specify` (`speckit_orchestrator.ex:115-134`).
+`Autonomous.resolve/1` only removes the kept worktree, so the next
+`run/1` re-runs the whole pipeline from `specify` (`autonomous.ex:115-134`).
 With checkpoint persistence (001), the resume entry point (002), and prompt
 injection (003) in place, a surgical resume path can restart at the halted phase
 instead of the beginning.
@@ -17,7 +17,7 @@ instead of the beginning.
 ## User value
 
 An operator resolves the cause on the feature branch, then runs
-`SpeckitOrchestrator.resume(id, prompt: "...")` and the feature resumes at its
+`Autonomous.resume(id, prompt: "...")` and the feature resumes at its
 halted phase — no re-`specify`, no clobbering the human's edits, no re-paying
 already-committed phases.
 
@@ -29,7 +29,7 @@ already-committed phases.
 
 ## In scope
 
-- New `SpeckitOrchestrator.resume(feature_id, opts \\ [])`:
+- New `Autonomous.resume(feature_id, opts \\ [])`:
   - `:prompt` — operator guidance injected into the resume phase (optional).
   - `:from` — override the start phase (default: `checkpoint.last_phase`).
   - plus the same run opts as `run/1`.
@@ -59,7 +59,7 @@ already-committed phases.
 ## Technical notes
 
 - Mirror the one-feature-wave + runner-wrapper pattern already proven by
-  `run_spec` / `seed_runner` / `run_seeded` (`speckit_orchestrator.ex:85-102,
+  `run_spec` / `seed_runner` / `run_seeded` (`autonomous.ex:85-102,
   247-289`).
 - Branch reuse on worktree recreate is handled by `Worktree.create`
   (`worktree.ex:154-168`).

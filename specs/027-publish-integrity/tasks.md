@@ -27,11 +27,11 @@
 
 **⚠️ CRITICAL**: US1 and US2 both call into `Worktree` helpers added here; US1's surfaces depend on `PublishOutcome`. Complete this phase first.
 
-- [X] T002 [P] Add `Worktree.current_branch/1` in `lib/speckit_orchestrator/worktree.ex` — `git symbolic-ref --quiet --short HEAD`, fallback `git rev-parse --short HEAD` for `{:detached, sha}`, `{:error, reason}` if both fail (contracts/branch-guard.md §2)
-- [X] T003 [P] Add `Worktree.commits_beyond/3` in `lib/speckit_orchestrator/worktree.ex` — `git rev-list --count <base>..<branch>` in the base repo, returns `{:ok, count, %{branch_sha, base_sha}}` or `{:error, term}` (contracts/publish-outcome.md §1, data-model.md)
-- [X] T004 [P] Add `Worktree.branch_name/1` in `lib/speckit_orchestrator/worktree.ex` — single source of truth `"feature/#{Feature.spec_id(feature)}-#{slug}"`, reused by `locate/2` and the specify prompt (contracts/specify-branch-pin.md)
-- [X] T005 [P] Create `SpeckitOrchestrator.BranchGuard` in `lib/speckit_orchestrator/branch_guard.ex` — pure `check/2`: `:ok` on match, `{:drift, %{expected, observed}}` otherwise, no side effects (contracts/branch-guard.md §1)
-- [X] T006 [P] Create `SpeckitOrchestrator.PublishOutcome` in `lib/speckit_orchestrator/publish_outcome.ex` — pure `describe/1` for `{:publish_failed, kind, detail}` and `{:branch_drift, phase, d}` per the exact-string table, `nil` for anything else (contracts/operator-surfaces.md)
+- [X] T002 [P] Add `Worktree.current_branch/1` in `lib/autonomous/worktree.ex` — `git symbolic-ref --quiet --short HEAD`, fallback `git rev-parse --short HEAD` for `{:detached, sha}`, `{:error, reason}` if both fail (contracts/branch-guard.md §2)
+- [X] T003 [P] Add `Worktree.commits_beyond/3` in `lib/autonomous/worktree.ex` — `git rev-list --count <base>..<branch>` in the base repo, returns `{:ok, count, %{branch_sha, base_sha}}` or `{:error, term}` (contracts/publish-outcome.md §1, data-model.md)
+- [X] T004 [P] Add `Worktree.branch_name/1` in `lib/autonomous/worktree.ex` — single source of truth `"feature/#{Feature.spec_id(feature)}-#{slug}"`, reused by `locate/2` and the specify prompt (contracts/specify-branch-pin.md)
+- [X] T005 [P] Create `Autonomous.BranchGuard` in `lib/autonomous/branch_guard.ex` — pure `check/2`: `:ok` on match, `{:drift, %{expected, observed}}` otherwise, no side effects (contracts/branch-guard.md §1)
+- [X] T006 [P] Create `Autonomous.PublishOutcome` in `lib/autonomous/publish_outcome.ex` — pure `describe/1` for `{:publish_failed, kind, detail}` and `{:branch_drift, phase, d}` per the exact-string table, `nil` for anything else (contracts/operator-surfaces.md)
 - [X] T007 [P] `branch_guard_test.exs` — exhaustive table: same branch → `:ok`; different branch / `{:detached, sha}` → `{:drift, …}` (quickstart.md)
 - [X] T008 [P] Extend `worktree_test.exs` against a real temp git repo — `current_branch/1` (named branch, detached), `commits_beyond/3` (count 0, count >0, unreadable ref) (quickstart.md)
 - [X] T009 [P] `publish_outcome_test.exs` — exact-string table for all four tags plus `nil` fallback (quickstart.md, contracts/operator-surfaces.md)
@@ -48,12 +48,12 @@
 
 ### Implementation for User Story 1
 
-- [X] T010 [US1] Normalize the real publisher in `publish_feature/3` (`lib/speckit_orchestrator.ex`): short-circuit on an already-recorded `pr_url`; call `Worktree.commits_beyond/3` first and return `{:error, {:publish_failed, :empty_branch, %{branch, base, branch_sha, base_sha}}}` on zero, before any push or `gh` call (contracts/publish-outcome.md §1, data-model.md)
+- [X] T010 [US1] Normalize the real publisher in `publish_feature/3` (`lib/autonomous.ex`): short-circuit on an already-recorded `pr_url`; call `Worktree.commits_beyond/3` first and return `{:error, {:publish_failed, :empty_branch, %{branch, base, branch_sha, base_sha}}}` on zero, before any push or `gh` call (contracts/publish-outcome.md §1, data-model.md)
 - [X] T011 [US1] In the same function, normalize `Worktree.push/2` failures to `{:error, {:publish_failed, :push_failed, %{branch, remote, output}}}` and `PullRequest.open/2`'s `{:gh_failed, code, out}` to `{:error, {:publish_failed, :pr_failed, %{branch, base, exit: code, output: out}}}` (contracts/publish-outcome.md §1)
-- [X] T012 [US1] In `pr_notify/5` (`lib/speckit_orchestrator.ex`), on a backlog feature's `{:error, pf}`: normalize a non-tagged seam error via the `:publish_failed :pr_failed` wrap, `record_feature_terminal(id, :failed, pf)` (keep `pr_description`), skip `StackTracker.push/2`, forward `(id, :failed, pf)`, log a warning, emit `[:speckit, :publish, :failed]` with `%{feature_id, kind, reason}` (contracts/publish-outcome.md §2, FR-002, FR-003, FR-004)
+- [X] T012 [US1] In `pr_notify/5` (`lib/autonomous.ex`), on a backlog feature's `{:error, pf}`: normalize a non-tagged seam error via the `:publish_failed :pr_failed` wrap, `record_feature_terminal(id, :failed, pf)` (keep `pr_description`), skip `StackTracker.push/2`, forward `(id, :failed, pf)`, log a warning, emit `[:speckit, :publish, :failed]` with `%{feature_id, kind, reason}` (contracts/publish-outcome.md §2, FR-002, FR-003, FR-004)
 - [X] T013 [US1] In `pr_notify/5`, preserve ad-hoc behavior unchanged: publish failure logs + emits `[:speckit, :publish, :failed]`, forwards `(id, :done, reason)`, no store rewrite, no parking (FR-007, contracts/publish-outcome.md §2 row 4)
-- [X] T014 [US1] Fix `stack_seed/1` (`lib/speckit_orchestrator.ex`) to map each chain feature through `Worktree.locate(feature, opts).branch` (spec_id-based) instead of the backlog `number` (contracts/publish-outcome.md §5, data-model.md, research.md R8)
-- [X] T015 [US1] Add the publish-only continue route in `resume/2` (`lib/speckit_orchestrator.ex`): detect `feature_record.status == :failed` with `terminal_reason` matching `{:publish_failed, _, _}`; return `{:error, {:publish_only, feature_id}}` if `:from`/`:prompt`/`:from_task_phase`/`:remediation_prompt`/`:remediation_model` supplied; otherwise skip `resolve_start_phase/2`, restore run scope, inject the publish-only executor (`Workers.spawn/3` notifying `:done, :republish`) so `run_stacked/4`'s `pr_notify` wrapper drives the ordinary publish path (contracts/publish-outcome.md §4, R7)
+- [X] T014 [US1] Fix `stack_seed/1` (`lib/autonomous.ex`) to map each chain feature through `Worktree.locate(feature, opts).branch` (spec_id-based) instead of the backlog `number` (contracts/publish-outcome.md §5, data-model.md, research.md R8)
+- [X] T015 [US1] Add the publish-only continue route in `resume/2` (`lib/autonomous.ex`): detect `feature_record.status == :failed` with `terminal_reason` matching `{:publish_failed, _, _}`; return `{:error, {:publish_only, feature_id}}` if `:from`/`:prompt`/`:from_task_phase`/`:remediation_prompt`/`:remediation_model` supplied; otherwise skip `resolve_start_phase/2`, restore run scope, inject the publish-only executor (`Workers.spawn/3` notifying `:done, :republish`) so `run_stacked/4`'s `pr_notify` wrapper drives the ordinary publish path (contracts/publish-outcome.md §4, R7)
 - [X] T016 [US1] `stacked_run_test.exs`: publisher returns `{:error, _}` for feature 1 → feature 2 never released, run parked, `stopped_by.reason` is `{:publish_failed, …}`, tracker chain excludes feature 1 (quickstart.md)
 - [X] T017 [P] [US1] `stacked_run_test.exs`: ad-hoc feature publish failure → run continues, ad-hoc feature is `:done` (quickstart.md, FR-007)
 - [X] T018 [P] [US1] `stacked_run_test.exs` with a real temp repo: branch == base → `{:publish_failed, :empty_branch, _}`, no push attempted (quickstart.md, FR-001)
@@ -61,9 +61,9 @@
 - [X] T020 [P] [US1] `resume_test.exs`: `continue_run/1` with `pr_url` pre-recorded via `record_pr/3` → publisher never called (quickstart.md, R7)
 - [X] T021 [P] [US1] `resume_test.exs`: `resume/2` with `:from` on a publish-failed feature → `{:error, {:publish_only, id}}` (quickstart.md, R7)
 - [X] T022 [P] [US1] Stacked test: `stack_seed/1` with `spec_number ≠ number` → chain entries are `feature/<spec_id>-<slug>` (quickstart.md, R8)
-- [X] T023 [US1] Wire operator surfaces for publish failures: `Report.format_reason/1` delegates to `PublishOutcome.describe/1 || inspect/1` (`lib/speckit_orchestrator/report.ex`); `Telemetry.attach_default_logger/0` logs `describe/1` of the reason (`lib/speckit_orchestrator/telemetry.ex`) (contracts/operator-surfaces.md, FR-004)
-- [X] T024 [US1] Wire the three console `inspect(stopped_reason)` sites to describe-or-inspect: `MissionControlLive` parked banner, `RunDetailLive` run header, `RunsLive` row (`lib/speckit_orchestrator/web/live/{mission_control,run_detail,runs}_live.ex`) — reuse the existing mono span, no new CSS literal (contracts/operator-surfaces.md, design-contract discipline)
-- [X] T025 [US1] Wire `RunDetailLive`'s local feature-row `format_reason/1` to try `PublishOutcome.describe/1` first, then its existing clauses (`lib/speckit_orchestrator/web/live/run_detail_live.ex`) (contracts/operator-surfaces.md, FR-005)
+- [X] T023 [US1] Wire operator surfaces for publish failures: `Report.format_reason/1` delegates to `PublishOutcome.describe/1 || inspect/1` (`lib/autonomous/report.ex`); `Telemetry.attach_default_logger/0` logs `describe/1` of the reason (`lib/autonomous/telemetry.ex`) (contracts/operator-surfaces.md, FR-004)
+- [X] T024 [US1] Wire the three console `inspect(stopped_reason)` sites to describe-or-inspect: `MissionControlLive` parked banner, `RunDetailLive` run header, `RunsLive` row (`lib/autonomous/web/live/{mission_control,run_detail,runs}_live.ex`) — reuse the existing mono span, no new CSS literal (contracts/operator-surfaces.md, design-contract discipline)
+- [X] T025 [US1] Wire `RunDetailLive`'s local feature-row `format_reason/1` to try `PublishOutcome.describe/1` first, then its existing clauses (`lib/autonomous/web/live/run_detail_live.ex`) (contracts/operator-surfaces.md, FR-005)
 
 **Checkpoint**: User Story 1 is fully functional and independently testable — the incident's chain-corruption path (steps 4-7 of Background) is closed even without US2.
 
@@ -77,14 +77,14 @@
 
 ### Implementation for User Story 2
 
-- [X] T026 [US2] Add the drift check in `Actions.RunFeaturePhase.run/2` (`lib/speckit_orchestrator/actions/run_feature_phase.ex`): after `PhaseSession.reduce/2` returns, when `state.worktree` is a `%Worktree{}` with a path, call `Worktree.current_branch/1` + `BranchGuard.check/2` as the **first** clause of `classify/4`, ahead of the incomplete-session gate; on `{:error, _}` from `current_branch/1` treat as drift with `observed: {:detached, "unknown"}`; on drift set `last_outcome: :error`, `last_signals: %{branch_drift: d}` (contracts/branch-guard.md §1-§3, FR-009, FR-010, FR-012)
-- [X] T027 [P] [US2] Add the same post-`reduce/2` drift check to `Actions.RunAutoRemediation.run/2` (`lib/speckit_orchestrator/actions/run_auto_remediation.ex`) — attempt recorded failed, loop ends `{:failed, {:branch_drift, :analyze, d}}` (contracts/branch-guard.md §3, FR-009)
-- [X] T028 [P] [US2] Add the same post-`reduce/2` drift check to `Actions.RunRemediation.run/2` (`lib/speckit_orchestrator/actions/run_remediation.ex`) — `FeatureRunner` ends `{:failed, {:branch_drift, :remediation, d}}` (contracts/branch-guard.md §3, FR-009)
-- [X] T029 [US2] `PhaseStep.retry_reason/1` (`lib/speckit_orchestrator/phase_step.ex`): `branch_drift` present → `nil`, checked before any other retry test including `transient?` (contracts/branch-guard.md §4, FR-011)
-- [X] T030 [US2] `Pipeline.next/3` (`lib/speckit_orchestrator/pipeline.ex`): new clause `next(phase, :error, %{branch_drift: d}) when phase in @ordered -> {:failed, {:branch_drift, phase, d}}`, ahead of the incomplete-session clause (contracts/branch-guard.md §4)
-- [X] T031 [US2] `ChunkRunner.dispatch/4` (`lib/speckit_orchestrator/chunk_runner.ex`): when `agent1.state.last_signals[:branch_drift]` is present, skip `maybe_commit_boundary/4` and add `branch_drift: d` to the chunk signals (contracts/branch-guard.md §4)
-- [X] T032 [US2] `Chunking.next/2` (`lib/speckit_orchestrator/chunking.ex`): new first row `Map.has_key?(signals, :branch_drift) -> {:failed, {:branch_drift, :implement, d}, state}` (contracts/branch-guard.md §4)
-- [X] T033 [US2] `FeatureRunner.handle_worktree/5` (`lib/speckit_orchestrator/feature_runner.ex`): when reason is `{:branch_drift, _, _}`, skip `Worktree.commit/2` and only call `keep_for_inspection/1` (contracts/branch-guard.md §4, FR-011)
+- [X] T026 [US2] Add the drift check in `Actions.RunFeaturePhase.run/2` (`lib/autonomous/actions/run_feature_phase.ex`): after `PhaseSession.reduce/2` returns, when `state.worktree` is a `%Worktree{}` with a path, call `Worktree.current_branch/1` + `BranchGuard.check/2` as the **first** clause of `classify/4`, ahead of the incomplete-session gate; on `{:error, _}` from `current_branch/1` treat as drift with `observed: {:detached, "unknown"}`; on drift set `last_outcome: :error`, `last_signals: %{branch_drift: d}` (contracts/branch-guard.md §1-§3, FR-009, FR-010, FR-012)
+- [X] T027 [P] [US2] Add the same post-`reduce/2` drift check to `Actions.RunAutoRemediation.run/2` (`lib/autonomous/actions/run_auto_remediation.ex`) — attempt recorded failed, loop ends `{:failed, {:branch_drift, :analyze, d}}` (contracts/branch-guard.md §3, FR-009)
+- [X] T028 [P] [US2] Add the same post-`reduce/2` drift check to `Actions.RunRemediation.run/2` (`lib/autonomous/actions/run_remediation.ex`) — `FeatureRunner` ends `{:failed, {:branch_drift, :remediation, d}}` (contracts/branch-guard.md §3, FR-009)
+- [X] T029 [US2] `PhaseStep.retry_reason/1` (`lib/autonomous/phase_step.ex`): `branch_drift` present → `nil`, checked before any other retry test including `transient?` (contracts/branch-guard.md §4, FR-011)
+- [X] T030 [US2] `Pipeline.next/3` (`lib/autonomous/pipeline.ex`): new clause `next(phase, :error, %{branch_drift: d}) when phase in @ordered -> {:failed, {:branch_drift, phase, d}}`, ahead of the incomplete-session clause (contracts/branch-guard.md §4)
+- [X] T031 [US2] `ChunkRunner.dispatch/4` (`lib/autonomous/chunk_runner.ex`): when `agent1.state.last_signals[:branch_drift]` is present, skip `maybe_commit_boundary/4` and add `branch_drift: d` to the chunk signals (contracts/branch-guard.md §4)
+- [X] T032 [US2] `Chunking.next/2` (`lib/autonomous/chunking.ex`): new first row `Map.has_key?(signals, :branch_drift) -> {:failed, {:branch_drift, :implement, d}, state}` (contracts/branch-guard.md §4)
+- [X] T033 [US2] `FeatureRunner.handle_worktree/5` (`lib/autonomous/feature_runner.ex`): when reason is `{:branch_drift, _, _}`, skip `Worktree.commit/2` and only call `keep_for_inspection/1` (contracts/branch-guard.md §4, FR-011)
 - [X] T034 [US2] `run_feature_phase_test.exs`: stubbed harness session runs `git checkout -b other` → `last_outcome: :error`, `last_signals.branch_drift` names both branches (quickstart.md)
 - [X] T035 [P] [US2] `phase_step_test.exs`: drift is not retried, exactly one session (quickstart.md)
 - [X] T036 [P] [US2] `pipeline_test.exs`: `Pipeline.next(:specify, :error, %{branch_drift: d})` → `{:failed, {:branch_drift, :specify, d}}` (quickstart.md)
@@ -104,7 +104,7 @@
 
 ### Implementation for User Story 3
 
-- [X] T040 [US3] `PhaseRequest.build(feature, :specify, opts)` (`lib/speckit_orchestrator/phase_request.ex`): append the `GIT_BRANCH_NAME=feature/<spec_id>-<slug>` reuse sentence immediately after `SPECIFY_FEATURE_DIRECTORY`, using `Worktree.branch_name/1` (T004) as the single source of truth; no change to any other phase (contracts/specify-branch-pin.md)
+- [X] T040 [US3] `PhaseRequest.build(feature, :specify, opts)` (`lib/autonomous/phase_request.ex`): append the `GIT_BRANCH_NAME=feature/<spec_id>-<slug>` reuse sentence immediately after `SPECIFY_FEATURE_DIRECTORY`, using `Worktree.branch_name/1` (T004) as the single source of truth; no change to any other phase (contracts/specify-branch-pin.md)
 - [X] T041 [US3] `phase_request_test.exs`: specify prompt contains `GIT_BRANCH_NAME=feature/<spec_id>-<slug>` and the reuse sentence; no other phase's prompt changes (quickstart.md)
 
 **Checkpoint**: All three user stories are independently functional — US1 contains, US2 detects, US3 prevents.
@@ -163,11 +163,11 @@
 
 ```bash
 # Launch the five new pure additions together (different files):
-Task: "Add Worktree.current_branch/1 in lib/speckit_orchestrator/worktree.ex"
-Task: "Add Worktree.commits_beyond/3 in lib/speckit_orchestrator/worktree.ex"
-Task: "Add Worktree.branch_name/1 in lib/speckit_orchestrator/worktree.ex"
-Task: "Create SpeckitOrchestrator.BranchGuard in lib/speckit_orchestrator/branch_guard.ex"
-Task: "Create SpeckitOrchestrator.PublishOutcome in lib/speckit_orchestrator/publish_outcome.ex"
+Task: "Add Worktree.current_branch/1 in lib/autonomous/worktree.ex"
+Task: "Add Worktree.commits_beyond/3 in lib/autonomous/worktree.ex"
+Task: "Add Worktree.branch_name/1 in lib/autonomous/worktree.ex"
+Task: "Create Autonomous.BranchGuard in lib/autonomous/branch_guard.ex"
+Task: "Create Autonomous.PublishOutcome in lib/autonomous/publish_outcome.ex"
 ```
 
 ## Parallel Example: User Story 2 remediation actions
@@ -200,7 +200,7 @@ Task: "Add drift check to Actions.RunRemediation.run/2"
 
 1. Team completes Setup + Foundational together (five independent files)
 2. Once Foundational is done:
-   - Developer A: US1 (Phase 3) — `speckit_orchestrator.ex` + `report.ex`/`telemetry.ex`/console
+   - Developer A: US1 (Phase 3) — `autonomous.ex` + `report.ex`/`telemetry.ex`/console
    - Developer B: US2 (Phase 4) — `run_feature_phase.ex`, remediation actions, `pipeline.ex`, `chunking.ex`, `chunk_runner.ex`, `feature_runner.ex`
    - Developer C: US3 (Phase 5) — `phase_request.ex`, then docs (Phase 6) once US1-US3 land
 3. Stories integrate independently since they touch disjoint file sets (only `PublishOutcome.describe/1`'s console wiring is shared surface — T023-T025 and T039 both render through it but don't conflict on lines)
