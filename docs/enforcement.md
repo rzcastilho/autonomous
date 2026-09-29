@@ -79,7 +79,7 @@ git add .specify .claude && git commit -m "spec kit + enforcement pack"
 Autonomous.TargetPack.verify("/path/to/target/repo")  # => :ok
 
 # 4a. A run that will use `containment_profile: :permissive` additionally
-#     requires the committed pack to be at contract 2 (this hook + this
+#     requires the committed pack to be at contract 3 (this hook + this
 #     settings.json, both committed) — verify explicitly:
 Autonomous.TargetPack.verify("/path/to/target/repo", profile: "permissive")  # => :ok
 ```

@@ -269,7 +269,7 @@ entry used to block human sessions too. `TargetPack.install/2` lays the pack
 into a target repo without clobbering the constitution; `TargetPack.verify/2`
 is the preflight (fails while the template constitution marker is present, if
 it's uncommitted, or — for a `permissive` run — if the committed pack isn't at
-contract 2). `PhaseRequest`'s per-phase permissions follow the same profile
+contract 3). `PhaseRequest`'s per-phase permissions follow the same profile
 (full access under `permissive`, scoped under `strict`) and are the second
 layer; a container recipe (`docs/enforcement.md`) is the third, recommended
 alongside any `permissive` run since that profile leaves the hook as the only

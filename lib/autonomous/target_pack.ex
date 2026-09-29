@@ -15,8 +15,8 @@ defmodule Autonomous.TargetPack do
   so a default constitution can never drive a run.
   """
 
-  # The legacy marker is still detected: packs installed before the rename carry it.
-  @template_markers ["AUTONOMOUS_TEMPLATE", "SPECKIT_ORCHESTRATOR_TEMPLATE"]
+  @template_marker "AUTONOMOUS_TEMPLATE"
+  @pack_contract "3"
 
   @doc """
   Copy the pack into `repo`. Always (over)writes `.claude/settings.json` and
@@ -56,7 +56,7 @@ defmodule Autonomous.TargetPack do
   the constitution is committed (git-tracked).
 
   `:profile` (030, default `"strict"`) — `"permissive"` adds
-  `check_pack_contract/2`: the **committed** pack must carry hook contract 2
+  `check_pack_contract/2`: the **committed** pack must carry hook contract 3
   and a `settings.json` with no `permissions.deny` entry, or the run refuses
   with `{:pack_outdated, path, hint}`. `"strict"` is unchanged from today —
   an un-upgraded target still enforces its own (older) rules and does not
@@ -82,15 +82,15 @@ defmodule Autonomous.TargetPack do
 
   @doc """
   Read the **committed** pack (`git -C repo show HEAD:…`) and confirm it is
-  contract 2: the hook prints `2` for `--contract`, and `settings.json` carries
+  contract 3: the hook prints `3` for `--contract`, and `settings.json` carries
   no non-empty `permissions.deny`. Any failure (git show failure — including an
-  uncommitted upgrade — a non-`"2"` contract output, or a present `deny`) is
+  uncommitted upgrade — a non-`"3"` contract output, or a present `deny`) is
   `{:pack_outdated, ".claude/hooks/scope_guard.py", "re-run TargetPack.install/2 and commit"}`.
   """
   @spec check_pack_contract(Path.t()) :: :ok | {:error, term()}
   def check_pack_contract(repo) do
     with {:ok, hook_src} <- git_show(repo, ".claude/hooks/scope_guard.py"),
-         {:ok, "2"} <- contract_of(hook_src),
+         {:ok, @pack_contract} <- contract_of(hook_src),
          {:ok, settings_src} <- git_show(repo, ".claude/settings.json"),
          :ok <- no_deny?(settings_src) do
       :ok
@@ -154,7 +154,7 @@ defmodule Autonomous.TargetPack do
 
       {:ok, content} ->
         cond do
-          String.contains?(content, @template_markers) ->
+          String.contains?(content, @template_marker) ->
             [{:default_constitution, "still the shipped template — customize it"} | problems]
 
           String.trim(content) == "" ->

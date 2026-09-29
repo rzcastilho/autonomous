@@ -139,7 +139,7 @@ defmodule Autonomous do
   # explicit `:containment_profile` opt is caught here — before any store
   # write — rather than surfacing as a raise deep in `RunContext.capture/1`.
   # `"permissive"` additionally requires the target's **committed** pack to be
-  # contract 2 (no test-mode skip: an operator opting into relaxed
+  # contract 3 (no test-mode skip: an operator opting into relaxed
   # containment must have the relaxed pack actually installed).
   defp preflight_containment(opts, run_context) do
     case Keyword.fetch(opts, :containment_profile) do
@@ -2494,7 +2494,7 @@ defmodule Autonomous do
   # Preflight the real target (pack scaffold + committed constitution + remote)
   # unless a seam is injected (tests supply their own features/executor).
   # `profile` (030) — the run's containment profile; `"permissive"` also
-  # requires the committed pack to be contract 2 (already checked once, at
+  # requires the committed pack to be contract 3 (already checked once, at
   # `run/1` preflight, by `preflight_containment/2` — repeated here so
   # `run_spec/2`'s own `spec_run_opts/3` path, which does not go through
   # `run/1`'s preflight chain directly, still enforces it).

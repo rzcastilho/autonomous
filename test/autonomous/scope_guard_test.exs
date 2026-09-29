@@ -58,9 +58,9 @@ defmodule Autonomous.ScopeGuardTest do
   defp interactive, do: %{"CLAUDE_CODE_ENTRYPOINT" => "cli"}
 
   describe "contract probe" do
-    test "--contract prints 2 and reads no stdin" do
+    test "--contract prints 3 and reads no stdin" do
       {out, 0} = System.cmd("python3", [@hook, "--contract"])
-      assert String.trim(out) == "2"
+      assert String.trim(out) == "3"
     end
   end
 

@@ -29,19 +29,6 @@ defmodule Autonomous.TargetPackTest do
              "AUTONOMOUS_TEMPLATE"
   end
 
-  test "verify/1 still detects the pre-rename template marker" do
-    repo = tmp_repo()
-    File.mkdir_p!(Path.join(repo, ".specify/memory"))
-
-    File.write!(
-      Path.join(repo, ".specify/memory/constitution.md"),
-      "<!-- SPECKIT_ORCHESTRATOR_TEMPLATE: replace this file -->\n# Template\n"
-    )
-
-    assert {:error, problems} = TargetPack.verify(repo, check_git: false)
-    assert Enum.any?(problems, &match?({:default_constitution, _}, &1))
-  end
-
   test "install/2 never clobbers an existing constitution" do
     repo = tmp_repo()
     File.mkdir_p!(Path.join(repo, ".specify/memory"))
@@ -168,13 +155,25 @@ defmodule Autonomous.TargetPackTest do
       assert Enum.any?(problems, &match?({:pack_outdated, ".claude/hooks/scope_guard.py", _}, &1))
     end
 
-    test "profile permissive fails when the committed hook predates contract 2" do
+    test "profile permissive fails when the committed hook predates contract 2 (030)" do
       repo = committed_target()
       hook = Path.join(repo, ".claude/hooks/scope_guard.py")
 
       File.write!(hook, old_hook_source())
       git!(repo, ["add", "-A"])
       git!(repo, ["commit", "-q", "-m", "downgrade hook"])
+
+      assert {:error, problems} = TargetPack.verify(repo, profile: "permissive")
+      assert Enum.any?(problems, &match?({:pack_outdated, ".claude/hooks/scope_guard.py", _}, &1))
+    end
+
+    test "profile permissive fails when the committed hook is contract 2" do
+      repo = committed_target()
+      hook = Path.join(repo, ".claude/hooks/scope_guard.py")
+
+      File.write!(hook, String.replace(File.read!(hook), "PACK_CONTRACT = 3", "PACK_CONTRACT = 2"))
+      git!(repo, ["add", "-A"])
+      git!(repo, ["commit", "-q", "-m", "contract 2 hook"])
 
       assert {:error, problems} = TargetPack.verify(repo, profile: "permissive")
       assert Enum.any?(problems, &match?({:pack_outdated, ".claude/hooks/scope_guard.py", _}, &1))
@@ -188,7 +187,7 @@ defmodule Autonomous.TargetPackTest do
       git!(repo, ["add", "-A"])
       git!(repo, ["commit", "-q", "-m", "downgrade hook"])
 
-      # Re-install (contract 2 again) but leave it uncommitted — HEAD: still
+      # Re-install (contract 3 again) but leave it uncommitted — HEAD: still
       # sees the downgraded hook, so this must fail exactly like a missing
       # upgrade.
       {:ok, _} = TargetPack.install(repo)
