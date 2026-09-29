@@ -43,7 +43,7 @@ resume with no in-memory state (SC-005).
 
 1. Run a feature through `plan`, then simulate a crash during `tasks` (kill the
    runner; leave an uncommitted partial file in the worktree).
-2. `SpeckitOrchestrator.resume(feature_id)`.
+2. `Autonomous.resume(feature_id)`.
 3. Assert: the resume starts at `tasks` (the interrupted phase — the phase after
    the last completed `plan`); `Worktree.restore/1` removed the partial file;
    `specify…plan` artifacts are byte-unchanged (not regenerated); the feature

@@ -8,12 +8,12 @@ that the Coordinator snapshot cannot supply (research R3).
 
 - **`ConsoleProjection`** — one boot-started GenServer (added to the app
   supervision tree). Owns the console read-model and the bounded feed.
-- **`Phoenix.PubSub`** — one instance (`SpeckitOrchestrator.PubSub`) added to the
+- **`Phoenix.PubSub`** — one instance (`Autonomous.PubSub`) added to the
   supervision tree. Topic: `"console:run"`.
 
 ## Telemetry subscription
 
-On `init`, `ConsoleProjection` attaches to `SpeckitOrchestrator.Telemetry.events/0`:
+On `init`, `ConsoleProjection` attaches to `Autonomous.Telemetry.events/0`:
 
 | Event | Fold effect |
 |-------|-------------|
@@ -36,7 +36,7 @@ is a thin owner: fold → store → broadcast diff.
 {:console, :run_finished, report_map}             # from Coordinator :owner {:run_complete, report}, re-broadcast
 ```
 
-LiveViews `Phoenix.PubSub.subscribe(SpeckitOrchestrator.PubSub, "console:run")` on
+LiveViews `Phoenix.PubSub.subscribe(Autonomous.PubSub, "console:run")` on
 `mount` (connected only) and update assigns per message. No message carries
 authority on its own — `:reconciled` is the source of truth and supersedes drift.
 

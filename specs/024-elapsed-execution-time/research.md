@@ -9,7 +9,7 @@ tasks below are the integration points the design depends on.
 ## R1. Where recorded execution windows come from
 
 **Decision**: every element of a recorded feature's `phase_attempts` list
-(as `SpeckitOrchestrator.run_detail/1` returns it) is one recorded window
+(as `Autonomous.run_detail/1` returns it) is one recorded window
 `[started_at, ended_at]`, regardless of its `phase` atom; an attempt missing
 either timestamp yields no window.
 

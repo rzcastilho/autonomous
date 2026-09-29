@@ -10,7 +10,7 @@ owns every color, fill alpha, and border alpha.
 
 ## 1. Elixir side
 
-`SpeckitOrchestrator.Web.CoreComponents` stops carrying colors.
+`Autonomous.Web.CoreComponents` stops carrying colors.
 
 **Before**
 

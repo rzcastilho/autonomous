@@ -6,7 +6,7 @@
 
 **Status**: Draft
 
-**Input**: User description: "Let's create a specification that allows a single spec be implemented in speckit orchestrator"
+**Input**: User description: "Let's create a specification that allows a single spec be implemented in autonomous"
 
 ## Clarifications
 

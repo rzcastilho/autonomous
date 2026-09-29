@@ -20,9 +20,9 @@ description: "Task list for Resume Checkpoint Persistence"
 ## Path Conventions
 
 Single-project Elixir/OTP layout (plan.md → Project Structure):
-- `lib/speckit_orchestrator/checkpoint.ex` — new module
-- `lib/speckit_orchestrator/feature_runner.ex` — wiring edit
-- `test/speckit_orchestrator/checkpoint_test.exs` — new test file
+- `lib/autonomous/checkpoint.ex` — new module
+- `lib/autonomous/feature_runner.ex` — wiring edit
+- `test/autonomous/checkpoint_test.exs` — new test file
 
 ---
 
@@ -40,18 +40,18 @@ mix dependency; Jason is already a transitive dep used by `analyze_result.ex` /
 
 **⚠️ CRITICAL**: No user story work can begin until this phase is complete.
 
-- [X] T001 [P] Create `lib/speckit_orchestrator/checkpoint.ex`: `@moduledoc` per
-      contracts/checkpoint.md, `alias SpeckitOrchestrator.Config`, and a private
+- [X] T001 [P] Create `lib/autonomous/checkpoint.ex`: `@moduledoc` per
+      contracts/checkpoint.md, `alias Autonomous.Config`, and a private
       `checkpoint_path(feature_id)` helper returning
       `Path.join([Config.transcript_root(), feature_id, "checkpoint.json"])`. Stub
       the three public functions (`write/1`, `read/1`, `delete/1`) with `@spec`s
       matching contracts/checkpoint.md so the module compiles under
       `warnings_as_errors`.
-- [X] T002 [P] Create `test/speckit_orchestrator/checkpoint_test.exs`:
+- [X] T002 [P] Create `test/autonomous/checkpoint_test.exs`:
       `use ExUnit.Case, async: false` (mutates the global `:transcript_root` app
-      env, mirroring `test/speckit_orchestrator/transcripts_test.exs:1-25`),
-      `alias SpeckitOrchestrator.Checkpoint`, and a `setup` block that points
-      `Application.put_env(:speckit_orchestrator, :transcript_root, tmp_root)` at a
+      env, mirroring `test/autonomous/transcripts_test.exs:1-25`),
+      `alias Autonomous.Checkpoint`, and a `setup` block that points
+      `Application.put_env(:autonomous, :transcript_root, tmp_root)` at a
       unique tmp dir, restoring the previous value and `File.rm_rf`-ing the tmp dir
       `on_exit`.
 
@@ -76,7 +76,7 @@ phase/status and confirm the on-disk JSON file (read/decoded independently of
 > Write these first; they must fail (module raises `:not_implemented` or similar)
 > before T007.
 
-- [X] T003 [US1] In `test/speckit_orchestrator/checkpoint_test.exs`: test that
+- [X] T003 [US1] In `test/autonomous/checkpoint_test.exs`: test that
       `Checkpoint.write(%{feature_id: ..., last_phase: :clarify, status:
       :escalated, reason: "needs human", session_id: "s1"})` writes
       `<tmp_root>/<feature_id>/checkpoint.json`, and the file decodes (via
@@ -92,21 +92,21 @@ phase/status and confirm the on-disk JSON file (read/decoded independently of
       "non-serializable reason").
 - [X] T006 [US1] In the same file: test that a forced write failure (point
       `:transcript_root` at an unwritable path, e.g. `/proc/nonexistent/deny`,
-      mirroring `test/speckit_orchestrator/transcripts_test.exs:52-60`) returns
+      mirroring `test/autonomous/transcripts_test.exs:52-60`) returns
       `:ok` from `Checkpoint.write/1` and raises nothing (FR-008, SC-004).
 
 ### Implementation for User Story 1
 
 - [X] T007 [US1] Implement `Checkpoint.write/1` in
-      `lib/speckit_orchestrator/checkpoint.ex`: build the JSON-safe map
+      `lib/autonomous/checkpoint.ex`: build the JSON-safe map
       (`feature_id` as-is, `last_phase`/`status` via `Atom.to_string/1`, `reason`
       via `inspect/1`, `session_id` string-or-`nil`), `File.mkdir_p!` the
       per-feature dir, `Jason.encode!/1` and `File.write!/2` to
       `checkpoint_path/1`; wrap the whole body in `rescue _ -> :ok` so any
       failure is swallowed and the function always returns `:ok` (FR-008).
 - [X] T008 [US1] Wire the write into
-      `lib/speckit_orchestrator/feature_runner.ex`: add `Checkpoint` to the
-      module's `alias SpeckitOrchestrator.{...}` list; after `loop/7` returns
+      `lib/autonomous/feature_runner.ex`: add `Checkpoint` to the
+      module's `alias Autonomous.{...}` list; after `loop/7` returns
       (beside the existing `handle_worktree/3` call at `feature_runner.ex:78`),
       on a non-`:done` `status` (`:escalated` / `:halted` / `:failed`) call
       `Checkpoint.write(%{feature_id: feature.id, last_phase: agent.state.phase,
@@ -129,7 +129,7 @@ confirm it's a no-op.
 
 ### Tests for User Story 2
 
-- [X] T009 [US2] In `test/speckit_orchestrator/checkpoint_test.exs`: test that
+- [X] T009 [US2] In `test/autonomous/checkpoint_test.exs`: test that
       after `Checkpoint.write/1` creates a checkpoint, `Checkpoint.delete/1`
       removes the file (assert `File.exists?` on the path is now `false`) and
       returns `:ok` (FR-005, spec.md acceptance scenario 1).
@@ -140,10 +140,10 @@ confirm it's a no-op.
 ### Implementation for User Story 2
 
 - [X] T011 [US2] Implement `Checkpoint.delete/1` in
-      `lib/speckit_orchestrator/checkpoint.ex`: `File.rm(checkpoint_path(id))`
+      `lib/autonomous/checkpoint.ex`: `File.rm(checkpoint_path(id))`
       wrapped so a missing file or any error is swallowed; always returns `:ok`
       (FR-007).
-- [X] T012 [US2] Wire the delete into `lib/speckit_orchestrator/feature_runner.ex`:
+- [X] T012 [US2] Wire the delete into `lib/autonomous/feature_runner.ex`:
       at the same finalization point as T008, on `status == :done` call
       `Checkpoint.delete(feature.id)` instead of `write/1`. (Sequential with
       T008 — same call site in `run/2`.)
@@ -165,7 +165,7 @@ exists but can't be parsed — never confusing the two.
 
 ### Tests for User Story 3
 
-- [X] T013 [US3] In `test/speckit_orchestrator/checkpoint_test.exs`: test that
+- [X] T013 [US3] In `test/autonomous/checkpoint_test.exs`: test that
       `Checkpoint.read/1` for a feature id with no checkpoint file returns
       `{:error, :no_checkpoint}` (FR-006b).
 - [X] T014 [US3] In the same file: test that a hand-written malformed
@@ -180,7 +180,7 @@ exists but can't be parsed — never confusing the two.
 ### Implementation for User Story 3
 
 - [X] T016 [US3] Implement `Checkpoint.read/1` in
-      `lib/speckit_orchestrator/checkpoint.ex`: `File.read(checkpoint_path(id))`;
+      `lib/autonomous/checkpoint.ex`: `File.read(checkpoint_path(id))`;
       `{:error, :enoent}` → `{:error, :no_checkpoint}`; on `{:ok, contents}`,
       `Jason.decode(contents)` — a decoded JSON object → `{:ok, map}`, anything
       else (decode error, or a decoded non-object like an array) → `{:error,
@@ -197,7 +197,7 @@ delete, and read each behave per contracts/checkpoint.md.
 - [X] T017 [P] Run `mise exec -- mix compile` and confirm a clean build under
       `warnings_as_errors` (no unused aliases/stubs left from T001).
 - [X] T018 Run `mise exec -- mix test` (full suite) and confirm no regression in
-      `test/speckit_orchestrator/feature_runner_test.exs` from the T008/T012
+      `test/autonomous/feature_runner_test.exs` from the T008/T012
       wiring edit.
 - [X] T019 Walk through quickstart.md's manual `iex` section end-to-end
       (write → read → delete → read) to confirm the documented output matches.
@@ -244,7 +244,7 @@ delete, and read each behave per contracts/checkpoint.md.
 
 1. Complete Phase 2: Foundational.
 2. Complete Phase 3: User Story 1 (write + wiring for diverted terminals).
-3. **STOP and VALIDATE**: `mise exec -- mix test test/speckit_orchestrator/checkpoint_test.exs` green for T003-T006; drive a real diverted feature and confirm the file lands under `Config.transcript_root()`.
+3. **STOP and VALIDATE**: `mise exec -- mix test test/autonomous/checkpoint_test.exs` green for T003-T006; drive a real diverted feature and confirm the file lands under `Config.transcript_root()`.
 
 ### Incremental Delivery
 
@@ -258,8 +258,8 @@ delete, and read each behave per contracts/checkpoint.md.
 ## Notes
 
 - All three user stories converge on one small module
-  (`lib/speckit_orchestrator/checkpoint.ex`, ~3 public functions) and one test
-  file (`test/speckit_orchestrator/checkpoint_test.exs`) — parallelism here is
+  (`lib/autonomous/checkpoint.ex`, ~3 public functions) and one test
+  file (`test/autonomous/checkpoint_test.exs`) — parallelism here is
   naturally limited to Foundational (T001/T002); later tasks are sequential by
   shared-file edits, not by story independence.
 - Per FR-010 / plan.md scope: this feature only produces/removes the record.

@@ -11,9 +11,9 @@
 ```bash
 mise exec -- mix compile                       # warnings_as_errors
 mise exec -- mix test                          # full suite, incl. design guard
-mise exec -- mix test test/speckit_orchestrator/interactive_clarify_test.exs
-mise exec -- mix test test/speckit_orchestrator/needs_human_test.exs
-mise exec -- mix test test/speckit_orchestrator/feature_runner_clarify_wait_test.exs
+mise exec -- mix test test/autonomous/interactive_clarify_test.exs
+mise exec -- mix test test/autonomous/needs_human_test.exs
+mise exec -- mix test test/autonomous/feature_runner_clarify_wait_test.exs
 ```
 
 The suite must show the following:
@@ -38,20 +38,20 @@ The suite must show the following:
 
 ```elixir
 # iex: mise exec -- iex -S mix
-SpeckitOrchestrator.run(repo: "../ledgerlite",
+Autonomous.run(repo: "../ledgerlite",
   features: ["007"], interactive_clarify: true,
   clarify_answer_timeout_s: 900, clarify_max_rounds: 2)
 
-SpeckitOrchestrator.print_status()
+Autonomous.print_status()
 # expect: 007 … awaiting_answers   and   awaiting: 007 round 1/2 …
 
-[p] = SpeckitOrchestrator.pending_questions()
+[p] = Autonomous.pending_questions()
 p.questions                      # {:numbered, [%Question{id: "Q1", ...}, ...]}
 
-SpeckitOrchestrator.answer("007", p.seq, %{"Q1" => "Apply from next period", "Q2" => ""})
+Autonomous.answer("007", p.seq, %{"Q1" => "Apply from next period", "Q2" => ""})
 # Q2 blank → accepted recommended (or {:error, {:missing_answer, "Q2"}} if it has none)
 
-SpeckitOrchestrator.answer("007", p.seq, %{"Q1" => "x"})
+Autonomous.answer("007", p.seq, %{"Q1" => "x"})
 # → {:error, {:stale_round, :answered}}
 ```
 

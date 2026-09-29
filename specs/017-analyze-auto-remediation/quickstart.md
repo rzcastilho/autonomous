@@ -33,11 +33,11 @@ remediation step ran between the two analyze runs.
 
 ```bash
 # pure decision surface — the table in contracts/remediation.md §2
-mise exec -- mix test test/speckit_orchestrator/remediation_test.exs
-mise exec -- mix test test/speckit_orchestrator/severity_test.exs
+mise exec -- mix test test/autonomous/remediation_test.exs
+mise exec -- mix test test/autonomous/severity_test.exs
 
 # the loop end to end against a scripted fake agent (no CLI, no worktree)
-mise exec -- mix test test/speckit_orchestrator/analyze_runner_test.exs
+mise exec -- mix test test/autonomous/analyze_runner_test.exs
 ```
 
 Expected:
@@ -56,7 +56,7 @@ Expected:
 **Integration** (drives the real CLI against a scratch target repo):
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/integration/analyze_loop_test.exs --include integration
+mise exec -- mix test test/autonomous/integration/analyze_loop_test.exs --include integration
 ```
 
 ---
@@ -69,9 +69,9 @@ same terminal state it would have reached with the loop disabled, worktree kept,
 every attempt recorded.
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/analyze_runner_test.exs
-mise exec -- mix test test/speckit_orchestrator/feature_runner_test.exs
-mise exec -- mix test test/speckit_orchestrator/checkpoint_test.exs
+mise exec -- mix test test/autonomous/analyze_runner_test.exs
+mise exec -- mix test test/autonomous/feature_runner_test.exs
+mise exec -- mix test test/autonomous/checkpoint_test.exs
 ```
 
 Expected:
@@ -95,7 +95,7 @@ Expected:
 Fresh budget on a human-initiated re-run (FR-015):
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/resume_test.exs
+mise exec -- mix test test/autonomous/resume_test.exs
 ```
 
 The resumed run starts at `attempts_used == 0` even though the checkpoint
@@ -109,9 +109,9 @@ records an exhausted budget.
 launch configurations, and an unspecified launch defaults to on.
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/remediation_test.exs      # validate/1
-mise exec -- mix test test/speckit_orchestrator/run_context_test.exs      # capture/round-trip
-mise exec -- mix test test/speckit_orchestrator/web/trigger_live_test.exs # the launch form
+mise exec -- mix test test/autonomous/remediation_test.exs      # validate/1
+mise exec -- mix test test/autonomous/run_context_test.exs      # capture/round-trip
+mise exec -- mix test test/autonomous/web/trigger_live_test.exs # the launch form
 ```
 
 Expected:
@@ -156,9 +156,9 @@ mise exec -- iex -S mix
 
 ```elixir
 # Attach first — the logger is the iex surface for the loop.
-SpeckitOrchestrator.Telemetry.attach_default_logger()
+Autonomous.Telemetry.attach_default_logger()
 
-SpeckitOrchestrator.run(auto_remediation: true, auto_remediation_threshold: :medium,
+Autonomous.run(auto_remediation: true, auto_remediation_threshold: :medium,
                         auto_remediation_attempt_limit: 3)
 ```
 
@@ -189,7 +189,7 @@ is true of the 015 chunk sub-label. Verifying an invalid launch is refused needs
 no run at all:
 
 ```elixir
-SpeckitOrchestrator.run(auto_remediation_attempt_limit: 7)
+Autonomous.run(auto_remediation_attempt_limit: 7)
 #=> {:error, {:preflight, [invalid_attempt_limit: 7]}}
 ```
 
@@ -198,8 +198,8 @@ SpeckitOrchestrator.run(auto_remediation_attempt_limit: 7)
 ## Observability (FR-013) and history (SC-005)
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/console_read_model_test.exs
-mise exec -- mix test test/speckit_orchestrator/web/escalations_live_test.exs
+mise exec -- mix test test/autonomous/console_read_model_test.exs
+mise exec -- mix test test/autonomous/web/escalations_live_test.exs
 ```
 
 Expected: an in-flight loop renders `attempt k/n` under the analyze cell within

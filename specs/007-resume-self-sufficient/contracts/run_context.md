@@ -1,4 +1,4 @@
-# Contract: `SpeckitOrchestrator.RunContext`
+# Contract: `Autonomous.RunContext`
 
 New pure module. Holds the six run-shaping settings, captures them from effective
 run opts, serializes them for the checkpoint, and merges recorded values back into

@@ -80,7 +80,7 @@ observability/operability paragraph describes the shipped `resume/2` facade.
   existing `resolve/1` flow, both under the runbook's recovery/operations guidance.
 - **FR-002**: `docs/runbook.md` MUST document the full escalate → fix → resume loop: resolve the
   root cause on the feature branch (edit + commit the artifacts), then invoke
-  `SpeckitOrchestrator.resume(id, prompt: "...")`, with exact `iex` call syntax.
+  `Autonomous.resume(id, prompt: "...")`, with exact `iex` call syntax.
 - **FR-003**: `docs/runbook.md` MUST explain restart-at-halted-phase semantics — that resume
   restarts at the phase the feature halted or escalated at by default.
 - **FR-004**: `docs/runbook.md` MUST document the `:from` option for overriding the phase resume
@@ -93,7 +93,7 @@ observability/operability paragraph describes the shipped `resume/2` facade.
 - **FR-007**: No markdown documentation file (`.md`) in the repository MUST describe mid-pipeline
   resume as a future/unshipped capability after this change. This scope covers every `.md` doc
   (e.g. `docs/runbook.md`, `CLAUDE.md`, `docs/workflow.md`, the phase-7 runbook), not just the
-  two files edited directly. Source-code docstrings (e.g. `lib/speckit_orchestrator.ex`) are out
+  two files edited directly. Source-code docstrings (e.g. `lib/autonomous.ex`) are out
   of scope — the breakdown places code changes out of scope, so the `resolve/1` docstring's "v2"
   wording is left untouched.
 
@@ -111,7 +111,7 @@ observability/operability paragraph describes the shipped `resume/2` facade.
 
 ## Assumptions
 
-- `resume/2` (features 001-004) is fully shipped and its public API (`SpeckitOrchestrator.resume/2`
+- `resume/2` (features 001-004) is fully shipped and its public API (`Autonomous.resume/2`
   with `:from` and `:prompt` opts) is stable at documentation time.
 - This is a docs-only change per the breakdown's explicit out-of-scope note — no source code is
   modified.

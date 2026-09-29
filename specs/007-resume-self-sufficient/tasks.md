@@ -49,11 +49,11 @@ slug: "widget", path: ...}` starting at the checkpointed phase, with no
 
 ### Tests for User Story 1
 
-- [X] T001 [P] [US1] Extend `test/speckit_orchestrator/checkpoint_test.exs`: `write/1`
+- [X] T001 [P] [US1] Extend `test/autonomous/checkpoint_test.exs`: `write/1`
       given `slug`/`path` persists them; `read/1` round-trips them losslessly; an old-shape
       write map without `slug`/`path` (simulating a caller that doesn't yet thread them)
       still writes successfully (contracts/checkpoint.md write/1 + persisted record table)
-- [X] T002 [P] [US1] Add fixtures to `test/speckit_orchestrator/resume_test.exs`: a
+- [X] T002 [P] [US1] Add fixtures to `test/autonomous/resume_test.exs`: a
       `Checkpoint.write/1` call carrying `slug`/`path` under the existing temp
       `transcript_root` pattern, for reuse by the tests below
 - [X] T003 [US1] Add test "resume/2 reconstructs the feature from checkpoint identity when
@@ -80,22 +80,22 @@ slug: "widget", path: ...}` starting at the checkpointed phase, with no
 
 ### Implementation for User Story 1
 
-- [X] T009 [US1] Extend `Checkpoint.write/1` in `lib/speckit_orchestrator/checkpoint.ex`:
+- [X] T009 [US1] Extend `Checkpoint.write/1` in `lib/autonomous/checkpoint.ex`:
       accept `slug` and `path` keys in the input map, add them to the encoded `record` as
       `slug: slug, path: path` (plain strings, no atom conversion — no change to the
       `rescue -> :ok` best-effort behavior) — depends on T001
-- [X] T010 [US1] In `lib/speckit_orchestrator/feature_runner.ex`'s `checkpoint/4` (the
+- [X] T010 [US1] In `lib/autonomous/feature_runner.ex`'s `checkpoint/4` (the
       diverted-terminal write site, ~line 201), pass `slug: feature.slug, path:
       feature.path` into the `Checkpoint.write/1` call — depends on T009
-- [X] T011 [US1] Reshape identity resolution in `SpeckitOrchestrator.resume/2`
-      (`lib/speckit_orchestrator.ex`): read the checkpoint **first** via
+- [X] T011 [US1] Reshape identity resolution in `Autonomous.resume/2`
+      (`lib/autonomous.ex`): read the checkpoint **first** via
       `Checkpoint.read/1` (dispatching `:no_checkpoint`/`:corrupt_checkpoint` as today);
       resolve identity by trying the explicit/backlog list first (best-effort
       `load_backlog/0` — a load failure or missing feature is non-fatal, not raised), else
       reconstructing `%Feature{id: feature_id, slug: record["slug"], path: record["path"],
       status: :pending}` when the checkpoint carries both; else
       `{:error, {:unknown_feature, feature_id}}` — depends on T009, T010
-- [X] T012 [US1] Update the `resume/2` moduledoc in `lib/speckit_orchestrator.ex` to
+- [X] T012 [US1] Update the `resume/2` moduledoc in `lib/autonomous.ex` to
       document the id-only form (identity recovered from the checkpoint when omitted) and
       the FR-003 precedence rule (explicit/backlog feature wins over checkpoint identity)
       — depends on T011
@@ -117,14 +117,14 @@ Config/default) — including routing a resumed PR-workflow feature through the 
 executor path so cap-1/preflight/stacking/PR-on-done are preserved.
 
 **Independent Test**: Start a run with `pr_workflow: true`, drive a feature to a
-checkpointed non-done state, flip `Application.put_env(:speckit_orchestrator,
+checkpointed non-done state, flip `Application.put_env(:autonomous,
 :pr_workflow, false)` to simulate a fresh env, then `resume(id, features: [], executor:
 fake_executor)` and confirm the resumed feature runs through the PR-workflow path (cap 1,
 stacking) despite the live default being off.
 
 ### Tests for User Story 2
 
-- [X] T013 [P] [US2] Create `test/speckit_orchestrator/run_context_test.exs`: `capture/1`
+- [X] T013 [P] [US2] Create `test/autonomous/run_context_test.exs`: `capture/1`
       resolves each of the six fields from `Keyword.get(opts, key, Config.<accessor>())`
       (both the opts-present and opts-absent/Config-fallback cases per field); `to_map/1`
       produces a JSON-ready string-keyed map of exactly the six settings and nothing else
@@ -138,14 +138,14 @@ stacking) despite the live default being off.
       injected into `merged_opts` when opts lacks the key; a key present in neither is left
       absent and reported in `fell_back_keys`; result is independent of `opts` vs
       `recorded` argument order (contracts/run_context.md merge/2)
-- [X] T016 [P] [US2] Extend `test/speckit_orchestrator/checkpoint_test.exs`: `write/1`
+- [X] T016 [P] [US2] Extend `test/autonomous/checkpoint_test.exs`: `write/1`
       given a `run_context: %RunContext{}` persists `RunContext.to_map/1` under the
       `"context"` key; `write/1` given `run_context: nil` omits the `"context"` key
       entirely; round-trip through `read/1` is lossless (contracts/checkpoint.md
       persisted record table)
 - [X] T017 [US2] Add test "resume/2 routes a checkpoint recording `pr_workflow: true`
       through the PR-workflow path (stacking/preflight/PR-on-done, cap 1) even when live
-      `Config.pr_workflow?/0` is `false`" to `test/speckit_orchestrator/resume_test.exs`
+      `Config.pr_workflow?/0` is `false`" to `test/autonomous/resume_test.exs`
       (spec Story 2 AS1; SC-002; quickstart Scenario 2) — depends on T013–T016
 - [X] T018 [US2] Add test "resume/2 reapplies recorded `max_concurrency`/`budget_usd`/
       `plan_stack`/`pr_base` over live Config defaults" (spec Story 2 AS2; quickstart
@@ -164,30 +164,30 @@ stacking) despite the live default being off.
 - [X] T022 [US2] Add integration test (`@tag :integration`) "a checkpoint write failure
       (unwritable `transcript_root`) with `slug`/`path`/`run_context` present still reaches
       the run's terminal result — `Checkpoint.write/1` returns `:ok` (rescued), no new
-      break" to `test/speckit_orchestrator/checkpoint_test.exs` or `feature_runner_test.exs`
+      break" to `test/autonomous/checkpoint_test.exs` or `feature_runner_test.exs`
       (FR-010; SC-005; quickstart Scenario 6) — depends on T009 (US1), T024
 
 ### Implementation for User Story 2
 
-- [X] T023 [P] [US2] Create `lib/speckit_orchestrator/run_context.ex`: pure struct
+- [X] T023 [P] [US2] Create `lib/autonomous/run_context.ex`: pure struct
       `defstruct pr_workflow: nil, max_concurrency: nil, budget_usd: nil, plan_stack: nil,
       pr_base: nil, pr_remote: nil`; `capture/1`, `to_map/1`, `from_map/1`, `merge/2` per
       contracts/run_context.md — no IO beyond reading `Config` in `capture/1` — depends on
       T013–T015
-- [X] T024 [US2] Extend `Checkpoint.write/1` in `lib/speckit_orchestrator/checkpoint.ex`:
+- [X] T024 [US2] Extend `Checkpoint.write/1` in `lib/autonomous/checkpoint.ex`:
       accept an optional `run_context` key; when non-`nil`, add `context:
       RunContext.to_map(run_context)` to the encoded record; when `nil`/absent, omit the
       key — no new raising path (best-effort preserved) — depends on T023, T016
 - [X] T025 [US2] Add a `:run_context` option to `FeatureRunner.run/2`
-      (`lib/speckit_orchestrator/feature_runner.ex`), default `nil`; pass it into the
+      (`lib/autonomous/feature_runner.ex`), default `nil`; pass it into the
       `checkpoint/4` call site alongside `slug`/`path` (T010) — depends on T024
-- [X] T026 [US2] In `SpeckitOrchestrator.run/1` (`lib/speckit_orchestrator.ex`), capture
+- [X] T026 [US2] In `Autonomous.run/1` (`lib/autonomous.ex`), capture
       `RunContext.capture(effective_opts)` from the opts `run/1` actually uses (post
       `:pr_workflow`/`:max_concurrency`/etc. resolution) and thread it as `run_context:`
       into every runner/executor closure that calls `FeatureRunner.run/2`:
       `default_runner/2`, `seed_runner/1`'s inner fun, `seed_executor/1`'s inner fun (via
       `run_seeded/4`), and `default_executor/3` — depends on T023, T025
-- [X] T027 [US2] In `SpeckitOrchestrator.resume/2`, after resolving identity (US1) and
+- [X] T027 [US2] In `Autonomous.resume/2`, after resolving identity (US1) and
       start phase: compute `ctx = RunContext.from_map(record["context"])`, `{merged_opts,
       fell_back} = RunContext.merge(opts, ctx)`; when `fell_back != []`, emit one
       `Logger.info` naming the fallen-back settings (FR-008) — depends on T011, T023
@@ -207,7 +207,7 @@ stacking) despite the live default being off.
       `pr_workflow`-branch dispatch (`run_stacked/1` vs `start_run/2`) consistently with
       the T028 worktree-strategy selection — depends on T027, T028
 - [X] T031 [US2] Update the `resume/2` moduledoc and `run/1` moduledoc in
-      `lib/speckit_orchestrator.ex` to document run-context capture/reapply and the
+      `lib/autonomous.ex` to document run-context capture/reapply and the
       precedence rule (explicit resume opt > recorded context > live Config/default) —
       depends on T030
 
@@ -274,7 +274,7 @@ including the PR workflow, without needing the environment to re-declare it (US2
 Task: "run_context_test.exs — capture/1 resolves opts-vs-Config per field"
 Task: "run_context_test.exs — from_map/1 tolerant decode (nil/partial/unknown keys)"
 Task: "run_context_test.exs — merge/2 precedence and fallback reporting"
-Task: "lib/speckit_orchestrator/run_context.ex — struct + capture/to_map/from_map/merge"
+Task: "lib/autonomous/run_context.ex — struct + capture/to_map/from_map/merge"
 ```
 
 ---
@@ -304,8 +304,8 @@ Task: "lib/speckit_orchestrator/run_context.ex — struct + capture/to_map/from_
 - [P] tasks = different files, no dependencies (or genuinely independent additions to a
   shared new file, called out per-task above)
 - [Story] label maps task to specific user story for traceability
-- Both stories touch `lib/speckit_orchestrator/checkpoint.ex` and
-  `lib/speckit_orchestrator.ex` — sequential by design (US2's edits build on US1's), not a
+- Both stories touch `lib/autonomous/checkpoint.ex` and
+  `lib/autonomous.ex` — sequential by design (US2's edits build on US1's), not a
   same-file conflict since neither phase parallelizes across the story boundary
 - No `String.to_atom/1` on any file-sourced value (atom-table safety) — `slug`/`path` are
   strings; `context` values decode as JSON primitives, never atoms (research D7)

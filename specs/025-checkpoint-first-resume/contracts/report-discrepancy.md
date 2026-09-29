@@ -1,7 +1,7 @@
 # Contract: the discrepancy on the existing operator surface
 
 **Kind**: rendering extension of an existing report (no new surface).
-**Modules**: `SpeckitOrchestrator.Recovery.Report`, `SpeckitOrchestrator.Recovery`
+**Modules**: `Autonomous.Recovery.Report`, `Autonomous.Recovery`
 **Extends**: `specs/014-recovery-reconciliation/contracts/recovery-report.md`
 **Satisfies**: FR-005, FR-006, FR-012, SC-005; Principle V, Principle VII
 
@@ -9,7 +9,7 @@
 
 ## 1. Where an operator sees it before any spend
 
-`SpeckitOrchestrator.resumable/1` (and `resumable_run/0`) call
+`Autonomous.resumable/1` (and `resumable_run/0`) call
 `Recovery.reconcile_run/2`, which calls `plan_run/2` — **read-only for
 non-`:done` verdicts** — and return `%{report:, statuses:, resume_phases:,
 gap_possible?:}`. No `Coordinator` is started, no phase runs, no reservation
@@ -19,7 +19,7 @@ FR-006 therefore needs **no new code path**: the discrepancy appears in the
 existing preview the moment `Reconcile.status/3` produces it. What this
 contract adds is that the preview *names the two phases*.
 
-`SpeckitOrchestrator.recover_record/1` previews through
+`Autonomous.recover_record/1` previews through
 `Recovery.Rebuild.propose/3`, which builds `conflicts` from its
 `:unreconcilable` discrepancies with `detail: reason` — the widened reason
 travels there unchanged (FR-012).
@@ -107,8 +107,8 @@ blocked feature is not a `{:stopped, _, _}`, because `:blocked` is absent from
 
 ## 6. Console
 
-Unchanged. `lib/speckit_orchestrator/web/` renders no conflict reason today
-(`grep -rn conflict lib/speckit_orchestrator/web/` is empty), so there is no
+Unchanged. `lib/autonomous/web/` renders no conflict reason today
+(`grep -rn conflict lib/autonomous/web/` is empty), so there is no
 LiveView template, no status color, and no `console.css` token to touch — the
 `design_contract_test` guard is unaffected. The spec's Assumptions state no
 new operator surface is introduced.

@@ -56,7 +56,7 @@ Two files whose numbers are **numerically equal** make the order ambiguous. The
 loader raises rather than picking one:
 
 ```
-** (SpeckitOrchestrator.Backlog.DuplicateNumberError) two features claim number 2:
+** (Autonomous.Backlog.DuplicateNumberError) two features claim number 2:
      docs/breakdown/002-categories.md
      docs/breakdown/0002-categories-v2.md
 ```

@@ -2,7 +2,7 @@
 
 ## One rule (FR-018)
 
-`SpeckitOrchestrator.NeedsHuman` is the only definition. It is used by
+`Autonomous.NeedsHuman` is the only definition. It is used by
 `RunFeaturePhase` (for both the final-text match and the `spec.md` scan) and
 by `EscalationsLive`. It also supplies the questions stored on each round
 row, so round rows use it too.

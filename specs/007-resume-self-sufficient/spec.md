@@ -6,7 +6,7 @@
 
 **Status**: Draft
 
-**Input**: User description: "Two bugs to fix: (1) When restarting from checkpoint I shouldn't need to pass feature info (the Feature struct with id/slug/path/status) — the checkpoint must already hold this so `resume/1` works from the id alone. (2) Context variables like `pr_workflow: true` used to initialize the run must be reused on resume — a run started with `SPECKIT_PR_WORKFLOW=true` did not honor that setting when a phase was resumed."
+**Input**: User description: "Two bugs to fix: (1) When restarting from checkpoint I shouldn't need to pass feature info (the Feature struct with id/slug/path/status) — the checkpoint must already hold this so `resume/1` works from the id alone. (2) Context variables like `pr_workflow: true` used to initialize the run must be reused on resume — a run started with `AUTONOMOUS_PR_WORKFLOW=true` did not honor that setting when a phase was resumed."
 
 ## Clarifications
 

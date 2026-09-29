@@ -93,7 +93,7 @@ partitioning is a key concern, not a directory concern, see R10).
 ## R4 — Startup ordering and failure
 
 **Decision**: a `Store.Boot.start!/0` runs **first** in
-`SpeckitOrchestrator.Application.start/2`, before any child spec, and returns
+`Autonomous.Application.start/2`, before any child spec, and returns
 `{:error, reason}` from `start/2` on failure so the OTP application aborts.
 Sequence:
 
@@ -369,7 +369,7 @@ directories are impossible in one BEAM. Therefore:
 - `test/test_helper.exs` creates **one** temporary store (a fresh dir under the
   system temp dir, unique per run), boots it via the same `Store.Boot` path
   production uses, and removes it on exit;
-- a `SpeckitOrchestrator.StoreCase` helper clears every table between tests;
+- a `Autonomous.StoreCase` helper clears every table between tests;
 - tests that touch the store are `async: false`; pure-module tests
   (`Store.Records`, `Store.Prune`, `Store.Capacity`, `Store.Export`,
   `Store.Ids`) stay `async: true` and need no schema at all;
@@ -413,7 +413,7 @@ of transcript content is `Recovery.Evidence.final_marker?/2`, which reads the
 
 **Consequence, called out for the operator**: a live `tail -f` of
 `<worktree>/.speckit_logs` is no longer available; the console's run-detail view
-and `SpeckitOrchestrator.transcript/1` replace it.
+and `Autonomous.transcript/1` replace it.
 
 **Alternatives rejected**: keeping `.speckit_logs` as a convenience copy
 (FR-003/FR-037 forbid a surviving second copy, and it leaks transcripts into the

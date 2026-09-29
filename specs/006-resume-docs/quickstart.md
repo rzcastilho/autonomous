@@ -7,7 +7,7 @@ branch `006-resume-docs` after the implementation phase.
 ## Prerequisites
 
 - Branch `006-resume-docs` checked out with the docs edits applied.
-- `docs/runbook.md` and `CLAUDE.md` edited; `lib/speckit_orchestrator.ex`
+- `docs/runbook.md` and `CLAUDE.md` edited; `lib/autonomous.ex`
   unchanged (source docstring stays).
 - Reference: [contracts/resume-doc-surface.md](./contracts/resume-doc-surface.md),
   [data-model.md](./data-model.md).
@@ -32,10 +32,10 @@ and no invented internal opts.
 
 ```bash
 # Facade signature (source of truth) — eyeball the @spec / @doc:
-rtk grep -n -A2 'def resume' lib/speckit_orchestrator.ex
+rtk grep -n -A2 'def resume' lib/autonomous.ex
 
 # Every resume example in the runbook uses only :from / :prompt (or run/1 opts):
-rtk grep -n 'SpeckitOrchestrator.resume(' docs/runbook.md
+rtk grep -n 'Autonomous.resume(' docs/runbook.md
 # Must NOT appear in runbook examples (internal FeatureRunner opts, not the facade):
 rtk grep -n -E 'resume\([^)]*(start_phase:|resume_prompt:)' docs/runbook.md
 ```
@@ -50,7 +50,7 @@ section can:
 
 1. Identify when to prefer `resume/2` over `resolve/1` (decision criteria present — FR-005).
 2. Fix the root cause on the feature branch and commit it.
-3. Invoke `SpeckitOrchestrator.resume("NNN", prompt: "…")` to restart at the
+3. Invoke `Autonomous.resume("NNN", prompt: "…")` to restart at the
    checkpointed phase (FR-002, FR-003).
 4. Know that `:from` overrides the start phase for the restart-earlier case,
    and *when* to reach for it (FR-004).
@@ -73,5 +73,5 @@ rtk grep -n 'resume' CLAUDE.md
 ```
 
 **Expected**: the observability/operability paragraph now mentions
-`SpeckitOrchestrator.resume/2` as a shipped mid-pipeline recovery path (alongside
+`Autonomous.resume/2` as a shipped mid-pipeline recovery path (alongside
 `resolve/1`), with no "v2 concern" / deferred framing.

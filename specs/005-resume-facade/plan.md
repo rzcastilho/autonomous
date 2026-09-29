@@ -6,7 +6,7 @@
 
 ## Summary
 
-Add `SpeckitOrchestrator.resume(feature_id, opts \\ [])` — the single
+Add `Autonomous.resume(feature_id, opts \\ [])` — the single
 operator-facing entry point that restarts one halted/escalated feature at its
 checkpointed phase, reusing the feature branch and the human's committed fix,
 instead of the full-restart `resolve/1` path. It wires together three
@@ -44,7 +44,7 @@ run (Principle II — fail loud at boundaries).
 
 - **I. Pure Core, Isolated Contracts** — PASS. Phase-string→atom validation
   reuses `Pipeline.phases/0` (pure). The facade stays in the impure boundary
-  layer (`SpeckitOrchestrator`), alongside `run/1`/`resolve/1`; no CLI/harness
+  layer (`Autonomous`), alongside `run/1`/`resolve/1`; no CLI/harness
   contract leaks into pure modules. No pure module is changed.
 - **II. Fail Loud at Boundaries** — PASS (central to this feature). Every unsafe
   precondition is rejected at the facade edge with a **distinct** result and
@@ -85,21 +85,21 @@ specs/005-resume-facade/
 ### Source Code (repository root)
 
 ```text
-lib/speckit_orchestrator.ex          # + resume/2 public fn; + private resume runner wrapper + phase-resolution helpers
-lib/speckit_orchestrator/
+lib/autonomous.ex          # + resume/2 public fn; + private resume runner wrapper + phase-resolution helpers
+lib/autonomous/
 ├── pipeline.ex                       # (read-only) Pipeline.phases/0 used for override validation; add phase?/1 helper if absent
 ├── checkpoint.ex                     # (read-only) Checkpoint.read/1
 ├── feature_runner.ex                 # (read-only) FeatureRunner.run :start_phase/:resume_prompt
 └── worktree.ex                       # (read-only) Worktree.create branch reuse / Worktree.locate
 
-test/speckit_orchestrator/
+test/autonomous/
 └── resume_test.exs                   # new — unit tests via :runner seam + fixture checkpoint
 test/fixtures/
 └── checkpoint/                        # fixture checkpoint(s) if not reusing 002's
 ```
 
 **Structure Decision**: Single Elixir project, no new top-level layout. The
-change is additive to the existing operator facade `lib/speckit_orchestrator.ex`
+change is additive to the existing operator facade `lib/autonomous.ex`
 (where `run/1`, `run_spec/2`, `resolve/1` already live) plus one new test file.
 Prerequisite modules are consumed read-only; the only possible non-facade edit is
 a small pure `Pipeline.phase?/1` (or `known_phase?/1`) predicate if one does not

@@ -1,6 +1,6 @@
 # Contract: Spec directory resolution
 
-Covers FR-009 – FR-011 (net one). Changes `SpeckitOrchestrator.SpecDir` only;
+Covers FR-009 – FR-011 (net one). Changes `Autonomous.SpecDir` only;
 its public signatures are unchanged.
 
 ## 1. Public API (unchanged)

@@ -6,12 +6,12 @@
 
 ## Summary
 
-Document the shipped `SpeckitOrchestrator.resume/2` mid-pipeline recovery flow in
+Document the shipped `Autonomous.resume/2` mid-pipeline recovery flow in
 `docs/runbook.md` alongside the existing `resolve/1` flow, update the `CLAUDE.md`
 observability/operability paragraph to name mid-pipeline resume as shipped, and
 purge every remaining "resume is a v2/future concern" framing from repository
 markdown. Docs-only: no source code changes (the `resolve/1` docstring's "v2"
-wording in `lib/speckit_orchestrator.ex` is explicitly out of scope). The
+wording in `lib/autonomous.ex` is explicitly out of scope). The
 documented API surface must match the real `resume/2` signature so every runbook
 example runs unmodified.
 
@@ -20,7 +20,7 @@ example runs unmodified.
 **Language/Version**: Markdown documentation (repo pins Elixir 1.20.2-otp-28, but
 no code is edited).
 
-**Primary Dependencies**: The shipped `SpeckitOrchestrator.resume/2` facade
+**Primary Dependencies**: The shipped `Autonomous.resume/2` facade
 (features 001–005) — its public signature and options are the documented subject.
 
 **Storage**: N/A (files edited in place: `docs/runbook.md`, `CLAUDE.md`, and any
@@ -28,7 +28,7 @@ other `.md` carrying stale framing).
 
 **Testing**: Manual + `grep`-based verification (SC-003 zero-match search);
 operator dry-read of the runbook resume section (SC-001); example-vs-signature
-parity check against `lib/speckit_orchestrator.ex` (SC-002). No automated test
+parity check against `lib/autonomous.ex` (SC-002). No automated test
 suite is added — this feature ships no code.
 
 **Target Platform**: Repository documentation (rendered on GitHub / read in-repo).
@@ -92,13 +92,13 @@ docs/
 CLAUDE.md                # UPDATE observability/operability paragraph to name shipped resume/2
 
 # Read-only reference (NOT edited — out of scope):
-lib/speckit_orchestrator.ex   # resume/2 @doc is the source of truth for the documented signature;
+lib/autonomous.ex   # resume/2 @doc is the source of truth for the documented signature;
                               # resolve/1 docstring "v2" wording stays (source docstrings excluded)
 ```
 
 **Structure Decision**: No code structure. The unit of work is the operator
 documentation set. The authoritative reference for every documented call is the
-`resume/2` `@doc`/`@spec` in `lib/speckit_orchestrator.ex` (lines ~138–162);
+`resume/2` `@doc`/`@spec` in `lib/autonomous.ex` (lines ~138–162);
 `contracts/resume-doc-surface.md` freezes that surface so the runbook examples
 and the code cannot silently drift (SC-002).
 

@@ -1,6 +1,6 @@
 # Contract: facade supersession & active-run guard
 
-Changes to `SpeckitOrchestrator` (`lib/speckit_orchestrator.ex`). Every return
+Changes to `Autonomous` (`lib/autonomous.ex`). Every return
 shape that exists today is kept; one error term is added.
 
 ## `run/1` (fresh run, no `:run_key`) — and `run_spec/2`, which delegates to it

@@ -6,7 +6,7 @@ LiveView assign state.
 
 ## Existing inputs (read-only)
 
-### Run summary: `SpeckitOrchestrator.run_history/1` element
+### Run summary: `Autonomous.run_history/1` element
 
 The fields this feature uses come from `Store.Query.run_summary/1`:
 
@@ -19,7 +19,7 @@ The fields this feature uses come from `Store.Query.run_summary/1`:
 A damaged row is `%{run_id:, damaged: true, reason:}`. It has no `scope` and
 is never matched.
 
-### Run detail: `SpeckitOrchestrator.run_detail/1`
+### Run detail: `Autonomous.run_detail/1`
 
 `{:ok, %{run: run, features: [feature_run], cost_entries: [...]}}` is
 hydrated through the existing

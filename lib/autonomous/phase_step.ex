@@ -1,0 +1,176 @@
+defmodule Autonomous.PhaseStep do
+  @moduledoc """
+  Run one phase: `[:speckit, :phase]` telemetry span, transient-retry policy.
+  Extracted from `FeatureRunner` (research R8) so `AnalyzeRunner`'s
+  attempt-numbered analyze/remediation records can share this exact machinery
+  via `:span_meta` without duplicating it.
+
+  Returns the agent so the caller (`FeatureRunner`, `AnalyzeRunner`) can
+  persist the attempt/checkpoint/transcript through `Store.Writer` in its own
+  boundary transaction (018).
+  """
+
+  require Logger
+
+  alias Jido.{AgentServer, Signal}
+
+  alias Autonomous.{Config, Feature, PhaseResult, PhaseSession, Pipeline, Workers}
+
+  @doc """
+  Run `phase` for `feature` via the agent at `pid`, retrying transient
+  failures. Options:
+
+    * `:step` (required) — the pipeline step number, for the span meta.
+    * `:timeout` (required) — the session's wall-clock **deadline** (ms),
+      enforced inside the action by `PhaseSession`; the `AgentServer.call/3`
+      timeout is derived from it (`PhaseSession.call_timeout/1`).
+    * `:retries` — transient-retry budget (default `Config.phase_max_retries/0`).
+    * `:span_meta` — extra keys merged into the `[:speckit, :phase]` span
+      meta (e.g. `%{attempt:, limit:}`).
+    * `:operator_answers` — (029) the rendered "Operator answers" block for
+      an interactive-clarify re-run; threaded into every retry of this same
+      call, `nil` (default) is a no-op everywhere else.
+  """
+  @spec run(pid(), Feature.t(), Pipeline.phase(), keyword()) :: struct()
+  def run(pid, feature, phase, opts) do
+    step = Keyword.fetch!(opts, :step)
+    timeout = Keyword.fetch!(opts, :timeout)
+    retries = Keyword.get(opts, :retries, Config.phase_max_retries())
+    span_meta = Keyword.get(opts, :span_meta, %{})
+    operator_answers = Keyword.get(opts, :operator_answers)
+
+    run_with_retry(pid, feature, phase, step, timeout, span_meta, retries, operator_answers)
+  end
+
+  # Re-run a phase that failed transiently (a server/API drop, not a real
+  # error) up to `retries` times before giving up. Real errors and most gate
+  # outcomes (signals, not `:error`) fall straight through.
+  defp run_with_retry(pid, feature, phase, step, timeout, span_meta, retries, operator_answers) do
+    agent = run_once(pid, feature, phase, step, timeout, span_meta, operator_answers)
+    st = agent.state
+
+    case retries > 0 and retry_reason(st) do
+      false ->
+        agent
+
+      nil ->
+        agent
+
+      reason ->
+        Logger.warning(
+          "feature #{feature.id} phase #{phase} #{reason} — retrying (#{retries} left)"
+        )
+
+        run_with_retry(pid, feature, phase, step, timeout, span_meta, retries - 1, operator_answers)
+    end
+  end
+
+  # Why this attempt is worth repeating, or `nil` to accept it as final.
+  #
+  # Beyond the original transient case, two outcomes are retried because both
+  # are evidence the model *started* and stopped rather than deliberately
+  # refusing, and neither reproduces deterministically — a fresh session is the
+  # single most likely thing to fix them:
+  #
+  #   * `outstanding_work?` — the session reported success with tool calls still
+  #     unreturned, i.e. it ended its turn mid-flight.
+  #   * `unfilled_artifact?` — the artifact exists but is the untouched Spec Kit
+  #     template.
+  #
+  # A *plain* missing artifact is deliberately NOT retried: a phase that wrote
+  # nothing at all usually refused for a deterministic reason (a contradictory
+  # `plan_stack` being the common one), so a second session burns the same
+  # model for the same refusal.
+  defp retry_reason(st) do
+    signals = st.last_signals || %{}
+
+    cond do
+      # Branch drift (027, US2) is checked first, ahead of every other test:
+      # a drifted session is never retried, not even as a transient one — a
+      # fresh session would only write to the same wrong branch again.
+      Map.has_key?(signals, :branch_drift) -> nil
+      st.last_outcome != :error and not Map.get(signals, :unfilled_artifact?, false) -> nil
+      PhaseResult.transient?(st.last_result) and st.last_outcome == :error -> "failed transiently"
+      Map.get(signals, :outstanding_work?, false) -> "ended with work outstanding"
+      Map.get(signals, :unfilled_artifact?, false) -> "left its artifact as an unfilled template"
+      true -> nil
+    end
+  end
+
+  defp run_once(pid, feature, phase, step, timeout, span_meta, operator_answers) do
+    meta =
+      %{feature_id: feature.id, phase: phase, model: Config.model_for(phase), step: step}
+      |> Map.merge(span_meta)
+
+    :telemetry.span([:speckit, :phase], meta, fn ->
+      {:ok, %{agent: before}} = AgentServer.state(pid)
+
+      Workers.session_started(timeout)
+
+      signal_data = %{phase: phase, deadline_ms: timeout}
+
+      signal_data =
+        if operator_answers,
+          do: Map.put(signal_data, :operator_answers, operator_answers),
+          else: signal_data
+
+      {:ok, agent} = call(pid, "phase.run", signal_data, PhaseSession.call_timeout(timeout))
+
+      agent = ensure_recorded(before, agent, phase)
+      entry = List.first(agent.state.history) || %{}
+      Logger.info("feature #{feature.id} phase #{phase} -> #{inspect(Map.get(entry, :outcome))}")
+
+      {agent,
+       Map.merge(meta, %{outcome: Map.get(entry, :outcome), cost: Map.get(entry, :cost, 0.0)})}
+    end)
+  end
+
+  defp call(pid, type, data, timeout) do
+    AgentServer.call(pid, Signal.new!(type, data, source: "/runner"), timeout)
+  end
+
+  @doc """
+  Guard against a phase call that returned without recording anything.
+
+  `Jido.AgentServer.call/3` replies `{:ok, agent}` even when the routed
+  action never produced a state update — an action that raised, or that
+  jido_action's executor turned into an error, surfaces only as a logged
+  `Directive.Error`, and the agent comes back with the **previous** phase's
+  `last_outcome`/`last_result` still in place. Read naively, a stale `:ok`
+  would advance the pipeline past a phase that never ran (probed live: a
+  timed-out-then-retried action returns exactly this shape).
+
+  Every phase action appends one `history` entry on every path (success,
+  harness error, gate divert), so "history did not grow" is the mechanical
+  signature of a swallowed failure. When it fires the agent is patched to an
+  unambiguous error result — `{:no_phase_result, phase}`, non-transient — so
+  the caller fails the phase loudly instead of trusting the stale state.
+  """
+  @spec ensure_recorded(struct(), struct(), atom()) :: struct()
+  def ensure_recorded(%{state: before}, %{state: after_state} = agent, phase) do
+    if length(after_state.history || []) > length(before.history || []) do
+      agent
+    else
+      Logger.error(
+        "phase #{phase} call returned without recording a result — " <>
+          "the action did not run to completion; failing the phase rather than trusting stale state"
+      )
+
+      result = %PhaseResult{status: :error, error: {:no_phase_result, phase}}
+
+      %{
+        agent
+        | state:
+            Map.merge(after_state, %{
+              phase: phase,
+              last_outcome: :error,
+              last_signals: %{},
+              last_result: result,
+              history: [
+                %{phase: phase, outcome: :error, error: result.error} | after_state.history || []
+              ]
+            })
+      }
+    end
+  end
+end

@@ -1,6 +1,6 @@
 # Contract: `Checkpoint` per-phase progress write (extension)
 
-Extends `SpeckitOrchestrator.Checkpoint` usage — **no signature change**. The
+Extends `Autonomous.Checkpoint` usage — **no signature change**. The
 existing `write/1`/`read/1`/`delete/1` already accept and round-trip the fields
 below; this contract fixes the new *call site* and the new `status` value.
 

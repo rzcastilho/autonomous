@@ -28,8 +28,8 @@ Single Elixir project (existing). All paths are repo-root-relative.
 
 **Purpose**: The one pure-core addition every later phase depends on — validating a phase string/atom against the real pipeline before it can drive `FeatureRunner.run` (used both for the checkpoint's stored `last_phase` in US1 and the `:from` override in US3).
 
-- [X] T001 [P] Add `phase?/1` to `lib/speckit_orchestrator/pipeline.ex`: `@spec phase?(atom()) :: boolean()`, `def phase?(phase), do: phase in @ordered` — pure, no new deps
-- [X] T002 [P] Add `phase?/1` unit tests to `test/speckit_orchestrator/pipeline_test.exs`: `true` for every member of `Pipeline.phases()`, `false` for a non-phase atom (e.g. `:bogus`)
+- [X] T001 [P] Add `phase?/1` to `lib/autonomous/pipeline.ex`: `@spec phase?(atom()) :: boolean()`, `def phase?(phase), do: phase in @ordered` — pure, no new deps
+- [X] T002 [P] Add `phase?/1` unit tests to `test/autonomous/pipeline_test.exs`: `true` for every member of `Pipeline.phases()`, `false` for a non-phase atom (e.g. `:bogus`)
 
 **Checkpoint**: `mix compile` clean; `Pipeline.phase?/1` available for the resume boundary validation in every user story below.
 
@@ -37,13 +37,13 @@ Single Elixir project (existing). All paths are repo-root-relative.
 
 ## Phase 2: User Story 1 - Resume a halted/escalated feature at its checkpointed phase (Priority: P1) 🎯 MVP
 
-**Goal**: `SpeckitOrchestrator.resume(feature_id, opts)` looks up the feature and its checkpoint, restarts the pipeline at the checkpointed phase (never `Pipeline.first()`), reuses or recreates the feature's worktree from its existing branch, and returns a distinct `{:error, …}` result for every unsafe precondition — no run starts on any of them.
+**Goal**: `Autonomous.resume(feature_id, opts)` looks up the feature and its checkpoint, restarts the pipeline at the checkpointed phase (never `Pipeline.first()`), reuses or recreates the feature's worktree from its existing branch, and returns a distinct `{:error, …}` result for every unsafe precondition — no run starts on any of them.
 
 **Independent Test**: Checkpoint a fixture feature at `analyze` (via `Checkpoint.write/1` under a temp `transcript_root`), call `resume(id)` with a fake `:runner`, and confirm the run is invoked starting at `:analyze`, never at the first phase.
 
 ### Tests for User Story 1
 
-- [X] T003 [US1] Create `test/speckit_orchestrator/resume_test.exs` with shared fixtures (a minimal `%Feature{}`, a `Checkpoint.write/1`-backed fixture checkpoint under a temp `transcript_root` app-env swap per `checkpoint_test.exs`'s pattern, a capturing fake `:runner`) plus the test "resume/2 restarts at the checkpointed phase, not `Pipeline.first()`" (contract T1; US1 AS1; SC-002)
+- [X] T003 [US1] Create `test/autonomous/resume_test.exs` with shared fixtures (a minimal `%Feature{}`, a `Checkpoint.write/1`-backed fixture checkpoint under a temp `transcript_root` app-env swap per `checkpoint_test.exs`'s pattern, a capturing fake `:runner`) plus the test "resume/2 restarts at the checkpointed phase, not `Pipeline.first()`" (contract T1; US1 AS1; SC-002)
 - [X] T004 [US1] Add test "resume/2 reports `{:error, :no_checkpoint}` and starts no run when the feature has no checkpoint" — assert the fake runner is never invoked (contract T2; US1 AS2)
 - [X] T005 [US1] Add test "resume/2 reports `{:error, {:unknown_feature, id}}` and starts no run for a feature id absent from the backlog" — assert the fake runner is never invoked (contract T3; US1 AS3)
 - [X] T006 [US1] Add test "resume/2 reports `{:error, :corrupt_checkpoint}`, distinct from `:no_checkpoint`, and starts no run when the checkpoint file exists but is undecodable" — write raw invalid JSON to the checkpoint path (contract T8; FR-006a; edge case)
@@ -52,8 +52,8 @@ Single Elixir project (existing). All paths are repo-root-relative.
 
 ### Implementation for User Story 1
 
-- [X] T009 [US1] Implement `SpeckitOrchestrator.resume/2` boundary validation in `lib/speckit_orchestrator.ex`: look up the feature in `Keyword.get_lazy(opts, :features, &load_backlog/0)` (`{:error, {:unknown_feature, id}}` on miss, matching `resolve/1`), then `Checkpoint.read(feature_id)` dispatching `{:error, :no_checkpoint}` / `{:error, :corrupt_checkpoint}`, then resolve `start_phase` from the checkpoint's `last_phase` string via `String.to_existing_atom/1` guarded by `Pipeline.phase?/1` (`{:error, {:unknown_phase, phase}}` on a bad stored value — never `String.to_atom/1` on file contents) — depends on T001
-- [X] T010 [US1] Implement the private resume-runner wrapper in `lib/speckit_orchestrator.ex`: `Worktree.locate/2` the feature and reuse its path if the directory exists, else `Worktree.create/2` to recreate from the existing branch; on `Worktree.create` failure call `notify.(feature.id, :failed, {:worktree, reason})` exactly as `default_runner/2` does; otherwise `FeatureRunner.run(feature, worktree: wt, ledger: Ledger, notify: notify, start_phase: start_phase, resume_prompt: nil)` (prompt threading lands in US2) — depends on T009
+- [X] T009 [US1] Implement `Autonomous.resume/2` boundary validation in `lib/autonomous.ex`: look up the feature in `Keyword.get_lazy(opts, :features, &load_backlog/0)` (`{:error, {:unknown_feature, id}}` on miss, matching `resolve/1`), then `Checkpoint.read(feature_id)` dispatching `{:error, :no_checkpoint}` / `{:error, :corrupt_checkpoint}`, then resolve `start_phase` from the checkpoint's `last_phase` string via `String.to_existing_atom/1` guarded by `Pipeline.phase?/1` (`{:error, {:unknown_phase, phase}}` on a bad stored value — never `String.to_atom/1` on file contents) — depends on T001
+- [X] T010 [US1] Implement the private resume-runner wrapper in `lib/autonomous.ex`: `Worktree.locate/2` the feature and reuse its path if the directory exists, else `Worktree.create/2` to recreate from the existing branch; on `Worktree.create` failure call `notify.(feature.id, :failed, {:worktree, reason})` exactly as `default_runner/2` does; otherwise `FeatureRunner.run(feature, worktree: wt, ledger: Ledger, notify: notify, start_phase: start_phase, resume_prompt: nil)` (prompt threading lands in US2) — depends on T009
 - [X] T011 [US1] Wire `resume/2` to delegate to `run/1`: inject the T010 wrapper as `:runner` only when the caller did not already supply one (mirror `spec_run_opts/3`'s `caller_test_mode?` guard), pass `features: [feature]` plus all other opts through unchanged (FR-008), and return `run/1`'s `on_start` tuple — depends on T009, T010
 
 **Checkpoint**: User Story 1 is independently functional — `resume/2` restarts a checkpointed feature at the right phase, reuses/recreates its worktree correctly, and every precondition failure is distinct with zero side effects.
@@ -68,12 +68,12 @@ Single Elixir project (existing). All paths are repo-root-relative.
 
 ### Tests for User Story 2
 
-- [X] T012 [US2] Add test "resume/2 delivers the `:prompt` guidance note to the resumed phase unchanged" to `test/speckit_orchestrator/resume_test.exs` (contract T4; US2 AS1; SC-003)
+- [X] T012 [US2] Add test "resume/2 delivers the `:prompt` guidance note to the resumed phase unchanged" to `test/autonomous/resume_test.exs` (contract T4; US2 AS1; SC-003)
 - [X] T013 [US2] Add test "resume/2 with no `:prompt` runs the resumed phase with `resume_prompt: nil` — no error, no placeholder text injected" (contract T5; US2 AS2)
 
 ### Implementation for User Story 2
 
-- [X] T014 [US2] In the T010 resume-runner wrapper (`lib/speckit_orchestrator.ex`), replace the hardcoded `resume_prompt: nil` with the resume request's `:prompt` opt (default `nil` when absent), passed through unchanged to `FeatureRunner.run` — depends on T010
+- [X] T014 [US2] In the T010 resume-runner wrapper (`lib/autonomous.ex`), replace the hardcoded `resume_prompt: nil` with the resume request's `:prompt` opt (default `nil` when absent), passed through unchanged to `FeatureRunner.run` — depends on T010
 
 **Checkpoint**: User Stories 1 AND 2 both work independently — guidance passthrough adds no regression to US1's checkpoint-driven restart.
 
@@ -87,12 +87,12 @@ Single Elixir project (existing). All paths are repo-root-relative.
 
 ### Tests for User Story 3
 
-- [X] T015 [US3] Add test "resume/2 with a valid `:from` overrides the checkpointed phase" to `test/speckit_orchestrator/resume_test.exs` (contract T6; US3 AS1)
+- [X] T015 [US3] Add test "resume/2 with a valid `:from` overrides the checkpointed phase" to `test/autonomous/resume_test.exs` (contract T6; US3 AS1)
 - [X] T016 [US3] Add test "resume/2 with an invalid `:from` rejects with `{:error, {:unknown_phase, phase}}` and starts no run" — assert the fake runner is never invoked (contract T7; SC-005)
 
 ### Implementation for User Story 3
 
-- [X] T017 [US3] In `resume/2`'s boundary validation (`lib/speckit_orchestrator.ex`, T009), resolve `start_phase` as `opts[:from] || parsed_checkpoint_phase`, validating `opts[:from]` against `Pipeline.phase?/1` the same way as the checkpoint's stored phase (`{:error, {:unknown_phase, phase}}` on a bad override) — depends on T009, T001
+- [X] T017 [US3] In `resume/2`'s boundary validation (`lib/autonomous.ex`, T009), resolve `start_phase` as `opts[:from] || parsed_checkpoint_phase`, validating `opts[:from]` against `Pipeline.phase?/1` the same way as the checkpoint's stored phase (`{:error, {:unknown_phase, phase}}` on a bad override) — depends on T009, T001
 
 **Checkpoint**: All three user stories work independently and together — default checkpoint resume, guidance passthrough, and explicit phase override each behave per their acceptance scenarios with no cross-story regression.
 
@@ -125,7 +125,7 @@ Single Elixir project (existing). All paths are repo-root-relative.
 
 - T001 and T002 (Foundational) — different files.
 - T003-T008 (US1 tests) all edit `resume_test.exs` — not marked `[P]`, added as sequential test cases in one file.
-- T009 and T010 both edit `lib/speckit_orchestrator.ex` — sequential, not `[P]` (T010 depends on T009's resolved `start_phase`/error tuples).
+- T009 and T010 both edit `lib/autonomous.ex` — sequential, not `[P]` (T010 depends on T009's resolved `start_phase`/error tuples).
 - T018 and later Polish tasks may run alongside a final read-through, though T019/T020 depend on T001-T017 being complete to be meaningful.
 
 ---
@@ -134,8 +134,8 @@ Single Elixir project (existing). All paths are repo-root-relative.
 
 ```bash
 # T001 (pipeline.ex) and T002 (pipeline_test.exs) touch different files:
-Task: "Add phase?/1 to lib/speckit_orchestrator/pipeline.ex"
-Task: "Add phase?/1 unit tests to test/speckit_orchestrator/pipeline_test.exs"
+Task: "Add phase?/1 to lib/autonomous/pipeline.ex"
+Task: "Add phase?/1 unit tests to test/autonomous/pipeline_test.exs"
 ```
 
 ---
@@ -146,7 +146,7 @@ Task: "Add phase?/1 unit tests to test/speckit_orchestrator/pipeline_test.exs"
 
 1. Complete Phase 1: Foundational (`Pipeline.phase?/1`)
 2. Complete Phase 2: User Story 1 — checkpoint-driven restart, worktree reuse/recreate, all five distinct failure results
-3. **STOP and VALIDATE**: `mix test test/speckit_orchestrator/resume_test.exs` green, quickstart's hermetic scenarios pass
+3. **STOP and VALIDATE**: `mix test test/autonomous/resume_test.exs` green, quickstart's hermetic scenarios pass
 4. This alone satisfies SC-001, SC-002, SC-004, SC-005 (minus the `:from`-specific failure) and FR-001/002/005/006/006a/007/009/010
 
 ### Incremental Delivery

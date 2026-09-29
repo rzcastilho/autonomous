@@ -160,7 +160,7 @@ specs/018-unified-run-persistence/
 ### Source Code (repository root)
 
 ```text
-lib/speckit_orchestrator/
+lib/autonomous/
 ├── store.ex                       # NEW — persistence boundary facade + behaviour
 ├── store/
 │   ├── boot.ex                    # NEW — dir, schema create/verify, migrations, write probe
@@ -203,21 +203,21 @@ lib/speckit_orchestrator/
         ├── mission_control_live.ex, pipeline_dag_live.ex,
         ├── escalations_live.ex, transcripts_live.ex   # re-pointed at the facade
 
-lib/speckit_orchestrator.ex        # + run_history/1, run_detail/1, transcript/1, resumable/1,
+lib/autonomous.ex        # + run_history/1, run_detail/1, transcript/1, resumable/1,
                                    #   prune_preview/1, prune/1, export_run/3, store_capacity/0,
                                    #   resolve_escalation/2; run/resume/resume_run cut over
 
 test/
 ├── support/store_case.ex          # NEW — shared temp schema, table clearing
-├── speckit_orchestrator/store/    # NEW — records, ids, prune, capacity, export (async)
+├── autonomous/store/    # NEW — records, ids, prune, capacity, export (async)
 │                                  #       mnesia, boot, writer, query (async: false)
-├── speckit_orchestrator/persistence_failure_test.exs   # NEW — FR-010 drain, SC-013
-├── speckit_orchestrator/store_boundary_test.exs        # NEW — grep guards (SC-007)
+├── autonomous/persistence_failure_test.exs   # NEW — FR-010 drain, SC-013
+├── autonomous/store_boundary_test.exs        # NEW — grep guards (SC-007)
 └── (existing manifest/checkpoint/transcript tests replaced in place)
 ```
 
 **Structure Decision**: single Elixir/OTP application, unchanged. All new code
-lands under `lib/speckit_orchestrator/store/` behind one boundary module, exactly
+lands under `lib/autonomous/store/` behind one boundary module, exactly
 as the harness contract is isolated today (Principle I). The pure/edge split
 inside that directory is what keeps policy — capacity, pruning, export, record
 decoding — unit-testable with no schema and no running node.

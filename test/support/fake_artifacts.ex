@@ -1,4 +1,4 @@
-defmodule SpeckitOrchestrator.FakeArtifacts do
+defmodule Autonomous.FakeArtifacts do
   @moduledoc """
   Test helper: make a fake SDK write the files a real Spec Kit phase writes.
 

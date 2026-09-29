@@ -24,7 +24,7 @@ independent implementation and testing of each story.
 
 ## Path Conventions
 
-Single Elixir project (per plan.md): `lib/speckit_orchestrator/`, `test/speckit_orchestrator/`.
+Single Elixir project (per plan.md): `lib/autonomous/`, `test/autonomous/`.
 
 ---
 
@@ -32,9 +32,9 @@ Single Elixir project (per plan.md): `lib/speckit_orchestrator/`, `test/speckit_
 
 **Purpose**: Create the new module and test file skeletons that every later task fills in
 
-- [X] T001 Create `lib/speckit_orchestrator/single_spec.ex` module skeleton (`@moduledoc`, `alias SpeckitOrchestrator.Feature`, empty function stubs for `next_id/1`, `slug/1`, `seed_body/2`, `build/3` per contracts/run_spec.md §4)
-- [X] T002 [P] Create `test/speckit_orchestrator/single_spec_test.exs` skeleton (`use ExUnit.Case, async: true`, `alias SpeckitOrchestrator.SingleSpec`)
-- [X] T003 [P] Create `test/speckit_orchestrator/run_spec_test.exs` skeleton (`use ExUnit.Case, async: true`, `alias SpeckitOrchestrator`)
+- [X] T001 Create `lib/autonomous/single_spec.ex` module skeleton (`@moduledoc`, `alias Autonomous.Feature`, empty function stubs for `next_id/1`, `slug/1`, `seed_body/2`, `build/3` per contracts/run_spec.md §4)
+- [X] T002 [P] Create `test/autonomous/single_spec_test.exs` skeleton (`use ExUnit.Case, async: true`, `alias Autonomous.SingleSpec`)
+- [X] T003 [P] Create `test/autonomous/run_spec_test.exs` skeleton (`use ExUnit.Case, async: true`, `alias Autonomous`)
 
 ---
 
@@ -44,14 +44,14 @@ Single Elixir project (per plan.md): `lib/speckit_orchestrator/`, `test/speckit_
 
 **⚠️ CRITICAL**: No user story work can begin until this phase is complete
 
-- [X] T004 Write tests for `SingleSpec.next_id/1` in `test/speckit_orchestrator/single_spec_test.exs` — empty list → `"001"`; `["001", "003"]` → `"004"`; ids drawn from `feature/NNN-*` branch names are honored (data-model.md, research.md R3)
-- [X] T005 Implement `SingleSpec.next_id/1` in `lib/speckit_orchestrator/single_spec.ex` (depends on T004)
-- [X] T006 Write tests for `SingleSpec.slug/1` in `test/speckit_orchestrator/single_spec_test.exs` — kebab-case derivation, first-5-token limit, ≤40-char truncation, no-alphanumeric description falls back to `"feature"` (research.md R4)
-- [X] T007 Implement `SingleSpec.slug/1` in `lib/speckit_orchestrator/single_spec.ex` (depends on T006)
-- [X] T008 Write tests for `SingleSpec.seed_body/2` in `test/speckit_orchestrator/single_spec_test.exs` — renders `# <id> — <Title>` + description + `## Prerequisites\n\nNone`; output round-trips through `SpeckitOrchestrator.Backlog.load!/1` as a single no-prereq feature (contracts/run_spec.md §3)
-- [X] T009 Implement `SingleSpec.seed_body/2` in `lib/speckit_orchestrator/single_spec.ex` (depends on T008)
-- [X] T010 Write tests for `SingleSpec.build/3` in `test/speckit_orchestrator/single_spec_test.exs` — `nil`/`""`/whitespace-only description → `{:error, :empty_description}`; valid description + taken-ids list → `{:ok, %Feature{prereqs: [], status: :pending, ...}}` (data-model.md, FR-003, FR-012)
-- [X] T011 Implement `SingleSpec.build/3` in `lib/speckit_orchestrator/single_spec.ex`, composing `next_id/1`, `slug/1`, `seed_body/2` (depends on T005, T007, T009, T010)
+- [X] T004 Write tests for `SingleSpec.next_id/1` in `test/autonomous/single_spec_test.exs` — empty list → `"001"`; `["001", "003"]` → `"004"`; ids drawn from `feature/NNN-*` branch names are honored (data-model.md, research.md R3)
+- [X] T005 Implement `SingleSpec.next_id/1` in `lib/autonomous/single_spec.ex` (depends on T004)
+- [X] T006 Write tests for `SingleSpec.slug/1` in `test/autonomous/single_spec_test.exs` — kebab-case derivation, first-5-token limit, ≤40-char truncation, no-alphanumeric description falls back to `"feature"` (research.md R4)
+- [X] T007 Implement `SingleSpec.slug/1` in `lib/autonomous/single_spec.ex` (depends on T006)
+- [X] T008 Write tests for `SingleSpec.seed_body/2` in `test/autonomous/single_spec_test.exs` — renders `# <id> — <Title>` + description + `## Prerequisites\n\nNone`; output round-trips through `Autonomous.Backlog.load!/1` as a single no-prereq feature (contracts/run_spec.md §3)
+- [X] T009 Implement `SingleSpec.seed_body/2` in `lib/autonomous/single_spec.ex` (depends on T008)
+- [X] T010 Write tests for `SingleSpec.build/3` in `test/autonomous/single_spec_test.exs` — `nil`/`""`/whitespace-only description → `{:error, :empty_description}`; valid description + taken-ids list → `{:ok, %Feature{prereqs: [], status: :pending, ...}}` (data-model.md, FR-003, FR-012)
+- [X] T011 Implement `SingleSpec.build/3` in `lib/autonomous/single_spec.ex`, composing `next_id/1`, `slug/1`, `seed_body/2` (depends on T005, T007, T009, T010)
 
 **Checkpoint**: `SingleSpec` complete and covered — user story implementation can now begin
 
@@ -59,23 +59,23 @@ Single Elixir project (per plan.md): `lib/speckit_orchestrator/`, `test/speckit_
 
 ## Phase 3: User Story 1 - Run one feature without authoring a backlog (Priority: P1) 🎯 MVP
 
-**Goal**: `SpeckitOrchestrator.run_spec/2` drives one feature end-to-end from a free-text description — no breakdown directory, no prerequisite declarations, wave of one
+**Goal**: `Autonomous.run_spec/2` drives one feature end-to-end from a free-text description — no breakdown directory, no prerequisite declarations, wave of one
 
 **Independent Test**: call `run_spec/2` with an injected `:runner` and `:features` seam; assert the one feature runs and the drain report accounts for exactly it (spec.md US1 AC1-3)
 
 ### Tests for User Story 1
 
-- [X] T012 [P] [US1] Write tests for the taken-id gathering helper (scans `Config.breakdown_dir()` `NNN-*.md` filenames and `feature/NNN-*` branch names) in `test/speckit_orchestrator/run_spec_test.exs`
-- [X] T014 [P] [US1] Write tests for the seed-writing runner wrapper in `test/speckit_orchestrator/run_spec_test.exs` — writes the seed to `<worktree.path>/<breakdown_dir>/<id>-<slug>.md` after `Worktree.create/2` succeeds and before `FeatureRunner.run/2` (contracts/run_spec.md §2, research.md R1-R2)
-- [X] T016 [P] [US1] Write tests for the seed-write failure path in `test/speckit_orchestrator/run_spec_test.exs` — a failing seed write calls `notify.(id, :failed, {:seed, reason})` and never invokes `FeatureRunner.run/2` (contracts/run_spec.md §2, edge case: fail loud)
-- [X] T018 [P] [US1] Write tests for `run_spec/2` (non-PR path) in `test/speckit_orchestrator/run_spec_test.exs` — empty/whitespace description → `{:error, :empty_description}` with no Coordinator/worktree/file side effect (SC-005); valid description with injected `:runner`/`:features` → one feature runs as a wave of one and the drain report accounts for exactly it with spend within budget (SC-001, SC-002, SC-004, SC-006)
+- [X] T012 [P] [US1] Write tests for the taken-id gathering helper (scans `Config.breakdown_dir()` `NNN-*.md` filenames and `feature/NNN-*` branch names) in `test/autonomous/run_spec_test.exs`
+- [X] T014 [P] [US1] Write tests for the seed-writing runner wrapper in `test/autonomous/run_spec_test.exs` — writes the seed to `<worktree.path>/<breakdown_dir>/<id>-<slug>.md` after `Worktree.create/2` succeeds and before `FeatureRunner.run/2` (contracts/run_spec.md §2, research.md R1-R2)
+- [X] T016 [P] [US1] Write tests for the seed-write failure path in `test/autonomous/run_spec_test.exs` — a failing seed write calls `notify.(id, :failed, {:seed, reason})` and never invokes `FeatureRunner.run/2` (contracts/run_spec.md §2, edge case: fail loud)
+- [X] T018 [P] [US1] Write tests for `run_spec/2` (non-PR path) in `test/autonomous/run_spec_test.exs` — empty/whitespace description → `{:error, :empty_description}` with no Coordinator/worktree/file side effect (SC-005); valid description with injected `:runner`/`:features` → one feature runs as a wave of one and the drain report accounts for exactly it with spend within budget (SC-001, SC-002, SC-004, SC-006)
 
 ### Implementation for User Story 1
 
-- [X] T013 [US1] Implement the taken-id gathering helper in `lib/speckit_orchestrator.ex` (depends on T012)
-- [X] T015 [US1] Implement the seed-writing runner wrapper in `lib/speckit_orchestrator.ex`, wrapping `default_runner/2` (depends on T014, T013, T011)
-- [X] T017 [US1] Wire the seed-write failure branch into the runner wrapper in `lib/speckit_orchestrator.ex` (depends on T016, T015)
-- [X] T019 [US1] Implement `SpeckitOrchestrator.run_spec/2` — validate the description via `SingleSpec.build/3`, then delegate to `start_run(features: [feature], runner: seed_runner)` per contracts/run_spec.md §1 (depends on T018, T017, T011)
+- [X] T013 [US1] Implement the taken-id gathering helper in `lib/autonomous.ex` (depends on T012)
+- [X] T015 [US1] Implement the seed-writing runner wrapper in `lib/autonomous.ex`, wrapping `default_runner/2` (depends on T014, T013, T011)
+- [X] T017 [US1] Wire the seed-write failure branch into the runner wrapper in `lib/autonomous.ex` (depends on T016, T015)
+- [X] T019 [US1] Implement `Autonomous.run_spec/2` — validate the description via `SingleSpec.build/3`, then delegate to `start_run(features: [feature], runner: seed_runner)` per contracts/run_spec.md §1 (depends on T018, T017, T011)
 
 **Checkpoint**: An operator can call `run_spec("...")` and get one feature built with no breakdown file authored — MVP complete and independently testable
 
@@ -89,15 +89,15 @@ Single Elixir project (per plan.md): `lib/speckit_orchestrator/`, `test/speckit_
 
 ### Tests for User Story 2
 
-- [X] T020 [P] [US2] Write test in `test/speckit_orchestrator/run_spec_test.exs`: a single feature whose stubbed clarify result carries `## NEEDS HUMAN` escalates via `run_spec/2` and its worktree is retained (FR-006)
-- [X] T021 [P] [US2] Write test in `test/speckit_orchestrator/run_spec_test.exs`: a single feature whose stubbed analyze result is Critical halts via `run_spec/2` and its worktree is retained (FR-007)
-- [X] T022 [P] [US2] Write test in `test/speckit_orchestrator/run_spec_test.exs`: starting `run_spec/2` against an already-tripped `Ledger` releases no new work and reports no spend beyond what was already committed (FR-008, drain-not-kill)
-- [X] T023 [P] [US2] Write test in `test/speckit_orchestrator/run_spec_test.exs`: the seed file is written only inside the feature's worktree path, never in the base repo tree (FR-009, containment)
-- [X] T024 [P] [US2] Write test in `test/speckit_orchestrator/run_spec_test.exs`: a `run_spec/2` run writes a durable per-phase transcript to the feature's workspace (FR-010)
+- [X] T020 [P] [US2] Write test in `test/autonomous/run_spec_test.exs`: a single feature whose stubbed clarify result carries `## NEEDS HUMAN` escalates via `run_spec/2` and its worktree is retained (FR-006)
+- [X] T021 [P] [US2] Write test in `test/autonomous/run_spec_test.exs`: a single feature whose stubbed analyze result is Critical halts via `run_spec/2` and its worktree is retained (FR-007)
+- [X] T022 [P] [US2] Write test in `test/autonomous/run_spec_test.exs`: starting `run_spec/2` against an already-tripped `Ledger` releases no new work and reports no spend beyond what was already committed (FR-008, drain-not-kill)
+- [X] T023 [P] [US2] Write test in `test/autonomous/run_spec_test.exs`: the seed file is written only inside the feature's worktree path, never in the base repo tree (FR-009, containment)
+- [X] T024 [P] [US2] Write test in `test/autonomous/run_spec_test.exs`: a `run_spec/2` run writes a durable per-phase transcript to the feature's workspace (FR-010)
 
 ### Implementation for User Story 2
 
-- [X] T025 [US2] Close any gap surfaced by T020-T024 in `lib/speckit_orchestrator.ex` (expected to be none — these guarantees are inherited by delegation to `Coordinator`/`FeatureRunner`/`Ledger`; this task exists to fix regressions the tests catch) (depends on T020, T021, T022, T023, T024, T019)
+- [X] T025 [US2] Close any gap surfaced by T020-T024 in `lib/autonomous.ex` (expected to be none — these guarantees are inherited by delegation to `Coordinator`/`FeatureRunner`/`Ledger`; this task exists to fix regressions the tests catch) (depends on T020, T021, T022, T023, T024, T019)
 
 **Checkpoint**: `run_spec/2` provably carries every safety guarantee a backlog run has
 
@@ -111,12 +111,12 @@ Single Elixir project (per plan.md): `lib/speckit_orchestrator/`, `test/speckit_
 
 ### Tests for User Story 3
 
-- [X] T026 [P] [US3] Write tests for the seed-writing executor wrapper in `test/speckit_orchestrator/run_spec_test.exs` — writes the seed after `Worktree.create(feature, base: base)` and before `FeatureRunner.run/2` (contracts/run_spec.md §2, research.md R6)
-- [X] T028 [P] [US3] Write tests for `run_spec(description, pr_workflow: true)` in `test/speckit_orchestrator/run_spec_test.exs` — cap-1 sequential run, remote/pack preflight via `TargetPack.verify/2`; on `:done` the branch is published and a PR opened via injected `:executor`/`:publisher`; a failed preflight returns `{:error, {:preflight, problems}}` and runs nothing (FR-014, Story 3 AC1-2)
+- [X] T026 [P] [US3] Write tests for the seed-writing executor wrapper in `test/autonomous/run_spec_test.exs` — writes the seed after `Worktree.create(feature, base: base)` and before `FeatureRunner.run/2` (contracts/run_spec.md §2, research.md R6)
+- [X] T028 [P] [US3] Write tests for `run_spec(description, pr_workflow: true)` in `test/autonomous/run_spec_test.exs` — cap-1 sequential run, remote/pack preflight via `TargetPack.verify/2`; on `:done` the branch is published and a PR opened via injected `:executor`/`:publisher`; a failed preflight returns `{:error, {:preflight, problems}}` and runs nothing (FR-014, Story 3 AC1-2)
 
 ### Implementation for User Story 3
 
-- [X] T027 [US3] Implement the seed-writing executor wrapper in `lib/speckit_orchestrator.ex`, wrapping `default_executor/3` (depends on T026, T011)
+- [X] T027 [US3] Implement the seed-writing executor wrapper in `lib/autonomous.ex`, wrapping `default_executor/3` (depends on T026, T011)
 - [X] T029 [US3] Wire `run_spec/2`'s `pr_workflow: true` path — delegate to `run_stacked(features: [feature], executor: seed_executor)` per contracts/run_spec.md §1 (depends on T028, T027, T019)
 
 **Checkpoint**: All three user stories independently functional — single-spec mode complete
@@ -127,9 +127,9 @@ Single Elixir project (per plan.md): `lib/speckit_orchestrator/`, `test/speckit_
 
 **Purpose**: Verify quality gates and close the loop with operator-facing docs
 
-- [X] T030 [P] Run `mise exec -- mix test --cover` and confirm >90% coverage on `lib/speckit_orchestrator/single_spec.ex` (constitution: Quality & Test Discipline)
+- [X] T030 [P] Run `mise exec -- mix test --cover` and confirm >90% coverage on `lib/autonomous/single_spec.ex` (constitution: Quality & Test Discipline)
 - [X] T031 [P] Run `mise exec -- mix compile` and confirm zero warnings (`warnings_as_errors`)
-- [X] T032 Execute the quickstart.md unit validation section end-to-end: `mise exec -- mix test test/speckit_orchestrator/single_spec_test.exs test/speckit_orchestrator/run_spec_test.exs`
+- [X] T032 Execute the quickstart.md unit validation section end-to-end: `mise exec -- mix test test/autonomous/single_spec_test.exs test/autonomous/run_spec_test.exs`
 - [X] T033 Add a "Single-spec run" operator section to `docs/runbook.md` documenting `run_spec/2`, its options, and a pointer to `specs/001-single-spec-run/quickstart.md`
 
 ---
@@ -224,4 +224,4 @@ Task: "Durable transcript test for run_spec/2"
 - Tests are written before their implementation task (see `depends on`) — confirm they fail first
 - Commit after each task or logical group
 - Stop at any checkpoint to validate a story independently
-- No new production module besides `single_spec.ex`; `speckit_orchestrator.ex` gains `run_spec/2` plus two small private helpers (seed-writing runner, seed-writing executor) — avoid over-splitting these into more files than plan.md's Source Code section specifies
+- No new production module besides `single_spec.ex`; `autonomous.ex` gains `run_spec/2` plus two small private helpers (seed-writing runner, seed-writing executor) — avoid over-splitting these into more files than plan.md's Source Code section specifies

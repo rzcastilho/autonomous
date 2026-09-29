@@ -25,16 +25,16 @@ description: "Task list for Auto-Remediation Exhaustion Policy"
 
 **Purpose**: The setting, the gate signal plumbing, and the schema migration that every user story reads or writes through. No user-story work starts until this phase is green.
 
-- [X] T001 [P] Add `exhaustion_policy` field, `parse_policy/1`, the `validate/1` check (appended last, after `model`), and `from_context/1` handling to `Remediation.Settings` in lib/speckit_orchestrator/remediation.ex
-- [X] T002 [P] Add the ninth field `auto_remediation_exhaustion_policy` (capture/1, to_map/1, from_map/1, @keys, stringify_policy/1) to lib/speckit_orchestrator/run_context.ex
-- [X] T003 [P] Add `Config.auto_remediation_exhaustion_policy/0` (default `:escalate`) in lib/speckit_orchestrator/config.ex and register the key's default in config/config.exs
-- [X] T004 Add `:exhausted?` / `:exhaustion_policy` to `Pipeline.signals` and amend `Pipeline.next(:analyze, :ok, signals)`'s decision table (row 1 critical unconditional, row 2 unchanged, row 3 new `high? and exhausted? and policy == :proceed` → advance, row 4 `high?` → escalate, row 5 otherwise), with `exhausted?/1` and `exhaustion_policy/1` defaulting absent signals to today's behaviour, in lib/speckit_orchestrator/pipeline.ex (depends on T001 for the `policy()` type)
-- [X] T005 [P] Append the `advanced_with_findings` attribute to `speckit_feature_run` and register schema version 4 (`add_advanced_with_findings/0`, `current_version/0 == 4`) in lib/speckit_orchestrator/store/schema.ex and lib/speckit_orchestrator/store/migrations.ex
-- [X] T006 [P] Add the matching `advanced_with_findings` struct field and typespec to `Store.Records.FeatureRun` in lib/speckit_orchestrator/store/records.ex
-- [X] T007 Wire `auto_remediation_exhaustion_policy` through `run/1` and `resume/2` preflight validation — reject an unrecognized value with no run started and no store row — in lib/speckit_orchestrator/speckit_orchestrator.ex (depends on T001)
-- [X] T008 [P] Gate test matrix: `{policy} × {exhausted?} × {critical, high-below-threshold, high-at/above-threshold, clean}`, plus invariants I1 (Critical always halts), I2 (exhausted? absent ⇒ pre-021 outcome), I3 (`:escalate` ⇒ pre-021 outcome), I4 (policy never changes a non-`:analyze` outcome or an `:error` outcome) in test/speckit_orchestrator/pipeline_test.exs (depends on T004)
-- [X] T009 [P] Settings validation/parsing tests — atoms and case-insensitive strings accepted, absent ⇒ default, invalid value ⇒ `{:error, {:invalid_exhaustion_policy, value}}` — in test/speckit_orchestrator/remediation_test.exs (depends on T001)
-- [X] T010 [P] Migration test: a v3-shaped `speckit_feature_run` row transforms to v4 with `advanced_with_findings: nil`; `Store.Migrations.current_version/0 == 4` in test/speckit_orchestrator/store/migrations_test.exs (depends on T005)
+- [X] T001 [P] Add `exhaustion_policy` field, `parse_policy/1`, the `validate/1` check (appended last, after `model`), and `from_context/1` handling to `Remediation.Settings` in lib/autonomous/remediation.ex
+- [X] T002 [P] Add the ninth field `auto_remediation_exhaustion_policy` (capture/1, to_map/1, from_map/1, @keys, stringify_policy/1) to lib/autonomous/run_context.ex
+- [X] T003 [P] Add `Config.auto_remediation_exhaustion_policy/0` (default `:escalate`) in lib/autonomous/config.ex and register the key's default in config/config.exs
+- [X] T004 Add `:exhausted?` / `:exhaustion_policy` to `Pipeline.signals` and amend `Pipeline.next(:analyze, :ok, signals)`'s decision table (row 1 critical unconditional, row 2 unchanged, row 3 new `high? and exhausted? and policy == :proceed` → advance, row 4 `high?` → escalate, row 5 otherwise), with `exhausted?/1` and `exhaustion_policy/1` defaulting absent signals to today's behaviour, in lib/autonomous/pipeline.ex (depends on T001 for the `policy()` type)
+- [X] T005 [P] Append the `advanced_with_findings` attribute to `speckit_feature_run` and register schema version 4 (`add_advanced_with_findings/0`, `current_version/0 == 4`) in lib/autonomous/store/schema.ex and lib/autonomous/store/migrations.ex
+- [X] T006 [P] Add the matching `advanced_with_findings` struct field and typespec to `Store.Records.FeatureRun` in lib/autonomous/store/records.ex
+- [X] T007 Wire `auto_remediation_exhaustion_policy` through `run/1` and `resume/2` preflight validation — reject an unrecognized value with no run started and no store row — in lib/autonomous/autonomous.ex (depends on T001)
+- [X] T008 [P] Gate test matrix: `{policy} × {exhausted?} × {critical, high-below-threshold, high-at/above-threshold, clean}`, plus invariants I1 (Critical always halts), I2 (exhausted? absent ⇒ pre-021 outcome), I3 (`:escalate` ⇒ pre-021 outcome), I4 (policy never changes a non-`:analyze` outcome or an `:error` outcome) in test/autonomous/pipeline_test.exs (depends on T004)
+- [X] T009 [P] Settings validation/parsing tests — atoms and case-insensitive strings accepted, absent ⇒ default, invalid value ⇒ `{:error, {:invalid_exhaustion_policy, value}}` — in test/autonomous/remediation_test.exs (depends on T001)
+- [X] T010 [P] Migration test: a v3-shaped `speckit_feature_run` row transforms to v4 with `advanced_with_findings: nil`; `Store.Migrations.current_version/0 == 4` in test/autonomous/store/migrations_test.exs (depends on T005)
 
 **Checkpoint**: Setting, gate table, and schema exist and are proven byte-identical on absent signals. User story work can begin.
 
@@ -46,22 +46,22 @@ description: "Task list for Auto-Remediation Exhaustion Policy"
 
 **Independent Test**: Launch a run with `exhaustion_policy: :proceed` against a feature whose analyze reports the same High finding on every pass. Verify remediation runs exactly `attempt_limit` times, the feature advances past `:analyze`, reaches `:done` with no operator input, and the unresolved finding is recorded and surfaced against that feature (report + PR body).
 
-- [X] T011 [US1] Implement `Remediation.exhaustion_advance/2` — `{:mark, record} | :none` per the truth table in contracts/advanced-record.md §1.1 — in lib/speckit_orchestrator/remediation.ex (depends on T001, T004)
-- [X] T012 [P] [US1] Unit tests for `exhaustion_advance/2`'s full truth table (below-threshold, clean analyze, `:critical` threshold, `:escalate` policy all ⇒ `:none`) in test/speckit_orchestrator/remediation_test.exs (depends on T011)
-- [X] T013 [P] [US1] `AnalyzeRunner.exhaustion_signals/3` sets `signals.exhausted? = true` and attaches the final result's residual findings as `analyze_residual_findings` on the exhaustion branch only, in lib/speckit_orchestrator/analyze_runner.ex (depends on T004)
-- [X] T014 [US1] `FeatureRunner.gate_signals(:analyze, ...)` injects `:exhaustion_policy` from the run's captured `Remediation.Settings`; thread a `marks` map through `loop/*`; call `exhaustion_advance/2` at the analyze boundary; decorate the eventual `{:done, :done}` transition as `{:done, :advanced_with_unresolved_findings}` when marked, in lib/speckit_orchestrator/feature_runner.ex (depends on T011, T013)
-- [X] T015 [US1] `Store.Writer.record_phase_attempt/2` gains an optional `:advanced_with_findings` key, written in the same transaction as the analyze phase-attempt boundary, in lib/speckit_orchestrator/store/writer.ex (depends on T005, T006)
-- [X] T016 [US1] Wire `FeatureRunner` to pass the mark record into `Store.Writer.record_phase_attempt/2` at the analyze boundary in lib/speckit_orchestrator/feature_runner.ex (depends on T014, T015)
-- [X] T017 [P] [US1] `AnalyzeRunner` test: scripted persistent-High-finding agent asserts `:exhausted?` and residual findings carried verbatim in test/speckit_orchestrator/analyze_runner_test.exs (depends on T013)
-- [X] T018 [US1] `FeatureRunner` test: exhaust → advance → annotate → decorated `:done` reason, attempts consumed exactly `attempt_limit` (no more, no fewer) in test/speckit_orchestrator/feature_runner_test.exs (depends on T016)
-- [X] T019 [US1] `Store.Writer` test: the phase attempt and the annotation land in one transaction; `run_key: nil` is a silent no-op in test/speckit_orchestrator/store/writer_test.exs (depends on T015)
-- [X] T020 [US1] `Coordinator.build_report/2` derives `advanced_with_findings` (a subset of `done`) from the reasons it already retains, with no change to `notify/4`'s arity, in lib/speckit_orchestrator/coordinator.ex (depends on T014)
-- [X] T021 [P] [US1] `Coordinator` test: `report.advanced_with_findings ⊆ report.done` in test/speckit_orchestrator/coordinator_test.exs (depends on T020)
-- [X] T022 [US1] `Report.format_status/1` gains one conditional "advanced: ..." line, absent entirely when no feature advanced under *proceed*, in lib/speckit_orchestrator/report.ex (depends on T020)
-- [X] T023 [US1] `Remediation.pr_note/1` — pure markdown renderer, `pr_note(nil) == ""` — in lib/speckit_orchestrator/remediation.ex (depends on T011)
-- [X] T024 [US1] `SpeckitOrchestrator.pr_text/2` appends `pr_note/1`'s output to both the Claude-authored `pr_description` and the template-fallback PR body, reading the annotation from the same `Store.run/1` detail in lib/speckit_orchestrator/speckit_orchestrator.ex (depends on T023)
-- [X] T025 [P] [US1] PR body test: findings section renders on both branches; `pr_note(nil)` leaves an ordinary feature's PR body byte-identical to today in test/speckit_orchestrator/pull_request_test.exs (depends on T024)
-- [X] T026 [US1] Document `auto_remediation_exhaustion_policy` in `run/1`'s option list and docstring in lib/speckit_orchestrator/speckit_orchestrator.ex (depends on T007)
+- [X] T011 [US1] Implement `Remediation.exhaustion_advance/2` — `{:mark, record} | :none` per the truth table in contracts/advanced-record.md §1.1 — in lib/autonomous/remediation.ex (depends on T001, T004)
+- [X] T012 [P] [US1] Unit tests for `exhaustion_advance/2`'s full truth table (below-threshold, clean analyze, `:critical` threshold, `:escalate` policy all ⇒ `:none`) in test/autonomous/remediation_test.exs (depends on T011)
+- [X] T013 [P] [US1] `AnalyzeRunner.exhaustion_signals/3` sets `signals.exhausted? = true` and attaches the final result's residual findings as `analyze_residual_findings` on the exhaustion branch only, in lib/autonomous/analyze_runner.ex (depends on T004)
+- [X] T014 [US1] `FeatureRunner.gate_signals(:analyze, ...)` injects `:exhaustion_policy` from the run's captured `Remediation.Settings`; thread a `marks` map through `loop/*`; call `exhaustion_advance/2` at the analyze boundary; decorate the eventual `{:done, :done}` transition as `{:done, :advanced_with_unresolved_findings}` when marked, in lib/autonomous/feature_runner.ex (depends on T011, T013)
+- [X] T015 [US1] `Store.Writer.record_phase_attempt/2` gains an optional `:advanced_with_findings` key, written in the same transaction as the analyze phase-attempt boundary, in lib/autonomous/store/writer.ex (depends on T005, T006)
+- [X] T016 [US1] Wire `FeatureRunner` to pass the mark record into `Store.Writer.record_phase_attempt/2` at the analyze boundary in lib/autonomous/feature_runner.ex (depends on T014, T015)
+- [X] T017 [P] [US1] `AnalyzeRunner` test: scripted persistent-High-finding agent asserts `:exhausted?` and residual findings carried verbatim in test/autonomous/analyze_runner_test.exs (depends on T013)
+- [X] T018 [US1] `FeatureRunner` test: exhaust → advance → annotate → decorated `:done` reason, attempts consumed exactly `attempt_limit` (no more, no fewer) in test/autonomous/feature_runner_test.exs (depends on T016)
+- [X] T019 [US1] `Store.Writer` test: the phase attempt and the annotation land in one transaction; `run_key: nil` is a silent no-op in test/autonomous/store/writer_test.exs (depends on T015)
+- [X] T020 [US1] `Coordinator.build_report/2` derives `advanced_with_findings` (a subset of `done`) from the reasons it already retains, with no change to `notify/4`'s arity, in lib/autonomous/coordinator.ex (depends on T014)
+- [X] T021 [P] [US1] `Coordinator` test: `report.advanced_with_findings ⊆ report.done` in test/autonomous/coordinator_test.exs (depends on T020)
+- [X] T022 [US1] `Report.format_status/1` gains one conditional "advanced: ..." line, absent entirely when no feature advanced under *proceed*, in lib/autonomous/report.ex (depends on T020)
+- [X] T023 [US1] `Remediation.pr_note/1` — pure markdown renderer, `pr_note(nil) == ""` — in lib/autonomous/remediation.ex (depends on T011)
+- [X] T024 [US1] `Autonomous.pr_text/2` appends `pr_note/1`'s output to both the Claude-authored `pr_description` and the template-fallback PR body, reading the annotation from the same `Store.run/1` detail in lib/autonomous/autonomous.ex (depends on T023)
+- [X] T025 [P] [US1] PR body test: findings section renders on both branches; `pr_note(nil)` leaves an ordinary feature's PR body byte-identical to today in test/autonomous/pull_request_test.exs (depends on T024)
+- [X] T026 [US1] Document `auto_remediation_exhaustion_policy` in `run/1`'s option list and docstring in lib/autonomous/autonomous.ex (depends on T007)
 
 **Checkpoint**: A run launched with *proceed* completes unattended past a residual High finding, and the advance is recorded in the store, the report, and the PR body.
 
@@ -73,9 +73,9 @@ description: "Task list for Auto-Remediation Exhaustion Policy"
 
 **Independent Test**: Launch a run specifying nothing, and one specifying `:escalate` explicitly, both against a feature reporting a persistent High finding. Verify both escalate with the exhausted-auto-remediation reason, the worktree is retained, and the outcome matches the feature before this feature existed.
 
-- [X] T027 [P] [US2] Pin `:escalate` / default / SC-002 regression assertions (byte-identical terminal state, reason, retained worktree) into the existing cases of test/speckit_orchestrator/pipeline_test.exs (depends on T008, T018)
-- [X] T028 [P] [US2] Pin the same regression assertions, plus FR-015 (policy inert with auto-remediation disabled, for either policy value), into the existing cases of test/speckit_orchestrator/remediation_test.exs and test/speckit_orchestrator/feature_runner_test.exs (depends on T009, T018)
-- [X] T029 [US2] Add a test proving a run launched with `proceed` does not change the exhaustion policy offered on the next launch (FR-012) in test/speckit_orchestrator/run_context_test.exs (depends on T002, T007)
+- [X] T027 [P] [US2] Pin `:escalate` / default / SC-002 regression assertions (byte-identical terminal state, reason, retained worktree) into the existing cases of test/autonomous/pipeline_test.exs (depends on T008, T018)
+- [X] T028 [P] [US2] Pin the same regression assertions, plus FR-015 (policy inert with auto-remediation disabled, for either policy value), into the existing cases of test/autonomous/remediation_test.exs and test/autonomous/feature_runner_test.exs (depends on T009, T018)
+- [X] T029 [US2] Add a test proving a run launched with `proceed` does not change the exhaustion policy offered on the next launch (FR-012) in test/autonomous/run_context_test.exs (depends on T002, T007)
 
 **Checkpoint**: Every pre-existing assertion about the `:escalate` path still passes, unchanged, and a leak of the new path into the default would now fail a pinned test.
 
@@ -87,13 +87,13 @@ description: "Task list for Auto-Remediation Exhaustion Policy"
 
 **Independent Test**: Open the launch form and confirm the policy control shows the default; launch with *proceed* and confirm the run's recorded settings and the console both show *proceed*; attempt to launch with an unrecognized value and confirm the form names the bad setting and starts no run.
 
-- [X] T030 [US3] Add the `exhaustion_policy` `<select>` to `#auto-remediation-form` (pre-filled from `Config.auto_remediation_exhaustion_policy/0`, disabled with the rest of the group when auto-remediation is off, reusing the existing `field-label-inline` class) in lib/speckit_orchestrator/web/live/trigger_live.ex (depends on T001, T007)
-- [X] T031 [US3] `"update_remediation"` event reads `params["exhaustion_policy"]`; `start_opts/1` adds `auto_remediation_exhaustion_policy` to the `run/1` opts it dispatches; `validate_remediation/1` maps an invalid value to a `<.form_refusal>` naming `auto-remediation-exhaustion-policy`, in lib/speckit_orchestrator/web/live/trigger_live.ex (depends on T030)
-- [X] T032 [P] [US3] `TriggerLive` test: control pre-filled with `escalate`; refusal on a bad value with no run dispatched; `proceed` captured into the run's settings in test/speckit_orchestrator/web/trigger_live_test.exs (depends on T031)
-- [X] T033 [US3] `Store.Query` carries `advanced_with_findings` into the run-detail feature slice in lib/speckit_orchestrator/store/query.ex (depends on T015)
-- [X] T034 [US3] `RunDetailLive` feature panel gains a `data-advanced-with-findings` block (severity + finding text in the mono family, reusing `run-context`/`run-context-chip` classes only, no status color, no motion) sibling to `data-remediation-attempts`, in lib/speckit_orchestrator/web/live/run_detail_live.ex (depends on T033)
-- [X] T035 [P] [US3] `RunDetailLive` test: settings chip shows the run's captured policy; the feature marker renders for an annotated feature and is absent for a clean one in test/speckit_orchestrator/web/run_detail_live_test.exs (depends on T034)
-- [X] T036 [US3] Run `mix test test/speckit_orchestrator/web/design_contract_test.exs` and confirm it passes unmodified — no new literal, no status color on the new markup (depends on T034)
+- [X] T030 [US3] Add the `exhaustion_policy` `<select>` to `#auto-remediation-form` (pre-filled from `Config.auto_remediation_exhaustion_policy/0`, disabled with the rest of the group when auto-remediation is off, reusing the existing `field-label-inline` class) in lib/autonomous/web/live/trigger_live.ex (depends on T001, T007)
+- [X] T031 [US3] `"update_remediation"` event reads `params["exhaustion_policy"]`; `start_opts/1` adds `auto_remediation_exhaustion_policy` to the `run/1` opts it dispatches; `validate_remediation/1` maps an invalid value to a `<.form_refusal>` naming `auto-remediation-exhaustion-policy`, in lib/autonomous/web/live/trigger_live.ex (depends on T030)
+- [X] T032 [P] [US3] `TriggerLive` test: control pre-filled with `escalate`; refusal on a bad value with no run dispatched; `proceed` captured into the run's settings in test/autonomous/web/trigger_live_test.exs (depends on T031)
+- [X] T033 [US3] `Store.Query` carries `advanced_with_findings` into the run-detail feature slice in lib/autonomous/store/query.ex (depends on T015)
+- [X] T034 [US3] `RunDetailLive` feature panel gains a `data-advanced-with-findings` block (severity + finding text in the mono family, reusing `run-context`/`run-context-chip` classes only, no status color, no motion) sibling to `data-remediation-attempts`, in lib/autonomous/web/live/run_detail_live.ex (depends on T033)
+- [X] T035 [P] [US3] `RunDetailLive` test: settings chip shows the run's captured policy; the feature marker renders for an annotated feature and is absent for a clean one in test/autonomous/web/run_detail_live_test.exs (depends on T034)
+- [X] T036 [US3] Run `mix test test/autonomous/web/design_contract_test.exs` and confirm it passes unmodified — no new literal, no status color on the new markup (depends on T034)
 
 **Checkpoint**: An operator can choose, launch with, and observe the exhaustion policy end to end, with no console-side literal or status-color violation.
 
@@ -146,9 +146,9 @@ description: "Task list for Auto-Remediation Exhaustion Policy"
 
 ```bash
 # Independent-file foundational tasks together:
-Task: "Add exhaustion_policy field/parser/validate/from_context to Remediation.Settings in lib/speckit_orchestrator/remediation.ex"
-Task: "Add ninth field to RunContext in lib/speckit_orchestrator/run_context.ex"
-Task: "Add Config.auto_remediation_exhaustion_policy/0 in lib/speckit_orchestrator/config.ex"
+Task: "Add exhaustion_policy field/parser/validate/from_context to Remediation.Settings in lib/autonomous/remediation.ex"
+Task: "Add ninth field to RunContext in lib/autonomous/run_context.ex"
+Task: "Add Config.auto_remediation_exhaustion_policy/0 in lib/autonomous/config.ex"
 Task: "Append advanced_with_findings + schema v4 migration in store/schema.ex, store/migrations.ex"
 Task: "Add advanced_with_findings field to Store.Records.FeatureRun in store/records.ex"
 ```

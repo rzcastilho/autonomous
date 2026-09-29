@@ -43,7 +43,7 @@ segment. Worktree/transcript roots built from the segment share no subpath.
 # a repo with no origin remote
 assert {:error, :no_origin} = RepoIdentity.resolve(repo_without_origin)
 # facade preflight
-assert {:error, {:preflight, problems}} = SpeckitOrchestrator.run(repo: repo_without_origin)
+assert {:error, {:preflight, problems}} = Autonomous.run(repo: repo_without_origin)
 assert Enum.any?(problems, &match?({:no_origin, _}, &1))
 ```
 
@@ -86,7 +86,7 @@ package; a breakdown package named `ad-hoc` is rejected loud.
 ## Scenario 5 — Fail loud on unwritable machine-global root (FR-010)
 
 ```elixir
-Application.put_env(:speckit_orchestrator, :autonomous_root, "/nonexistent/unwritable")
+Application.put_env(:autonomous, :autonomous_root, "/nonexistent/unwritable")
 {:ok, l} = Layout.build(repo, "seg", {:breakdown, "alpha"})
 assert {:error, {:mkdir, _, _}} = Layout.ensure(l)
 ```

@@ -21,10 +21,10 @@ description: "Task list template for feature implementation"
 
 ## Path Conventions (single project)
 
-- `lib/speckit_orchestrator/web/live/pipeline_dag_live.ex` — the LiveView (render)
-- `lib/speckit_orchestrator/web/live/pipeline_dag_layout.ex` — the pure layout module
-- `test/speckit_orchestrator/web/pipeline_dag_layout_test.exs` — pure-layout tests
-- `test/speckit_orchestrator/web/pipeline_dag_live_test.exs` — LiveView render/interaction tests
+- `lib/autonomous/web/live/pipeline_dag_live.ex` — the LiveView (render)
+- `lib/autonomous/web/live/pipeline_dag_layout.ex` — the pure layout module
+- `test/autonomous/web/pipeline_dag_layout_test.exs` — pure-layout tests
+- `test/autonomous/web/pipeline_dag_live_test.exs` — LiveView render/interaction tests
 
 No other files are touched — `feature_drawer.ex`, `core_components.ex` (status_pill/phase_strip/palette), `run_spec/2`, `SingleSpec`, and `Backlog.load!` are reused unchanged (spec FR-007, plan Structure Decision).
 
@@ -47,7 +47,7 @@ renders from. Nothing in Phase 3+ can be implemented correctly without it.
 
 - [X] T001 Add failing unit tests for the ad-hoc lane helper's contract (C1–C7
   in `contracts/dag-ad-hoc-render.md`) to
-  `test/speckit_orchestrator/web/pipeline_dag_layout_test.exs`: empty when live
+  `test/autonomous/web/pipeline_dag_layout_test.exs`: empty when live
   ids ⊆ backlog node ids (C1); one orphan node per absent id, `origin: :ad_hoc`,
   `depth: 0`, `prereqs: []` (C2); N absent ids → N nodes at distinct positions
   (C3); an id present in both sets resolves to backlog-only, absent from the
@@ -57,14 +57,14 @@ renders from. Nothing in Phase 3+ can be implemented correctly without it.
   no process/Phoenix call (C7).
 - [X] T002 Implement the pure ad-hoc lane helper (e.g.
   `PipelineDagLayout.ad_hoc_nodes/2`) in
-  `lib/speckit_orchestrator/web/live/pipeline_dag_layout.ex` to satisfy T001:
+  `lib/autonomous/web/live/pipeline_dag_layout.ex` to satisfy T001:
   takes the backlog `dag_layout` and the live `per_feature` map, returns
   `%{nodes: [ad_hoc_node()]}` per the type in
   `contracts/dag-ad-hoc-render.md` — computed independently of the existing
   `layout/1`/`position/1` backlog math so backlog geometry is provably
   unaffected (depends on T001).
 
-**Checkpoint**: `mise exec -- mix test test/speckit_orchestrator/web/pipeline_dag_layout_test.exs` green. Ready for user-story work.
+**Checkpoint**: `mise exec -- mix test test/autonomous/web/pipeline_dag_layout_test.exs` green. Ready for user-story work.
 
 ---
 
@@ -80,7 +80,7 @@ appears in both cases with status/spend matching Mission Control (spec US1).
 ### Tests for User Story 1
 
 - [X] T003 [US1] Add a failing test to
-  `test/speckit_orchestrator/web/pipeline_dag_live_test.exs`: start
+  `test/autonomous/web/pipeline_dag_live_test.exs`: start
   `Coordinator` with a `per_feature`-visible id absent from the backlog fixture
   (`@valid_dir`, ids `001`–`007`); mount `/dag`; assert a
   `data-dag-node={id}` element renders inside the ad-hoc lane container (e.g.
@@ -92,7 +92,7 @@ appears in both cases with status/spend matching Mission Control (spec US1).
 ### Implementation for User Story 1
 
 - [X] T004 [US1] In
-  `lib/speckit_orchestrator/web/live/pipeline_dag_live.ex`, render the ad-hoc
+  `lib/autonomous/web/live/pipeline_dag_live.ex`, render the ad-hoc
   lane: call the T002 helper with `@dag_layout` and `@view.per_feature`, and
   `:for`-iterate its nodes in a dedicated section (sibling to the existing
   `data-state="dag"` plane, not nested in it) — each node showing
@@ -103,12 +103,12 @@ appears in both cases with status/spend matching Mission Control (spec US1).
 - [X] T005 [US1] Guard the whole ad-hoc lane section (and, later, its legend
   entry) on the T002 helper returning a non-empty node list, so a run with no
   ad-hoc feature emits zero additional DOM; add a regression test to
-  `test/speckit_orchestrator/web/pipeline_dag_live_test.exs` asserting no
+  `test/autonomous/web/pipeline_dag_live_test.exs` asserting no
   `data-state="ad-hoc-lane"` element is present when `per_feature` is a subset
   of the backlog, and that the existing backlog node/edge/legend assertions in
   that file still pass unchanged (FR-006, SC-004).
 
-**Checkpoint**: `mise exec -- mix test test/speckit_orchestrator/web/pipeline_dag_live_test.exs` green. US1 fully functional and independently demoable.
+**Checkpoint**: `mise exec -- mix test test/autonomous/web/pipeline_dag_live_test.exs` green. US1 fully functional and independently demoable.
 
 ---
 
@@ -121,7 +121,7 @@ detail and recovery actions, as any backlog node.
 same drawer component opens with that feature's real detail (spec US2).
 
 **Design note**: `select_feature`/`feature_drawer` already key generically off
-a feature id (`lib/speckit_orchestrator/web/live/pipeline_dag_live.ex:104-110,176-181`)
+a feature id (`lib/autonomous/web/live/pipeline_dag_live.ex:104-110,176-181`)
 and the ad-hoc node markup added in T004 carries the same
 `phx-click="select_feature" phx-value-id={id}` as backlog nodes — so FR-004 is
 satisfied by reuse, not new code (research.md Decision 5). This phase is
@@ -130,7 +130,7 @@ verification-only.
 ### Tests for User Story 2
 
 - [X] T006 [US2] Add a test to
-  `test/speckit_orchestrator/web/pipeline_dag_live_test.exs`: with an ad-hoc
+  `test/autonomous/web/pipeline_dag_live_test.exs`: with an ad-hoc
   node on `/dag`, `render_click(view, "select_feature", %{"id" => ad_hoc_id})`
   and assert the same `id="feature-drawer"` / `data-feature-id={ad_hoc_id}`
   markup renders as it does for a backlog id, showing that feature's phase
@@ -157,7 +157,7 @@ without clicking in (spec US3).
 ### Tests for User Story 3
 
 - [X] T008 [US3] Add failing tests to
-  `test/speckit_orchestrator/web/pipeline_dag_live_test.exs`: every backlog
+  `test/autonomous/web/pipeline_dag_live_test.exs`: every backlog
   node carries `data-node-origin="backlog"`; every ad-hoc node carries
   `data-node-origin="ad-hoc"` plus a visible marker element (e.g.
   `data-adhoc-badge`); the legend contains a `data-legend-origin="ad-hoc"`
@@ -168,7 +168,7 @@ without clicking in (spec US3).
 ### Implementation for User Story 3
 
 - [X] T009 [US3] In
-  `lib/speckit_orchestrator/web/live/pipeline_dag_live.ex`, add
+  `lib/autonomous/web/live/pipeline_dag_live.ex`, add
   `data-node-origin="backlog"` to the existing backlog node markup and
   `data-node-origin="ad-hoc"` plus a visible badge/border element to the
   ad-hoc node markup added in T004 (depends on T004, T008).
@@ -178,7 +178,7 @@ without clicking in (spec US3).
   (same guard as T005) so it is absent when no ad-hoc feature is live (depends
   on T005, T008).
 
-**Checkpoint**: All three user stories independently functional. `mise exec -- mix test test/speckit_orchestrator/web/pipeline_dag_live_test.exs` green.
+**Checkpoint**: All three user stories independently functional. `mise exec -- mix test test/autonomous/web/pipeline_dag_live_test.exs` green.
 
 ---
 
@@ -231,7 +231,7 @@ without clicking in (spec US3).
 
 1. Phase 2: Foundational (T001–T002).
 2. Phase 3: User Story 1 (T003–T005).
-3. **STOP and VALIDATE**: `mise exec -- mix test test/speckit_orchestrator/web/`; confirm SC-001/SC-002 manually with a single-spec run.
+3. **STOP and VALIDATE**: `mise exec -- mix test test/autonomous/web/`; confirm SC-001/SC-002 manually with a single-spec run.
 4. This alone closes the reported gap (spec's primary complaint).
 
 ### Incremental Delivery

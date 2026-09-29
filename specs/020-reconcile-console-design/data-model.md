@@ -98,7 +98,7 @@ in every representation.
 
 **Members.** `done` `running` `escalated` `halted` `failed` `pending` `blocked`.
 
-**Domain mapping.** `SpeckitOrchestrator.Feature.status/0` also has
+**Domain mapping.** `Autonomous.Feature.status/0` also has
 `:never_started`, which the contract does not name. It renders as `blocked` — the
 contract status whose meaning it shares — rather than introducing an eighth color
 (spec assumption; research §2).
@@ -147,19 +147,19 @@ enumerable set — the guard's input domain and the inventory's row key.
 | Surface | Path | LOC |
 |---|---|---|
 | stylesheet | `priv/static/assets/console.css` | 2050 |
-| shared primitives | `lib/speckit_orchestrator/web/components/core_components.ex` | 203 |
-| feature drawer | `lib/speckit_orchestrator/web/components/feature_drawer.ex` | 210 |
-| layout helpers | `lib/speckit_orchestrator/web/components/layouts.ex` | 95 |
-| app chrome | `lib/speckit_orchestrator/web/components/layouts/app.html.heex` | 99 |
-| document shell | `lib/speckit_orchestrator/web/components/layouts/root.html.heex` | 33 |
-| mission control | `lib/speckit_orchestrator/web/live/mission_control_live.ex` | 295 |
-| pipeline DAG | `lib/speckit_orchestrator/web/live/pipeline_dag_live.ex` | 390 |
-| trigger run | `lib/speckit_orchestrator/web/live/trigger_live.ex` | 465 |
-| escalations | `lib/speckit_orchestrator/web/live/escalations_live.ex` | 569 |
-| runs | `lib/speckit_orchestrator/web/live/runs_live.ex` | 202 |
-| run detail | `lib/speckit_orchestrator/web/live/run_detail_live.ex` | 314 |
-| transcripts | `lib/speckit_orchestrator/web/live/transcripts_live.ex` | 235 |
-| configuration | `lib/speckit_orchestrator/web/live/config_live.ex` | 195 |
+| shared primitives | `lib/autonomous/web/components/core_components.ex` | 203 |
+| feature drawer | `lib/autonomous/web/components/feature_drawer.ex` | 210 |
+| layout helpers | `lib/autonomous/web/components/layouts.ex` | 95 |
+| app chrome | `lib/autonomous/web/components/layouts/app.html.heex` | 99 |
+| document shell | `lib/autonomous/web/components/layouts/root.html.heex` | 33 |
+| mission control | `lib/autonomous/web/live/mission_control_live.ex` | 295 |
+| pipeline DAG | `lib/autonomous/web/live/pipeline_dag_live.ex` | 390 |
+| trigger run | `lib/autonomous/web/live/trigger_live.ex` | 465 |
+| escalations | `lib/autonomous/web/live/escalations_live.ex` | 569 |
+| runs | `lib/autonomous/web/live/runs_live.ex` | 202 |
+| run detail | `lib/autonomous/web/live/run_detail_live.ex` | 314 |
+| transcripts | `lib/autonomous/web/live/transcripts_live.ex` | 235 |
+| configuration | `lib/autonomous/web/live/config_live.ex` | 195 |
 
 **Out of scope for the visual contract** (spec assumption): `Report.format_status/1`
 (iex table), `docs/**`, and `priv/static/assets/app.js` (7 lines, 0 color
@@ -170,7 +170,7 @@ guard's input domain so it cannot become a hiding place.
 
 ## 5. Violation *(compliance check output)*
 
-Produced by `SpeckitOrchestrator.Web.DesignContract.scan/1`. Pure struct; no
+Produced by `Autonomous.Web.DesignContract.scan/1`. Pure struct; no
 process, no I/O.
 
 ```

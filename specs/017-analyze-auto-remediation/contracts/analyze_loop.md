@@ -1,4 +1,4 @@
-# Contract: `SpeckitOrchestrator.AnalyzeRunner` (edge — drives the loop)
+# Contract: `Autonomous.AnalyzeRunner` (edge — drives the loop)
 
 The edge module that turns `Remediation.next/2`'s decisions into harness runs.
 Not a process: called synchronously from the same supervised `Task`
@@ -116,7 +116,7 @@ recoverable from one file (FR-012).
   step always finishes and is always accounted; nothing new starts after a trip
   (Principle IV, drain-don't-kill).
 
-## 6. `SpeckitOrchestrator.PhaseStep` (extracted, research R8)
+## 6. `Autonomous.PhaseStep` (extracted, research R8)
 
 `FeatureRunner`'s private `run_phase/7` and `run_phase_with_retry/8` move here
 verbatim plus a `:label` option:

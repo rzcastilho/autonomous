@@ -18,13 +18,13 @@ that story requires and is independently verifiable via its own test file.
 
 - **[P]**: Can run in parallel (different files, no dependencies)
 - **[Story]**: Which user story this task belongs to (US1–US4)
-- Paths are repo-root relative, matching the existing `lib/speckit_orchestrator/`
-  / `test/speckit_orchestrator/` layout (plan.md "Project Structure")
+- Paths are repo-root relative, matching the existing `lib/autonomous/`
+  / `test/autonomous/` layout (plan.md "Project Structure")
 
 ## Path Conventions
 
-Single Elixir project (Option 1). Source: `lib/speckit_orchestrator/`. Tests:
-`test/speckit_orchestrator/`. No new project structure — this feature adds a
+Single Elixir project (Option 1). Source: `lib/autonomous/`. Tests:
+`test/autonomous/`. No new project structure — this feature adds a
 `recovery/` submodule folder to the existing tree.
 
 ---
@@ -46,15 +46,15 @@ story's reconciliation depends on. No user story can be verified without these.
 
 **⚠️ CRITICAL**: Phase 3+ cannot start until this phase is complete.
 
-- [X] T002 [P] Define `SpeckitOrchestrator.Recovery.Evidence` struct in
-      `lib/speckit_orchestrator/recovery/evidence.ex`: fields
+- [X] T002 [P] Define `Autonomous.Recovery.Evidence` struct in
+      `lib/autonomous/recovery/evidence.ex`: fields
       `feature_id :: String.t()`, `branch_committed? :: boolean()`,
       `last_boundary_phase :: Pipeline.phase() | nil`,
       `pr_record? :: boolean()`, `pr_remote? :: boolean() | :unknown`,
       `checkpoint :: map() | nil`, `final_marker? :: boolean()`, per
       data-model.md "Entity: `Recovery.Evidence`"; add `@type t`.
 - [X] T003 [US-shared] Implement `Recovery.Evidence.collect/3` in
-      `lib/speckit_orchestrator/recovery/evidence.ex` per
+      `lib/autonomous/recovery/evidence.ex` per
       `contracts/evidence.md` `collect/3`: `(feature :: Feature.t(), layout ::
       Layout.t() | nil, opts :: keyword()) :: Evidence.t()`, reading
       `branch_committed?` and `last_boundary_phase` via an injected `:git` seam
@@ -66,7 +66,7 @@ story's reconciliation depends on. No user story can be verified without these.
       source read independently; any absent/corrupt source degrades to its
       unknown value, never raises (FR-011).
 - [X] T004 [US-shared] Implement the boundary-commit git-log parse in
-      `lib/speckit_orchestrator/recovery/evidence.ex` (or a small private
+      `lib/autonomous/recovery/evidence.ex` (or a small private
       helper module under `recovery/`): match only subjects
       `"speckit: <id> checkpoint after <phase>"` (the `:done`-squash subject
       `"speckit: feature <id> pipeline artifacts (...)"` and other terminal
@@ -75,7 +75,7 @@ story's reconciliation depends on. No user story can be verified without these.
       unparseable/absent → `nil`. Wire this as the default `:git` seam's
       `last_boundary_phase` implementation, reusing `Worktree`'s branch-naming
       convention (`feature/NNN-slug`) for the `git log` target.
-- [X] T005 [P] [US-shared] `test/speckit_orchestrator/recovery/evidence_test.exs`:
+- [X] T005 [P] [US-shared] `test/autonomous/recovery/evidence_test.exs`:
       unit tests for `collect/3` over tmp-dir fixtures — present
       `pr.json`/`checkpoint.json`/`07-converge.md` (all fields populate);
       absent each individually (degrades to unknown value, no raise); corrupt
@@ -103,11 +103,11 @@ with zero phase re-run and spend preserved exactly once.
 `001: running`, `002: pending`; `001`'s `pr.json` + `07-converge.md` READY +
 branch with boundary commit `after converge`). Run recovery. Verify `001`
 reports/persists `done`, `002` reports as next runnable, no `001` phase
-re-runs (`test/speckit_orchestrator/recovery_quickpoll_test.exs`).
+re-runs (`test/autonomous/recovery_quickpoll_test.exs`).
 
 ### Tests for User Story 1
 
-- [X] T006 [P] [US1] `test/speckit_orchestrator/recovery/reconcile_test.exs`
+- [X] T006 [P] [US1] `test/autonomous/recovery/reconcile_test.exs`
       (US1 slice): unit tests for `Recovery.Reconcile.status/3` clause 4
       (contracts/reconcile.md precedence #4) — `recorded ∈ {:running,
       :pending}` and `done_signal?(evidence, shape)` → `:done`, for both
@@ -116,7 +116,7 @@ re-runs (`test/speckit_orchestrator/recovery_quickpoll_test.exs`).
       run shapes; and `done_signal?/2` itself (PR-workflow ignores
       `final_marker?`, non-PR ignores `pr_record?`, `pr_remote?: :unknown`
       never flips a local `true` to `false`).
-- [X] T007 [US1] `test/speckit_orchestrator/recovery_quickpoll_test.exs`: SC-001
+- [X] T007 [US1] `test/autonomous/recovery_quickpoll_test.exs`: SC-001
       regression reproducing the exact `quickpoll` defect per quickstart.md
       Scenario 1 — manifest `001: running`/`002: pending` fixture, `001`'s
       durable dir with `pr.json` + `07-converge.md` READY, git branch
@@ -127,8 +127,8 @@ re-runs (`test/speckit_orchestrator/recovery_quickpoll_test.exs`).
 
 ### Implementation for User Story 1
 
-- [X] T008 [US1] Implement `SpeckitOrchestrator.Recovery.Reconcile.status/3`
-      skeleton in `lib/speckit_orchestrator/recovery/reconcile.ex` per
+- [X] T008 [US1] Implement `Autonomous.Recovery.Reconcile.status/3`
+      skeleton in `lib/autonomous/recovery/reconcile.ex` per
       `contracts/reconcile.md` `status/3`: `@spec status(recorded ::
       Feature.status(), Evidence.t(), run_shape()) :: :done | {:resume,
       Pipeline.phase()} | :pending | :escalated | :halted | :failed |
@@ -137,8 +137,8 @@ re-runs (`test/speckit_orchestrator/recovery_quickpoll_test.exs`).
       done-signal → `:done`) plus a `done_signal?/2` and `phase_after/1`
       helper per the contract (later stories add the remaining clauses to the
       same module/function).
-- [X] T009 [US1] Implement `SpeckitOrchestrator.Recovery.reconcile_run/2` in
-      `lib/speckit_orchestrator/recovery.ex` per `contracts/recovery-report.md`
+- [X] T009 [US1] Implement `Autonomous.Recovery.reconcile_run/2` in
+      `lib/autonomous/recovery.ex` per `contracts/recovery-report.md`
       steps 1–5: `@spec reconcile_run(record :: map(), opts :: keyword()) ::
       {:ok, %{statuses: map(), report: Recovery.Report.t(), resume_phases:
       map()}} | {:error, term()}` — rebuild `Layout` via
@@ -152,15 +152,15 @@ re-runs (`test/speckit_orchestrator/recovery_quickpoll_test.exs`).
       corrupt manifest propagates as `{:error, :no_manifest | :corrupt}`; a
       single corrupt per-feature artifact never errors (absorbed by the
       collector).
-- [X] T010 [US1] Define `SpeckitOrchestrator.Recovery.Report` struct/type in
-      `lib/speckit_orchestrator/recovery/report.ex` (or inline in
+- [X] T010 [US1] Define `Autonomous.Recovery.Report` struct/type in
+      `lib/autonomous/recovery/report.ex` (or inline in
       `recovery.ex` if simpler) matching data-model.md "Entity: Reconciled run
       report": `features :: [%{id, slug, recorded, reconciled, resume_phase,
       corrected?}]`, `conflicts :: [%{id, reason}]`, `next_runnable ::
       [feature_id]`, `spend :: number`, `run_shape :: {:breakdown, String.t()}
       | :ad_hoc`. `corrected?` is `recorded != reconciled`.
-- [X] T011 [US1] Wire `SpeckitOrchestrator.resume_run/2`
-      (`lib/speckit_orchestrator.ex:424`) to call `Recovery.reconcile_run/2` in
+- [X] T011 [US1] Wire `Autonomous.resume_run/2`
+      (`lib/autonomous.ex:424`) to call `Recovery.reconcile_run/2` in
       place of the raw `RunManifest.reconstruct/1` call at line 427, per
       `contracts/recovery-report.md` "Integration with `resume_run/2`": seed
       the Coordinator's `:statuses` option with the reconciled statuses
@@ -169,14 +169,14 @@ re-runs (`test/speckit_orchestrator/recovery_quickpoll_test.exs`).
       `dispatch_resume` use `resume_phases` for `{:resume, phase}` features
       while leaving `:done`/held/conflict features untouched (FR-006, no
       re-run for this story's `:done` path).
-- [X] T012 [US1] Wire `SpeckitOrchestrator.resumable_run/0`
-      (`lib/speckit_orchestrator.ex:373`) to return the reconciled report from
+- [X] T012 [US1] Wire `Autonomous.resumable_run/0`
+      (`lib/autonomous.ex:373`) to return the reconciled report from
       `Recovery.reconcile_run/2` for a read-only preview (FR-015, SC-008) —
       no Coordinator seeded, no work started; preserves the existing `:none`
       classification and `{:error, :no_manifest | :corrupt_manifest}` returns.
 
 **Checkpoint**: User Story 1 is independently functional — `mise exec -- mix
-test test/speckit_orchestrator/recovery_quickpoll_test.exs` passes; the exact
+test test/autonomous/recovery_quickpoll_test.exs` passes; the exact
 reported `quickpoll` defect (SC-001) is fixed.
 
 ---
@@ -190,11 +190,11 @@ latest committed git boundary, so continuation re-runs only remaining phases.
 **Independent Test**: Feature with boundary commits through `plan`, no
 `pr.json`, checkpoint `last_phase: plan / in_progress`. Run recovery. Verify
 reconciled `{:resume, :tasks}` and continuation runs only `tasks → … →
-converge` (quickstart.md Scenario 2; `test/speckit_orchestrator/recovery/reconcile_test.exs`).
+converge` (quickstart.md Scenario 2; `test/autonomous/recovery/reconcile_test.exs`).
 
 ### Tests for User Story 2
 
-- [X] T013 [P] [US2] `test/speckit_orchestrator/recovery/reconcile_test.exs`
+- [X] T013 [P] [US2] `test/autonomous/recovery/reconcile_test.exs`
       (US2 slice): unit tests for clause 5 (contracts/reconcile.md
       precedence #5) — `recorded == :running`, not a done-signal, branch has
       ≥1 boundary commit → `{:resume, phase_after(evidence.last_boundary_phase)}`;
@@ -202,7 +202,7 @@ converge` (quickstart.md Scenario 2; `test/speckit_orchestrator/recovery/reconci
       → `:tasks`, `:analyze` → `:implement`); and clause 6 — `recorded ==
       :pending`, no branch and no artifacts → `:pending` (FR-008, US3 overlap
       covered fully in Phase 5).
-- [X] T014 [US2] Integration test in `test/speckit_orchestrator/recovery_test.exs`
+- [X] T014 [US2] Integration test in `test/autonomous/recovery_test.exs`
       reproducing quickstart.md Scenario 2: manifest `running`, boundary
       commits through `plan` only, no `pr.json`, checkpoint `last_phase: plan`
       / `status: in_progress`. Run `Recovery.reconcile_run/2`. Assert
@@ -212,8 +212,8 @@ converge` (quickstart.md Scenario 2; `test/speckit_orchestrator/recovery/reconci
 
 ### Implementation for User Story 2
 
-- [X] T015 [US2] Extend `SpeckitOrchestrator.Recovery.Reconcile.status/3` in
-      `lib/speckit_orchestrator/recovery/reconcile.ex` with clause 5 (mid-run
+- [X] T015 [US2] Extend `Autonomous.Recovery.Reconcile.status/3` in
+      `lib/autonomous/recovery/reconcile.ex` with clause 5 (mid-run
       resume) and clause 6 (never-started pending) per `contracts/reconcile.md`
       precedence order — clause 5 before clause 6, both after the clause-4
       done-signal check from Phase 3; implement `phase_after/1` per the
@@ -222,11 +222,11 @@ converge` (quickstart.md Scenario 2; `test/speckit_orchestrator/recovery/reconci
       boundary with `recorded == :running` falls through to clause 6/7, not a
       resume).
 - [X] T016 [US2] Confirm `dispatch_resume` (the private helper `resume_run/2`
-      already calls per `lib/speckit_orchestrator.ex`'s existing resume
+      already calls per `lib/autonomous.ex`'s existing resume
       machinery) accepts a `resume_phases`-supplied start phase for a
       `{:resume, phase}` feature via the existing checkpoint-driven resume
       path (007's phase-boundary resume) — add the plumbing in
-      `lib/speckit_orchestrator.ex` if the current `dispatch_resume` only
+      `lib/autonomous.ex` if the current `dispatch_resume` only
       reads the checkpoint's own `last_phase` and needs the reconciled
       `resume_phases` override threaded through (FR-004: never resume within
       a phase, always at a full phase boundary).
@@ -248,12 +248,12 @@ evidence and other self-contradictory evidence surface as
 **Independent Test**: Manifest exercising every status
 (`running`/`pending`/`escalated`/`halted`/`failed`/`done`) with matching or
 conflicting evidence; verify each reconciles per the rule for its state
-(`test/speckit_orchestrator/recovery/reconcile_test.exs` full run,
+(`test/autonomous/recovery/reconcile_test.exs` full run,
 quickstart.md Scenario 3).
 
 ### Tests for User Story 3
 
-- [X] T017 [P] [US3] `test/speckit_orchestrator/recovery/reconcile_test.exs`
+- [X] T017 [P] [US3] `test/autonomous/recovery/reconcile_test.exs`
       (US3 slice): unit tests for the remaining clauses — clause 1 (`recorded
       ∈ {:escalated, :halted}` → unchanged regardless of evidence, gate
       safety invariant: no input combination advances a gate); clause 2
@@ -266,7 +266,7 @@ quickstart.md Scenario 3).
       output, no I/O) and a property-style sweep asserting no
       `:escalated`/`:halted` input reaches any output other than itself.
 - [X] T018 [US3] Integration test in
-      `test/speckit_orchestrator/recovery_test.exs` (or extend
+      `test/autonomous/recovery_test.exs` (or extend
       `recovery_quickpoll_test.exs`'s sibling fixture): one manifest with six
       features, each exercising one status per data-model.md's state
       transitions table (including the `done_without_artifacts` conflict and
@@ -279,28 +279,28 @@ quickstart.md Scenario 3).
 
 ### Implementation for User Story 3
 
-- [X] T019 [US3] Complete `SpeckitOrchestrator.Recovery.Reconcile.status/3` in
-      `lib/speckit_orchestrator/recovery/reconcile.ex` with the remaining
+- [X] T019 [US3] Complete `Autonomous.Recovery.Reconcile.status/3` in
+      `lib/autonomous/recovery/reconcile.ex` with the remaining
       clauses in contract precedence order: 1 (gate passthrough), 2 (failed
       passthrough), 3 (done corroboration / `:done_without_artifacts`
       conflict), 7 (`:pr_without_branch` conflict and the residual-ambiguity
       catch-all `{:conflict, reason}` — never a silent guess, per the
       "No fabrication" invariant).
 - [X] T020 [US3] In `Recovery.reconcile_run/2`
-      (`lib/speckit_orchestrator/recovery.ex`), map `{:conflict, reason}`
+      (`lib/autonomous/recovery.ex`), map `{:conflict, reason}`
       reconciled values to the persisted manifest status `"blocked"` and
       populate the report's `conflicts` list (`%{id, reason}`) per
       data-model.md's mapping table and `contracts/recovery-report.md`
       "Conflict release semantics" — no change needed to `Release`
       (`:blocked` already excluded from `releasable?`), confirm this holds by
       T018 rather than adding new release logic.
-- [X] T021 [US3] Update `SpeckitOrchestrator.Report`
-      (`lib/speckit_orchestrator/report.ex`) or add a
+- [X] T021 [US3] Update `Autonomous.Report`
+      (`lib/autonomous/report.ex`) or add a
       `Recovery.Report.format/1` rendering function producing the reconciled
       table shown in `contracts/recovery-report.md` "Reconciled report"
       (`Feature | Recorded | Reconciled | Note` columns, `Spend:` and `Next
       runnable:` footer, `CONFLICT` rows carrying their reason) — feeds
-      `SpeckitOrchestrator.print_status`-style operator output for
+      `Autonomous.print_status`-style operator output for
       `resumable_run/0`'s reconciled preview.
 
 **Checkpoint**: All six status classifications reconcile correctly; the whole-
@@ -319,14 +319,14 @@ releases dependents on continuation (quickstart.md Scenario 4).
 
 ### Tests for User Story 4
 
-- [X] T022 [P] [US4] `test/speckit_orchestrator/recovery_test.exs`: ad-hoc-run
+- [X] T022 [P] [US4] `test/autonomous/recovery_test.exs`: ad-hoc-run
       scenario — single-feature manifest with `scope: "ad-hoc"`, `running`
       recorded, non-PR-workflow done-signal (`final_marker?` +
       `branch_committed?`, no `pr.json`); run `Recovery.reconcile_run/2`;
       assert `run_shape == :ad_hoc` is derived correctly from
       `RunManifest.rebuild_layout/2`'s scope, the feature reconciles `done`,
       and the report reflects a complete run.
-- [X] T023 [P] [US4] `test/speckit_orchestrator/recovery_test.exs`: breakdown-
+- [X] T023 [P] [US4] `test/autonomous/recovery_test.exs`: breakdown-
       wave scenario — manifest `scope: %{"breakdown" => slug}`, a finished
       upstream feature (`done`-signal evidence) and a `pending` dependent with
       that feature as a prereq; assert `run_shape == {:breakdown, slug}`,
@@ -336,7 +336,7 @@ releases dependents on continuation (quickstart.md Scenario 4).
 ### Implementation for User Story 4
 
 - [X] T024 [US4] Confirm/adjust `run_shape` derivation in
-      `Recovery.reconcile_run/2` (`lib/speckit_orchestrator/recovery.ex`) so
+      `Recovery.reconcile_run/2` (`lib/autonomous/recovery.ex`) so
       `RunManifest.rebuild_layout/2`'s scope (`scope_of/1`: `{:breakdown,
       slug}` vs `:ad_hoc`) maps 1:1 onto `Reconcile`'s `run_shape()` type used
       by `done_signal?/2` — no new scope logic; this task is the explicit
@@ -353,19 +353,19 @@ is functionally complete.
 **Purpose**: Corrupt-tolerance/offline resilience proofs spanning all stories,
 coverage verification, and full-suite regression.
 
-- [X] T025 [P] `test/speckit_orchestrator/recovery/evidence_test.exs`
+- [X] T025 [P] `test/autonomous/recovery/evidence_test.exs`
       (extend): quickstart.md Scenario 5 corrupt-tolerance case — truncate
       `pr.json` for an otherwise-finished feature; assert `collect/3` falls
       back to git/transcript evidence and `Reconcile.status/3` still reaches a
       correct `:done` or `{:conflict, _}` (never crashes, per SC-006).
-- [X] T026 [P] `test/speckit_orchestrator/recovery_test.exs` (extend):
+- [X] T026 [P] `test/autonomous/recovery_test.exs` (extend):
       quickstart.md Scenario 5 offline case — run `Recovery.reconcile_run/2`
       with the default local-only `:remote` seam (network never touched);
       assert every feature reaches its correct reconciled status from local
       state alone, `pr_remote?` stays `:unknown` throughout, and no
       `{:error, _}` is attributable to the remote (SC-009).
 - [X] T027 Manifest-missing/corrupt edge case in
-      `test/speckit_orchestrator/recovery_test.exs`: `Recovery.reconcile_run/2`
+      `test/autonomous/recovery_test.exs`: `Recovery.reconcile_run/2`
       on a missing manifest returns `{:error, :no_manifest}`; on a corrupt
       manifest returns `{:error, :corrupt}` — fail-loud per Principle II,
       never fabricates a run (spec "Edge Cases" — manifest missing/corrupt).
@@ -442,8 +442,8 @@ tasks touch the same file sequentially.
 
 ```bash
 # T002 first (struct shape), then:
-Task: "Implement Recovery.Evidence.collect/3 in lib/speckit_orchestrator/recovery/evidence.ex"
-Task: "Implement boundary-commit git-log parse in lib/speckit_orchestrator/recovery/evidence.ex"
+Task: "Implement Recovery.Evidence.collect/3 in lib/autonomous/recovery/evidence.ex"
+Task: "Implement boundary-commit git-log parse in lib/autonomous/recovery/evidence.ex"
 # T005 drafted in parallel against contracts/evidence.md, run once T003/T004 land
 ```
 
@@ -459,7 +459,7 @@ Task: "Implement boundary-commit git-log parse in lib/speckit_orchestrator/recov
 3. Complete Phase 3: User Story 1 — this alone fixes the reported `quickpoll`
    defect (SC-001) and stands up the full `Recovery` orchestration path.
 4. **STOP and VALIDATE**: `mise exec -- mix test
-   test/speckit_orchestrator/recovery_quickpoll_test.exs` green.
+   test/autonomous/recovery_quickpoll_test.exs` green.
 
 ### Incremental Delivery
 
@@ -481,5 +481,5 @@ Task: "Implement boundary-commit git-log parse in lib/speckit_orchestrator/recov
 - Commit after each task or logical group.
 - Stop at any checkpoint to validate a story independently.
 - No new dependency, no datastore, no new process — every task edits or adds
-  files inside `lib/speckit_orchestrator/` and `test/speckit_orchestrator/`
+  files inside `lib/autonomous/` and `test/autonomous/`
   only (FR-016, plan.md Constitution Check).

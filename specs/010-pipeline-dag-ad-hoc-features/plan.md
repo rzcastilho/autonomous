@@ -87,7 +87,7 @@ specs/010-pipeline-dag-ad-hoc-features/
 ### Source Code (repository root)
 
 ```text
-lib/speckit_orchestrator/web/
+lib/autonomous/web/
 ├── live/
 │   ├── pipeline_dag_live.ex       # MODIFY — render a second "ad-hoc lane" section + legend entry
 │   └── pipeline_dag_layout.ex     # MODIFY — add pure ad_hoc_nodes/2 (set-diff + lane positioning)
@@ -95,13 +95,13 @@ lib/speckit_orchestrator/web/
     ├── feature_drawer.ex          # UNCHANGED — reused as-is (reads view.per_feature[id])
     └── core_components.ex         # UNCHANGED — status_pill / phase_strip / palette reused
 
-test/speckit_orchestrator/web/
+test/autonomous/web/
 ├── pipeline_dag_layout_test.exs   # MODIFY/ADD — pure tests for ad_hoc_nodes/2
 └── pipeline_dag_live_test.exs     # MODIFY — ad-hoc node render, marker, legend, drawer, no-regression
 ```
 
 **Structure Decision**: Single project. The console is a set of LiveViews +
-components under `lib/speckit_orchestrator/web/`. The change is confined to the
+components under `lib/autonomous/web/`. The change is confined to the
 two DAG modules (`pipeline_dag_live.ex` view + `pipeline_dag_layout.ex` pure
 helper); all reused presentation components stay untouched, satisfying the
 spec's "reuse existing drawer/pill/spend components" assumption.

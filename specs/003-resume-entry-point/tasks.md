@@ -20,12 +20,12 @@ description: "Task list for FeatureRunner Resume Entry Point"
 ## Path Conventions
 
 Single-project Elixir/OTP layout (plan.md → Project Structure):
-- `lib/speckit_orchestrator/pipeline.ex` — pure `step_of/1` addition
-- `lib/speckit_orchestrator/feature_runner.ex` — `run/2` opts + `loop/7` start
-- `lib/speckit_orchestrator/feature_agent.ex` — schema fields
-- `lib/speckit_orchestrator/actions/init_feature.ex` — schema + seed
-- `test/speckit_orchestrator/pipeline_test.exs` — `step_of/1` cases
-- `test/speckit_orchestrator/feature_runner_test.exs` — resume/no-regression/anchor cases
+- `lib/autonomous/pipeline.ex` — pure `step_of/1` addition
+- `lib/autonomous/feature_runner.ex` — `run/2` opts + `loop/7` start
+- `lib/autonomous/feature_agent.ex` — schema fields
+- `lib/autonomous/actions/init_feature.ex` — schema + seed
+- `test/autonomous/pipeline_test.exs` — `step_of/1` cases
+- `test/autonomous/feature_runner_test.exs` — resume/no-regression/anchor cases
 
 ---
 
@@ -44,13 +44,13 @@ threading (US1) and the anchor's step label (US3) both build on.
 
 **⚠️ CRITICAL**: No user story work can begin until this phase is complete.
 
-- [X] T001 [P] In `lib/speckit_orchestrator/pipeline.ex`: add
+- [X] T001 [P] In `lib/autonomous/pipeline.ex`: add
       `@spec step_of(phase()) :: pos_integer()` /
       `def step_of(phase), do: Enum.find_index(@ordered, &(&1 == phase)) + 1`,
       placed after `first/0` (around line 66). Pure, no new deps — satisfies
       contracts/resume-entry.md's `step_of/1` contract table exhaustively for all
       7 phases.
-- [X] T002 [P] In `test/speckit_orchestrator/pipeline_test.exs`: add a test that
+- [X] T002 [P] In `test/autonomous/pipeline_test.exs`: add a test that
       iterates `Enum.with_index(Pipeline.phases(), 1)` and asserts
       `Pipeline.step_of(phase) == step` for every pair, plus explicit boundary
       assertions `Pipeline.step_of(:specify) == 1` and
@@ -75,7 +75,7 @@ there, with step numbering matching that phase's position in `Pipeline.phases/0`
 > Write first; must fail (loop still starts at `Pipeline.first()`/step 1
 > regardless of opts) before T005/T006.
 
-- [X] T003 [US1] In `test/speckit_orchestrator/feature_runner_test.exs`: add a
+- [X] T003 [US1] In `test/autonomous/feature_runner_test.exs`: add a
       test that calls `FeatureRunner.run(feature(), start_phase: :plan, worktree:
       scaffolded_worktree(), notify: self())` and asserts the run reaches a
       terminal `:done` (happy scenario) with `.speckit_logs/03-plan.md` present
@@ -90,11 +90,11 @@ there, with step numbering matching that phase's position in `Pipeline.phases/0`
 
 ### Implementation for User Story 1
 
-- [X] T005 [US1] In `lib/speckit_orchestrator/actions/init_feature.ex`: add
+- [X] T005 [US1] In `lib/autonomous/actions/init_feature.ex`: add
       `phase: [type: :atom, default: nil]` to the schema; in `run/2`, resolve
       `phase = params.phase || Pipeline.first()` and seed `phase: phase` (replaces
       the current hardcoded `phase: Pipeline.first()` at line 25).
-- [X] T006 [US1] In `lib/speckit_orchestrator/feature_runner.ex`: in `run/2`, read
+- [X] T006 [US1] In `lib/autonomous/feature_runner.ex`: in `run/2`, read
       `start_phase = Keyword.get(opts, :start_phase, Pipeline.first())`; pass
       `phase: start_phase` into the `"feature.init"` call's data map (line 71);
       replace the hardcoded `loop(pid, feature, Pipeline.first(), 1, ...)` at
@@ -117,7 +117,7 @@ confirm it begins at `:specify`, step 1, identical to pre-feature behavior.
 
 ### Tests for User Story 2
 
-- [X] T007 [US2] In `test/speckit_orchestrator/feature_runner_test.exs`: add a
+- [X] T007 [US2] In `test/autonomous/feature_runner_test.exs`: add a
       test that calls `FeatureRunner.run(feature(), worktree:
       scaffolded_worktree(), notify: self())` with no `:start_phase` and asserts,
       via the `[:speckit, :phase, :stop]` telemetry handler, the first event is
@@ -152,7 +152,7 @@ loop has advanced to `:tasks`.
 
 ### Tests for User Story 3
 
-- [X] T008 [US3] In `test/speckit_orchestrator/feature_runner_test.exs`: add a
+- [X] T008 [US3] In `test/autonomous/feature_runner_test.exs`: add a
       test using a scenario/hook that inspects agent state mid-run (e.g. a
       `:test_artifact_hook` or direct `AgentServer` inspection point) to assert
       that after starting with `start_phase: :plan, resume_prompt: "pick up at
@@ -163,15 +163,15 @@ loop has advanced to `:tasks`.
 
 ### Implementation for User Story 3
 
-- [X] T009 [US3] In `lib/speckit_orchestrator/feature_agent.ex`: add
+- [X] T009 [US3] In `lib/autonomous/feature_agent.ex`: add
       `resume_phase: [type: :atom, default: nil]` and
       `resume_prompt: [type: :string, default: nil]` to the schema (after
       `phase`, around line 26).
-- [X] T010 [US3] In `lib/speckit_orchestrator/actions/init_feature.ex`: add
+- [X] T010 [US3] In `lib/autonomous/actions/init_feature.ex`: add
       `resume_prompt: [type: :string, default: nil]` to the schema; in `run/2`,
       seed `resume_phase: phase` (same resolved value as T005's `phase` seed) and
       `resume_prompt: params.resume_prompt` into the returned state map.
-- [X] T011 [US3] In `lib/speckit_orchestrator/feature_runner.ex`: in `run/2`, read
+- [X] T011 [US3] In `lib/autonomous/feature_runner.ex`: in `run/2`, read
       `resume_prompt = Keyword.get(opts, :resume_prompt)` and add it to the
       `"feature.init"` call's data map alongside `phase` (T006's edit at line 71).
 
@@ -237,8 +237,8 @@ loop advancement for a future prompt-injection feature to consume.
 
 ```bash
 # Launch both Foundational tasks together (different files):
-Task: "Add step_of/1 to lib/speckit_orchestrator/pipeline.ex"
-Task: "Add step_of/1 index cases to test/speckit_orchestrator/pipeline_test.exs"
+Task: "Add step_of/1 to lib/autonomous/pipeline.ex"
+Task: "Add step_of/1 index cases to test/autonomous/pipeline_test.exs"
 ```
 
 ---
@@ -250,7 +250,7 @@ Task: "Add step_of/1 index cases to test/speckit_orchestrator/pipeline_test.exs"
 1. Complete Phase 2: Foundational (`step_of/1`).
 2. Complete Phase 3: User Story 1 (`start_phase` threading through `run/2` and
    `InitFeature`).
-3. **STOP and VALIDATE**: `mise exec -- mix test test/speckit_orchestrator/pipeline_test.exs test/speckit_orchestrator/feature_runner_test.exs`
+3. **STOP and VALIDATE**: `mise exec -- mix test test/autonomous/pipeline_test.exs test/autonomous/feature_runner_test.exs`
    green for T002-T004; confirm a `start_phase: :plan` run begins at step 3 and
    reaches `:done`.
 

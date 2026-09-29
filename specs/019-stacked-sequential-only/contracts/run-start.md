@@ -2,7 +2,7 @@
 
 **Feature**: `019-stacked-sequential-only`
 
-Covers `SpeckitOrchestrator.run/1` and `run_spec/2` — the only two ways new work
+Covers `Autonomous.run/1` and `run_spec/2` — the only two ways new work
 begins. Both are now *one shape*: stacked, sequential, ordered by number.
 
 ---
@@ -102,8 +102,8 @@ a second run while one is live (`{:error, {:active_run, pid}}`, unchanged).
 
 | Surface | Retired key | Behaviour |
 |---|---|---|
-| `config/runtime.exs` | `SPECKIT_PR_WORKFLOW` | set at all ⇒ `raise` at config load, naming the retired setting |
-| `config/runtime.exs` | `SPECKIT_MAX_CONCURRENCY` | set at all ⇒ `raise` at config load |
+| `config/runtime.exs` | `AUTONOMOUS_PR_WORKFLOW` | set at all ⇒ `raise` at config load, naming the retired setting |
+| `config/runtime.exs` | `AUTONOMOUS_MAX_CONCURRENCY` | set at all ⇒ `raise` at config load |
 | `Application.get_env` | `:pr_workflow` | present at boot ⇒ startup aborts, naming the retired setting |
 | `Application.get_env` | `:max_concurrency` | present at boot ⇒ startup aborts |
 

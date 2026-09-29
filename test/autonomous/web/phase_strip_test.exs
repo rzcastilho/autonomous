@@ -1,0 +1,163 @@
+defmodule Autonomous.Web.PhaseStripTest do
+  @moduledoc """
+  `phase_strip/1`'s chunk sub-label (specs/015-implement-phase-chunking,
+  contracts/telemetry-chunk.md §4): the implement cell gains an optional
+  task-phase/sweep sub-label, but only when `chunk.scope == :task_phase` or
+  `:sweep`. Absent/`nil`/`:whole_list` must render **byte-identical** to the
+  pre-015 two-attr `phase_strip/1` (FR-019, SC-005) — `@golden_strip` below is
+  that exact pre-015 render, captured before this feature touched the
+  component.
+  """
+
+  use ExUnit.Case, async: true
+
+  import Phoenix.LiveViewTest
+
+  alias Autonomous.Web.CoreComponents
+
+  @golden_strip "<div class=\"phase-strip\">\n  " <>
+                  "<span class=\"phase-cell phase-cell-pending\" data-phase=\"specify\" title=\"specify — pending\">\n    specify\n  </span>" <>
+                  "<span class=\"phase-cell phase-cell-pending\" data-phase=\"clarify\" title=\"clarify — pending\">\n    clarify\n  </span>" <>
+                  "<span class=\"phase-cell phase-cell-pending\" data-phase=\"plan\" title=\"plan — pending\">\n    plan\n  </span>" <>
+                  "<span class=\"phase-cell phase-cell-pending\" data-phase=\"tasks\" title=\"tasks — pending\">\n    tasks\n  </span>" <>
+                  "<span class=\"phase-cell phase-cell-pending\" data-phase=\"analyze\" title=\"analyze — pending\">\n    analyze\n  </span>" <>
+                  "<span class=\"phase-cell phase-cell-pending\" data-phase=\"implement\" title=\"implement — pending\">\n    implement\n  </span>" <>
+                  "<span class=\"phase-cell phase-cell-pending\" data-phase=\"converge\" title=\"converge — pending\">\n    converge\n  </span>\n</div>"
+
+  defp strip(assigns), do: render_component(&CoreComponents.phase_strip/1, assigns)
+
+  test "no chunk attr at all renders byte-identical to the pre-015 strip" do
+    assert strip(%{phases: %{}, status: :pending}) == @golden_strip
+  end
+
+  test "chunk: nil renders byte-identical to the pre-015 strip" do
+    assert strip(%{phases: %{}, status: :pending, chunk: nil}) == @golden_strip
+  end
+
+  test "chunk with scope: :whole_list renders byte-identical to the pre-015 strip (FR-019, SC-005)" do
+    chunk = %{
+      ordinal: nil,
+      total: nil,
+      title: nil,
+      attempt: 1,
+      scope: :whole_list,
+      sessions_used: 1,
+      ceiling: 14,
+      remaining: nil,
+      outcome: nil
+    }
+
+    assert strip(%{phases: %{}, status: :pending, chunk: chunk}) == @golden_strip
+  end
+
+  test "chunk with scope: :task_phase adds an ordinal/total/title sub-label to the implement cell only" do
+    chunk = %{
+      ordinal: 3,
+      total: 5,
+      title: "User Story 1",
+      attempt: 1,
+      scope: :task_phase,
+      sessions_used: 7,
+      ceiling: 14,
+      remaining: nil,
+      outcome: nil
+    }
+
+    html = strip(%{phases: %{}, status: :running, chunk: chunk})
+
+    assert html =~
+             ~s(<span class="phase-cell phase-cell-pending" data-phase="implement" title="implement — pending">) <>
+               ~s(\n    implement<span class="phase-sublabel"> 3/5 · User Story 1</span>\n  </span>)
+
+    for phase <- [:specify, :clarify, :plan, :tasks, :analyze, :converge] do
+      refute html =~ ~s(data-phase="#{phase}">\n    #{phase}<span)
+    end
+  end
+
+  test "attempt > 1 appends an (attempt N) suffix to the task-phase sub-label" do
+    chunk = %{
+      ordinal: 3,
+      total: 5,
+      title: "User Story 1",
+      attempt: 2,
+      scope: :task_phase,
+      sessions_used: 8,
+      ceiling: 14,
+      remaining: nil,
+      outcome: nil
+    }
+
+    html = strip(%{phases: %{}, status: :running, chunk: chunk})
+    assert html =~ "3/5 · User Story 1 (attempt 2)"
+  end
+
+  test "chunk with scope: :sweep renders \"sweep · N left\"" do
+    chunk = %{
+      ordinal: nil,
+      total: nil,
+      title: nil,
+      attempt: 1,
+      scope: :sweep,
+      sessions_used: 12,
+      ceiling: 14,
+      remaining: 2,
+      outcome: nil
+    }
+
+    html = strip(%{phases: %{}, status: :running, chunk: chunk})
+    assert html =~ "sweep · 2 left"
+  end
+
+  # ---- 017-analyze-auto-remediation (contracts/telemetry-console.md §3) ------
+
+  test "remediation: nil renders byte-identical to the pre-017 strip" do
+    assert strip(%{phases: %{}, status: :pending, remediation: nil}) == @golden_strip
+  end
+
+  test "a running loop adds an \"attempt k/n\" sub-label to the analyze cell only" do
+    remediation = %{attempt: 1, limit: 2, threshold: :high, findings: 3, outcome: nil}
+
+    html = strip(%{phases: %{}, status: :running, remediation: remediation})
+
+    assert html =~
+             ~s(<span class="phase-cell phase-cell-pending" data-phase="analyze" title="analyze — pending">) <>
+               ~s(\n    analyze<span class="phase-sublabel"> attempt 1/2</span>\n  </span>)
+
+    for phase <- [:specify, :clarify, :plan, :tasks, :implement, :converge] do
+      refute html =~ ~s(data-phase="#{phase}">\n    #{phase}<span)
+    end
+  end
+
+  # ---- 028-dag-wave-history (FR-007a) ----------------------------------------
+
+  test "an interrupted phase cell renders phase-cell-interrupted, never phase-cell-active or scPulse" do
+    html = strip(%{phases: %{implement: %{state: :interrupted}}, status: :interrupted})
+
+    assert html =~
+             ~s(<span class="phase-cell phase-cell-interrupted" data-phase="implement" title="implement — interrupted">)
+
+    refute html =~ "phase-cell-active"
+    refute html =~ "scPulse"
+  end
+
+  test "chunk and remediation sub-labels coexist on their own cells" do
+    chunk = %{
+      ordinal: 2,
+      total: 4,
+      title: "Foundational",
+      attempt: 1,
+      scope: :task_phase,
+      sessions_used: 3,
+      ceiling: 14,
+      remaining: nil,
+      outcome: nil
+    }
+
+    remediation = %{attempt: 2, limit: 2, threshold: :high, findings: 1, outcome: nil}
+
+    html = strip(%{phases: %{}, status: :running, chunk: chunk, remediation: remediation})
+
+    assert html =~ ~s(analyze<span class="phase-sublabel"> attempt 2/2</span>)
+    assert html =~ ~s(implement<span class="phase-sublabel"> 2/4 · Foundational</span>)
+  end
+end

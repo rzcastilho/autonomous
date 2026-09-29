@@ -126,7 +126,7 @@ Consumers: default logger (`Telemetry.handle_event/4`), console feed
 ## Entity 5 — Rebuild proposal *(new, in-memory; US3)*
 
 `Recovery.Rebuild.propose/3` output; the preview payload of
-`SpeckitOrchestrator.recover_record/1`.
+`Autonomous.recover_record/1`.
 
 | Field | Type | Meaning |
 |-------|------|---------|

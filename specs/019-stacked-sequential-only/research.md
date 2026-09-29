@@ -28,7 +28,7 @@ the existing `{:error, {:preflight, problems}}` shape:
    retired-setting message. This catches a stale `config/*.exs` or a
    `Application.put_env` left in a `.iex.exs`.
 3. **Environment variables** — `config/runtime.exs` currently maps
-   `SPECKIT_PR_WORKFLOW` and `SPECKIT_MAX_CONCURRENCY`. Both mappings are
+   `AUTONOMOUS_PR_WORKFLOW` and `AUTONOMOUS_MAX_CONCURRENCY`. Both mappings are
    deleted and replaced with a `raise` when either variable is *set at all*,
    so an operator exporting one out of habit learns at boot instead of getting
    a run that silently ignores it.

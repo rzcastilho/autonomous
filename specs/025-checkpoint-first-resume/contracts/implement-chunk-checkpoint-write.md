@@ -2,7 +2,7 @@
 
 **Kind**: durable-write repair (the write half of a 015 contract that did not
 survive the 018 file→store checkpoint migration).
-**Module**: `SpeckitOrchestrator.ChunkRunner`
+**Module**: `Autonomous.ChunkRunner`
 **Completes**: `specs/015-implement-phase-chunking/contracts/checkpoint-implement-chunk.md` §2
 **Satisfies**: FR-007, FR-007a, SC-006
 

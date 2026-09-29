@@ -1,0 +1,277 @@
+defmodule Autonomous.Config do
+  @moduledoc """
+  Typed accessors over `config :autonomous` (see `config/config.exs`).
+
+  All reads go through `Application.get_env/3` so tests can override values with
+  `Application.put_env/3`. Model values are full model strings (not CLI aliases)
+  for reproducibility.
+  """
+
+  @app :autonomous
+
+  # Aliases, not full strings — the pinned ClaudeAgentSDK catalog validates
+  # against these (see config/config.exs). Pin reproducibility via
+  # ANTHROPIC_DEFAULT_*_MODEL env vars.
+  @default_models %{
+    specify: "sonnet",
+    clarify: "opus",
+    plan: "opus",
+    tasks: "sonnet",
+    analyze: "opus",
+    implement: "sonnet",
+    converge: "sonnet",
+    describe: "sonnet"
+  }
+
+  @doc "Path to the target Spec Kit repo the orchestrator drives."
+  @spec repo() :: String.t()
+  def repo, do: get(:repo, ".")
+
+  @doc """
+  **Legacy (pre-012).** Directory holding `NNN-*.md` breakdown files, relative
+  to `repo/0` — the flat, single-package layout `Layout`/`specs_root/0`
+  superseded (`specs/autonomous/breakdown/<slug>`, FR-005/FR-007). No new
+  write path resolves through this function; it survives only as the
+  `layout: nil` fallback in `PhaseRequest`, the facade's own placeholder/
+  legacy-package-detection scope, `SingleSpec`, and the read-only LiveViews —
+  every one of them a backward-compatibility path for a repo that hasn't
+  adopted `specs/autonomous/breakdown/` yet (FR-013).
+  """
+  @spec breakdown_dir() :: String.t()
+  def breakdown_dir, do: get(:breakdown_dir, "docs/breakdown")
+
+  @doc """
+  **Legacy (pre-012).** Root under which per-feature git worktrees are
+  created — the sibling-of-repo default `Layout.worktree_root` (machine-global,
+  keyed by repository identity, FR-003) superseded. No new write path resolves
+  through this function; `Worktree.create/2`'s `layout: nil` (test/legacy)
+  fallback is its only remaining caller.
+  """
+  @spec worktree_root() :: String.t()
+  def worktree_root, do: get(:worktree_root, "../.speckit-worktrees")
+
+  @doc """
+  Machine-global base for worktrees + durable transcripts, keyed by repository
+  identity (`RepoIdentity.segment/1`). Default `~/.autonomous`, expanded at read
+  time; overridable via `Application.put_env/3` (tests point it at a tmp dir).
+  """
+  @spec autonomous_root() :: String.t()
+  def autonomous_root, do: get(:autonomous_root, "~/.autonomous") |> Path.expand()
+
+  @doc """
+  In-repo root for committed breakdown/ad-hoc feature files, relative to
+  `repo/0`. Default `specs/autonomous`.
+  """
+  @spec specs_root() :: String.t()
+  def specs_root, do: get(:specs_root, "specs/autonomous")
+
+  @doc "Full per-phase model routing map."
+  @spec models() :: %{atom() => String.t()}
+  def models, do: get(:models, @default_models)
+
+  @doc """
+  Full model string for a phase. Raises if the phase has no configured model —
+  a missing route is a config bug, not a silent fallback.
+  """
+  @spec model_for(atom()) :: String.t()
+  def model_for(phase) when is_atom(phase) do
+    case Map.fetch(models(), phase) do
+      {:ok, model} ->
+        model
+
+      :error ->
+        raise ArgumentError,
+              "no model configured for phase #{inspect(phase)}; " <>
+                "known phases: #{inspect(Map.keys(models()))}"
+    end
+  end
+
+  @valid_models ~w(opus sonnet)
+
+  @doc "The CLI model aliases accepted by `remediation_model/2`'s `override` arg."
+  @spec valid_models() :: [String.t()]
+  def valid_models, do: @valid_models
+
+  @doc """
+  Resolve the model for a pre-phase remediation step: an explicit `override`
+  alias wins; `nil` defaults to `model_for(target_phase)` (FR-011). An unknown
+  override alias is rejected loudly rather than silently defaulted (Principle
+  II) — the pinned SDK catalog only accepts `opus`/`sonnet`.
+  """
+  @spec remediation_model(atom(), String.t() | nil) ::
+          {:ok, String.t()} | {:error, {:unknown_model, String.t()}}
+  def remediation_model(target_phase, nil) when is_atom(target_phase),
+    do: {:ok, model_for(target_phase)}
+
+  def remediation_model(_target_phase, override) when override in @valid_models,
+    do: {:ok, override}
+
+  def remediation_model(_target_phase, override), do: {:error, {:unknown_model, override}}
+
+  @doc "Ordered plan stack passed to the plan phase."
+  @spec plan_stack() :: [String.t()]
+  def plan_stack, do: get(:plan_stack, [])
+
+  @doc "Root base branch for the first feature's PR in the stacked workflow."
+  @spec pr_base() :: String.t()
+  def pr_base, do: get(:pr_base, "main")
+
+  @doc "Git remote to push feature branches to (and preflight) in the PR workflow."
+  @spec pr_remote() :: String.t()
+  def pr_remote, do: get(:pr_remote, "origin")
+
+  @doc "Cost circuit-breaker budget for a run, in USD."
+  @spec budget_usd() :: number()
+  def budget_usd, do: get(:budget_usd, 25.0)
+
+  @doc """
+  Wall-clock deadline (ms) for one harness session — a whole phase, or one
+  implement chunk — enforced inside the action by `PhaseSession`. The outer
+  `AgentServer.call` timeout is always derived from it
+  (`PhaseSession.call_timeout/1`), so the deadline is the governing guard and
+  the call can never fire first.
+  """
+  @spec phase_timeout() :: pos_integer()
+  def phase_timeout, do: get(:phase_timeout, :timer.minutes(50))
+
+  @doc """
+  Per-task deadline extension (ms) for an implement chunk — see
+  `Chunking.deadline_ms/2`: `max(phase_timeout(), per_task * task_count)`.
+  """
+  @spec implement_chunk_timeout_per_task() :: pos_integer()
+  def implement_chunk_timeout_per_task,
+    do: get(:implement_chunk_timeout_per_task, :timer.minutes(4))
+
+  @doc "Turn cap for the long-running implement phase."
+  @spec implement_max_turns() :: pos_integer()
+  def implement_max_turns, do: get(:implement_max_turns, 200)
+
+  @doc """
+  How many times to retry a phase that fails **transiently** (a server/API drop —
+  see `PhaseResult.transient?/1`) before failing the feature. A real,
+  deterministic failure is never retried.
+  """
+  @spec phase_max_retries() :: non_neg_integer()
+  def phase_max_retries, do: get(:phase_max_retries, 1)
+
+  @doc """
+  Consecutive no-progress attempts on one task-phase before it is judged stuck
+  (FR-013). Progress resets this counter; it is distinct from the session
+  ceiling (`implement_sessions_per_task_phase/0` + `implement_sessions_headroom/0`).
+  """
+  @spec implement_no_progress_limit() :: pos_integer()
+  def implement_no_progress_limit, do: get(:implement_no_progress_limit, 3)
+
+  @doc """
+  Session-ceiling formula multiplier (FR-013a): the ceiling is
+  `implement_sessions_per_task_phase() * task_phase_count + implement_sessions_headroom()`,
+  frozen once at implement-step start (research R8).
+  """
+  @spec implement_sessions_per_task_phase() :: pos_integer()
+  def implement_sessions_per_task_phase, do: get(:implement_sessions_per_task_phase, 2)
+
+  @doc "Session-ceiling formula constant (FR-013a) — see `implement_sessions_per_task_phase/0`."
+  @spec implement_sessions_headroom() :: non_neg_integer()
+  def implement_sessions_headroom, do: get(:implement_sessions_headroom, 4)
+
+  @doc "Pinned Spec Kit CLI tag (drift diagnosis)."
+  @spec speckit_version() :: String.t()
+  def speckit_version, do: get(:speckit_version, "v0.12.11")
+
+  @doc "Default: whether the analyze auto-remediation loop runs at all (FR-002/FR-010)."
+  @spec auto_remediation?() :: boolean()
+  def auto_remediation?, do: get(:auto_remediation, true)
+
+  @doc "Default severity threshold (inclusive floor) that triggers a remediation attempt."
+  @spec auto_remediation_threshold() :: atom()
+  def auto_remediation_threshold, do: get(:auto_remediation_threshold, :high)
+
+  @doc "Default per-run attempt limit (1..5) for the auto-remediation loop."
+  @spec auto_remediation_attempt_limit() :: pos_integer()
+  def auto_remediation_attempt_limit, do: get(:auto_remediation_attempt_limit, 2)
+
+  @doc "Default model alias override for the auto-remediation step (`nil` = analyze's model)."
+  @spec auto_remediation_model() :: String.t() | nil
+  def auto_remediation_model, do: get(:auto_remediation_model, nil)
+
+  @doc "The default exhaustion policy for a run that does not choose one (feature 021, FR-002)."
+  @spec auto_remediation_exhaustion_policy() :: :escalate | :proceed
+  def auto_remediation_exhaustion_policy,
+    do: get(:auto_remediation_exhaustion_policy, :escalate)
+
+  @default_cost_estimates %{
+    specify: 0.20,
+    clarify: 0.40,
+    plan: 0.60,
+    tasks: 0.30,
+    analyze: 0.40,
+    implement: 2.50,
+    converge: 0.30,
+    remediation: 0.30
+  }
+
+  @doc "Fallback per-phase USD cost estimate (used when the run surfaces no cost)."
+  @spec cost_estimate(atom()) :: number()
+  def cost_estimate(phase) when is_atom(phase) do
+    get(:cost_estimates, @default_cost_estimates) |> Map.get(phase, 0.0)
+  end
+
+  @doc """
+  Directory the Mnesia store lives under (018). Default
+  `<autonomous_root/0>/mnesia`, expanded at read time; never inside a target
+  repository tree (FR-005).
+  """
+  @spec store_dir() :: String.t()
+  def store_dir, do: get(:store_dir, Path.join(autonomous_root(), "mnesia")) |> Path.expand()
+
+  @doc """
+  Store capacity ceiling in bytes (018, FR-031b), kept safely under the DETS
+  per-table ceiling `disc_only_copies` inherits. Default 1.5 GB.
+  """
+  @spec store_capacity_bytes() :: pos_integer()
+  def store_capacity_bytes, do: get(:store_capacity_bytes, 1_500_000_000)
+
+  @doc """
+  Headroom (018, FR-031b) reserved below `store_capacity_bytes/0` — a run is
+  refused once `used + headroom > capacity`. Default 150 MB (10%).
+  """
+  @spec store_headroom_bytes() :: pos_integer()
+  def store_headroom_bytes, do: get(:store_headroom_bytes, 150_000_000)
+
+  @doc "Default: whether interactive clarify answering is on for a run (029, FR-001)."
+  @spec interactive_clarify?() :: boolean()
+  def interactive_clarify?, do: get(:interactive_clarify, false)
+
+  @doc "Default seconds an operator has to answer before a round times out (029, 60..86_400)."
+  @spec clarify_answer_timeout_s() :: pos_integer()
+  def clarify_answer_timeout_s, do: get(:clarify_answer_timeout_s, 1_800)
+
+  @doc "Default max interactive-clarify rounds per feature run (029, 1..5)."
+  @spec clarify_max_rounds() :: pos_integer()
+  def clarify_max_rounds, do: get(:clarify_max_rounds, 3)
+
+  @doc "Wait-loop poll interval in ms while a feature is `:awaiting_answers` (029). Not a run setting."
+  @spec clarify_poll_ms() :: pos_integer()
+  def clarify_poll_ms, do: get(:clarify_poll_ms, 1_000)
+
+  @doc """
+  Default containment profile (030, FR-002) — shipped default `:strict`.
+  Raises `ArgumentError` naming the key and value for anything but
+  `:strict`/`:permissive`; a config typo must fail loud, not silently widen
+  or narrow every session's permissions.
+  """
+  @spec containment_profile() :: :strict | :permissive
+  def containment_profile do
+    case get(:containment_profile, :strict) do
+      value when value in [:strict, :permissive] ->
+        value
+
+      value ->
+        raise ArgumentError,
+              "invalid :containment_profile #{inspect(value)}; expected :strict or :permissive"
+    end
+  end
+
+  @spec get(atom(), term()) :: term()
+  defp get(key, default), do: Application.get_env(@app, key, default)
+end

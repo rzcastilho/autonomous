@@ -32,7 +32,7 @@ Each maps to a user story / success criterion. Drive runs from the console
 (preferred) or from `iex` — the console reflects either (FR-033).
 
 ### US1 — Watch a live run (SC-001, SC-002)
-1. Start a backlog run (Trigger view → **Start**, or `SpeckitOrchestrator.run/1`).
+1. Start a backlog run (Trigger view → **Start**, or `Autonomous.run/1`).
 2. On **Mission Control**, confirm within ~10 s: status-count strip, backlog table
    (id, slug, status, seven-phase progress, elapsed, spend), cost gauge, telemetry
    feed.
@@ -90,9 +90,9 @@ effective concurrency 1 and shows PR base/remote.
 ## Tests
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/console_read_model_test.exs   # pure fold
-mise exec -- mix test test/speckit_orchestrator/live_config_test.exs          # forward-only apply
-mise exec -- mix test test/speckit_orchestrator/web                           # LiveView flows (facade :runner seam)
+mise exec -- mix test test/autonomous/console_read_model_test.exs   # pure fold
+mise exec -- mix test test/autonomous/live_config_test.exs          # forward-only apply
+mise exec -- mix test test/autonomous/web                           # LiveView flows (facade :runner seam)
 mise exec -- mix test                                                         # full hermetic suite
 mise exec -- mix test --include integration                                   # opt-in real-harness (no CI runs by default)
 ```

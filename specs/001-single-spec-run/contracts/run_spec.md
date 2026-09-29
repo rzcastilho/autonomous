@@ -6,7 +6,7 @@ Feature 001 (an Elixir library / `iex` operator surface — no HTTP/CLI-arg laye
 ## 1. Facade function
 
 ```elixir
-@spec SpeckitOrchestrator.run_spec(description :: String.t(), opts :: keyword()) ::
+@spec Autonomous.run_spec(description :: String.t(), opts :: keyword()) ::
         GenServer.on_start()
         | {:error, :empty_description}
         | {:error, {:preflight, [term()]}}
@@ -33,7 +33,7 @@ Feature 001 (an Elixir library / `iex` operator surface — no HTTP/CLI-arg laye
 | `:owner` | caller pid | receives `{:run_complete, report}` |
 | `:runner` / `:executor` | seed-writing default | test seam (bypasses real worktree/CLI) |
 | `:features` | derived `[feature]` | test seam to inject a prebuilt feature |
-| `:repo`, `:breakdown_dir` | `Config.*` | override where already-taken ids are scanned from (tests only — the real worktree/seed location always follows `Config.repo()`/`Config.worktree_root()`/`Config.breakdown_dir()`, matching `run/1`; to redirect a real run, override those globally, e.g. `Application.put_env(:speckit_orchestrator, :repo, ...)`) |
+| `:repo`, `:breakdown_dir` | `Config.*` | override where already-taken ids are scanned from (tests only — the real worktree/seed location always follows `Config.repo()`/`Config.worktree_root()`/`Config.breakdown_dir()`, matching `run/1`; to redirect a real run, override those globally, e.g. `Application.put_env(:autonomous, :repo, ...)`) |
 
 **Guarantees preserved** (by delegation, not reimplementation): clarify-gate
 escalation, analyze-gate halt, breaker drain-not-kill, write containment, durable

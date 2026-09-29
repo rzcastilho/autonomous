@@ -9,10 +9,10 @@
 ## 1. Automated validation (hermetic)
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/wave_history_test.exs
-mise exec -- mix test test/speckit_orchestrator/web/pipeline_dag_live_test.exs
-mise exec -- mix test test/speckit_orchestrator/web/phase_strip_test.exs
-mise exec -- mix test test/speckit_orchestrator/web/design_contract_test.exs
+mise exec -- mix test test/autonomous/wave_history_test.exs
+mise exec -- mix test test/autonomous/web/pipeline_dag_live_test.exs
+mise exec -- mix test test/autonomous/web/phase_strip_test.exs
+mise exec -- mix test test/autonomous/web/design_contract_test.exs
 mise exec -- mix test                      # full suite: SC-005, nothing else regresses
 ```
 
@@ -35,10 +35,10 @@ cover are:
 ## 2. Manual validation against a real target (optional)
 
 1. Start the console with `mise exec -- iex -S mix` (the endpoint serves the
-   console) and point `config :speckit_orchestrator, :repo` at a target with
+   console) and point `config :autonomous, :repo` at a target with
    two or more breakdown packages that share feature numbers.
 2. Run one wave to completion, for example
-   `SpeckitOrchestrator.run(package: "008-…")`, or reuse an existing recorded
+   `Autonomous.run(package: "008-…")`, or reuse an existing recorded
    run.
 3. Open `/dag`.
    - **Expected**: the picker lands on `008` (US3), and the receipt strip

@@ -1,9 +1,9 @@
-defmodule SpeckitOrchestrator.MixProject do
+defmodule Autonomous.MixProject do
   use Mix.Project
 
   def project do
     [
-      app: :speckit_orchestrator,
+      app: :autonomous,
       version: "0.1.0",
       elixir: "~> 1.20",
       start_permanent: Mix.env() == :prod,
@@ -22,7 +22,7 @@ defmodule SpeckitOrchestrator.MixProject do
   def application do
     [
       extra_applications: [:logger, :mnesia],
-      mod: {SpeckitOrchestrator.Application, []}
+      mod: {Autonomous.Application, []}
     ]
   end
 

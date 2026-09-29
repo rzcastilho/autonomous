@@ -28,7 +28,7 @@ None.
 
 ## In scope
 
-- New module `SpeckitOrchestrator.Checkpoint`:
+- New module `Autonomous.Checkpoint`:
   - `write(feature_id, %{last_phase, status, reason, session_id})` — writes JSON
     to `<Config.transcript_root>/<feature_id>/checkpoint.json`. Best-effort
     (`rescue -> :ok`), mirroring `Transcripts.maybe_write_durable/4`. `reason`

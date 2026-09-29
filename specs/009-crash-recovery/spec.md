@@ -10,7 +10,7 @@
 
 ## Overview
 
-Today a `speckit_orchestrator` run lives entirely in memory: the `Coordinator`
+Today a `autonomous` run lives entirely in memory: the `Coordinator`
 holds each feature's status and the wave position, the `Ledger` holds committed
 spend, and one in-flight `claude` phase runs as a child process. If the BEAM node
 crashes (or is killed) mid-run, all of that is lost — even though the durable

@@ -5,7 +5,7 @@ the internal remediation-step behavior it drives. This is a CLI/iex-invoked
 library, so the contract is the function signature, its option semantics, and the
 observable side effects — not an HTTP schema.
 
-## Public surface — `SpeckitOrchestrator.resume/2`
+## Public surface — `Autonomous.resume/2`
 
 ```elixir
 @spec resume(String.t(), keyword()) ::

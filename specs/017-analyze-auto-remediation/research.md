@@ -40,7 +40,7 @@ there would need to run phases.
 
 ## R2 — Severity is a new pure module, not two more booleans
 
-**Decision**: New pure module `SpeckitOrchestrator.Severity` owning the ordered
+**Decision**: New pure module `Autonomous.Severity` owning the ordered
 vocabulary `:low < :medium < :high < :critical`, with `"blocker"` retained as a
 case-insensitive synonym for `:critical`. `AnalyzeResult` gains
 `max_severity/1` and `findings_at_or_above/2` built on it; the existing
@@ -178,7 +178,7 @@ rather than re-implemented.
 ## R8 — Extract `PhaseStep` rather than duplicate the retry/span/transcript trio
 
 **Decision**: Move `FeatureRunner`'s private `run_phase/7` +
-`run_phase_with_retry/8` into a new module `SpeckitOrchestrator.PhaseStep`,
+`run_phase_with_retry/8` into a new module `Autonomous.PhaseStep`,
 parameterized by a transcript **label** (defaulting to the phase name).
 `FeatureRunner` delegates; `AnalyzeRunner` reuses it for every analyze run in
 the loop.

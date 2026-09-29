@@ -1,8 +1,8 @@
-defmodule SpeckitOrchestrator.StoreCase do
+defmodule Autonomous.StoreCase do
   @moduledoc """
   Shared `ExUnit.CaseTemplate` for tests that touch the store (018, research
   R14). The Mnesia directory is node-global, so there is one store for the
-  whole suite — booted automatically when the `:speckit_orchestrator`
+  whole suite — booted automatically when the `:autonomous`
   application starts, against the tmp `autonomous_root` test config
   (`config/config.exs`), never `~/.autonomous`. This case template clears
   every table and the persistence breaker before each test, keeping tests
@@ -12,13 +12,13 @@ defmodule SpeckitOrchestrator.StoreCase do
 
   use ExUnit.CaseTemplate
 
-  alias SpeckitOrchestrator.Store.{Health, Mnesia, Schema}
+  alias Autonomous.Store.{Health, Mnesia, Schema}
 
   using do
     quote do
-      alias SpeckitOrchestrator.Store
+      alias Autonomous.Store
 
-      alias SpeckitOrchestrator.Store.{
+      alias Autonomous.Store.{
         Boot,
         Capacity,
         Export,
@@ -52,12 +52,12 @@ defmodule SpeckitOrchestrator.StoreCase do
   # order, so telemetry already queued from an earlier test is folded (and
   # discarded) before the reset lands.
   defp reset_console_projection do
-    case Process.whereis(SpeckitOrchestrator.ConsoleProjection) do
+    case Process.whereis(Autonomous.ConsoleProjection) do
       nil ->
         :ok
 
       pid ->
-        :sys.replace_state(pid, &%{&1 | model: SpeckitOrchestrator.ConsoleReadModel.new()})
+        :sys.replace_state(pid, &%{&1 | model: Autonomous.ConsoleReadModel.new()})
         :ok
     end
   end
@@ -71,7 +71,7 @@ defmodule SpeckitOrchestrator.StoreCase do
   # touched. Retire them before clearing, so no leftover process writes into the
   # table set this setup just emptied.
   defp stop_lingering_run do
-    Enum.each([SpeckitOrchestrator.Coordinator, SpeckitOrchestrator.StackTracker], fn name ->
+    Enum.each([Autonomous.Coordinator, Autonomous.StackTracker], fn name ->
       case Process.whereis(name) do
         nil -> :ok
         pid -> GenServer.stop(pid, :normal)

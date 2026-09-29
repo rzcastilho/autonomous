@@ -51,7 +51,7 @@ stay above 90%. `warnings_as_errors` is ON.
 **Target Platform**: BEAM control plane on macOS/Linux; the operator console is
 server-rendered LiveView with no Node/npm/bundler.
 
-**Project Type**: Single Elixir/OTP application (`speckit_orchestrator`) with an
+**Project Type**: Single Elixir/OTP application (`autonomous`) with an
 embedded Phoenix LiveView console — the existing tree, extended.
 
 **Performance Goals**: none new. SC-006 is a *no-cost* goal, satisfied
@@ -133,7 +133,7 @@ specs/021-analyze-exhaustion-policy/
 ### Source Code (repository root)
 
 ```text
-lib/speckit_orchestrator/
+lib/autonomous/
 ├── pipeline.ex                      # MODIFIED — gate row 3; two new signals + defaults
 ├── remediation.ex                   # MODIFIED — Settings.exhaustion_policy + parser;
 │                                    #   NEW exhaustion_advance/2, pr_note/1
@@ -145,7 +145,7 @@ lib/speckit_orchestrator/
 ├── report.ex                        # MODIFIED — one conditional line
 ├── run_context.ex                   # MODIFIED — ninth field (capture/to_map/from_map/@keys)
 ├── config.ex                        # MODIFIED — auto_remediation_exhaustion_policy/0
-├── speckit_orchestrator.ex          # MODIFIED — run/1 opt docs; pr_text/2 appends pr_note
+├── autonomous.ex          # MODIFIED — run/1 opt docs; pr_text/2 appends pr_note
 ├── store/
 │   ├── schema.ex                    # MODIFIED — feature_run.advanced_with_findings
 │   ├── records.ex                   # MODIFIED — FeatureRun struct + typespec
@@ -158,7 +158,7 @@ lib/speckit_orchestrator/
 
 config/config.exs                    # MODIFIED — :auto_remediation_exhaustion_policy default
 
-test/speckit_orchestrator/
+test/autonomous/
 ├── pipeline_test.exs                # gate matrix + I1/I2/I3/I4 invariants
 ├── remediation_test.exs             # Settings validation, exhaustion_advance/2, pr_note/1
 ├── analyze_runner_test.exs          # signal emission, residual findings verbatim

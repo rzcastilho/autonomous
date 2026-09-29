@@ -9,7 +9,7 @@ file-backed checkpoint, extended with one optional key.
 
 ---
 
-## 1. `TaskPlan` (new, pure — `lib/speckit_orchestrator/task_plan.ex`)
+## 1. `TaskPlan` (new, pure — `lib/autonomous/task_plan.ex`)
 
 The ordered set of task-phases derived from a feature's `tasks.md`. **Derived,
 never authoritative** — re-parsed before every dispatch (FR-006).

@@ -43,7 +43,7 @@ A git commit of the feature worktree made after each phase completes, on branch
 - **Created by**: `Worktree.commit/2` in `FeatureRunner.loop/7`, once per phase.
 - **Message**: `speckit: <feature_id> checkpoint after <phase>` (distinct from the
   final authored/template message).
-- **Author**: the existing orchestrator author (`speckit-orchestrator
+- **Author**: the existing orchestrator author (`autonomous
   <orchestrator@speckit.local>`), so pipeline commits stay distinguishable from
   human resolution commits.
 - **Lifecycle**:

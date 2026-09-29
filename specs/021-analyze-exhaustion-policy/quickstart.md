@@ -23,7 +23,7 @@ no machine-global Mnesia directory. The one opt-in scenario is marked.
 Pure, no process. Feed `Pipeline.next/3` the exhaustion cell directly.
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/pipeline_test.exs
+mise exec -- mix test test/autonomous/pipeline_test.exs
 ```
 
 Expected:
@@ -38,7 +38,7 @@ Expected:
 ## Scenario 2 — Critical never advances (US1 AS3, FR-005, SC-003)
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/pipeline_test.exs
+mise exec -- mix test test/autonomous/pipeline_test.exs
 ```
 
 Expected: for **every** `{policy, threshold}` pair, `critical? == true` yields
@@ -49,7 +49,7 @@ member cannot quietly escape it (contract §4.3 invariant I1).
 ## Scenario 3 — the mark fires only where the gate would have diverted (FR-009)
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/remediation_test.exs
+mise exec -- mix test test/autonomous/remediation_test.exs
 ```
 
 Expected: `Remediation.exhaustion_advance/2` reproduces the truth table in
@@ -60,8 +60,8 @@ threshold is `:critical`.
 ## Scenario 4 — validation refuses a bad value (US3 AS2, FR-010, SC-007)
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/remediation_test.exs
-mise exec -- mix test test/speckit_orchestrator/web/trigger_live_test.exs
+mise exec -- mix test test/autonomous/remediation_test.exs
+mise exec -- mix test test/autonomous/web/trigger_live_test.exs
 ```
 
 Expected:
@@ -76,8 +76,8 @@ Expected:
 ## Scenario 5 — the full loop: exhaust, advance, annotate (US1, FR-007)
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/analyze_runner_test.exs
-mise exec -- mix test test/speckit_orchestrator/feature_runner_test.exs
+mise exec -- mix test test/autonomous/analyze_runner_test.exs
+mise exec -- mix test test/autonomous/feature_runner_test.exs
 ```
 
 Drives a scripted agent that reports the same High finding on every analyze
@@ -107,7 +107,7 @@ either value (FR-015).
 ## Scenario 7 — persistence and migration (FR-007, schema v4)
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/store/
+mise exec -- mix test test/autonomous/store/
 ```
 
 Expected:
@@ -122,8 +122,8 @@ Expected:
 ## Scenario 8 — the operator surfaces (FR-008, FR-013, FR-014)
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/web/
-mise exec -- mix test test/speckit_orchestrator/design_contract_test.exs
+mise exec -- mix test test/autonomous/web/
+mise exec -- mix test test/autonomous/design_contract_test.exs
 ```
 
 Expected:
@@ -139,7 +139,7 @@ Expected:
 ## Scenario 9 — the pull request body (FR-008b, SC-008)
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/pull_request_test.exs
+mise exec -- mix test test/autonomous/pull_request_test.exs
 ```
 
 Expected: `Remediation.pr_note/1` renders the findings section; `pr_text/2`

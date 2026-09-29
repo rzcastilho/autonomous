@@ -1,6 +1,6 @@
-<!-- SPECKIT_ORCHESTRATOR_TEMPLATE: replace this file with your project's real
+<!-- AUTONOMOUS_TEMPLATE: replace this file with your project's real
      constitution before running the orchestrator. The preflight
-     (SpeckitOrchestrator.TargetPack.verify/1) FAILS while this marker is
+     (Autonomous.TargetPack.verify/1) FAILS while this marker is
      present, so a default/template constitution can never drive a run. -->
 
 # Constitution — <PROJECT NAME>

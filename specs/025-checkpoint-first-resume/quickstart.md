@@ -39,7 +39,7 @@ Reproduces run `r000002` / `mod-player` / feature `001`: a checkpoint naming
 `:implement` beside a trail whose newest boundary is `:tasks`.
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/recovery/reconcile_test.exs
+mise exec -- mix test test/autonomous/recovery/reconcile_test.exs
 ```
 
 **Expected**: `Reconcile.status(:running, evidence, run_shape)` returns
@@ -53,7 +53,7 @@ mise exec -- iex -S mix
 ```
 
 ```elixir
-alias SpeckitOrchestrator.Recovery.{Evidence, Reconcile}
+alias Autonomous.Recovery.{Evidence, Reconcile}
 
 ev = %Evidence{
   feature_id: "001",
@@ -74,14 +74,14 @@ Reconcile.resume_position(ev.checkpoint, ev.last_boundary_phase)
 ## Scenario 2 — the two paths agree (SC-002, FR-003)
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/resume_test.exs \
-                     test/speckit_orchestrator/resume_run_test.exs \
-                     test/speckit_orchestrator/resume_scope_test.exs \
-                     test/speckit_orchestrator/resume_crash_test.exs
+mise exec -- mix test test/autonomous/resume_test.exs \
+                     test/autonomous/resume_run_test.exs \
+                     test/autonomous/resume_scope_test.exs \
+                     test/autonomous/resume_crash_test.exs
 ```
 
 **Expected**: for the same feature record and the same evidence, the phase
-`SpeckitOrchestrator.resume/2` resolves (via `resolve_start_phase/2` on the
+`Autonomous.resume/2` resolves (via `resolve_start_phase/2` on the
 checkpoint) equals the phase `resume_run/1` dispatches (via
 `resume_phases` → `from:` → the same `resolve_start_phase/2`) — asserted
 across every phase the pipeline can be interrupted in, with an injected
@@ -92,7 +92,7 @@ across every phase the pipeline can be interrupted in, with an injected
 ## Scenario 3 — no checkpoint still falls back to the trail (FR-002)
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/recovery/reconcile_test.exs
+mise exec -- mix test test/autonomous/recovery/reconcile_test.exs
 ```
 
 **Expected**: with `checkpoint: nil` and `last_boundary_phase: :tasks`, the
@@ -106,8 +106,8 @@ persistence-failure drain still reports `gap_possible?: true` through
 ## Scenario 4 — a contradiction blocks and is named (SC-005, FR-005/FR-006)
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/recovery/reconcile_test.exs \
-                     test/speckit_orchestrator/recovery_test.exs
+mise exec -- mix test test/autonomous/recovery/reconcile_test.exs \
+                     test/autonomous/recovery_test.exs
 ```
 
 **Expected**:
@@ -124,8 +124,8 @@ mise exec -- mix test test/speckit_orchestrator/recovery/reconcile_test.exs \
 Preview it end-to-end against a live store, still without spending:
 
 ```elixir
-{:ok, %{report: report}} = SpeckitOrchestrator.resumable_run()
-IO.puts(SpeckitOrchestrator.Recovery.Report.format(report))
+{:ok, %{report: report}} = Autonomous.resumable_run()
+IO.puts(Autonomous.Recovery.Report.format(report))
 ```
 
 `resumable/1` starts no `Coordinator` and makes no `Ledger` reservation, so
@@ -141,8 +141,8 @@ no other artifact yields `{:conflict, :checkpoint_without_branch}`, never
 ## Scenario 5 — implement progress is recorded and honoured (SC-006, FR-007)
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/chunk_runner_test.exs \
-                     test/speckit_orchestrator/store/writer_test.exs
+mise exec -- mix test test/autonomous/chunk_runner_test.exs \
+                     test/autonomous/store/writer_test.exs
 ```
 
 **Expected**:
@@ -171,11 +171,11 @@ mise exec -- mix test test/speckit_orchestrator/chunk_runner_test.exs \
 ## Scenario 6 — nothing that works today changes (SC-004, FR-014)
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/recovery/ \
-                     test/speckit_orchestrator/recovery_test.exs \
-                     test/speckit_orchestrator/recovery_quickpoll_test.exs \
-                     test/speckit_orchestrator/record_recovery_test.exs \
-                     test/speckit_orchestrator/web/reconcile_test.exs
+mise exec -- mix test test/autonomous/recovery/ \
+                     test/autonomous/recovery_test.exs \
+                     test/autonomous/recovery_quickpoll_test.exs \
+                     test/autonomous/record_recovery_test.exs \
+                     test/autonomous/web/reconcile_test.exs
 ```
 
 **Expected**: every pre-existing reconciliation case resolves to the identical
@@ -197,9 +197,9 @@ Only if a live proof is wanted beyond the suite: start a run against a target
 repo, kill the BEAM mid-`implement` (`Ctrl+\`), then
 
 ```elixir
-{:ok, %{report: r}} = SpeckitOrchestrator.resumable_run()
-IO.puts(SpeckitOrchestrator.Recovery.Report.format(r))   # shows "resume: implement"
-SpeckitOrchestrator.resume_run()
+{:ok, %{report: r}} = Autonomous.resumable_run()
+IO.puts(Autonomous.Recovery.Report.format(r))   # shows "resume: implement"
+Autonomous.resume_run()
 ```
 
 **Expected**: the report names `resume: implement` before anything starts, and

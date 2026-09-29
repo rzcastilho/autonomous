@@ -17,7 +17,7 @@ Run the module's unit suite (hermetic — uses an ExUnit `tmp_dir` as the transc
 root; no CLI/worktree):
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/checkpoint_test.exs
+mise exec -- mix test test/autonomous/checkpoint_test.exs
 ```
 
 Expected: all green. The suite MUST cover, one scenario per acceptance criterion:
@@ -51,7 +51,7 @@ mise exec -- iex -S mix
 ```
 
 ```elixir
-alias SpeckitOrchestrator.Checkpoint
+alias Autonomous.Checkpoint
 
 # absent
 Checkpoint.read("999-demo")
@@ -80,7 +80,7 @@ Confirm the file lived under the durable transcript root (co-located with per-ph
 transcripts, keyed by feature id — FR-009):
 
 ```bash
-ls "$(mise exec -- elixir -e 'IO.puts SpeckitOrchestrator.Config.transcript_root()')"/999-demo/
+ls "$(mise exec -- elixir -e 'IO.puts Autonomous.Config.transcript_root()')"/999-demo/
 ```
 
 ## End-to-end check (optional, ties to FeatureRunner)

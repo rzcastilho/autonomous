@@ -1,4 +1,4 @@
-# Contract: `SpeckitOrchestrator.ConsoleHydration` (pure) + `ConsoleReadModel.hydrate/3`
+# Contract: `Autonomous.ConsoleHydration` (pure) + `ConsoleReadModel.hydrate/3`
 
 **Feature**: `023-console-restart-hydration` | **Status**: design
 

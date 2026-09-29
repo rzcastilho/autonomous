@@ -3,7 +3,7 @@
 ## Configuration
 
 ```elixir
-config :speckit_orchestrator, containment_profile: :strict   # shipped default
+config :autonomous, containment_profile: :strict   # shipped default
 ```
 
 `Config.containment_profile/0 :: :strict | :permissive`. Any other value
@@ -11,7 +11,7 @@ raises `ArgumentError` naming the key and the value.
 
 ## Facade
 
-### `SpeckitOrchestrator.run/1`
+### `Autonomous.run/1`
 
 New option `:containment_profile` — `:strict | :permissive | "strict" | "permissive"`.
 Absent → `Config.containment_profile/0`.
@@ -65,4 +65,4 @@ is independent of the profile.
 Callers that must pass it: `RunFeaturePhase` (covers implement chunks),
 `RunAutoRemediation`, `RunRemediation`, `Describe.run/4`. A test asserts that
 every `RunRequest` reaching the harness from these sites carries
-`SPECKIT_ORCHESTRATED=1`.
+`AUTONOMOUS_ORCHESTRATED=1`.

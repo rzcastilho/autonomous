@@ -7,7 +7,7 @@ for the interface and entities.
 ## Prerequisites
 
 - Toolchain via mise (`mise exec --`; Elixir 1.20.2-otp-28).
-- A configured target repo (`config :speckit_orchestrator, repo: …`) with the
+- A configured target repo (`config :autonomous, repo: …`) with the
   committed Spec Kit scaffold (`.specify/`, `.claude/`) and a committed
   constitution — same preconditions as a backlog run (`docs/runbook.md`).
 - `mise exec -- mix deps.get && mise exec -- mix compile` clean (no warnings).
@@ -17,9 +17,9 @@ for the interface and entities.
 Proves the pure logic and the facade wiring through injected seams.
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/single_spec_test.exs
-mise exec -- mix test test/speckit_orchestrator/run_spec_test.exs
-mise exec -- mix test --cover        # >90% on lib/speckit_orchestrator/single_spec.ex
+mise exec -- mix test test/autonomous/single_spec_test.exs
+mise exec -- mix test test/autonomous/run_spec_test.exs
+mise exec -- mix test --cover        # >90% on lib/autonomous/single_spec.ex
 ```
 
 Expected:
@@ -38,12 +38,12 @@ mise exec -- iex -S mix
 
 ```elixir
 # One feature from a description only — no breakdown file authored.
-{:ok, _coord} = SpeckitOrchestrator.run_spec("""
+{:ok, _coord} = Autonomous.run_spec("""
 Add a health-check endpoint that returns service status and version.
 """)
 
 # Watch it drive specify -> clarify -> plan -> tasks -> analyze -> implement -> converge.
-SpeckitOrchestrator.print_status()
+Autonomous.print_status()
 ```
 
 **Expected outcomes**:
@@ -66,7 +66,7 @@ SpeckitOrchestrator.print_status()
 ## PR workflow (optional)
 
 ```elixir
-{:ok, _coord} = SpeckitOrchestrator.run_spec("…description…", pr_workflow: true)
+{:ok, _coord} = Autonomous.run_spec("…description…", pr_workflow: true)
 ```
 
 Expected: remote/pack preflight runs first; on `:done` the branch is pushed and a

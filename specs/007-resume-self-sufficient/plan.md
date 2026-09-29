@@ -47,7 +47,7 @@ contents (atom-table safety — reuse the existing `String.to_existing_atom` +
 `Pipeline.phase?/1` guard).
 
 **Scale/Scope**: Small, surgical. Touches `Checkpoint`, `FeatureRunner` (write
-site + a threaded `run_context`), the `SpeckitOrchestrator` facade (`resume/2`
+site + a threaded `run_context`), the `Autonomous` facade (`resume/2`
 identity reconstruction + context reapplication + PR-workflow routing), one new
 pure `RunContext` module, and the runbook doc (FR-012).
 
@@ -88,18 +88,18 @@ specs/007-resume-self-sufficient/
 ### Source Code (repository root)
 
 ```text
-lib/speckit_orchestrator/
+lib/autonomous/
 ├── run_context.ex          # NEW — pure: capture(opts) + merge/precedence + to_map/from_map
 ├── checkpoint.ex           # EXTEND — persist/read identity (slug, path) + context map
 ├── feature_runner.ex       # EXTEND — accept :run_context, pass it into Checkpoint.write
 ├── feature.ex              # (read-only) work-unit rebuilt from checkpoint identity
-└── speckit_orchestrator.ex # EXTEND — resume/2: id-only identity recovery + context reapply
+└── autonomous.ex # EXTEND — resume/2: id-only identity recovery + context reapply
                             #          + PR-workflow-aware runner/executor selection
 
-test/speckit_orchestrator/
+test/autonomous/
 ├── run_context_test.exs        # NEW — pure capture/merge/precedence + round-trip
 ├── checkpoint_test.exs         # EXTEND — identity + context round-trip; corrupt/partial
-└── speckit_orchestrator_resume_test.exs # EXTEND — id-only resume, context reapply,
+└── autonomous_resume_test.exs # EXTEND — id-only resume, context reapply,
                                          #          precedence, PR-workflow routing, fallbacks
 
 docs/runbook.md             # EXTEND — document id-only resume as the canonical form (FR-012)

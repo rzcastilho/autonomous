@@ -57,7 +57,7 @@ The decision itself is a pure function, `BranchGuard.check(expected, observed)`,
 
 ## R5 — Where the publish failure becomes a stop
 
-**Decision.** `pr_notify/5` (lib/speckit_orchestrator.ex) already intercepts the runner's `:done` notification before the Coordinator sees it. For a **backlog** feature, when `publish_and_advance/4` fails, it now:
+**Decision.** `pr_notify/5` (lib/autonomous.ex) already intercepts the runner's `:done` notification before the Coordinator sees it. For a **backlog** feature, when `publish_and_advance/4` fails, it now:
 
 1. rewrites the store row `:done → :failed` with the publish reason (`Writer.record_feature_terminal/5`; the `pr_description` is kept, since the function only deletes the checkpoint on `:done`, which already happened);
 2. does **not** call `StackTracker.push/2`;

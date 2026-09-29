@@ -7,6 +7,6 @@
 # config/config.exs (research R14: the default suite never touches
 # ~/.autonomous). Remove it on exit so repeated runs never accumulate stale
 # schema files.
-System.at_exit(fn _status -> File.rm_rf(SpeckitOrchestrator.Config.store_dir()) end)
+System.at_exit(fn _status -> File.rm_rf(Autonomous.Config.store_dir()) end)
 
 ExUnit.start(exclude: [:integration])

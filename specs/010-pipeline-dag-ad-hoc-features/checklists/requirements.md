@@ -33,7 +33,7 @@
 
 - Items marked incomplete require spec updates before `/speckit-clarify` or `/speckit-plan`.
 - Scope is deliberately narrow: presentation-only change to Pipeline DAG
-  (`SpeckitOrchestrator.Web.PipelineDagLive`) so it also plots ad-hoc
+  (`Autonomous.Web.PipelineDagLive`) so it also plots ad-hoc
   single-spec features from the live per-feature read-model, as orphan
   nodes alongside backlog-derived ones. No change to `run_spec/2`,
   `SingleSpec`, or `Backlog.load!/1` themselves (FR-007).

@@ -2,7 +2,7 @@
 
 How to run the orchestrator, watch a run, unblock it, and verify what it
 produced. The operator surface is `iex` plus
-`SpeckitOrchestrator.{run, status, print_status, resolve}`.
+`Autonomous.{run, status, print_status, resolve}`.
 
 Everything here was validated against the LedgerLite Phase 7 target — see
 `docs/phase7-ledgerlite-runbook.md` for the validation protocol and traps.
@@ -54,13 +54,13 @@ scope** (a breakdown package slug, or the literal `ad-hoc`):
 Every phase attempt, checkpoint, escalation, remediation attempt, and
 transcript is a row in the Mnesia store at `store_dir` (default
 `~/.autonomous/mnesia`) — read it through
-`SpeckitOrchestrator.{run_history/1, run_detail/1, transcript/1}` or the
+`Autonomous.{run_history/1, run_detail/1, transcript/1}` or the
 console's `/runs` and `/runs/:run_id` views (see "Run history & detail" below),
 never by grepping a file. The worktree itself still exists on disk (kept for a
 non-`:done` outcome, removed on `:done`) but carries no state the orchestrator
 reads back.
 
-A **breakdown run** (`SpeckitOrchestrator.run/1`) selects one package by
+A **breakdown run** (`Autonomous.run/1`) selects one package by
 `:slug`/`:package` opt, or — with none given — the sole package directory
 under `specs/autonomous/breakdown/`; two or more with no selection is refused
 loud (`{:error, {:preflight, {:ambiguous_breakdown_package, slugs}}}`). The
@@ -68,7 +68,7 @@ Trigger console view (`/trigger`) lists available packages and lets the
 operator pick one before starting. A package literally named `ad-hoc` is
 rejected (it would collide with the ad-hoc transcript segment).
 
-A **single-spec run** (`SpeckitOrchestrator.run_spec/2`) is always ad-hoc
+A **single-spec run** (`Autonomous.run_spec/2`) is always ad-hoc
 scope — its seed lands under `specs/autonomous/ad-hoc/`, never inside any
 breakdown package, and its transcripts key off the literal `ad-hoc` segment.
 
@@ -99,7 +99,7 @@ cd my-target && git init -q
 
 # From the ORCHESTRATOR repo, lay in the enforcement pack:
 mise exec -- mix run --no-start -e \
-  'SpeckitOrchestrator.TargetPack.install("/path/to/my-target")'
+  'Autonomous.TargetPack.install("/path/to/my-target")'
 ```
 
 `specify init` provides `.specify/` (templates + `.specify/scripts/*.sh`) and the
@@ -111,7 +111,7 @@ hook.
 ### 2. Write a real constitution
 
 Replace `.specify/memory/constitution.md` — remove the
-`SPECKIT_ORCHESTRATOR_TEMPLATE` marker and write **checkable MUSTs** the analyze
+`AUTONOMOUS_TEMPLATE` marker and write **checkable MUSTs** the analyze
 gate can enforce (e.g. "monetary amounts stored/computed as integer cents;
 floating-point money forbidden"). Vague principles cannot gate anything.
 
@@ -130,35 +130,35 @@ cd /path/to/my-target && git add -A && git commit -m "spec kit + enforcement pac
 ```
 ```elixir
 # preflight must be :ok before a run
-SpeckitOrchestrator.TargetPack.verify("/path/to/my-target")   # => :ok
+Autonomous.TargetPack.verify("/path/to/my-target")   # => :ok
 ```
 `verify` fails while the template constitution marker is present, or if the
 constitution is uncommitted.
 
 ### 5. Point the orchestrator at the target + decide the tech stack
 
-In `config/runtime.exs` (or via the `SPECKIT_REPO` env var, which wins):
+In `config/runtime.exs` (or via the `AUTONOMOUS_REPO` env var, which wins):
 ```elixir
-config :speckit_orchestrator, repo: "/path/to/my-target"
+config :autonomous, repo: "/path/to/my-target"
 ```
 
 **Decide the tech stack (critical).** If the spec delegates language/format to
 `plan` (most do), `plan` cannot proceed without one — with `plan_stack: []` it
 stalls and the run false-greens (see Troubleshooting). Set it:
 ```elixir
-config :speckit_orchestrator,
+config :autonomous,
   plan_stack: ["Python 3 (standard library only: argparse, unittest; no deps)"]
 ```
 
 ### 6. Start the run
 
 ```bash
-SPECKIT_REPO=../ledgerlite iex -S mix
+AUTONOMOUS_REPO=../ledgerlite iex -S mix
 ```
 
 ```elixir
-iex> SpeckitOrchestrator.Telemetry.attach_default_logger()   # log phase transitions
-iex> {:ok, _coord} = SpeckitOrchestrator.run()
+iex> Autonomous.Telemetry.attach_default_logger()   # log phase transitions
+iex> {:ok, _coord} = Autonomous.run()
 ```
 
 `run/0` loads the backlog, validates the DAG (raises on cycles / dangling
@@ -171,21 +171,21 @@ except `:test`, so they steer a plain `iex -S mix` as well as a release:
 
 | Variable | Effect |
 |----------|--------|
-| `SPECKIT_REPO` | Target repo. Required in `:prod` (raises at boot if unset); elsewhere overrides the `repo: "."` default. **Unset means the orchestrator points at itself and finds no backlog** — the console's package pickers then render empty. |
-| `SPECKIT_PR_WORKFLOW` | `true` → stacked sequential PR run: cap 1, remote preflight, one stacked PR per feature on `:done`. |
-| `SPECKIT_PR_BASE` / `SPECKIT_PR_REMOTE` | Root base branch / remote for the PR stack (default `main` / `origin`). |
-| `SPECKIT_MAX_CONCURRENCY` | Wave cap. Ignored under the PR workflow, which pins 1. |
-| `SPECKIT_BUDGET_USD` | Cost breaker budget. |
-| `SPECKIT_PLAN_STACK` | Preferred stack handed to `plan` (see step 5). |
+| `AUTONOMOUS_REPO` | Target repo. Required in `:prod` (raises at boot if unset); elsewhere overrides the `repo: "."` default. **Unset means the orchestrator points at itself and finds no backlog** — the console's package pickers then render empty. |
+| `AUTONOMOUS_PR_WORKFLOW` | `true` → stacked sequential PR run: cap 1, remote preflight, one stacked PR per feature on `:done`. |
+| `AUTONOMOUS_PR_BASE` / `AUTONOMOUS_PR_REMOTE` | Root base branch / remote for the PR stack (default `main` / `origin`). |
+| `AUTONOMOUS_MAX_CONCURRENCY` | Wave cap. Ignored under the PR workflow, which pins 1. |
+| `AUTONOMOUS_BUDGET_USD` | Cost breaker budget. |
+| `AUTONOMOUS_PLAN_STACK` | Preferred stack handed to `plan` (see step 5). |
 
 **More than one breakdown package.** With 2+ packages under
 `specs/autonomous/breakdown/`, a bare `run/0` refuses rather than guessing:
 
 ```elixir
-iex> SpeckitOrchestrator.run()
+iex> Autonomous.run()
 {:error, {:ambiguous_breakdown_package, ["001-mvp", "002-addons"]}}
 
-iex> SpeckitOrchestrator.run(slug: "001-mvp")
+iex> Autonomous.run(slug: "001-mvp")
 ```
 
 The console's Trigger Run page supplies this from its package picker.
@@ -198,11 +198,11 @@ Every run picks a containment profile, `strict` (default) or `permissive`,
 recorded once at run start and locked for the run's lifetime.
 
 ```elixir
-iex> SpeckitOrchestrator.run(containment_profile: :permissive)
+iex> Autonomous.run(containment_profile: :permissive)
 ```
 
 Or leave it unset to take `Config.containment_profile/0` (`config
-:speckit_orchestrator, containment_profile: :permissive` to change the
+:autonomous, containment_profile: :permissive` to change the
 default). The Trigger Run console page exposes the same two-option control,
 with a one-line consequence note when `permissive` is selected.
 
@@ -210,7 +210,7 @@ with a one-line consequence note when `permissive` is selected.
 run otherwise:
 
 ```elixir
-iex> SpeckitOrchestrator.run(containment_profile: :permissive)
+iex> Autonomous.run(containment_profile: :permissive)
 {:error, {:preflight, [{:pack_outdated, "/path/to/target", "re-run TargetPack.install/2 and commit"}]}}
 ```
 
@@ -223,7 +223,7 @@ the result (`git add .claude && git commit`), then re-run.
 effect:
 
 ```elixir
-iex> SpeckitOrchestrator.resume("r000012", containment_profile: :strict)
+iex> Autonomous.resume("r000012", containment_profile: :strict)
 {:error, {:preflight, [{:containment_profile_locked, "permissive"}]}}
 ```
 
@@ -231,7 +231,7 @@ Omit the opt (or pass the same value) to resume normally — it silently
 inherits the recorded profile.
 
 **Visibility.** A `permissive` run shows `containment: permissive` on the
-final report, `iex> SpeckitOrchestrator.print_status/0`, the console topbar
+final report, `iex> Autonomous.print_status/0`, the console topbar
 (every view), Run Detail's CONTAINMENT block, the Configuration page, and the
 PR body. A `strict` run's surfaces are byte-identical to before this feature —
 no marker anywhere. See `docs/enforcement.md` for what `permissive` actually
@@ -241,7 +241,7 @@ for the exact surface list.
 **Human sessions are never blocked, under either profile.** The pack's hook
 tells an operator's own interactive `claude` session (run directly in a target
 repo, outside the orchestrator) apart from an orchestrator-driven one via
-`SPECKIT_ORCHESTRATED`/`SPECKIT_CONTAINMENT_PROFILE` env markers the
+`AUTONOMOUS_ORCHESTRATED`/`AUTONOMOUS_CONTAINMENT_PROFILE` env markers the
 orchestrator sets on every session it starts, falling back to
 `CLAUDE_CODE_ENTRYPOINT=cli` to detect a human shell with neither marker set.
 **Known limitation:** this detection has not been verified against every
@@ -256,14 +256,14 @@ sessions start seeing unexpected denials.
 To drive **exactly one** feature from a free-text description — no
 `specs/autonomous/breakdown/<slug>/NNN-slug.md` file to author, no
 prerequisites to declare — use
-`SpeckitOrchestrator.run_spec/2` instead of `run/1`:
+`Autonomous.run_spec/2` instead of `run/1`:
 
 ```elixir
 iex -S mix
-iex> {:ok, _coord} = SpeckitOrchestrator.run_spec("""
+iex> {:ok, _coord} = Autonomous.run_spec("""
 ...> Add a health-check endpoint that returns service status and version.
 ...> """)
-iex> SpeckitOrchestrator.print_status()
+iex> Autonomous.print_status()
 ```
 
 `run_spec/2` auto-assigns the feature id (one past the highest existing
@@ -291,8 +291,8 @@ for the interface contract.
 
 An alternative to the default parallel-wave run that builds features **one at a
 time** and opens a **pull request per feature**. Enable it with
-`config :speckit_orchestrator, pr_workflow: true` (or per-run
-`SpeckitOrchestrator.run(pr_workflow: true)`). When on, it enforces three things:
+`config :autonomous, pr_workflow: true` (or per-run
+`Autonomous.run(pr_workflow: true)`). When on, it enforces three things:
 
 1. **Sequential** — concurrency is forced to 1; features build strictly in
    dependency/id order, one at a time.
@@ -306,7 +306,7 @@ time** and opens a **pull request per feature**. Enable it with
    `003 → feature/002`). Each PR carries a clean diff on top of its prerequisite;
    **you merge them bottom-up**.
 
-Config knobs (`config :speckit_orchestrator`):
+Config knobs (`config :autonomous`):
 
 - `pr_workflow: false` — the master switch.
 - `pr_base: "main"` — base branch for the first feature's PR.
@@ -336,7 +336,7 @@ Notes:
 ## Watch a run
 
 ```elixir
-iex> SpeckitOrchestrator.print_status()
+iex> Autonomous.print_status()
 FEATURE  STATUS    ELAPSED
 001      done      12.4s
 002      running   3.1s
@@ -352,9 +352,9 @@ state:  running
 - **Transcripts live in the store, not on disk (018).** Every phase attempt's
   transcript survives worktree teardown on `:done`, retrievable on demand:
   ```elixir
-  {:ok, detail} = SpeckitOrchestrator.run_detail(run_id)
+  {:ok, detail} = Autonomous.run_detail(run_id)
   attempt = detail.features |> Enum.find(& &1.feature_id == "003") |> Map.fetch!(:phase_attempts) |> List.last()
-  {:ok, %{body: body}} = SpeckitOrchestrator.transcript(attempt.transcript_ref)
+  {:ok, %{body: body}} = Autonomous.transcript(attempt.transcript_ref)
   ```
   or browse them in the console's run detail view (`/runs/:run_id`) or the
   Transcripts view (`/transcripts`) — never by reading a file.
@@ -398,9 +398,9 @@ If plan/tasks/implement produced nothing, read that phase's transcript for the
 blocker — usually a missing tech stack or a Bash approval denial:
 
 ```elixir
-{:ok, detail} = SpeckitOrchestrator.run_detail(run_id)
+{:ok, detail} = Autonomous.run_detail(run_id)
 plan_attempt = detail.features |> Enum.find(& &1.feature_id == "NNN") |> Map.fetch!(:phase_attempts) |> Enum.find(& &1.phase == :plan)
-{:ok, %{body: body}} = SpeckitOrchestrator.transcript(plan_attempt.transcript_ref)
+{:ok, %{body: body}} = Autonomous.transcript(plan_attempt.transcript_ref)
 IO.puts(body)
 ```
 
@@ -435,9 +435,9 @@ failure.
    ```
 4. **Free the worktree** (the branch commit is preserved):
    ```elixir
-   iex> SpeckitOrchestrator.resolve("NNN")
+   iex> Autonomous.resolve("NNN")
    ```
-5. **Re-run** `SpeckitOrchestrator.run()`. The feature reuses its branch and
+5. **Re-run** `Autonomous.run()`. The feature reuses its branch and
    re-runs from the start. For a targeted restart at the checkpointed phase
    instead, see "Resume a halted/escalated feature (mid-pipeline)" below.
    With the decisions now in the breakdown, `clarify` should default/resolve
@@ -454,7 +454,7 @@ resolves it. **Interactive clarify** is an opt-in per-run mode that answers
 those questions live, inside the run, instead of parking it.
 
 **The three settings** (Trigger Run page's **Interactive clarify** control
-group, or the equivalent `SpeckitOrchestrator.run/1` opts):
+group, or the equivalent `Autonomous.run/1` opts):
 
 - **Interactive clarify** — on/off, default **off**. Off is byte-identical to
   today's escalate-and-park behavior.
@@ -463,7 +463,7 @@ group, or the equivalent `SpeckitOrchestrator.run/1` opts):
 - **Max rounds** — maximum question rounds per feature. Default 3; range 1–5.
 
 ```elixir
-iex> SpeckitOrchestrator.run(
+iex> Autonomous.run(
   interactive_clarify: true,
   clarify_answer_timeout_s: 1800,
   clarify_max_rounds: 3
@@ -482,7 +482,7 @@ worktree stays live, the run does not park, and the feature still counts as
 the run's one in-flight slot (nothing downstream releases). "Awaiting
 answers" shows as a distinct status everywhere status is shown — the console
 (`Mission Control`, `/runs/:run_id`, and the in-flight listing), the iex
-status table (`SpeckitOrchestrator.print_status/0`), and the run report —
+status table (`Autonomous.print_status/0`), and the run report —
 each with elapsed wait and time left before timeout.
 
 **Answering surfaces:**
@@ -497,10 +497,10 @@ each with elapsed wait and time left before timeout.
   block.
 - **iex**:
   ```elixir
-  iex> SpeckitOrchestrator.pending_questions()
+  iex> Autonomous.pending_questions()
   # => [%{feature_id: "NNN", round: 1, max_rounds: 3, questions: [...], deadline_at: ~U[...]}]
 
-  iex> SpeckitOrchestrator.answer("NNN", _seq = 1, %{"Q1" => "yes", "Q2" => "no"})
+  iex> Autonomous.answer("NNN", _seq = 1, %{"Q1" => "yes", "Q2" => "no"})
   :ok
   ```
   A single free-text answer (unstructured round) is a plain string instead of
@@ -567,7 +567,7 @@ automated gate remains in front of it. Treat that PR as the review it is.
 `iex`-driven runs pass the equivalent opt:
 
 ```elixir
-iex> SpeckitOrchestrator.run(auto_remediation_exhaustion_policy: :proceed)
+iex> Autonomous.run(auto_remediation_exhaustion_policy: :proceed)
 ```
 
 An unrecognized value (either surface) is refused before any run starts — no
@@ -581,7 +581,7 @@ launch re-reads the configured default).
 
 ## Resume a halted/escalated feature (mid-pipeline)
 
-`SpeckitOrchestrator.resume/2` restarts a previously-escalated or halted
+`Autonomous.resume/2` restarts a previously-escalated or halted
 feature at its checkpointed phase, reusing (or recreating) its existing
 branch — the mid-pipeline counterpart to `resolve/1`'s full restart from
 `specify`.
@@ -590,7 +590,7 @@ branch — the mid-pipeline counterpart to `resolve/1`'s full restart from
    `resolve/1` would target) and commit.
 2. Resume from the checkpointed phase:
    ```elixir
-   iex> SpeckitOrchestrator.resume("003")
+   iex> Autonomous.resume("003")
    ```
    By default this restarts at whichever phase was checkpointed when the
    feature last halted or escalated — not from `specify`.
@@ -600,17 +600,17 @@ branch — the mid-pipeline counterpart to `resolve/1`'s full restart from
 - `:prompt` — inject operator guidance into the resumed phase as
   `resume_prompt`:
   ```elixir
-  iex> SpeckitOrchestrator.resume("003", prompt: "use Decimal for money, not float")
+  iex> Autonomous.resume("003", prompt: "use Decimal for money, not float")
   ```
 - `:from` — override the start phase, restarting earlier than the checkpoint.
   Reach for this when the fix touches an upstream artifact the checkpointed
   phase alone won't pick back up:
   ```elixir
-  iex> SpeckitOrchestrator.resume("003", from: :plan)
+  iex> Autonomous.resume("003", from: :plan)
   ```
 - Both together:
   ```elixir
-  iex> SpeckitOrchestrator.resume("003", from: :plan, prompt: "re-plan around the money fix")
+  iex> Autonomous.resume("003", from: :plan, prompt: "re-plan around the money fix")
   ```
 
 `resume(id)` alone is the canonical, self-sufficient form: identity (`slug`,
@@ -639,10 +639,10 @@ original run but is off by default now). Precedence, fixed:
 # Checkpoint recorded pr_workflow: true — resume routes through the stacked
 # PR-workflow executor (cap 1, stacking, PR-on-:done) even if the live
 # Config default is off:
-iex> SpeckitOrchestrator.resume("003")
+iex> Autonomous.resume("003")
 
 # Override deliberately — explicit opt beats the recorded value:
-iex> SpeckitOrchestrator.resume("003", pr_workflow: false)
+iex> Autonomous.resume("003", pr_workflow: false)
 ```
 
 A setting missing from the checkpoint (old checkpoint written before this
@@ -683,7 +683,7 @@ closed with a distinct error and no run:
 `resume/2` above fixes one feature. If the orchestrator process itself
 crashed (BEAM node died, machine restarted) mid-run, the whole backlog needs
 reconstructing: some features `:done`, one `:running` when the crash hit, the
-rest still `:pending`. That's what `SpeckitOrchestrator.resume_run/1` and
+rest still `:pending`. That's what `Autonomous.resume_run/1` and
 `resumable_run/0` are for.
 
 Recovery relies on the one durable store record (018) — every phase attempt,
@@ -707,7 +707,7 @@ trail.
 1. **Detect.** After a crash, before touching anything, check whether a run
    is resumable — this starts no work:
    ```elixir
-   iex> SpeckitOrchestrator.resumable_run()
+   iex> Autonomous.resumable_run()
    {:ok, %{report: %{...}, statuses: %{...}, resume_phases: %{...}, gap_possible?: false}}
    # or :none — every feature was already terminal/diverted, nothing to resume
    # or {:error, :no_manifest} / {:error, :corrupt_manifest}
@@ -718,7 +718,7 @@ trail.
 2. **Resume explicitly.** Recovery is operator-initiated — it is never
    triggered automatically on boot, because resuming spends money (FR-014):
    ```elixir
-   iex> SpeckitOrchestrator.resume_run()
+   iex> Autonomous.resume_run()
    {:ok, coordinator_pid}
    ```
    This reconstructs `{features, statuses}` from the store's run record —
@@ -746,7 +746,7 @@ trail.
    alive and unfinished, `resume_run/1` (and `resume/2`, `continue_run/1`)
    refuses:
    ```elixir
-   iex> SpeckitOrchestrator.resume_run()
+   iex> Autonomous.resume_run()
    {:error, {:active_run, #PID<0.123.0>}}
    ```
    Pass `force: true` only when you're certain the live process is stuck, not
@@ -789,12 +789,12 @@ within its bound, `run/1` (and `run_spec/2`, and `guard_active_run/1`'s
 `:force` path above) returns instead of superseding anything:
 
 ```elixir
-iex> SpeckitOrchestrator.run(features: my_features)
+iex> Autonomous.run(features: my_features)
 {:error, {:drain_timeout, [%{feature_id: "003", run_id: "r000009"}]}}
 ```
 
 Nothing was started and the prior run record is untouched — safe to inspect
-(`SpeckitOrchestrator.workers/0`, below) and retry. A drained worker's own
+(`Autonomous.workers/0`, below) and retry. A drained worker's own
 feature row is left `:running` (not marked terminal) — the *new* run's
 supersession is what later marks it `:ended_by_supersession`, exactly as if
 the drain had never happened; look for
@@ -802,14 +802,14 @@ the drain had never happened; look for
 `[:speckit, :feature, :terminal]`) to confirm a feature exited this way
 rather than genuinely halting.
 
-**`SpeckitOrchestrator.workers/0`, `workers/1`** — read-only, answers "is
+**`Autonomous.workers/0`, `workers/1`** — read-only, answers "is
 anything still in flight?" truthfully even with no live `Coordinator`:
 
 ```elixir
-iex> SpeckitOrchestrator.workers()
+iex> Autonomous.workers()
 [%{pid: #PID<0.456.0>, feature_id: "003", run_id: "r000009", deadline_at: ~U[...]}]
 
-iex> SpeckitOrchestrator.workers("other/repo")
+iex> Autonomous.workers("other/repo")
 []
 ```
 
@@ -827,7 +827,7 @@ cost breaker uses. Check `Store.Health.status/0` to see a failure the moment
 it's recorded:
 
 ```elixir
-iex> SpeckitOrchestrator.Store.Health.status()
+iex> Autonomous.Store.Health.status()
 {:failed, reason, at}   # or :ok
 ```
 
@@ -854,7 +854,7 @@ the system never decides on the operator's behalf.
 `run_spec/2` refuse while one exists, naming it and both ways out:
 
 ```elixir
-iex> SpeckitOrchestrator.run()
+iex> Autonomous.run()
 {:error, {:parked_run, "r000007", [:continue, :end]}}
 ```
 
@@ -864,7 +864,7 @@ iex> SpeckitOrchestrator.run()
    phase (same machinery as `resume/2`), then releases the remainder in
    order, under the **same `run_id`**:
    ```elixir
-   iex> SpeckitOrchestrator.continue_run()
+   iex> Autonomous.continue_run()
    {:ok, coordinator_pid}
    # or {:error, :no_parked_run} / {:error, {:active_run, pid}} / a preflight error
    ```
@@ -875,7 +875,7 @@ iex> SpeckitOrchestrator.run()
    recorded distinctly from the first.
 2. **End** the chain — closes the run out without releasing anything further:
    ```elixir
-   iex> SpeckitOrchestrator.end_run()
+   iex> Autonomous.end_run()
    {:ok, run_summary}
    # or {:error, :no_parked_run}
    ```
@@ -891,9 +891,9 @@ escalation resolution first, then dispatches to whichever of the above you
 chose:
 
 ```elixir
-iex> SpeckitOrchestrator.resolve("003", decision: :continue)
-iex> SpeckitOrchestrator.resolve("003", decision: :end)
-iex> SpeckitOrchestrator.resolve("003")
+iex> Autonomous.resolve("003", decision: :continue)
+iex> Autonomous.resolve("003", decision: :end)
+iex> Autonomous.resolve("003")
 {:error, :decision_required}   # nothing changes — the choice is never made for you
 ```
 
@@ -976,7 +976,7 @@ no compatibility path). Before upgrading:
 ```bash
 # 1. Export anything worth keeping from the v1 store, BEFORE upgrading.
 mise exec -- iex -S mix
-iex> SpeckitOrchestrator.export_run("r000007", "/tmp/r000007.json")
+iex> Autonomous.export_run("r000007", "/tmp/r000007.json")
 
 # 2. Upgrade, then remove the v1 store directory.
 rm -rf ~/.autonomous/mnesia
@@ -1016,8 +1016,8 @@ step is the only thing that writes that field automatically, so once the run
 has moved on, an operator has to supply it:
 
 ```elixir
-SpeckitOrchestrator.record_pr("001", "https://github.com/you/repo/pull/6")
-SpeckitOrchestrator.record_pr("001", url, run_id: "r000001")   # an older run
+Autonomous.record_pr("001", "https://github.com/you/repo/pull/6")
+Autonomous.record_pr("001", url, run_id: "r000001")   # an older run
 ```
 
 The default targets the repository's **current in-flight** run; a completed or
@@ -1047,20 +1047,20 @@ Every run for a repository is retained, successful or not — review any of them
 without a live `Coordinator`, from `iex` or the console.
 
 ```elixir
-{:ok, runs} = SpeckitOrchestrator.run_history()
+{:ok, runs} = Autonomous.run_history()
 Enum.map(runs, &{&1.run_id, &1.state, &1.outcome, &1.spend_usd})
 # most recent first
 
-SpeckitOrchestrator.run_history(outcome: [:halted, :escalated])
-SpeckitOrchestrator.run_history(feature: "003")
+Autonomous.run_history(outcome: [:halted, :escalated])
+Autonomous.run_history(feature: "003")
 
-{:ok, d} = SpeckitOrchestrator.run_detail("r000004")
+{:ok, d} = Autonomous.run_detail("r000004")
 f = Enum.find(d.features, & &1.feature_id == "003")
 f.phase_attempts       # execution order, with outcome/model/cost/duration
 f.escalations          # reason, originating phase, triggering evidence
 f.remediation_attempts # each attempt, with the limit and threshold in force
 
-{:ok, %{body: body}} = SpeckitOrchestrator.transcript(List.first(f.phase_attempts).transcript_ref)
+{:ok, %{body: body}} = Autonomous.transcript(List.first(f.phase_attempts).transcript_ref)
 ```
 
 In the console: `/runs` lists history (state badge, outcome, spend, per-feature
@@ -1077,7 +1077,7 @@ The store has a capacity ceiling (`config :store_capacity_bytes`, default
 Check it any time:
 
 ```elixir
-iex> SpeckitOrchestrator.store_capacity()
+iex> Autonomous.store_capacity()
 %{status: :ok, used_bytes: _, capacity_bytes: 1_500_000_000, shortfall_bytes: nil, reclaimable_bytes: _}
 ```
 
@@ -1085,7 +1085,7 @@ A `run/1`/`resume/2`/`resume_run/1` refuses **before spending anything** when
 headroom is gone:
 
 ```elixir
-iex> SpeckitOrchestrator.run()
+iex> Autonomous.run()
 {:error, {:preflight, [{:store_capacity, %{shortfall_bytes: _, reclaimable_bytes: _}}]}}
 ```
 
@@ -1099,12 +1099,12 @@ failure, not a refusal — it drains the same way persistence failure does
 operator-initiated — preview first, confirm explicitly:
 
 ```elixir
-{:ok, plan} = SpeckitOrchestrator.prune_preview(before: ~U[2026-06-01 00:00:00Z])
+{:ok, plan} = Autonomous.prune_preview(before: ~U[2026-06-01 00:00:00Z])
 plan.removable          # what would go
 plan.retained           # in-flight / resumable runs, each with a reason — never removed
 plan.bytes_reclaimable
 
-{:ok, res} = SpeckitOrchestrator.prune(before: ~U[2026-06-01 00:00:00Z], confirm: true)
+{:ok, res} = Autonomous.prune(before: ~U[2026-06-01 00:00:00Z], confirm: true)
 ```
 
 A resumable run (in-flight, or with an open escalation/halt) is never removed
@@ -1113,7 +1113,7 @@ regardless of the boundary; `prune_preview/1` performs nothing on its own.
 ### Export
 
 ```elixir
-{:ok, path} = SpeckitOrchestrator.export_run("r000004", "/tmp/r000004.json")
+{:ok, path} = Autonomous.export_run("r000004", "/tmp/r000004.json")
 ```
 
 One self-describing JSON file: every feature, phase attempt, escalation,
@@ -1217,7 +1217,7 @@ passes.
 The usual cause is a plan session that dispatched research subagents and then
 ended its turn: headless, ending the turn ends the session, and nothing collects
 the subagents afterwards. That is also what the incomplete-session gate detects
-directly. Both outcomes are retried once (`SPECKIT_PHASE_MAX_RETRIES`, default 1)
+directly. Both outcomes are retried once (`AUTONOMOUS_PHASE_MAX_RETRIES`, default 1)
 before the feature fails, because a fresh session is the most likely fix and
 neither reproduces deterministically. A *plainly* missing `plan.md` is not
 retried — see the `plan_stack` note below.
@@ -1233,12 +1233,12 @@ finding now (`:escalated`, reason `:high_findings`); `critical` still halts.
 **The most common trigger — a contradictory `plan_stack`.** If the stack handed
 to `plan` conflicts with the target's own constitution/manifest (e.g. a Python
 stack against a Phoenix repo), plan will refuse and ask which to use, then write
-no `plan.md`. Leave `SPECKIT_PLAN_STACK` **unset** so plan derives the stack from
+no `plan.md`. Leave `AUTONOMOUS_PLAN_STACK` **unset** so plan derives the stack from
 the target itself; set it only for a target whose spec deliberately leaves the
 stack open:
 
 ```bash
-export SPECKIT_PLAN_STACK="Python 3 (standard library only: argparse, unittest)"
+export AUTONOMOUS_PLAN_STACK="Python 3 (standard library only: argparse, unittest)"
 ```
 
 Read the feature's `plan` transcript (`transcript/1`, or `/runs/:run_id` in the

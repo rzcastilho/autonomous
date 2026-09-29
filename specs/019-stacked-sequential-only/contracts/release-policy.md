@@ -1,4 +1,4 @@
-# Contract: `SpeckitOrchestrator.Release` — the pure release policy
+# Contract: `Autonomous.Release` — the pure release policy
 
 **Feature**: `019-stacked-sequential-only`
 

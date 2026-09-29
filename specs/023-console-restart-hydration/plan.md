@@ -19,7 +19,7 @@ it is reduced to the checkpoint alone.
 
 Technical approach, in three separable pieces:
 
-1. **A pure hydration module** (`SpeckitOrchestrator.ConsoleHydration`) turns
+1. **A pure hydration module** (`Autonomous.ConsoleHydration`) turns
    one recorded feature + the run's cost entries + an injected `now` into a
    console row slice (phase cells, spend, elapsed, current phase, chunk
    sub-label, PR link), then *layers* the live slice on top under one
@@ -46,7 +46,7 @@ every command through `mise exec --`.
 `phoenix_pubsub` (reconcile/feature broadcasts). **No new dependency.**
 
 **Storage**: Mnesia, single-node — read-only for this feature, through the
-existing `SpeckitOrchestrator.run_detail/1` facade (018). **No schema change,
+existing `Autonomous.run_detail/1` facade (018). **No schema change,
 no new table, no new field** (FR-015).
 
 **Testing**: ExUnit. Pure tests over synthetic `run_detail`-shaped maps with an
@@ -113,7 +113,7 @@ specs/023-console-restart-hydration/
 ### Source Code (repository root)
 
 ```text
-lib/speckit_orchestrator/
+lib/autonomous/
 ├── console_hydration.ex                 # NEW — pure: from_record/3, layer/2, apply_update/2
 ├── console_read_model.ex                # overlay_last_known_statuses/2 -> hydrate/3 (both modes);
 │                                        #   overlay_observed/1 merges via ConsoleHydration.layer/2;
@@ -126,7 +126,7 @@ lib/speckit_orchestrator/
     └── components/
         └── feature_drawer.ex            # timeline meta shows model beside cost (FR-016)
 
-test/speckit_orchestrator/
+test/autonomous/
 ├── console_hydration_test.exs           # NEW — pure, synthetic records, injected now
 ├── console_read_model_test.exs          # overlay_* describes -> hydrate/3 (cold + live modes)
 └── web/
@@ -135,7 +135,7 @@ test/speckit_orchestrator/
 ```
 
 **Structure Decision**: single Elixir application, existing layout. The new
-pure module sits beside `ConsoleReadModel` in `lib/speckit_orchestrator/`
+pure module sits beside `ConsoleReadModel` in `lib/autonomous/`
 (the pure core), not under `web/` — it knows nothing about Phoenix and is
 tested without it. `Store.Query`, `Records`, `Writer`, and `RunDetailLive` are
 not touched.

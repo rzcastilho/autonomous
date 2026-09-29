@@ -16,7 +16,7 @@ selector/function contracts asserted below.
 ### Pure layout tests (fast, hermetic — the interesting logic)
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/web/pipeline_dag_layout_test.exs
+mise exec -- mix test test/autonomous/web/pipeline_dag_layout_test.exs
 ```
 
 Covers the pure `ad_hoc_nodes/2` contract (C1–C7): empty when live ⊆ backlog;
@@ -27,7 +27,7 @@ backlog (VR-1); id-proximity still classified by set membership (VR-3, C5);
 ### LiveView render tests
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/web/pipeline_dag_live_test.exs
+mise exec -- mix test test/autonomous/web/pipeline_dag_live_test.exs
 ```
 
 Assert, mounting `/dag` against a Coordinator status whose `per_feature`

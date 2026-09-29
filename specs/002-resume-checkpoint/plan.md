@@ -6,7 +6,7 @@
 
 ## Summary
 
-Add a new infrastructure module `SpeckitOrchestrator.Checkpoint` that persists a
+Add a new infrastructure module `Autonomous.Checkpoint` that persists a
 durable, machine-readable pointer (`checkpoint.json`) recording the phase a
 feature reached when it terminated, its terminal status, reason, and session id —
 stored under the existing durable transcript root, keyed by feature id. Wire
@@ -83,19 +83,19 @@ specs/002-resume-checkpoint/
 ### Source Code (repository root)
 
 ```text
-lib/speckit_orchestrator/
+lib/autonomous/
 ├── checkpoint.ex        # NEW — write/1, read/1, delete/1 (best-effort write, 3-way read)
 ├── feature_runner.ex    # EDIT — after loop/7 returns, checkpoint or delete beside handle_worktree/3
 ├── transcripts.ex       # REFERENCE — durable-root + best-effort write pattern to mirror
 └── config.ex            # REFERENCE — Config.transcript_root/0 (existing, unchanged)
 
-test/speckit_orchestrator/
+test/autonomous/
 └── checkpoint_test.exs  # NEW — round-trip, absent, corrupt, best-effort-write, delete-on-done
 ```
 
 **Structure Decision**: Single-project Elixir/OTP layout. The new module lives in
-`lib/speckit_orchestrator/` alongside the peer infrastructure module it mirrors
-(`transcripts.ex`), and its unit test in `test/speckit_orchestrator/`. The only
+`lib/autonomous/` alongside the peer infrastructure module it mirrors
+(`transcripts.ex`), and its unit test in `test/autonomous/`. The only
 production edit outside the new module is the finalization wiring in
 `feature_runner.ex` (beside the existing `handle_worktree/3` call, ~line 78).
 

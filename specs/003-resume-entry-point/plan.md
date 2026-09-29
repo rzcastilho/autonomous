@@ -82,7 +82,7 @@ specs/003-resume-entry-point/
 ### Source Code (repository root)
 
 ```text
-lib/speckit_orchestrator/
+lib/autonomous/
 ├── pipeline.ex                    # + step_of/1 (pure)
 ├── feature_runner.ex              # run/2: read :start_phase + :resume_prompt opts;
 │                                  #   start loop/7 at start_phase, step_of(start_phase)
@@ -90,7 +90,7 @@ lib/speckit_orchestrator/
 └── actions/
     └── init_feature.ex            # schema + seed: phase, resume_phase, resume_prompt
 
-test/speckit_orchestrator/
+test/autonomous/
 ├── pipeline_test.exs              # + step_of/1 index cases (all 7 phases)
 └── feature_runner_test.exs        # + start_phase resume case; default no-regression case
 ```

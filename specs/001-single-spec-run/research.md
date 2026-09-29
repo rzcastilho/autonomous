@@ -11,7 +11,7 @@ file inside the worktree.
 `"/speckit.specify Implement the feature specified in <breakdown_ref> (id <id>,
 <slug>). Follow the constitution."`, where `breakdown_ref/1` is
 `Path.join(Config.breakdown_dir(), Path.basename(feature.path))`
-(`lib/speckit_orchestrator/phase_request.ex`). The CLI runs with
+(`lib/autonomous/phase_request.ex`). The CLI runs with
 `cwd = <worktree path>` (`Actions.RunFeaturePhase.run/2`). So the feature
 description must exist at `<worktree>/<breakdown_dir>/<basename(path)>` when
 `specify` runs.
@@ -97,7 +97,7 @@ existing branch-reuse behavior gives idempotent re-runs for free.
 the existing `start_run/2`; the `Coordinator` + `Release` release it immediately
 and drain to a final report.
 
-**Findings**: `SpeckitOrchestrator.run/1` already accepts an explicit `:features`
+**Findings**: `Autonomous.run/1` already accepts an explicit `:features`
 list and forwards it to `Coordinator.start_link`. `Release` releases any
 `:pending` feature whose prereqs are all `:done`; with no prereqs it is releasable
 on the first wave. `max_concurrency` is irrelevant for one feature. The drain path

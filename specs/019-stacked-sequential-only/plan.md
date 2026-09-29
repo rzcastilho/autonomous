@@ -43,7 +43,7 @@ the same `run_id`.
 Retired settings are **refused, not ignored**, at three independent edges,
 because they are read at three different times: an allow-list on run-start
 options, a boot-time application-environment check, and a `raise` in
-`config/runtime.exs` for `SPECKIT_PR_WORKFLOW`/`SPECKIT_MAX_CONCURRENCY`.
+`config/runtime.exs` for `AUTONOMOUS_PR_WORKFLOW`/`AUTONOMOUS_MAX_CONCURRENCY`.
 
 This is a clean break with no compatibility layer (FR-022). Schema bumps to v2
 with a *refusal migration*: registered in the same ordered list as every other
@@ -83,7 +83,7 @@ stays behind `--include integration`. Coverage above 90% on the pure core.
 via the `claude` CLI. Single BEAM node.
 
 **Project Type**: Single Elixir/OTP application with an embedded Phoenix LiveView
-console (`lib/speckit_orchestrator/web/`). No frontend build step.
+console (`lib/autonomous/web/`). No frontend build step.
 
 **Performance Goals**: Not a performance feature. One constraint holds:
 `Release.order/1` and `Release.next/3` run on every release decision and must
@@ -193,7 +193,7 @@ specs/019-stacked-sequential-only/
 ### Source Code (repository root)
 
 ```text
-lib/speckit_orchestrator/
+lib/autonomous/
 ├── feature.ex                     # REWRITE: -prereqs, -:blocked, +number/group/created_at
 ├── backlog.ex                     # REWRITE: delete dependency layer, +DuplicateNumberError
 ├── release.ex                     # REWRITE: next_wave/4 -> next/3 + order/1
@@ -206,7 +206,7 @@ lib/speckit_orchestrator/
 ├── application.ex                 # EDIT: +boot-time retired-app-env check
 ├── console_read_model.ex          # EDIT: -prereqs, +group, +parked run projection
 ├── report.ex                      # EDIT: -blocked, +stopped_by in the iex table
-├── speckit_orchestrator.ex        # REWRITE (facade): one run path; +continue_run/1, end_run/1;
+├── autonomous.ex        # REWRITE (facade): one run path; +continue_run/1, end_run/1;
 │                                  #   resolve/2 :decision; retired-option refusal; parked guard
 ├── recovery/
 │   ├── reconcile.ex               # EDIT: drop :blocked handling
@@ -231,9 +231,9 @@ lib/speckit_orchestrator/
 
 config/
 ├── config.exs                     # EDIT: delete :pr_workflow, :max_concurrency
-└── runtime.exs                    # EDIT: raise when SPECKIT_PR_WORKFLOW / SPECKIT_MAX_CONCURRENCY set
+└── runtime.exs                    # EDIT: raise when AUTONOMOUS_PR_WORKFLOW / AUTONOMOUS_MAX_CONCURRENCY set
 
-test/speckit_orchestrator/
+test/autonomous/
 ├── release_test.exs               # REWRITE to next/3 + order/1
 ├── backlog_test.exs               # REWRITE: -cycle/-dangling, +duplicate numbers, +gaps
 ├── coordinator_test.exs           # REWRITE: stop-on-first, no cap
@@ -248,7 +248,7 @@ docs/
 ├── breakdown-format.md            # EDIT: numbering contract (FR-013); prereqs now inert prose
 ├── runbook.md                     # EDIT: parked runs; the store reset procedure
 ├── workflow.md                    # EDIT: one run shape; chain, not DAG
-├── speckit-orchestrator-implementation-plan.md  # EDIT: record 019
+├── autonomous-implementation-plan.md  # EDIT: record 019
 └── (.specify/memory/constitution.md)            # DONE: amended 2.0.0 -> 2.1.0 before implementation
 
 CLAUDE.md                          # EDIT: Release/Backlog/Feature descriptions, run shape

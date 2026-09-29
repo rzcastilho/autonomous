@@ -8,11 +8,11 @@ the parity check (SC-002) have a concrete field list.
 ## Entity: `resume/2` documented API surface
 
 The read-only contract the docs describe. Source of truth:
-`lib/speckit_orchestrator.ex` `resume/2` `@doc`/`@spec`.
+`lib/autonomous.ex` `resume/2` `@doc`/`@spec`.
 
 | Field | Value / Type | Doc requirement |
 |-------|--------------|-----------------|
-| Call | `SpeckitOrchestrator.resume(feature_id, opts \\ [])` | Exact arity + name in every example (FR-002, SC-002) |
+| Call | `Autonomous.resume(feature_id, opts \\ [])` | Exact arity + name in every example (FR-002, SC-002) |
 | `feature_id` | `String.t()` (e.g. `"003"`) | Shown as the first positional arg |
 | Default start phase | checkpoint `record.last_phase` | "restarts at the halted/escalated phase by default" (FR-003) |
 | `:from` opt | pipeline phase atom; overrides checkpoint phase | Documented as the override for restarting earlier, with *when to reach for it* (FR-004) |
@@ -37,7 +37,7 @@ The read-only contract the docs describe. Source of truth:
 | `docs/runbook.md` | ADD `resume/2` recovery section (loop, `:from`, `:prompt`, decision criteria); FIX line ~281 "resume is v2" framing | FR-001..FR-005, FR-007 |
 | `CLAUDE.md` | UPDATE observability/operability paragraph (~124–132) to name shipped `resume/2` | FR-006 |
 | Other repo `.md` | Sweep confirms none carry stale framing (current: none beyond runbook:281) | FR-007, SC-003 |
-| `lib/speckit_orchestrator.ex` | **Read-only** — signature source; `resolve/1` "v2" docstring untouched | Out of scope (spec Assumptions, clarify ruling) |
+| `lib/autonomous.ex` | **Read-only** — signature source; `resolve/1` "v2" docstring untouched | Out of scope (spec Assumptions, clarify ruling) |
 
 ## State transitions
 

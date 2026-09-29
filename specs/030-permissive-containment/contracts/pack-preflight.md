@@ -36,4 +36,4 @@ path. The run does not start (edge case: "not silently under strict rules").
 ## Call sites
 
 `preflight_stacked/1` and the second `TargetPack.verify/2` call in
-`lib/speckit_orchestrator.ex` pass `profile: run_context.containment_profile`.
+`lib/autonomous.ex` pass `profile: run_context.containment_profile`.

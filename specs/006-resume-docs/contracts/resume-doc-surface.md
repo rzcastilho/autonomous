@@ -3,7 +3,7 @@
 The docs feature exposes no software interface. Its contract is the **frozen
 `resume/2` surface** every runbook example must match verbatim (SC-002), plus the
 **stale-reference invariant** (SC-003). Source of truth:
-`lib/speckit_orchestrator.ex` `resume/2` (`@doc`/`@spec` ~lines 138–162). If that
+`lib/autonomous.ex` `resume/2` (`@doc`/`@spec` ~lines 138–162). If that
 signature changes, this contract and the runbook examples change with it.
 
 ## Signature (must appear byte-compatible in docs)
@@ -25,16 +25,16 @@ these forms — same function name, arity, and option keys.
 
 ```elixir
 # 1. Default: restart at the checkpointed (halted/escalated) phase
-iex> SpeckitOrchestrator.resume("003")
+iex> Autonomous.resume("003")
 
 # 2. With operator guidance injected into the resumed phase
-iex> SpeckitOrchestrator.resume("003", prompt: "use Decimal for money, not float")
+iex> Autonomous.resume("003", prompt: "use Decimal for money, not float")
 
 # 3. Restart earlier than the checkpoint (override start phase)
-iex> SpeckitOrchestrator.resume("003", from: :plan)
+iex> Autonomous.resume("003", from: :plan)
 
 # 4. Both options together
-iex> SpeckitOrchestrator.resume("003", from: :plan, prompt: "re-plan around the money fix")
+iex> Autonomous.resume("003", from: :plan, prompt: "re-plan around the money fix")
 ```
 
 Only these option keys are valid in examples: `:from`, `:prompt`, plus inherited
@@ -54,7 +54,7 @@ those are internal `FeatureRunner` opts, NOT the facade surface).
 
 - **INV-1 (SC-002 parity)**: every documented `resume(...)` call and error tuple
   matches the `@spec` above — checked by diffing docs against
-  `lib/speckit_orchestrator.ex`.
+  `lib/autonomous.ex`.
 - **INV-2 (SC-003 zero-stale)**: `grep -rniE 'mid-pipeline resume is v2|v2 concern|resume[^.]*(is|a)[^.]*(future|v2)' --include='*.md' .`
   (excluding `specs/`) returns no match. Source `.ex` docstrings are excluded by
   construction (`--include='*.md'`).

@@ -1,4 +1,4 @@
-# Contract: `SpeckitOrchestrator.Severity`
+# Contract: `Autonomous.Severity`
 
 Pure module. No IO, no CLI, no harness, no Jido. The ordered finding vocabulary
 that FR-001a promotes into the contract.

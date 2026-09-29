@@ -85,8 +85,8 @@ specs/001-single-spec-run/
 ### Source Code (repository root)
 
 ```text
-lib/speckit_orchestrator/
-├── ../speckit_orchestrator.ex # facade — ADD run_spec/2 + seed-writing runner
+lib/autonomous/
+├── ../autonomous.ex # facade — ADD run_spec/2 + seed-writing runner
 ├── single_spec.ex             # NEW pure module: build a Feature from a description
 │                              #   (auto id, derived slug, seed path + contents)
 ├── feature.ex                 # reused unchanged (id/slug/path/prereqs/status)
@@ -97,14 +97,14 @@ lib/speckit_orchestrator/
 ├── ledger.ex                  # reused unchanged (breaker/drain)
 └── phase_request.ex           # reused unchanged (specify reads the seed via breakdown_ref)
 
-test/speckit_orchestrator/
+test/autonomous/
 ├── single_spec_test.exs       # NEW pure unit tests (id/slug/seed, validation)
 └── run_spec_test.exs          # NEW facade tests via injected :runner/:features seams
 ```
 
 **Structure Decision**: Single Elixir project. One new pure module
 (`SingleSpec`) plus a thin facade function and a seed-writing runner wrapper in
-the existing `SpeckitOrchestrator` module. No changes to the pipeline, the
+the existing `Autonomous` module. No changes to the pipeline, the
 request builder, the worktree manager, or the coordinator.
 
 ## Complexity Tracking

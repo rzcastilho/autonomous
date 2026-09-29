@@ -10,7 +10,7 @@
 
 ## Overview
 
-The Control Plane is an operator-facing web console for `speckit_orchestrator`.
+The Control Plane is an operator-facing web console for `autonomous`.
 Today an operator drives runs and recovers stuck features from an `iex` session
 (`run/1`, `run_spec/2`, `status/0`, `resume/2`, `resolve/1`) and reads progress
 from scattered log files and transcripts. The Control Plane replaces that
@@ -79,7 +79,7 @@ prepared backlog, or describe a single feature in free text and have the
 orchestrator build just that one.
 
 **Why this priority**: Starting runs is the second core operator action after
-observing them. It replaces `SpeckitOrchestrator.run/0` and `run_spec/2` with a
+observing them. It replaces `Autonomous.run/0` and `run_spec/2` with a
 form, and makes the console self-sufficient for the common case.
 
 **Independent Test**: From the Trigger view, start a backlog run and confirm the
@@ -484,7 +484,7 @@ started.
 
 ## Dependencies
 
-- The existing `speckit_orchestrator` control plane: Coordinator, Ledger,
+- The existing `autonomous` control plane: Coordinator, Ledger,
   Release/Backlog, Worktree, FeatureRunner, Transcripts, and the phase telemetry
   (`[:speckit, :phase]`, `[:speckit, :feature, :terminal]`).
 - The orchestrator facade functions the console invokes (`run/1`, `run_spec/2`,

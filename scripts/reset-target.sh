@@ -29,14 +29,14 @@ ROOTS=$(
       repo = System.get_env("SO_REPO")
 
       segment =
-        case SpeckitOrchestrator.RepoIdentity.resolve(repo) do
+        case Autonomous.RepoIdentity.resolve(repo) do
           {:ok, seg} -> seg
           {:error, reason} ->
             IO.puts(:stderr, "error: could not resolve repo identity for #{repo}: #{inspect(reason)}")
             System.halt(1)
         end
 
-      root = SpeckitOrchestrator.Config.autonomous_root()
+      root = Autonomous.Config.autonomous_root()
       IO.puts(Path.join([root, "worktrees", segment]))
       IO.puts(Path.join([root, "transcripts", segment]))
     '

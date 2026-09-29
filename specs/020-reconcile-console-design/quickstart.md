@@ -32,7 +32,7 @@ Covers **US4**, FR-023, FR-024, SC-007.
 
 ```bash
 # 1a. Clean tree: the default suite passes, guard included.
-mise exec -- mix test test/speckit_orchestrator/web/design_contract_test.exs
+mise exec -- mix test test/autonomous/web/design_contract_test.exs
 ```
 
 **Expected**: green. The clean-tree assertion is `scan/1 == []`; on failure the
@@ -51,7 +51,7 @@ by file reads, not by a Coordinator or a socket.
 # 1c. Inject each of the four guarded divergence classes and confirm 4/4 fail.
 #     These are unit cases inside the test file (crafted source maps, no tree
 #     mutation) — run them directly:
-mise exec -- mix test test/speckit_orchestrator/web/design_contract_test.exs --only injection
+mise exec -- mix test test/autonomous/web/design_contract_test.exs --only injection
 ```
 
 **Expected**: four passing tests, each asserting the injected source yields the
@@ -61,17 +61,17 @@ value, a fifth keyframe, and a color-bearing inline style.
 ```bash
 # 1d. Prove it against the real tree once, by hand.
 printf '\n.qs-probe { color: #34d399; }\n' >> priv/static/assets/console.css
-mise exec -- mix test test/speckit_orchestrator/web/design_contract_test.exs
+mise exec -- mix test test/autonomous/web/design_contract_test.exs
 # Expected: FAILS, naming priv/static/assets/console.css and the appended line,
 #           with both :color_literal and :duplicate_status_value.
 rtk git checkout -- priv/static/assets/console.css
-mise exec -- mix test test/speckit_orchestrator/web/design_contract_test.exs
+mise exec -- mix test test/autonomous/web/design_contract_test.exs
 # Expected: green again.
 ```
 
 ```bash
 # 1e. A new console surface cannot escape the guard by simply existing.
-mise exec -- mix test test/speckit_orchestrator/web/design_contract_test.exs --only coverage
+mise exec -- mix test test/autonomous/web/design_contract_test.exs --only coverage
 ```
 
 **Expected**: green; the test compares `DesignContract.surfaces/0` against the
@@ -86,7 +86,7 @@ Covers **US1**, FR-001–FR-005, SC-001, SC-002, SC-003.
 ```bash
 # 2a. Every contract token present, under its contract name, with its value.
 #     Asserted by the guard; confirm by eye against the contract's §II block.
-mise exec -- mix test test/speckit_orchestrator/web/design_contract_test.exs --only tokens
+mise exec -- mix test test/autonomous/web/design_contract_test.exs --only tokens
 ```
 
 ```bash
@@ -99,8 +99,8 @@ awk '/^:root \{/{r=1} r&&/^\}/{r=0;next} !r' priv/static/assets/console.css \
 ```bash
 # 2c. Zero color literals and zero color-bearing inline styles in server code
 #     (baselines: 14 hex literals, 6 inline styles).
-rtk grep -rn '#[0-9a-fA-F]\{6\}' lib/speckit_orchestrator/web/
-rtk grep -rn 'style=' lib/speckit_orchestrator/web/
+rtk grep -rn '#[0-9a-fA-F]\{6\}' lib/autonomous/web/
+rtk grep -rn 'style=' lib/autonomous/web/
 # Expected: nothing for the first; exactly two `width:` lines in
 #           core_components.ex's cost_gauge/1 for the second (FR-004b).
 ```
@@ -114,7 +114,7 @@ rtk grep -rn 'var(--muted)\|var(--accent-2)\|var(--link)\|var(--link-hover)' \
 
 ```bash
 # 2e. One definition per status, reached by every representation.
-mise exec -- mix test test/speckit_orchestrator/web/design_contract_test.exs --only status
+mise exec -- mix test test/autonomous/web/design_contract_test.exs --only status
 ```
 
 **Manual check (2f)** — the propagation proof of acceptance scenario 3: change
@@ -157,9 +157,9 @@ Walk each of the eight views and confirm, against
 
 ```bash
 # 3a. Confirm the prohibited pictographs are gone and the contract's stay.
-rtk grep -rn 'nav_glyph\|@nav_glyphs\|&#9654;\|&#8635;\|&#8801;' lib/speckit_orchestrator/web/
+rtk grep -rn 'nav_glyph\|@nav_glyphs\|&#9654;\|&#8635;\|&#8801;' lib/autonomous/web/
 # Expected: no output.
-rtk grep -rn '✓\|●\|✕' lib/speckit_orchestrator/web/components/feature_drawer.ex
+rtk grep -rn '✓\|●\|✕' lib/autonomous/web/components/feature_drawer.ex
 # Expected: the §V timeline marks only.
 ```
 
@@ -181,7 +181,7 @@ rtk grep -n 'prefers-reduced-motion' priv/static/assets/console.css
 resting:
 
 ```elixir
-SpeckitOrchestrator.run(repo: "../ledgerlite")
+Autonomous.run(repo: "../ledgerlite")
 ```
 
 - **Motion enabled**: only the active feature's dot and current pip pulse. Every

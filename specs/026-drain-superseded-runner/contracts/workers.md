@@ -1,4 +1,4 @@
-# Contract: `SpeckitOrchestrator.Workers`
+# Contract: `Autonomous.Workers`
 
 Process-layer module (not pure core). Owns `WorkerRegistry` membership and the
 drain-request table. Started under the application supervisor **before**

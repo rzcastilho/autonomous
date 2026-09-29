@@ -22,7 +22,7 @@ identity, no backlog required.
 1. Write a checkpoint for id `"042"` carrying `slug: "widget"`, `path:
    ".../042-widget.md"`, a valid `last_phase`, and status `:halted` (via
    `Checkpoint.write/1` or by driving a fake feature to a diverted terminal).
-2. Call `SpeckitOrchestrator.resume("042", features: [], runner: fake_runner)`
+2. Call `Autonomous.resume("042", features: [], runner: fake_runner)`
    — **no explicit feature**, empty backlog.
 3. **Expect**: the fake runner receives a `%Feature{id: "042", slug: "widget",
    path: ".../042-widget.md"}` and starts at the checkpointed phase. No
@@ -36,7 +36,7 @@ carried as `resume_prompt` into the resumed phase, identity still from checkpoin
 **Proves**: FR-006/007/009 — a PR-workflow run's context survives into a resume in a
 fresh env.
 
-1. `Application.put_env(:speckit_orchestrator, :pr_workflow, false)` (live default
+1. `Application.put_env(:autonomous, :pr_workflow, false)` (live default
    OFF, simulating the fresh invocation env).
 2. Write a checkpoint for id `"050"` whose `context` records `pr_workflow: true`
    (plus e.g. `max_concurrency: 1`, `budget_usd: 10.0`, `pr_base: "develop"`).

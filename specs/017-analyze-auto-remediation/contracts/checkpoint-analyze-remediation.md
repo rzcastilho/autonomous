@@ -93,7 +93,7 @@ new settings travel into it for free and appear in `Coordinator.status/0`'s
 ## 4. Config keys
 
 ```elixir
-config :speckit_orchestrator,
+config :autonomous,
   auto_remediation: true,
   auto_remediation_threshold: :high,
   auto_remediation_attempt_limit: 2,

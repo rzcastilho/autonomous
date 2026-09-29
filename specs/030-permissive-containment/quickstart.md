@@ -12,10 +12,10 @@ Run every Elixir command through mise (`mise exec -- …`).
 ## 1. Automated suite
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/scope_guard_test.exs      # red-team, strict parity, permissive matrix
-mise exec -- mix test test/speckit_orchestrator/phase_request_test.exs    # per-profile permissions + env markers
-mise exec -- mix test test/speckit_orchestrator/run_context_test.exs      # capture/from_map/merge, missing key ⇒ strict
-mise exec -- mix test test/speckit_orchestrator/target_pack_test.exs      # contract-2 preflight
+mise exec -- mix test test/autonomous/scope_guard_test.exs      # red-team, strict parity, permissive matrix
+mise exec -- mix test test/autonomous/phase_request_test.exs    # per-profile permissions + env markers
+mise exec -- mix test test/autonomous/run_context_test.exs      # capture/from_map/merge, missing key ⇒ strict
+mise exec -- mix test test/autonomous/target_pack_test.exs      # contract-2 preflight
 mise exec -- mix test                                                     # full suite, design guard included
 ```
 
@@ -25,7 +25,7 @@ pass without edits to any assertion (SC-003).
 ## 2. Upgrade the pack in the scratch target
 
 ```elixir
-SpeckitOrchestrator.TargetPack.install("/path/to/scratch")
+Autonomous.TargetPack.install("/path/to/scratch")
 ```
 
 Commit `.claude/`. Check that `settings.json` has no `deny` and that
@@ -48,8 +48,8 @@ appear.
 ## 4. Strict run is unchanged (US2 scenario 4, SC-003)
 
 ```elixir
-# with config :speckit_orchestrator, repo: "/path/to/scratch"
-SpeckitOrchestrator.run()
+# with config :autonomous, repo: "/path/to/scratch"
+Autonomous.run()
 ```
 
 Expected: same denials as today in transcripts (now prefixed
@@ -63,7 +63,7 @@ Use a one-feature backlog whose breakdown asks the phases to fetch a doc
 page and write a note in a sibling directory.
 
 ```elixir
-SpeckitOrchestrator.run(containment_profile: :permissive)
+Autonomous.run(containment_profile: :permissive)
 ```
 
 Expected:
@@ -78,7 +78,7 @@ Expected:
 ## 6. Profile lock on resume (FR-004, SC-005)
 
 1. Start a permissive run that escalates or halts.
-2. Set `config :speckit_orchestrator, containment_profile: :strict`.
+2. Set `config :autonomous, containment_profile: :strict`.
 3. Run `resume/2` on the feature.
 
 Expected: the resumed phases run permissive (check the transcript env

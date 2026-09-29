@@ -3,7 +3,7 @@
 Phase 1 output. Entities are the spec's Key Entities, expressed as the concrete
 structs, records, and signal maps the implementation changes.
 
-## 1. `SpeckitOrchestrator.Feature`
+## 1. `Autonomous.Feature`
 
 The work unit. Gains one field.
 
@@ -48,7 +48,7 @@ truncating.
   cannot drift apart (FR-005).
 - Once recorded, `spec_number` is never reallocated for that feature (FR-004).
 
-## 2. `SpeckitOrchestrator.SpecNumber` (new, pure)
+## 2. `Autonomous.SpecNumber` (new, pure)
 
 No struct. A pure decision surface over directory *names*, with all IO supplied
 by the caller.
@@ -77,7 +77,7 @@ Conforming shape: `^(\d+)-(.+)$`. A leading run of digits followed by `-` and a
 non-empty remainder. Numeric comparison, so `002` and `0002` are the same number
 (consistent with `Backlog`).
 
-## 3. `SpeckitOrchestrator.Checkpoint` (new, pure)
+## 3. `Autonomous.Checkpoint` (new, pure)
 
 The empty-checkpoint decision table — the direct analogue of `Remediation.next/2`
 sitting under `Pipeline.next/3`.

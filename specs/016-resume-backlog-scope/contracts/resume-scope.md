@@ -1,4 +1,4 @@
-# Contract: `SpeckitOrchestrator.resume/2` — whole-run continuation
+# Contract: `Autonomous.resume/2` — whole-run continuation
 
 **Feature**: `016-resume-backlog-scope`
 

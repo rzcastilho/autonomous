@@ -27,7 +27,7 @@ None.
 
 ## In scope
 
-- `SpeckitOrchestrator.Pipeline.step_of/1` — the 1-based index of a phase within
+- `Autonomous.Pipeline.step_of/1` — the 1-based index of a phase within
   `phases/0` (`:specify` → 1 … `:converge` → 7). Used so resumed transcripts keep
   phase-aligned `NN-<phase>.md` filenames.
 - `FeatureRunner.run/2`:

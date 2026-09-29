@@ -16,7 +16,7 @@ running, plus the in-flight phase's live window while one is open.
 
 Technical approach, in three separable pieces:
 
-1. **A pure window algebra** (`SpeckitOrchestrator.ExecutionTime`): a window
+1. **A pure window algebra** (`Autonomous.ExecutionTime`): a window
    is `%{key, from, to}` in wall-clock milliseconds (`to: nil` = still
    running). `elapsed_ms/2` closes open windows at an injected `now`, merges
    overlaps, and sums — one function answers "how long was at least one
@@ -59,7 +59,7 @@ every command through `mise exec --`.
 measurements already emitted by `:telemetry.span/3`). **No new dependency.**
 
 **Storage**: Mnesia, single-node — read-only for this feature, through the
-existing `SpeckitOrchestrator.run_detail/1` facade. **No schema change, no
+existing `Autonomous.run_detail/1` facade. **No schema change, no
 new table, no new field** (FR-014).
 
 **Testing**: ExUnit. Pure tests over synthetic windows / attempts / telemetry
@@ -132,7 +132,7 @@ specs/024-elapsed-execution-time/
 ### Source Code (repository root)
 
 ```text
-lib/speckit_orchestrator/
+lib/autonomous/
 ├── execution_time.ex                    # NEW — pure: window type, from_attempts/1, open/3, close/3,
 │                                        #   close_all/2, normalize/1, elapsed_ms/2, ms conversions
 ├── console_hydration.ex                 # from_record/3 derives windows (elapsed_for/2 removed);
@@ -148,7 +148,7 @@ lib/speckit_orchestrator/
     ├── mission_control_live.ex          # :feature_updated -> apply_update/3 with DateTime.utc_now()
     └── pipeline_dag_live.ex             # same one-line change
 
-test/speckit_orchestrator/
+test/autonomous/
 ├── execution_time_test.exs              # NEW — pure: union/overlap/open/idempotence/monotone/tolerance
 ├── console_hydration_test.exs           # elapsed = union of attempt windows; layer/3 + apply_update/3
 ├── console_read_model_test.exs          # windows fold per event; merge drops Coordinator elapsed_ms
@@ -160,7 +160,7 @@ test/speckit_orchestrator/
 
 **Structure Decision**: single Elixir application, existing layout. The new
 pure module sits beside `ConsoleHydration` and `ConsoleReadModel` in
-`lib/speckit_orchestrator/` (the pure core), not under `web/` — it knows
+`lib/autonomous/` (the pure core), not under `web/` — it knows
 nothing about Phoenix, telemetry, or the store and is tested without them.
 `Store.Query`, `Records`, `Writer`, `Coordinator`, `Report`, and
 `RunDetailLive` are not touched.

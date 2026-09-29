@@ -1,8 +1,8 @@
-# Contract: `SpeckitOrchestrator.Chunking`
+# Contract: `Autonomous.Chunking`
 
 **Kind**: pure decision surface (Constitution I) — the `Pipeline.next/3` of the
 implement step. No IO, no process state, no `:telemetry`.
-**File**: `lib/speckit_orchestrator/chunking.ex`
+**File**: `lib/autonomous/chunking.ex`
 **Satisfies**: FR-002, FR-003, FR-007, FR-007a, FR-007b, FR-009, FR-011, FR-012,
 FR-013, FR-013a
 

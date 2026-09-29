@@ -1,4 +1,4 @@
-# Contract: `SpeckitOrchestrator.resume/2` (extended)
+# Contract: `Autonomous.resume/2` (extended)
 
 Extends the 005 resume contract with **id-only identity recovery** and **run-context
 reapplication**. Signature and all existing distinct error outcomes are preserved;

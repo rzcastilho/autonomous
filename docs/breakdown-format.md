@@ -1,6 +1,6 @@
 # Breakdown file format (Backlog parser contract)
 
-`SpeckitOrchestrator.Backlog.load!/1` parses a directory of per-feature
+`Autonomous.Backlog.load!/1` parses a directory of per-feature
 breakdown files into the numbered backlog. This documents the format it
 expects, so it can be reconciled with the real `macro-spec-breakdown` skill
 output later (closing CONFIRM #5 against production-shaped input).

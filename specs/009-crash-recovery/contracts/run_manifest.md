@@ -1,4 +1,4 @@
-# Contract: `SpeckitOrchestrator.RunManifest`
+# Contract: `Autonomous.RunManifest`
 
 New pure module. Single-slot durable run record at
 `<Config.transcript_root()>/run.json`. Mirrors the `Checkpoint`/`RunContext`

@@ -28,8 +28,8 @@ Single Elixir project (existing). All paths are repo-root-relative.
 
 **Purpose**: The two-seam append-only change that both user stories depend on — no user story task can start until this compiles clean under `warnings_as_errors`.
 
-- [X] T001 Add `:resume_prompt` opt to `PhaseRequest.build/3` in `lib/speckit_orchestrator/phase_request.ex`: blank-guard on `is_binary(x) and String.trim(x) != ""` (nil/""/whitespace-only → no-op, no marker, no separator); when non-blank, append `"\n\n---\nOperator guidance (resume): <prompt>"` verbatim to the assembled prompt; no other `RunRequest` field (`model`, `permission_mode`, `allowed_tools`, `disallowed_tools`, `max_turns`, `cwd`, `session_id`) may change (FR-001, FR-002, FR-003, FR-007; contract G1-G4)
-- [X] T002 Add private `resume_prompt_for(state, phase)` helper to `lib/speckit_orchestrator/actions/run_feature_phase.ex` returning `state.resume_prompt` when `phase == state.resume_phase` else `nil`; pass its result as the `:resume_prompt` opt into the existing `PhaseRequest.build/3` call in `run/2` (FR-004, FR-005, FR-006; data-model.md `resume_prompt_for/2`; contract's Caller contract table)
+- [X] T001 Add `:resume_prompt` opt to `PhaseRequest.build/3` in `lib/autonomous/phase_request.ex`: blank-guard on `is_binary(x) and String.trim(x) != ""` (nil/""/whitespace-only → no-op, no marker, no separator); when non-blank, append `"\n\n---\nOperator guidance (resume): <prompt>"` verbatim to the assembled prompt; no other `RunRequest` field (`model`, `permission_mode`, `allowed_tools`, `disallowed_tools`, `max_turns`, `cwd`, `session_id`) may change (FR-001, FR-002, FR-003, FR-007; contract G1-G4)
+- [X] T002 Add private `resume_prompt_for(state, phase)` helper to `lib/autonomous/actions/run_feature_phase.ex` returning `state.resume_prompt` when `phase == state.resume_phase` else `nil`; pass its result as the `:resume_prompt` opt into the existing `PhaseRequest.build/3` call in `run/2` (FR-004, FR-005, FR-006; data-model.md `resume_prompt_for/2`; contract's Caller contract table)
 
 **Checkpoint**: `mix compile` clean; both user stories can now be implemented/tested against this seam.
 
@@ -43,8 +43,8 @@ Single Elixir project (existing). All paths are repo-root-relative.
 
 ### Tests for User Story 1
 
-- [X] T003 [P] [US1] Add `:resume_prompt` tests to `test/speckit_orchestrator/phase_request_test.exs`: non-blank guidance is appended as the exact trailing section with the base prompt as unchanged prefix (contract G1, quickstart Scenario 1); `resume_prompt ∈ {nil, "", "   ", "\n\t"}` and the opt being absent all produce a `prompt` byte-identical to no-opt output (contract G2, quickstart Scenario 2); `model`/`permission_mode`/`allowed_tools`/`disallowed_tools`/`max_turns`/`cwd`/`session_id` identical with and without `:resume_prompt` (contract G4, quickstart Scenario 3)
-- [X] T004 [US1] Add `resume_prompt_for/2` retry test to `test/speckit_orchestrator/run_feature_phase_test.exs`: with `resume_phase = :analyze` and a non-blank `resume_prompt` in agent state, computing the injected opt for `:analyze` twice (simulating a transient retry before the pipeline advances) returns the same non-nil guidance both times, with the built prompt carrying the guidance section on each call (contract G6, FR-006, SC-004; quickstart Scenario 6)
+- [X] T003 [P] [US1] Add `:resume_prompt` tests to `test/autonomous/phase_request_test.exs`: non-blank guidance is appended as the exact trailing section with the base prompt as unchanged prefix (contract G1, quickstart Scenario 1); `resume_prompt ∈ {nil, "", "   ", "\n\t"}` and the opt being absent all produce a `prompt` byte-identical to no-opt output (contract G2, quickstart Scenario 2); `model`/`permission_mode`/`allowed_tools`/`disallowed_tools`/`max_turns`/`cwd`/`session_id` identical with and without `:resume_prompt` (contract G4, quickstart Scenario 3)
+- [X] T004 [US1] Add `resume_prompt_for/2` retry test to `test/autonomous/run_feature_phase_test.exs`: with `resume_phase = :analyze` and a non-blank `resume_prompt` in agent state, computing the injected opt for `:analyze` twice (simulating a transient retry before the pipeline advances) returns the same non-nil guidance both times, with the built prompt carrying the guidance section on each call (contract G6, FR-006, SC-004; quickstart Scenario 6)
 
 **Checkpoint**: User Story 1 is independently testable — the resumed phase receives the operator's exact guidance text, and retries need no re-entry.
 
@@ -58,8 +58,8 @@ Single Elixir project (existing). All paths are repo-root-relative.
 
 ### Tests for User Story 2
 
-- [X] T005 [US2] Add a downstream-clean test to `test/speckit_orchestrator/run_feature_phase_test.exs`: with agent state `resume_phase = :clarify`, `resume_prompt = "use REST, not GraphQL"`, compute `resume_prompt_for/2` (and the resulting built prompt) across `specify, clarify, plan, tasks, analyze, implement`; assert the guidance text is present only in `:clarify`'s built prompt and absent from every other phase's (contract G5, FR-005, SC-002; quickstart Scenario 4)
-- [X] T006 [US2] Add a fresh-run-clean test to `test/speckit_orchestrator/run_feature_phase_test.exs`: with agent state `resume_phase = nil`, `resume_prompt = nil`, assert the injected opt is `nil` for every phase in `specify, clarify, plan, tasks, analyze, implement` and each built prompt is byte-identical to pre-feature (no-resume-state) output (contract G2 + G5, SC-003; quickstart Scenario 5)
+- [X] T005 [US2] Add a downstream-clean test to `test/autonomous/run_feature_phase_test.exs`: with agent state `resume_phase = :clarify`, `resume_prompt = "use REST, not GraphQL"`, compute `resume_prompt_for/2` (and the resulting built prompt) across `specify, clarify, plan, tasks, analyze, implement`; assert the guidance text is present only in `:clarify`'s built prompt and absent from every other phase's (contract G5, FR-005, SC-002; quickstart Scenario 4)
+- [X] T006 [US2] Add a fresh-run-clean test to `test/autonomous/run_feature_phase_test.exs`: with agent state `resume_phase = nil`, `resume_prompt = nil`, assert the injected opt is `nil` for every phase in `specify, clarify, plan, tasks, analyze, implement` and each built prompt is byte-identical to pre-feature (no-resume-state) output (contract G2 + G5, SC-003; quickstart Scenario 5)
 
 **Checkpoint**: Both user stories independently functional — guidance is scoped to exactly the resume phase, with no leakage downstream or on fresh runs.
 
@@ -100,8 +100,8 @@ Single Elixir project (existing). All paths are repo-root-relative.
 
 ```bash
 # After T001 + T002 (Foundational) land:
-Task: "Add :resume_prompt tests to test/speckit_orchestrator/phase_request_test.exs"       # T003, US1
-Task: "Add downstream-clean test to test/speckit_orchestrator/run_feature_phase_test.exs"   # T005, US2
+Task: "Add :resume_prompt tests to test/autonomous/phase_request_test.exs"       # T003, US1
+Task: "Add downstream-clean test to test/autonomous/run_feature_phase_test.exs"   # T005, US2
 ```
 
 ---
@@ -112,7 +112,7 @@ Task: "Add downstream-clean test to test/speckit_orchestrator/run_feature_phase_
 
 1. Complete Phase 1: Foundational (T001, T002)
 2. Complete Phase 2: User Story 1 (T003, T004)
-3. **STOP and VALIDATE**: `mise exec -- mix test test/speckit_orchestrator/phase_request_test.exs test/speckit_orchestrator/run_feature_phase_test.exs` — guidance reaches the resumed phase, retries re-inject
+3. **STOP and VALIDATE**: `mise exec -- mix test test/autonomous/phase_request_test.exs test/autonomous/run_feature_phase_test.exs` — guidance reaches the resumed phase, retries re-inject
 4. This alone is demoable: an operator's guidance reaches the phase they resumed
 
 ### Incremental Delivery

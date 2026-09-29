@@ -22,7 +22,7 @@ from `PipelineDagLive` (research R1):
 The fix gives each wave its own resolved **source run** and builds its drawn
 state only from that run:
 
-- **Pure resolution.** A new pure `SpeckitOrchestrator.WaveHistory` module
+- **Pure resolution.** A new pure `Autonomous.WaveHistory` module
   reads the `run_history/1` summaries, which already carry `scope`, `state`
   and a monotonic `run_id`. It resolves the selected wave to exactly one of:
   - `{:live, run}` when the in-flight run is scoped to this wave;
@@ -49,7 +49,7 @@ state only from that run:
 **Primary Dependencies**: Phoenix LiveView (console). No new dependencies.
 
 **Storage**: Mnesia store, **read-only** through the existing facade
-(`SpeckitOrchestrator.run_history/1`, `run_detail/1`). No schema change, no
+(`Autonomous.run_history/1`, `run_detail/1`). No schema change, no
 migration, no new write.
 
 **Testing**: ExUnit plus `Phoenix.LiveViewTest`:
@@ -121,7 +121,7 @@ specs/028-dag-wave-history/
 ### Source Code (repository root)
 
 ```text
-lib/speckit_orchestrator/
+lib/autonomous/
 ├── wave_history.ex                        # NEW — pure: source_for/2, default_package/2, interrupt/2
 └── web/
     ├── live/pipeline_dag_live.ex          # CHANGED — per-wave source, wave_view, receipt, default wave
@@ -129,7 +129,7 @@ lib/speckit_orchestrator/
 
 priv/static/assets/console.css             # CHANGED — .phase-cell-interrupted (var(--blocked), no animation)
 
-test/speckit_orchestrator/
+test/autonomous/
 ├── wave_history_test.exs                  # NEW — pure resolution/default/interrupt tables
 └── web/
     ├── pipeline_dag_live_test.exs         # CHANGED — US1/US2/US3 + FR-010/FR-011 scenarios

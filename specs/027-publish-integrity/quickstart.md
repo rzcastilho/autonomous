@@ -35,8 +35,8 @@ Expected new coverage:
 This covers SC-001, SC-003 and SC-004.
 
 1. Create a scratch target that carries the speckit git extension with `before_specify: speckit.git.feature` mandatory. mod-player's `.specify/` is a ready source. Install the target pack.
-2. Two-feature backlog. Start `SpeckitOrchestrator.run/1` with a small budget.
+2. Two-feature backlog. Start `Autonomous.run/1` with a small budget.
 3. **Pin (US3).** After feature 1's `specify`, `git -C <worktree> branch --show-current` is `feature/<spec_id>-<slug>`.
 4. **Drift (US2).** Re-run with the pin sentence removed from the prompt (a local patch). Expect feature 1 `:failed`, reason `branch_drift in :specify — expected feature/…, HEAD on NNN-…`, worktree kept, no further sessions, run parked.
 5. **Publish stop (US1).** Point `pr_remote` at a remote that rejects pushes (for example, a bare repo with a `pre-receive` hook that exits 1). Expect feature 1 `:failed` with `publish_failed :push_failed — …` shown in `print_status/0` and in the console's parked banner; feature 2 is never released.
-6. Fix the remote and run `SpeckitOrchestrator.continue_run/0`. Expect a PR for feature 1, no feature-1 phase sessions in the transcripts, and feature 2 branching from feature 1's branch.
+6. Fix the remote and run `Autonomous.continue_run/0`. Expect a PR for feature 1, no feature-1 phase sessions in the transcripts, and feature 2 branching from feature 1's branch.

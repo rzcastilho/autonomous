@@ -14,7 +14,7 @@ harness — Principle I) and the store schema.
 
 ## Pure core
 
-### `SpeckitOrchestrator.Feature`
+### `Autonomous.Feature`
 
 The work unit. Loses its dependency edges, gains its group and its ordering key.
 
@@ -56,7 +56,7 @@ as `:never_started` when the run closes out (see the store section).
 
 ---
 
-### `SpeckitOrchestrator.Backlog`
+### `Autonomous.Backlog`
 
 Parses a directory of `NNN-slug.md` files. Loses the whole dependency layer.
 
@@ -75,7 +75,7 @@ not validated, not an error (spec Assumptions — operators need not delete them
 
 ---
 
-### `SpeckitOrchestrator.Release`
+### `Autonomous.Release`
 
 The pure release policy. Collapses from a wave function to a single-step
 decision (R4).
@@ -104,7 +104,7 @@ R10).
 
 ---
 
-### `SpeckitOrchestrator.RunContext`
+### `Autonomous.RunContext`
 
 The settings recorded with a run so it can be resumed faithfully. Drops from ten
 fields to eight.
@@ -125,7 +125,7 @@ fields.
 
 ---
 
-### `SpeckitOrchestrator.Coordinator` (state)
+### `Autonomous.Coordinator` (state)
 
 | Field | Change |
 |---|---|
@@ -214,8 +214,8 @@ instead of ten — no schema change, the value is an opaque map. `speckit_phase_
 
 | Key | Surface | Replacement |
 |---|---|---|
-| `:pr_workflow` | `config.exs`, `runtime.exs` (`SPECKIT_PR_WORKFLOW`), `Config.pr_workflow?/0`, `LiveConfig`, `ConfigLive`, `TriggerLive` | none — behaviour is unconditional |
-| `:max_concurrency` | `config.exs`, `runtime.exs` (`SPECKIT_MAX_CONCURRENCY`), `Config.max_concurrency/0`, `LiveConfig`, `ConfigLive`, `Coordinator.set_cap/2` | none — one at a time is structural |
+| `:pr_workflow` | `config.exs`, `runtime.exs` (`AUTONOMOUS_PR_WORKFLOW`), `Config.pr_workflow?/0`, `LiveConfig`, `ConfigLive`, `TriggerLive` | none — behaviour is unconditional |
+| `:max_concurrency` | `config.exs`, `runtime.exs` (`AUTONOMOUS_MAX_CONCURRENCY`), `Config.max_concurrency/0`, `LiveConfig`, `ConfigLive`, `Coordinator.set_cap/2` | none — one at a time is structural |
 
 Both keys are refused rather than ignored on all three surfaces (R1).
 

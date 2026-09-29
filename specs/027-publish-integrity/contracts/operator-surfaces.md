@@ -1,6 +1,6 @@
 # Contract: Operator surfaces (FR-004, FR-005, FR-010)
 
-## `SpeckitOrchestrator.PublishOutcome.describe/1` (pure)
+## `Autonomous.PublishOutcome.describe/1` (pure)
 
 ```elixir
 @spec describe(term()) :: String.t() | nil

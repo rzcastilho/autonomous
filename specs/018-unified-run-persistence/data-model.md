@@ -7,7 +7,7 @@ table. Table mechanics (attribute order, storage type, indexes, migrations) are
 in `contracts/schema.md`; this document is the entity model, its invariants, and
 its state transitions.
 
-Pure structs live in `SpeckitOrchestrator.Store.Records` and know nothing about
+Pure structs live in `Autonomous.Store.Records` and know nothing about
 Mnesia — they are plain data with `encode/1` / `decode/1` to and from the record
 tuple, unit-testable with no schema and no running node (Principle I,
 constitution's "pure core MUST NOT depend on Mnesia").

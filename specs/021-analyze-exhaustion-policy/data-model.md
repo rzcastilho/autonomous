@@ -23,7 +23,7 @@ run's severity threshold.
 
 ### Where it lives
 
-**`SpeckitOrchestrator.Remediation.Settings`** — a fifth field beside the four
+**`Autonomous.Remediation.Settings`** — a fifth field beside the four
 that already exist:
 
 ```elixir
@@ -34,7 +34,7 @@ defstruct enabled?: true,
           exhaustion_policy: :escalate    # new
 ```
 
-**`SpeckitOrchestrator.RunContext`** — a ninth captured field. Stored as a
+**`Autonomous.RunContext`** — a ninth captured field. Stored as a
 string, never an atom, because the manifest is JSON and `String.to_atom/1` on
 file-sourced content is banned repo-wide:
 
@@ -42,7 +42,7 @@ file-sourced content is banned repo-wide:
 auto_remediation_exhaustion_policy: String.t() | nil    # "escalate" | "proceed"
 ```
 
-**`SpeckitOrchestrator.Config`** — the deployment default:
+**`Autonomous.Config`** — the deployment default:
 
 ```elixir
 @spec auto_remediation_exhaustion_policy() :: :escalate | :proceed

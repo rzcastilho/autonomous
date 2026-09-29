@@ -16,8 +16,8 @@ other. All scenarios are pure unit tests — no CLI, worktree, or network.
 ## Run the feature's tests
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/phase_request_test.exs
-mise exec -- mix test test/speckit_orchestrator/actions/run_feature_phase_test.exs
+mise exec -- mix test test/autonomous/phase_request_test.exs
+mise exec -- mix test test/autonomous/actions/run_feature_phase_test.exs
 mise exec -- mix test        # full suite stays green (SC-003 regression guard)
 ```
 

@@ -1,6 +1,6 @@
 # Contract: `Ledger.restore/2` (extension)
 
-New function on `SpeckitOrchestrator.Ledger` to restore committed spend on resume
+New function on `Autonomous.Ledger` to restore committed spend on resume
 (FR-012), without disturbing the reservation invariant (FR-013).
 
 ## `restore/2`

@@ -20,7 +20,7 @@ target repo, no `claude` CLI, no wall-clock sleeps — every pure test injects
 ## 1. Window algebra (FR-001, FR-002, FR-012, SC-006)
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/execution_time_test.exs
+mise exec -- mix test test/autonomous/execution_time_test.exs
 ```
 
 Expected: green. Synthetic `%{key, from, to}` windows and synthetic
@@ -42,7 +42,7 @@ Expected: green. Synthetic `%{key, from, to}` windows and synthetic
 ## 2. Hydration (FR-004, FR-007, FR-009, FR-010, FR-011)
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/console_hydration_test.exs
+mise exec -- mix test test/autonomous/console_hydration_test.exs
 ```
 
 Expected: green. Amended from 023:
@@ -62,7 +62,7 @@ Expected: green. Amended from 023:
 ## 3. Fold + read-model modes (FR-003, FR-008, FR-009)
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/console_read_model_test.exs
+mise exec -- mix test test/autonomous/console_read_model_test.exs
 ```
 
 Expected: green. Measurements are crafted with
@@ -84,8 +84,8 @@ Expected: green. Measurements are crafted with
 ## 4. Console pages (cold boot, live, resume, diverted)
 
 ```bash
-mise exec -- mix test test/speckit_orchestrator/web/mission_control_live_test.exs
-mise exec -- mix test test/speckit_orchestrator/web/pipeline_dag_live_test.exs
+mise exec -- mix test test/autonomous/web/mission_control_live_test.exs
+mise exec -- mix test test/autonomous/web/pipeline_dag_live_test.exs
 ```
 
 Expected: green. Each scenario in
@@ -101,7 +101,7 @@ already do. The `1348m`-class check is US1-1: a record whose attempts sum to
 
 ```bash
 mise exec -- mix test
-mise exec -- mix test test/speckit_orchestrator/design_contract_test.exs
+mise exec -- mix test test/autonomous/design_contract_test.exs
 mise exec -- mix test --cover
 ```
 
@@ -122,5 +122,5 @@ Open `http://localhost:4000/`. For a feature that crossed a restart, ELAPSED
 now reads well below the calendar span since its first start — and equals,
 to the second, the sum an operator gets by adding that feature's
 non-overlapping rows in Run Detail's Duration column (SC-001, SC-002).
-`SpeckitOrchestrator.print_status/0` in iex still shows the Coordinator's
+`Autonomous.print_status/0` in iex still shows the Coordinator's
 since-release counter — unchanged by design (FR-009, spec Assumptions).

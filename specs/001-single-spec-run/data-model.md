@@ -4,7 +4,7 @@ No persistent datastore. "Entities" are in-memory structs and on-disk files.
 
 ## Feature (reused, unchanged struct)
 
-`SpeckitOrchestrator.Feature` — the existing work-unit struct. Single-spec mode
+`Autonomous.Feature` — the existing work-unit struct. Single-spec mode
 constructs one, it is not a new type.
 
 | Field | Type | Single-spec value |

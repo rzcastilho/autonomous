@@ -6,7 +6,7 @@
 
 **Status**: Draft
 
-**Input**: User description: "Console per-feature state must survive a restart + resume. After a BEAM restart and `SpeckitOrchestrator.resume/2`, Mission Control (`/`) and Pipeline DAG (`/pipeline`) lose per-feature state that Run Detail (`/runs/:id`) still shows correctly: done features render empty phase strips, elapsed `—`, spend `$0.00`; the resumed running feature shows only the phases run since the restart lit and elapsed counted from the resume instead of its original start. […] The store is the single durable truth; in both modes (live Coordinator or cold boot) every feature row's phase cells, spend, elapsed, current phase and PR link are hydrated from the durable run record and live data is layered on top. No projection persistence, no Coordinator seeding, no new tables."
+**Input**: User description: "Console per-feature state must survive a restart + resume. After a BEAM restart and `Autonomous.resume/2`, Mission Control (`/`) and Pipeline DAG (`/pipeline`) lose per-feature state that Run Detail (`/runs/:id`) still shows correctly: done features render empty phase strips, elapsed `—`, spend `$0.00`; the resumed running feature shows only the phases run since the restart lit and elapsed counted from the resume instead of its original start. […] The store is the single durable truth; in both modes (live Coordinator or cold boot) every feature row's phase cells, spend, elapsed, current phase and PR link are hydrated from the durable run record and live data is layered on top. No projection persistence, no Coordinator seeding, no new tables."
 
 ## Clarifications
 

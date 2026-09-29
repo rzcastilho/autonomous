@@ -21,17 +21,17 @@ mise exec -- mix compile          # warnings_as_errors ON — a warning fails
 
 ```bash
 # Pure request builder (model, permissions, prompt framing, blank handling)
-mise exec -- mix test test/speckit_orchestrator/phase_request_test.exs
+mise exec -- mix test test/autonomous/phase_request_test.exs
 
 # The remediation action folds cost/history; error outcome on failure
-mise exec -- mix test test/speckit_orchestrator/run_remediation_test.exs
+mise exec -- mix test test/autonomous/run_remediation_test.exs
 
 # FeatureRunner: step runs once & before the phase; blank = no step;
 # failure stops the resume; transient failure is retried
-mise exec -- mix test test/speckit_orchestrator/feature_runner_test.exs
+mise exec -- mix test test/autonomous/feature_runner_test.exs
 
 # resume/2: opts threaded; independent of :prompt (FR-010)
-mise exec -- mix test test/speckit_orchestrator/resume_test.exs
+mise exec -- mix test test/autonomous/resume_test.exs
 
 # Full suite + coverage (pure core target >90%)
 mise exec -- mix test --cover
@@ -45,7 +45,7 @@ worktree and checkpoint.
 **When** resumed with a remediation prompt targeting `analyze`:
 
 ```elixir
-SpeckitOrchestrator.resume("003",
+Autonomous.resume("003",
   from: :analyze,
   remediation_prompt: "Fix the money-type Critical the analyze gate flagged in plan.md."
 )
@@ -63,8 +63,8 @@ SpeckitOrchestrator.resume("003",
 **When** resumed with no (or blank) remediation prompt:
 
 ```elixir
-SpeckitOrchestrator.resume("003", from: :analyze)                     # absent
-SpeckitOrchestrator.resume("003", from: :analyze, remediation_prompt: "   ")  # blank
+Autonomous.resume("003", from: :analyze)                     # absent
+Autonomous.resume("003", from: :analyze, remediation_prompt: "   ")  # blank
 ```
 
 **Then** zero remediation steps run — no `remediation.run` signal, no
@@ -95,7 +95,7 @@ success) is auto-retried and proceeds — retry parity with a phase (FR-006).
 ## Scenario 5 — Model override (FR-011)
 
 ```elixir
-SpeckitOrchestrator.resume("003", from: :analyze,
+Autonomous.resume("003", from: :analyze,
   remediation_prompt: "…", remediation_model: "opus")
 ```
 
@@ -106,7 +106,7 @@ and starts no run.
 ## Scenario 6 — Independent of the in-phase note (FR-010)
 
 ```elixir
-SpeckitOrchestrator.resume("003", from: :plan,
+Autonomous.resume("003", from: :plan,
   prompt: "Prefer the smaller migration.",          # feature-004 in-phase note
   remediation_prompt: "First delete the dead column.")  # this feature
 ```
