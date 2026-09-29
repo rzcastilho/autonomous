@@ -26,7 +26,20 @@ defmodule Autonomous.TargetPackTest do
     assert (stat.mode &&& 0o100) != 0, "hook should be executable"
 
     assert File.read!(Path.join(repo, ".specify/memory/constitution.md")) =~
-             "AUTONOMOUS_ORCHESTRATOR_TEMPLATE"
+             "AUTONOMOUS_TEMPLATE"
+  end
+
+  test "verify/1 still detects the pre-rename template marker" do
+    repo = tmp_repo()
+    File.mkdir_p!(Path.join(repo, ".specify/memory"))
+
+    File.write!(
+      Path.join(repo, ".specify/memory/constitution.md"),
+      "<!-- SPECKIT_ORCHESTRATOR_TEMPLATE: replace this file -->\n# Template\n"
+    )
+
+    assert {:error, problems} = TargetPack.verify(repo, check_git: false)
+    assert Enum.any?(problems, &match?({:default_constitution, _}, &1))
   end
 
   test "install/2 never clobbers an existing constitution" do

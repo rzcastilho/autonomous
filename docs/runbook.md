@@ -111,7 +111,7 @@ hook.
 ### 2. Write a real constitution
 
 Replace `.specify/memory/constitution.md` — remove the
-`AUTONOMOUS_ORCHESTRATOR_TEMPLATE` marker and write **checkable MUSTs** the analyze
+`AUTONOMOUS_TEMPLATE` marker and write **checkable MUSTs** the analyze
 gate can enforce (e.g. "monetary amounts stored/computed as integer cents;
 floating-point money forbidden"). Vague principles cannot gate anything.
 

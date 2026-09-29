@@ -15,7 +15,8 @@ defmodule Autonomous.TargetPack do
   so a default constitution can never drive a run.
   """
 
-  @template_marker "AUTONOMOUS_ORCHESTRATOR_TEMPLATE"
+  # The legacy marker is still detected: packs installed before the rename carry it.
+  @template_markers ["AUTONOMOUS_TEMPLATE", "SPECKIT_ORCHESTRATOR_TEMPLATE"]
 
   @doc """
   Copy the pack into `repo`. Always (over)writes `.claude/settings.json` and
@@ -153,7 +154,7 @@ defmodule Autonomous.TargetPack do
 
       {:ok, content} ->
         cond do
-          String.contains?(content, @template_marker) ->
+          String.contains?(content, @template_markers) ->
             [{:default_constitution, "still the shipped template — customize it"} | problems]
 
           String.trim(content) == "" ->

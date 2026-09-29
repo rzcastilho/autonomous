@@ -18,7 +18,7 @@ The header MUST cite the governing contract and MUST NOT cite the superseded
 feature-local one as governing *(FR-005, SC-005 acceptance 5)*:
 
 ```css
-/* Speckit Orchestrator console.
+/* Autonomous console.
    Governing contract: docs/design-constitution.md (normative by reference from
    .specify/memory/constitution.md Principle VII + Operator Surface Design).
    Historical record only, no longer governing:
