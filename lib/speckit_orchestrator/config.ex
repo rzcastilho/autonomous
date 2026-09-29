@@ -254,6 +254,24 @@ defmodule SpeckitOrchestrator.Config do
   @spec clarify_poll_ms() :: pos_integer()
   def clarify_poll_ms, do: get(:clarify_poll_ms, 1_000)
 
+  @doc """
+  Default containment profile (030, FR-002) — shipped default `:strict`.
+  Raises `ArgumentError` naming the key and value for anything but
+  `:strict`/`:permissive`; a config typo must fail loud, not silently widen
+  or narrow every session's permissions.
+  """
+  @spec containment_profile() :: :strict | :permissive
+  def containment_profile do
+    case get(:containment_profile, :strict) do
+      value when value in [:strict, :permissive] ->
+        value
+
+      value ->
+        raise ArgumentError,
+              "invalid :containment_profile #{inspect(value)}; expected :strict or :permissive"
+    end
+  end
+
   @spec get(atom(), term()) :: term()
   defp get(key, default), do: Application.get_env(@app, key, default)
 end

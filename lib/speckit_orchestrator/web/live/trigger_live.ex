@@ -40,6 +40,7 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
        clarify_timeout_min: to_string(div(Config.clarify_answer_timeout_s(), 60)),
        clarify_rounds: to_string(Config.clarify_max_rounds()),
        clarify_error: nil,
+       containment_profile: Config.containment_profile() |> to_string(),
        description: "",
        preview: nil,
        field_error: nil,
@@ -111,6 +112,12 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
        clarify_rounds: Map.get(params, "max_rounds", socket.assigns.clarify_rounds),
        clarify_error: nil
      )}
+  end
+
+  # ---- containment profile (030, contracts/operator-surfaces.md Trigger form) ----
+
+  def handle_event("set_containment_profile", %{"profile" => profile}, socket) do
+    {:noreply, assign(socket, containment_profile: profile)}
   end
 
   def handle_event("select_package", %{"slug" => slug}, socket) do
@@ -233,7 +240,8 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
         auto_remediation_exhaustion_policy: settings.exhaustion_policy,
         interactive_clarify: clarify.enabled?,
         clarify_answer_timeout_s: clarify.answer_timeout_s,
-        clarify_max_rounds: clarify.max_rounds
+        clarify_max_rounds: clarify.max_rounds,
+        containment_profile: socket.assigns.containment_profile
       ]
 
       base = maybe_put_slug(base, socket.assigns[:selected_package])
@@ -629,6 +637,25 @@ defmodule SpeckitOrchestrator.Web.TriggerLive do
       >
         {elem(@clarify_error, 1)}
       </.form_refusal>
+
+      <div class="pr-toggle-row containment-row" data-containment-control>
+        <label class="field-label-inline">
+          Containment
+          <form id="containment-form" phx-change="set_containment_profile">
+            <select name="profile" data-containment-select>
+              <option value="strict" selected={@containment_profile == "strict"}>strict</option>
+              <option value="permissive" selected={@containment_profile == "permissive"}>
+                permissive
+              </option>
+            </select>
+          </form>
+        </label>
+
+        <p :if={@containment_profile == "permissive"} class="pr-hint" data-containment-note>
+          Permissive: no pack deny list, full write/Bash/network access every phase.
+          Container recipe recommended (docs/enforcement.md).
+        </p>
+      </div>
 
       <button
         :if={@mode == :backlog}

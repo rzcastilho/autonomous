@@ -4,7 +4,7 @@ defmodule SpeckitOrchestrator.Report do
   surface. Pure — takes the snapshot map, returns a string.
   """
 
-  alias SpeckitOrchestrator.PublishOutcome
+  alias SpeckitOrchestrator.{Containment, PublishOutcome}
 
   @doc "Format a `Coordinator.status/0` snapshot as a table."
   @spec format_status(map()) :: String.t()
@@ -23,6 +23,7 @@ defmodule SpeckitOrchestrator.Report do
       "totals: #{format_totals(Map.get(snapshot, :totals, %{}))}",
       "spend:  $#{fmt_spend(Map.get(snapshot, :spend, 0.0))}" <>
         breaker(Map.get(snapshot, :breaker_tripped, false)),
+      containment_line(snapshot),
       advanced_line(snapshot),
       awaiting_line(snapshot),
       clarify_line(snapshot),
@@ -60,6 +61,13 @@ defmodule SpeckitOrchestrator.Report do
 
   defp breaker(true), do: "  [BREAKER TRIPPED]"
   defp breaker(false), do: ""
+
+  # 030, contracts/operator-surfaces.md: absent (byte-identical) unless the
+  # run's profile is permissive — `Coordinator`'s snapshot only ever carries
+  # `:containment_profile` in that case.
+  defp containment_line(snapshot) do
+    snapshot |> Map.get(:containment_profile) |> Containment.report_line()
+  end
 
   # Feature 021: absent entirely when no feature advanced under *proceed*, so
   # the :escalate-path report is byte-identical to today's (SC-002).

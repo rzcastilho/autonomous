@@ -8,20 +8,12 @@
       "Edit",
       "Write",
       "Bash"
-    ],
-    "deny": [
-      "Bash(sudo:*)",
-      "Bash(git push:*)",
-      "Bash(curl:*)",
-      "Bash(wget:*)",
-      "WebFetch",
-      "WebSearch"
     ]
   },
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash",
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash|WebFetch|WebSearch",
         "hooks": [
           {
             "type": "command",

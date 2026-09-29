@@ -16,7 +16,8 @@ defmodule SpeckitOrchestrator.RunContextTest do
     :auto_remediation_exhaustion_policy,
     :interactive_clarify,
     :clarify_answer_timeout_s,
-    :clarify_max_rounds
+    :clarify_max_rounds,
+    :containment_profile
   ]
 
   setup do
@@ -47,7 +48,8 @@ defmodule SpeckitOrchestrator.RunContextTest do
         auto_remediation_exhaustion_policy: :proceed,
         interactive_clarify: true,
         clarify_answer_timeout_s: 120,
-        clarify_max_rounds: 2
+        clarify_max_rounds: 2,
+        containment_profile: :permissive
       ]
 
       assert RunContext.capture(opts) == %RunContext{
@@ -62,7 +64,8 @@ defmodule SpeckitOrchestrator.RunContextTest do
                auto_remediation_exhaustion_policy: "proceed",
                interactive_clarify: true,
                clarify_answer_timeout_s: 120,
-               clarify_max_rounds: 2
+               clarify_max_rounds: 2,
+               containment_profile: "permissive"
              }
     end
 
@@ -79,6 +82,7 @@ defmodule SpeckitOrchestrator.RunContextTest do
       Application.put_env(:speckit_orchestrator, :interactive_clarify, true)
       Application.put_env(:speckit_orchestrator, :clarify_answer_timeout_s, 600)
       Application.put_env(:speckit_orchestrator, :clarify_max_rounds, 1)
+      Application.put_env(:speckit_orchestrator, :containment_profile, :permissive)
 
       assert RunContext.capture([]) == %RunContext{
                budget_usd: 12.0,
@@ -92,7 +96,8 @@ defmodule SpeckitOrchestrator.RunContextTest do
                auto_remediation_exhaustion_policy: "proceed",
                interactive_clarify: true,
                clarify_answer_timeout_s: 600,
-               clarify_max_rounds: 1
+               clarify_max_rounds: 1,
+               containment_profile: "permissive"
              }
     end
 
@@ -141,6 +146,18 @@ defmodule SpeckitOrchestrator.RunContextTest do
       assert ctx.clarify_max_rounds == 3
     end
 
+    test "defaults (no opts, no Config override) resolve containment_profile to \"strict\" (030, FR-002)" do
+      assert RunContext.capture([]).containment_profile == "strict"
+    end
+
+    test "containment_profile is always stored as a string, never an atom (030)" do
+      assert RunContext.capture(containment_profile: :permissive).containment_profile ==
+               "permissive"
+
+      assert RunContext.capture(containment_profile: "permissive").containment_profile ==
+               "permissive"
+    end
+
     test "resolves the interactive-clarify fields from opts when present" do
       ctx =
         RunContext.capture(
@@ -156,7 +173,7 @@ defmodule SpeckitOrchestrator.RunContextTest do
   end
 
   describe "to_map/1" do
-    test "produces a JSON-ready string-keyed map of exactly the twelve settings" do
+    test "produces a JSON-ready string-keyed map of exactly the thirteen settings" do
       ctx = %RunContext{
         budget_usd: 25.0,
         plan_stack: ["research", "plan"],
@@ -169,7 +186,8 @@ defmodule SpeckitOrchestrator.RunContextTest do
         auto_remediation_exhaustion_policy: "escalate",
         interactive_clarify: false,
         clarify_answer_timeout_s: 1_800,
-        clarify_max_rounds: 3
+        clarify_max_rounds: 3,
+        containment_profile: "strict"
       }
 
       assert RunContext.to_map(ctx) == %{
@@ -184,11 +202,12 @@ defmodule SpeckitOrchestrator.RunContextTest do
                "auto_remediation_exhaustion_policy" => "escalate",
                "interactive_clarify" => false,
                "clarify_answer_timeout_s" => 1_800,
-               "clarify_max_rounds" => 3
+               "clarify_max_rounds" => 3,
+               "containment_profile" => "strict"
              }
     end
 
-    test "map keys are exactly the twelve settings, nothing else" do
+    test "map keys are exactly the thirteen settings, nothing else" do
       map = RunContext.to_map(%RunContext{})
 
       assert Map.keys(map) |> Enum.sort() ==
@@ -204,28 +223,39 @@ defmodule SpeckitOrchestrator.RunContextTest do
                  "auto_remediation_exhaustion_policy",
                  "interactive_clarify",
                  "clarify_answer_timeout_s",
-                 "clarify_max_rounds"
+                 "clarify_max_rounds",
+                 "containment_profile"
                ])
     end
   end
 
   describe "from_map/1" do
-    test "nil returns an all-nil struct" do
-      assert RunContext.from_map(nil) == %RunContext{}
+    test "nil returns an all-nil struct except containment_profile, which defaults to \"strict\" (030)" do
+      assert RunContext.from_map(nil) == %RunContext{containment_profile: "strict"}
     end
 
-    test "empty map returns an all-nil struct" do
-      assert RunContext.from_map(%{}) == %RunContext{}
+    test "empty map returns an all-nil struct except containment_profile, which defaults to \"strict\" (030)" do
+      assert RunContext.from_map(%{}) == %RunContext{containment_profile: "strict"}
+    end
+
+    test "a missing containment_profile key decodes to \"strict\" — pre-030 recorded runs were strict" do
+      assert RunContext.from_map(%{"pr_base" => "trunk"}) ==
+               %RunContext{pr_base: "trunk", containment_profile: "strict"}
+    end
+
+    test "a present containment_profile key decodes as stored" do
+      assert RunContext.from_map(%{"containment_profile" => "permissive"}).containment_profile ==
+               "permissive"
     end
 
     test "partial map populates only present keys, leaving the rest nil" do
       assert RunContext.from_map(%{"pr_base" => "trunk", "budget_usd" => 10.0}) ==
-               %RunContext{pr_base: "trunk", budget_usd: 10.0}
+               %RunContext{pr_base: "trunk", budget_usd: 10.0, containment_profile: "strict"}
     end
 
     test "never raises on an unexpected/extra key" do
       assert RunContext.from_map(%{"pr_base" => "trunk", "unexpected" => "ignored"}) ==
-               %RunContext{pr_base: "trunk"}
+               %RunContext{pr_base: "trunk", containment_profile: "strict"}
     end
 
     test "round-trips the five auto-remediation fields through to_map/from_map" do
@@ -234,7 +264,8 @@ defmodule SpeckitOrchestrator.RunContextTest do
         auto_remediation_threshold: "critical",
         auto_remediation_attempt_limit: 5,
         auto_remediation_model: "opus",
-        auto_remediation_exhaustion_policy: "proceed"
+        auto_remediation_exhaustion_policy: "proceed",
+        containment_profile: "strict"
       }
 
       assert ctx |> RunContext.to_map() |> RunContext.from_map() == ctx
@@ -273,7 +304,7 @@ defmodule SpeckitOrchestrator.RunContextTest do
 
       assert Keyword.fetch(merged, :pr_base) == :error
       assert :pr_base in fell_back
-      assert length(fell_back) == 12
+      assert length(fell_back) == 13
     end
 
     test "explicit opt > recorded > absent precedence holds for the auto-remediation fields too" do
@@ -303,6 +334,17 @@ defmodule SpeckitOrchestrator.RunContextTest do
       assert Keyword.get(merged, :clarify_answer_timeout_s) == 300
       assert Keyword.fetch(merged, :clarify_max_rounds) == :error
       assert :clarify_max_rounds in fell_back
+    end
+
+    test "explicit opt > recorded > absent precedence holds for containment_profile too (030)" do
+      recorded = %RunContext{containment_profile: "permissive"}
+
+      {merged, fell_back} = RunContext.merge([], recorded)
+      assert Keyword.get(merged, :containment_profile) == "permissive"
+      refute :containment_profile in fell_back
+
+      {merged2, _} = RunContext.merge([containment_profile: "strict"], recorded)
+      assert Keyword.get(merged2, :containment_profile) == "strict"
     end
 
     test "a pre-029 recorded run without the interactive-clarify keys falls back to Config defaults" do

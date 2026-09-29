@@ -79,6 +79,12 @@
         </span>
       <% end %>
 
+      <%= if SpeckitOrchestrator.Containment.permissive?(run.containment_profile) do %>
+        <span class="containment-chip" data-containment={run.containment_profile}>
+          containment: {run.containment_profile}
+        </span>
+      <% end %>
+
       <div class="topbar-clock">
         <span id="console-clock">{run.clock}</span>
       </div>

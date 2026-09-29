@@ -1,7 +1,7 @@
 defmodule SpeckitOrchestrator.PullRequestTest do
   use ExUnit.Case, async: true
 
-  alias SpeckitOrchestrator.{PullRequest, Remediation}
+  alias SpeckitOrchestrator.{Containment, PullRequest, Remediation}
 
   test "build_args produces the gh pr create argv (head/base/title/body)" do
     args =
@@ -67,5 +67,32 @@ defmodule SpeckitOrchestrator.PullRequestTest do
     assert body =~ @template_fallback_body
     assert body =~ "Advanced with unresolved analyze findings"
     assert body =~ "tasks.md has no task for FR-004"
+  end
+
+  # ---- feature 030: pr_text/2 appends Containment.pr_note/1 after
+  # Remediation.pr_note/1 (contracts/operator-surfaces.md) --------------------
+  #
+  # `pr_text/2`'s own note-building is `Remediation.pr_note(...) <>
+  # Containment.pr_note(...)`; the profile is sourced from the recorded run's
+  # settings so a publish-only resume writes the same note as the original
+  # publish would have. Composition tested directly here (pure); the
+  # store-backed read is exercised end-to-end by feature_runner_test.exs.
+
+  test "containment note is empty (byte-identical) for strict/nil, appended after the remediation note for permissive" do
+    combined_nil = Remediation.pr_note(nil) <> Containment.pr_note(nil)
+    combined_strict = Remediation.pr_note(nil) <> Containment.pr_note("strict")
+    combined_permissive = Remediation.pr_note(nil) <> Containment.pr_note("permissive")
+
+    assert combined_nil == ""
+    assert combined_strict == ""
+    assert combined_permissive =~ "Containment: permissive"
+
+    both_notes = Remediation.pr_note(@record) <> Containment.pr_note("permissive")
+    assert both_notes =~ "Advanced with unresolved analyze findings"
+    assert both_notes =~ "Containment: permissive"
+
+    findings_idx = :binary.match(both_notes, "Advanced with unresolved analyze findings") |> elem(0)
+    containment_idx = :binary.match(both_notes, "Containment: permissive") |> elem(0)
+    assert containment_idx > findings_idx
   end
 end

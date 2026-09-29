@@ -1,6 +1,6 @@
 defmodule SpeckitOrchestrator.RunContext do
   @moduledoc """
-  The twelve run-shaping settings captured at `run/1` time and reapplied on
+  The thirteen run-shaping settings captured at `run/1` time and reapplied on
   `resume/2`. Pure value object — no IO beyond reading `Config` in
   `capture/1`. Excludes secrets/credentials by construction (FR-011): only
   bool/number/string/list-of-string fields exist.
@@ -8,11 +8,12 @@ defmodule SpeckitOrchestrator.RunContext do
   Every run is a stacked sequential run (FR-006, FR-007) — there is no run
   mode or concurrency setting to capture.
 
-  See `specs/007-resume-self-sufficient/contracts/run_context.md` and
-  `specs/017-analyze-auto-remediation/contracts/checkpoint-analyze-remediation.md`.
+  See `specs/007-resume-self-sufficient/contracts/run_context.md`,
+  `specs/017-analyze-auto-remediation/contracts/checkpoint-analyze-remediation.md`,
+  and `specs/030-permissive-containment/data-model.md`.
   """
 
-  alias SpeckitOrchestrator.Config
+  alias SpeckitOrchestrator.{Config, Containment}
 
   defstruct budget_usd: nil,
             plan_stack: nil,
@@ -25,7 +26,8 @@ defmodule SpeckitOrchestrator.RunContext do
             auto_remediation_exhaustion_policy: nil,
             interactive_clarify: nil,
             clarify_answer_timeout_s: nil,
-            clarify_max_rounds: nil
+            clarify_max_rounds: nil,
+            containment_profile: nil
 
   @type t :: %__MODULE__{
           budget_usd: number() | nil,
@@ -39,7 +41,8 @@ defmodule SpeckitOrchestrator.RunContext do
           auto_remediation_exhaustion_policy: String.t() | nil,
           interactive_clarify: boolean() | nil,
           clarify_answer_timeout_s: pos_integer() | nil,
-          clarify_max_rounds: pos_integer() | nil
+          clarify_max_rounds: pos_integer() | nil,
+          containment_profile: String.t() | nil
         }
 
   @keys [
@@ -54,7 +57,8 @@ defmodule SpeckitOrchestrator.RunContext do
     :auto_remediation_exhaustion_policy,
     :interactive_clarify,
     :clarify_answer_timeout_s,
-    :clarify_max_rounds
+    :clarify_max_rounds,
+    :containment_profile
   ]
 
   @doc "Resolves each field from `opts`, falling back to live `Config` — the capture boundary."
@@ -88,7 +92,11 @@ defmodule SpeckitOrchestrator.RunContext do
       interactive_clarify: Keyword.get(opts, :interactive_clarify, Config.interactive_clarify?()),
       clarify_answer_timeout_s:
         Keyword.get(opts, :clarify_answer_timeout_s, Config.clarify_answer_timeout_s()),
-      clarify_max_rounds: Keyword.get(opts, :clarify_max_rounds, Config.clarify_max_rounds())
+      clarify_max_rounds: Keyword.get(opts, :clarify_max_rounds, Config.clarify_max_rounds()),
+      containment_profile:
+        opts
+        |> Keyword.get(:containment_profile, Config.containment_profile())
+        |> stringify_containment_profile()
     }
   end
 
@@ -106,6 +114,15 @@ defmodule SpeckitOrchestrator.RunContext do
   defp stringify_policy(value) when is_binary(value), do: value
   defp stringify_policy(value) when is_atom(value), do: Atom.to_string(value)
 
+  # capture/1 only ever sees an already-valid atom/string (Config.containment_profile/0
+  # raises on anything else; the facade's own preflight — Phase 4 — validates an
+  # explicit opt before it reaches here), so Containment.normalize/1's error tuple
+  # is unreachable in practice; {:ok, str} unwraps to the stored string form.
+  defp stringify_containment_profile(value) do
+    {:ok, profile} = Containment.normalize(value)
+    profile
+  end
+
   @doc "JSON-ready, string-keyed map of exactly the nine settings, for the checkpoint."
   @spec to_map(t()) :: %{String.t() => term()}
   def to_map(%__MODULE__{} = ctx) do
@@ -121,13 +138,19 @@ defmodule SpeckitOrchestrator.RunContext do
       "auto_remediation_exhaustion_policy" => ctx.auto_remediation_exhaustion_policy,
       "interactive_clarify" => ctx.interactive_clarify,
       "clarify_answer_timeout_s" => ctx.clarify_answer_timeout_s,
-      "clarify_max_rounds" => ctx.clarify_max_rounds
+      "clarify_max_rounds" => ctx.clarify_max_rounds,
+      "containment_profile" => ctx.containment_profile
     }
   end
 
-  @doc "Tolerant decode: `nil`/`%{}` → all-nil struct; partial map → only present keys populated. Never raises."
+  @doc """
+  Tolerant decode: `nil`/`%{}` → all-nil struct except `containment_profile`,
+  which decodes to `"strict"` even then — a pre-030 recorded run was strict,
+  and a recorded run must never fall back to a since-changed live default
+  (030 data-model). Partial map → only present keys populated. Never raises.
+  """
   @spec from_map(map() | nil) :: t()
-  def from_map(nil), do: %__MODULE__{}
+  def from_map(nil), do: %__MODULE__{containment_profile: "strict"}
 
   def from_map(map) when is_map(map) do
     %__MODULE__{
@@ -142,7 +165,8 @@ defmodule SpeckitOrchestrator.RunContext do
       auto_remediation_exhaustion_policy: Map.get(map, "auto_remediation_exhaustion_policy"),
       interactive_clarify: Map.get(map, "interactive_clarify"),
       clarify_answer_timeout_s: Map.get(map, "clarify_answer_timeout_s"),
-      clarify_max_rounds: Map.get(map, "clarify_max_rounds")
+      clarify_max_rounds: Map.get(map, "clarify_max_rounds"),
+      containment_profile: Map.get(map, "containment_profile", "strict")
     }
   end
 

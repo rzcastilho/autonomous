@@ -118,6 +118,7 @@ defmodule SpeckitOrchestrator.FeatureRunner do
     remediation_model = Keyword.get(opts, :remediation_model)
     run_context = Keyword.get(opts, :run_context)
     layout = Keyword.get(opts, :layout)
+    containment = (run_context && run_context.containment_profile) || "strict"
     # Resolved lazily at each fork-point lookup (`merge_base/2`, `ChunkRunner`)
     # — a dry run with no worktree never looks one up, and must not pay for a
     # `Config.pr_base()` that may not be configured at all.
@@ -158,7 +159,8 @@ defmodule SpeckitOrchestrator.FeatureRunner do
               phase: start_phase,
               resume_prompt: resume_prompt,
               remediation_prompt: remediation_prompt,
-              remediation_model: remediation_model
+              remediation_model: remediation_model,
+              containment: containment
             },
             timeout
           )
@@ -187,7 +189,7 @@ defmodule SpeckitOrchestrator.FeatureRunner do
           end
 
         call(pid, "feature.finalize", %{status: status, reason: reason}, timeout)
-        {message, pr} = commit_message_and_pr(feature, status, worktree, layout)
+        {message, pr} = commit_message_and_pr(feature, status, worktree, layout, containment)
         handle_worktree(feature, status, reason, worktree, message, stack_base)
 
         if drained?(status, reason) do
@@ -1077,10 +1079,10 @@ defmodule SpeckitOrchestrator.FeatureRunner do
   # and the git history it describes always agree. Claude-authored via
   # `Describe.run/3` (019: every run publishes a PR, unconditionally). A
   # describe failure logs and falls back — never blocks.
-  defp commit_message_and_pr(feature, :done, %Worktree{} = wt, layout) do
+  defp commit_message_and_pr(feature, :done, %Worktree{} = wt, layout, containment) do
     fallback = "speckit: feature #{feature.id} pipeline artifacts (done)"
 
-    case Describe.run(feature, wt, layout) do
+    case Describe.run(feature, wt, layout, containment: containment) do
       {:ok, d} ->
         message = if d.commit_message == "", do: fallback, else: d.commit_message
         {message, %{pr_title: d.pr_title, pr_body: d.pr_body}}
@@ -1091,7 +1093,7 @@ defmodule SpeckitOrchestrator.FeatureRunner do
     end
   end
 
-  defp commit_message_and_pr(feature, status, _wt, _layout) do
+  defp commit_message_and_pr(feature, status, _wt, _layout, _containment) do
     {"speckit: feature #{feature.id} pipeline artifacts (#{status})", nil}
   end
 

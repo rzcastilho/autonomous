@@ -251,4 +251,42 @@ defmodule SpeckitOrchestrator.CoordinatorTest do
     assert_receive {:run_complete, report}, 1_000
     assert report.done == ["001", "002"]
   end
+
+  # ---- 030: containment_profile visibility (US3) ---------------------------
+
+  test "final report and status snapshot carry containment_profile only for a permissive run" do
+    pid = start([feat("001")], context: %{containment_profile: "permissive"})
+
+    assert Coordinator.status(pid).containment_profile == "permissive"
+
+    n1 = await_started("001")
+    n1.("001", :done, nil)
+
+    assert_receive {:run_complete, report}, 1_000
+    assert report.containment_profile == "permissive"
+  end
+
+  test "final report and status snapshot omit containment_profile for a strict run" do
+    pid = start([feat("001")], context: %{containment_profile: "strict"})
+
+    refute Map.has_key?(Coordinator.status(pid), :containment_profile)
+
+    n1 = await_started("001")
+    n1.("001", :done, nil)
+
+    assert_receive {:run_complete, report}, 1_000
+    refute Map.has_key?(report, :containment_profile)
+  end
+
+  test "final report and status snapshot omit containment_profile with no context" do
+    pid = start([feat("001")])
+
+    refute Map.has_key?(Coordinator.status(pid), :containment_profile)
+
+    n1 = await_started("001")
+    n1.("001", :done, nil)
+
+    assert_receive {:run_complete, report}, 1_000
+    refute Map.has_key?(report, :containment_profile)
+  end
 end

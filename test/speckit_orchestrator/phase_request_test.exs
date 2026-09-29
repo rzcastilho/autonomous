@@ -294,6 +294,96 @@ defmodule SpeckitOrchestrator.PhaseRequestTest do
     end
   end
 
+  describe ":containment option (030)" do
+    test "default (absent) is strict — byte-identical RunRequest except env markers" do
+      for phase <- [:specify, :plan, :tasks, :analyze, :implement, :clarify, :converge, :describe] do
+        default = PhaseRequest.build(feature(), phase)
+        explicit = PhaseRequest.build(feature(), phase, containment: "strict")
+
+        assert default.prompt == explicit.prompt
+        assert default.cwd == explicit.cwd
+        assert default.model == explicit.model
+        assert default.permission_mode == explicit.permission_mode
+        assert default.allowed_tools == explicit.allowed_tools
+        assert default.disallowed_tools == explicit.disallowed_tools
+        assert default.max_turns == explicit.max_turns
+
+        assert default.metadata["claude"][:env] == %{
+                 "SPECKIT_ORCHESTRATED" => "1",
+                 "SPECKIT_CONTAINMENT_PROFILE" => "strict"
+               }
+      end
+    end
+
+    test "permissive: bypass_permissions, full tool set, FR-008 exclusions only" do
+      for phase <- [:specify, :plan, :tasks, :analyze, :implement, :clarify, :converge, :describe] do
+        r = PhaseRequest.build(feature(), phase, containment: "permissive")
+
+        assert r.permission_mode == :bypass_permissions, "#{phase} permission_mode"
+
+        assert r.allowed_tools ==
+                 ~w(Read Write Edit MultiEdit NotebookEdit Bash Grep Glob WebFetch WebSearch),
+               "#{phase} allowed_tools"
+
+        assert r.disallowed_tools == ~w(Agent Task ScheduleWakeup), "#{phase} disallowed_tools"
+
+        assert r.metadata["claude"][:env] == %{
+                 "SPECKIT_ORCHESTRATED" => "1",
+                 "SPECKIT_CONTAINMENT_PROFILE" => "permissive"
+               }
+      end
+    end
+
+    test "permissive does not change the prompt, cwd, model, max_turns, or session_id" do
+      strict = PhaseRequest.build(feature(), :implement, cwd: "/wt", session_id: "s1")
+
+      permissive =
+        PhaseRequest.build(feature(), :implement,
+          cwd: "/wt",
+          session_id: "s1",
+          containment: "permissive"
+        )
+
+      assert strict.prompt == permissive.prompt
+      assert strict.cwd == permissive.cwd
+      assert strict.model == permissive.model
+      assert strict.max_turns == permissive.max_turns
+      assert strict.session_id == permissive.session_id
+    end
+
+    test "env markers are present under both profiles for build_remediation/3" do
+      strict = PhaseRequest.build_remediation(feature(), "sonnet", prompt: "fix it")
+
+      permissive =
+        PhaseRequest.build_remediation(feature(), "sonnet",
+          prompt: "fix it",
+          containment: "permissive"
+        )
+
+      assert strict.metadata["claude"][:env] == %{
+               "SPECKIT_ORCHESTRATED" => "1",
+               "SPECKIT_CONTAINMENT_PROFILE" => "strict"
+             }
+
+      assert permissive.metadata["claude"][:env] == %{
+               "SPECKIT_ORCHESTRATED" => "1",
+               "SPECKIT_CONTAINMENT_PROFILE" => "permissive"
+             }
+
+      assert permissive.permission_mode == :bypass_permissions
+
+      assert permissive.allowed_tools ==
+               ~w(Read Write Edit MultiEdit NotebookEdit Bash Grep Glob WebFetch WebSearch)
+    end
+
+    test "build_remediation/3 strict permissions are unchanged from before 030" do
+      r = PhaseRequest.build_remediation(feature(), "sonnet", prompt: "fix it")
+      assert r.permission_mode == :accept_edits
+      assert r.allowed_tools == ~w(Read Write Edit Bash Grep Glob)
+      assert r.disallowed_tools == ~w(Agent Task ScheduleWakeup)
+    end
+  end
+
   describe "build_remediation/3" do
     test "model passed through verbatim (caller-resolved, no re-routing)" do
       r = PhaseRequest.build_remediation(feature(), "opus", prompt: "fix the money type")

@@ -423,4 +423,45 @@ defmodule SpeckitOrchestrator.Web.RunDetailLiveTest do
     assert html =~ ~s(data-round="exhausted")
     assert html =~ "rounds exhausted — 2 of 2 used"
   end
+
+  # ---- 030: containment profile visibility (US3, contracts/operator-surfaces.md)
+
+  test "a permissive run's header shows the CONTAINMENT block and the SETTINGS chip",
+       %{conn: conn, repo_id: repo_id} do
+    features = [
+      %{
+        feature_id: "001",
+        slug: "f-001",
+        path: "specs/001",
+        number: 1,
+        group: :backlog,
+        created_at: nil
+      }
+    ]
+
+    {:ok, run_id} =
+      Writer.open_run(repo_id, %{
+        features: features,
+        settings: %{budget_usd: 100.0, containment_profile: "permissive"},
+        scope: :ad_hoc,
+        layout: %{}
+      })
+
+    {:ok, _view, html} = live(conn, "/runs/#{run_id}")
+
+    assert html =~ ~s(data-containment)
+    assert html =~ "CONTAINMENT"
+    assert html =~ "containment_profile=<span>permissive</span>"
+    assert html =~ "enforcement.md"
+  end
+
+  test "a strict run's header omits the CONTAINMENT block and the SETTINGS chip",
+       %{conn: conn, repo_id: repo_id} do
+    run_id = open(repo_id, ["001"])
+
+    {:ok, _view, html} = live(conn, "/runs/#{run_id}")
+
+    refute html =~ "CONTAINMENT"
+    refute html =~ "containment_profile"
+  end
 end

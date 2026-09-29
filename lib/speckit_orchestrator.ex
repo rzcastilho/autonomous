@@ -125,6 +125,7 @@ defmodule SpeckitOrchestrator do
     with :ok <- reject_retired_opts(opts),
          {:ok, _settings} <- preflight_remediation(run_context),
          {:ok, _settings} <- preflight_interactive_clarify(run_context),
+         :ok <- preflight_containment(opts, run_context),
          :ok <- preflight_parked_run(),
          {:ok, layout} <- preflight_layout(opts),
          {:ok, run_key} <- open_or_continue_run(opts, run_context, layout) do
@@ -132,6 +133,35 @@ defmodule SpeckitOrchestrator do
       run_stacked(opts, run_context, layout, run_key)
     end
   end
+
+  # 030: `run_context.containment_profile` is already normalized/defaulted by
+  # `RunContext.capture/1` (via `Containment.normalize/1`), so an invalid
+  # explicit `:containment_profile` opt is caught here — before any store
+  # write — rather than surfacing as a raise deep in `RunContext.capture/1`.
+  # `"permissive"` additionally requires the target's **committed** pack to be
+  # contract 2 (no test-mode skip: an operator opting into relaxed
+  # containment must have the relaxed pack actually installed).
+  defp preflight_containment(opts, run_context) do
+    case Keyword.fetch(opts, :containment_profile) do
+      :error ->
+        :ok
+
+      {:ok, value} ->
+        case SpeckitOrchestrator.Containment.normalize(value) do
+          {:error, reason} -> {:error, {:preflight, [reason]}}
+          {:ok, _profile} -> check_containment_pack(run_context)
+        end
+    end
+  end
+
+  defp check_containment_pack(%RunContext{containment_profile: "permissive"}) do
+    case TargetPack.verify(Config.repo(), profile: "permissive") do
+      :ok -> :ok
+      {:error, problems} -> {:error, {:preflight, problems}}
+    end
+  end
+
+  defp check_containment_pack(_run_context), do: :ok
 
   # 019, FR-020a/FR-020b: a `:parked` run for the repository blocks every new
   # backlog/ad-hoc start until the operator resolves it — checked directly
@@ -808,6 +838,7 @@ defmodule SpeckitOrchestrator do
     with :ok <- reject_retired_opts(opts),
          :ok <- guard_active_run(opts),
          {:ok, run_key, detail} <- read_current_run(),
+         :ok <- guard_containment_profile(opts, detail),
          {:ok, feature_record} <- find_feature_record(detail, feature_id),
          {:ok, feature} <- resolve_identity(feature_id, feature_record, opts),
          {:ok, route} <-
@@ -1216,6 +1247,7 @@ defmodule SpeckitOrchestrator do
     with :ok <- reject_retired_opts(opts),
          :ok <- guard_active_run(opts),
          {:ok, run_key, detail} <- read_current_run(),
+         :ok <- guard_containment_profile(opts, detail),
          {:ok, scope} <- restore_run_scope(detail, opts) do
       scope.merged_opts
       |> maybe_put_layout(scope.layout)
@@ -1753,6 +1785,33 @@ defmodule SpeckitOrchestrator do
     RepoIdentity.partition(Keyword.get(opts, :repo, Config.repo()))
   end
 
+  # 030, FR-004: the containment profile is fixed at run start and never
+  # renegotiated on resume/continue — a resume/continue_run/resume_run call
+  # with no explicit `:containment_profile` opt inherits the recorded value
+  # silently (the ordinary `RunContext.merge/2` precedence does that once
+  # dispatched); an explicit opt equal to the recorded value is accepted as a
+  # no-op; a *different* explicit value is refused before any side effect.
+  defp guard_containment_profile(opts, detail) do
+    case Keyword.fetch(opts, :containment_profile) do
+      :error ->
+        :ok
+
+      {:ok, value} ->
+        recorded = RunContext.from_map(detail.settings).containment_profile
+
+        case SpeckitOrchestrator.Containment.normalize(value) do
+          {:ok, ^recorded} ->
+            :ok
+
+          {:ok, _other} ->
+            {:error, {:preflight, [{:containment_profile_locked, recorded}]}}
+
+          {:error, reason} ->
+            {:error, {:preflight, [reason]}}
+        end
+    end
+  end
+
   defp coordinator_active_pid do
     case Process.whereis(@coordinator) do
       nil -> :inactive
@@ -2242,8 +2301,11 @@ defmodule SpeckitOrchestrator do
     else
       # 019, FR-003: the pack + PR-remote preflight is unconditional now —
       # every run publishes a PR, so there is no non-PR path left to fall
-      # back to.
-      case TargetPack.verify(Config.repo(), check_remote: Config.pr_remote()) do
+      # back to. 030: profile from the captured run context.
+      case TargetPack.verify(Config.repo(),
+             check_remote: Config.pr_remote(),
+             profile: run_context.containment_profile || "strict"
+           ) do
         :ok ->
           case preflight_layout(opts) do
             {:ok, layout} ->
@@ -2366,7 +2428,7 @@ defmodule SpeckitOrchestrator do
   defp run_stacked(opts, run_context, layout, run_key) do
     test_mode? = Keyword.has_key?(opts, :runner) or Keyword.has_key?(opts, :executor)
 
-    with :ok <- preflight_stacked(test_mode?) do
+    with :ok <- preflight_stacked(test_mode?, run_context.containment_profile) do
       {:ok, tracker} = start_stack_tracker(Config.pr_base(), stack_seed(opts))
 
       publisher =
@@ -2431,10 +2493,15 @@ defmodule SpeckitOrchestrator do
 
   # Preflight the real target (pack scaffold + committed constitution + remote)
   # unless a seam is injected (tests supply their own features/executor).
-  defp preflight_stacked(true), do: :ok
+  # `profile` (030) — the run's containment profile; `"permissive"` also
+  # requires the committed pack to be contract 2 (already checked once, at
+  # `run/1` preflight, by `preflight_containment/2` — repeated here so
+  # `run_spec/2`'s own `spec_run_opts/3` path, which does not go through
+  # `run/1`'s preflight chain directly, still enforces it).
+  defp preflight_stacked(true, _profile), do: :ok
 
-  defp preflight_stacked(false) do
-    case TargetPack.verify(Config.repo(), check_remote: Config.pr_remote()) do
+  defp preflight_stacked(false, profile) do
+    case TargetPack.verify(Config.repo(), check_remote: Config.pr_remote(), profile: profile || "strict") do
       :ok -> :ok
       {:error, problems} -> {:error, {:preflight, problems}}
     end
@@ -2734,7 +2801,9 @@ defmodule SpeckitOrchestrator do
   # recorded on :done (018 — replaces `Describe.read_pr/2`); fall back to a
   # template if it is absent/empty or this run isn't store-backed.
   defp pr_text(feature, base) do
-    note = Remediation.pr_note(store_advanced_with_findings(feature.id))
+    note =
+      Remediation.pr_note(store_advanced_with_findings(feature.id)) <>
+        SpeckitOrchestrator.Containment.pr_note(store_containment_profile())
 
     case store_pr_description(feature.id) do
       %{pr_title: t, pr_body: b} when t not in [nil, ""] and b not in [nil, ""] ->
@@ -2745,6 +2814,18 @@ defmodule SpeckitOrchestrator do
          "Autonomous build of feature #{feature.id} (#{feature.slug}) by " <>
            "speckit_orchestrator.\n\nnumber: #{feature.id}\nspec_number: #{spec_number_label(feature)}\n\n" <>
            "Stacked on `#{base}`." <> note}
+    end
+  end
+
+  # Read from the recorded run's settings, not the live `Config` default —
+  # a publish-only resume must write the same note the original publish
+  # would have (contracts/operator-surfaces.md).
+  defp store_containment_profile do
+    with run_key when run_key != nil <- current_run_key(),
+         {:ok, detail} <- Store.run(run_key) do
+      Map.get(detail.settings, "containment_profile")
+    else
+      _ -> nil
     end
   end
 

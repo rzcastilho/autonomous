@@ -53,6 +53,13 @@ defmodule SpeckitOrchestrator.TargetPack do
   Checks the pack scaffold is present, that the constitution has been customized
   (template marker gone) and is non-empty, and — unless `check_git: false` — that
   the constitution is committed (git-tracked).
+
+  `:profile` (030, default `"strict"`) — `"permissive"` adds
+  `check_pack_contract/2`: the **committed** pack must carry hook contract 2
+  and a `settings.json` with no `permissions.deny` entry, or the run refuses
+  with `{:pack_outdated, path, hint}`. `"strict"` is unchanged from today —
+  an un-upgraded target still enforces its own (older) rules and does not
+  fail preflight.
   """
   @spec verify(Path.t(), keyword()) :: :ok | {:error, [term()]}
   def verify(repo, opts \\ []) do
@@ -64,10 +71,66 @@ defmodule SpeckitOrchestrator.TargetPack do
       |> check_constitution(repo)
       |> check_committed(repo, Keyword.get(opts, :check_git, true))
       |> check_remote(repo, Keyword.get(opts, :check_remote, false))
+      |> check_pack_contract(repo, Keyword.get(opts, :profile, "strict"))
 
     case problems do
       [] -> :ok
       _ -> {:error, Enum.reverse(problems)}
+    end
+  end
+
+  @doc """
+  Read the **committed** pack (`git -C repo show HEAD:…`) and confirm it is
+  contract 2: the hook prints `2` for `--contract`, and `settings.json` carries
+  no non-empty `permissions.deny`. Any failure (git show failure — including an
+  uncommitted upgrade — a non-`"2"` contract output, or a present `deny`) is
+  `{:pack_outdated, ".claude/hooks/scope_guard.py", "re-run TargetPack.install/2 and commit"}`.
+  """
+  @spec check_pack_contract(Path.t()) :: :ok | {:error, term()}
+  def check_pack_contract(repo) do
+    with {:ok, hook_src} <- git_show(repo, ".claude/hooks/scope_guard.py"),
+         {:ok, "2"} <- contract_of(hook_src),
+         {:ok, settings_src} <- git_show(repo, ".claude/settings.json"),
+         :ok <- no_deny?(settings_src) do
+      :ok
+    else
+      _ ->
+        {:error,
+         {:pack_outdated, ".claude/hooks/scope_guard.py", "re-run TargetPack.install/2 and commit"}}
+    end
+  end
+
+  defp git_show(repo, rel) do
+    case System.cmd("git", ["-C", repo, "show", "HEAD:#{rel}"], stderr_to_stdout: true) do
+      {out, 0} -> {:ok, out}
+      {_out, _code} -> {:error, :git_show_failed}
+    end
+  end
+
+  defp contract_of(hook_src) do
+    tmp = Path.join(System.tmp_dir!(), "scope_guard_#{System.unique_integer([:positive])}.py")
+    File.write!(tmp, hook_src)
+
+    result =
+      case System.cmd("python3", [tmp, "--contract"], stderr_to_stdout: true) do
+        {out, 0} -> {:ok, String.trim(out)}
+        {_out, _code} -> {:error, :contract_probe_failed}
+      end
+
+    File.rm(tmp)
+    result
+  end
+
+  defp no_deny?(settings_src) do
+    case Jason.decode(settings_src) do
+      {:ok, %{"permissions" => %{"deny" => deny}}} when is_list(deny) and deny != [] ->
+        {:error, :deny_present}
+
+      {:ok, _decoded} ->
+        :ok
+
+      {:error, _reason} ->
+        {:error, :bad_json}
     end
   end
 
@@ -127,6 +190,15 @@ defmodule SpeckitOrchestrator.TargetPack do
     case System.cmd("git", ["-C", repo, "remote", "get-url", remote], stderr_to_stdout: true) do
       {_, 0} -> problems
       {_, _} -> [{:no_remote, remote} | problems]
+    end
+  end
+
+  defp check_pack_contract(problems, _repo, "strict"), do: problems
+
+  defp check_pack_contract(problems, repo, "permissive") do
+    case check_pack_contract(repo) do
+      :ok -> problems
+      {:error, reason} -> [reason | problems]
     end
   end
 

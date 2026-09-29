@@ -43,6 +43,48 @@ defmodule SpeckitOrchestrator.ReportTest do
     assert out =~ "200ms"
   end
 
+  test "format_status/1 shows the containment line after spend only when permissive" do
+    snapshot = %{
+      per_feature: %{},
+      totals: %{},
+      spend: 1.5,
+      breaker_tripped: false,
+      finished?: false,
+      containment_profile: "permissive"
+    }
+
+    out = Report.format_status(snapshot)
+
+    spend_idx = :binary.match(out, "spend:  $1.50") |> elem(0)
+    containment_idx = :binary.match(out, "containment: permissive (no pack deny list)") |> elem(0)
+    assert containment_idx > spend_idx
+  end
+
+  test "format_status/1 omits the containment line when strict" do
+    snapshot = %{
+      per_feature: %{},
+      totals: %{},
+      spend: 0.0,
+      breaker_tripped: false,
+      finished?: false,
+      containment_profile: "strict"
+    }
+
+    refute Report.format_status(snapshot) =~ "containment:"
+  end
+
+  test "format_status/1 omits the containment line when absent (pre-030 byte-identity)" do
+    snapshot = %{
+      per_feature: %{},
+      totals: %{},
+      spend: 0.0,
+      breaker_tripped: false,
+      finished?: false
+    }
+
+    refute Report.format_status(snapshot) =~ "containment:"
+  end
+
   test "format_status/1 shows number and spec_number under distinct labels" do
     snapshot = %{
       per_feature: %{

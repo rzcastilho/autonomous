@@ -248,16 +248,36 @@ single-phase-fix case; `resolve/1` remains the tool when upstream artifacts must
 be regenerated or the checkpoint is missing/corrupt. Operator flow:
 `docs/runbook.md`.
 
-**Enforcement (Phase 5).** Because the adapter runs the CLI with
-`--dangerously-skip-permissions`, containment is a committed **target-repo pack**
-(`priv/target_pack/.claude/`), not the CLI's prompts. `scope_guard.py` is a
-PreToolUse hook that denies out-of-tree writes and dangerous Bash (fails closed
-on bad input); `settings.json` is least-privilege and registers it.
-`TargetPack.install/2` lays the pack into a target repo without clobbering the
-constitution; `TargetPack.verify/1` is the preflight (fails while the template
-constitution marker is present, or if it's uncommitted). `PhaseRequest` per-phase
-permissions are the second layer; a container recipe (`docs/enforcement.md`) is
-the third. Red-teamed by `scope_guard_test` running the real hook.
+**Enforcement (Phase 5; two containment profiles, feature 030).** The real SDK
+path passes `--permission-mode` per phase, not `--dangerously-skip-permissions`
+(a superseded Phase 0 finding, `docs/harness-contract.md`), so containment is a
+committed **target-repo pack** (`priv/target_pack/.claude/`) working alongside
+genuine per-phase permissions, not a substitute for CLI prompts the CLI never
+actually skips. Every run picks a containment profile — `strict` (default,
+byte-identical to pre-030) or `permissive` (opt-in, per run, locked at start,
+never renegotiated by resume/continue). `scope_guard.py` is a PreToolUse hook
+that resolves session origin (`SPECKIT_ORCHESTRATED`/
+`SPECKIT_CONTAINMENT_PROFILE` env markers the orchestrator sets on every
+session it starts, vs. an interactive human session detected by their
+absence plus `CLAUDE_CODE_ENTRYPOINT=cli`) and denies out-of-tree writes and
+dangerous Bash only for an orchestrator-driven `strict` session — a human's own
+interactive session is never denied, under either profile; `permissive`
+applies no deny list at all. Fails closed (denies) on bad input or undecided
+origin. `settings.json` carries no `permissions.deny` of its own any more
+(feature 030) — every denial lives in the hook, since a `permissions.deny`
+entry used to block human sessions too. `TargetPack.install/2` lays the pack
+into a target repo without clobbering the constitution; `TargetPack.verify/2`
+is the preflight (fails while the template constitution marker is present, if
+it's uncommitted, or — for a `permissive` run — if the committed pack isn't at
+contract 2). `PhaseRequest`'s per-phase permissions follow the same profile
+(full access under `permissive`, scoped under `strict`) and are the second
+layer; a container recipe (`docs/enforcement.md`) is the third, recommended
+alongside any `permissive` run since that profile leaves the hook as the only
+in-tree layer. `Containment` (pure) renders the profile on every operator
+surface only when `permissive` — final report, `print_status/0`, console
+topbar/Run Detail/Configuration, and the PR body — so a `strict` run's output
+stays byte-identical (`contracts/operator-surfaces.md`). Red-teamed by
+`scope_guard_test` running the real hook across the origin × profile matrix.
 
 **Control plane (Phase 4).** `SpeckitOrchestrator.run/1` (facade) loads the
 backlog and starts a per-run `Coordinator`; `status/0` reports it. The

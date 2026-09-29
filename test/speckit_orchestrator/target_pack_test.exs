@@ -112,4 +112,95 @@ defmodule SpeckitOrchestrator.TargetPackTest do
     assert {:error, problems} = TargetPack.verify(repo, check_remote: "upstream")
     assert Enum.any?(problems, &match?({:no_remote, "upstream"}, &1))
   end
+
+  defp old_settings_json do
+    Jason.encode!(%{
+      "permissions" => %{
+        "defaultMode" => "acceptEdits",
+        "allow" => ["Read"],
+        "deny" => ["Bash(sudo:*)"]
+      }
+    })
+  end
+
+  defp old_hook_source, do: "#!/usr/bin/env python3\nimport sys\nsys.exit(0)\n"
+
+  describe "containment profile (030)" do
+    test "profile strict (default) is unchanged, passes on an un-upgraded pack" do
+      repo = committed_target()
+      settings = Path.join(repo, ".claude/settings.json")
+
+      File.write!(settings, old_settings_json())
+      git!(repo, ["add", "-A"])
+      git!(repo, ["commit", "-q", "-m", "downgrade to pre-030 pack"])
+
+      assert :ok = TargetPack.verify(repo)
+      assert :ok = TargetPack.verify(repo, profile: "strict")
+    end
+
+    test "profile permissive passes for a freshly installed, committed pack" do
+      repo = committed_target()
+      assert :ok = TargetPack.verify(repo, profile: "permissive")
+    end
+
+    test "profile permissive fails when the committed settings.json still has a deny list" do
+      repo = committed_target()
+      settings = Path.join(repo, ".claude/settings.json")
+
+      File.write!(settings, old_settings_json())
+      git!(repo, ["add", "-A"])
+      git!(repo, ["commit", "-q", "-m", "reintroduce deny list"])
+
+      assert {:error, problems} = TargetPack.verify(repo, profile: "permissive")
+      assert Enum.any?(problems, &match?({:pack_outdated, ".claude/hooks/scope_guard.py", _}, &1))
+    end
+
+    test "profile permissive fails when the committed hook predates contract 2" do
+      repo = committed_target()
+      hook = Path.join(repo, ".claude/hooks/scope_guard.py")
+
+      File.write!(hook, old_hook_source())
+      git!(repo, ["add", "-A"])
+      git!(repo, ["commit", "-q", "-m", "downgrade hook"])
+
+      assert {:error, problems} = TargetPack.verify(repo, profile: "permissive")
+      assert Enum.any?(problems, &match?({:pack_outdated, ".claude/hooks/scope_guard.py", _}, &1))
+    end
+
+    test "profile permissive fails when the upgrade is installed but uncommitted" do
+      repo = committed_target()
+      hook = Path.join(repo, ".claude/hooks/scope_guard.py")
+
+      File.write!(hook, old_hook_source())
+      git!(repo, ["add", "-A"])
+      git!(repo, ["commit", "-q", "-m", "downgrade hook"])
+
+      # Re-install (contract 2 again) but leave it uncommitted — HEAD: still
+      # sees the downgraded hook, so this must fail exactly like a missing
+      # upgrade.
+      {:ok, _} = TargetPack.install(repo)
+
+      assert {:error, problems} = TargetPack.verify(repo, profile: "permissive")
+      assert Enum.any?(problems, &match?({:pack_outdated, ".claude/hooks/scope_guard.py", _}, &1))
+    end
+
+    test "check_pack_contract/1 reads the committed hook, not the working tree" do
+      repo = committed_target()
+      hook = Path.join(repo, ".claude/hooks/scope_guard.py")
+
+      File.write!(hook, old_hook_source())
+      git!(repo, ["add", "-A"])
+      git!(repo, ["commit", "-q", "-m", "downgrade hook"])
+
+      {:ok, _} = TargetPack.install(repo)
+
+      assert {:error, {:pack_outdated, ".claude/hooks/scope_guard.py", _hint}} =
+               TargetPack.check_pack_contract(repo)
+    end
+
+    test "check_pack_contract/1 passes once the upgrade is committed" do
+      repo = committed_target()
+      assert :ok = TargetPack.check_pack_contract(repo)
+    end
+  end
 end
