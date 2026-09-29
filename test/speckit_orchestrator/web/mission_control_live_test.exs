@@ -1340,4 +1340,40 @@ defmodule SpeckitOrchestrator.Web.MissionControlLiveTest do
     assert html =~ "left"
     assert html =~ "/escalations#awaiting-701"
   end
+
+  # ---- 030: containment chip on the shared topbar (US3) ---------------------
+
+  test "topbar shows the containment chip when the live run is permissive", %{conn: conn} do
+    pid =
+      Coordinator.start_link(
+        name: Coordinator,
+        features: [feat("mc-perm")],
+        runner: fn _feature, _notify -> :ok end,
+        owner: self(),
+        context: %{containment_profile: "permissive"}
+      )
+      |> elem(1)
+
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    {:ok, _view, html} = live(conn, "/")
+
+    assert html =~ ~s(data-containment="permissive")
+    assert html =~ "containment: permissive"
+  end
+
+  test "topbar omits the containment chip when the live run is strict", %{conn: conn} do
+    pid = start_coordinator([feat("mc-strict")])
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    {:ok, _view, html} = live(conn, "/")
+
+    refute html =~ "data-containment"
+  end
+
+  test "topbar omits the containment chip when there is no active run", %{conn: conn} do
+    {:ok, _view, html} = live(conn, "/")
+
+    refute html =~ "data-containment"
+  end
 end

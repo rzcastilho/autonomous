@@ -17,7 +17,7 @@ defmodule SpeckitOrchestrator.Web.RunDetailLive do
 
   use SpeckitOrchestrator.Web, :live_view
 
-  alias SpeckitOrchestrator.{Config, ConsoleProjection, PublishOutcome}
+  alias SpeckitOrchestrator.{Config, Containment, ConsoleProjection, PublishOutcome}
 
   @impl true
   def mount(%{"run_id" => run_id}, _session, socket) do
@@ -409,6 +409,23 @@ defmodule SpeckitOrchestrator.Web.RunDetailLive do
   attr(:settings, :map, required: true)
   attr(:amendments, :list, required: true)
 
+  # 030, contracts/operator-surfaces.md: the generic SETTINGS chip list skips
+  # `containment_profile` when strict — a dedicated CONTAINMENT block covers
+  # the permissive case, so the strict view stays byte-identical to pre-030.
+  # Recorded settings carry string keys in production (`RunContext.to_map/1`)
+  # but existing tests seed this map with atom keys, so both are checked.
+  defp settings_chips(settings) do
+    if Containment.permissive?(containment_profile(settings)) do
+      settings
+    else
+      settings |> Map.delete("containment_profile") |> Map.delete(:containment_profile)
+    end
+  end
+
+  defp containment_profile(settings) do
+    Map.get(settings, "containment_profile") || Map.get(settings, :containment_profile)
+  end
+
   defp run_header(assigns) do
     ~H"""
     <div class="escalations-intro" data-run-header>
@@ -429,9 +446,21 @@ defmodule SpeckitOrchestrator.Web.RunDetailLive do
 
       <div class="run-context-label">SETTINGS</div>
       <div class="run-context">
-        <span :for={{k, v} <- @settings} class="run-context-chip">
+        <span :for={{k, v} <- settings_chips(@settings)} class="run-context-chip">
           {k}=<span>{inspect(v)}</span>
         </span>
+      </div>
+
+      <div :if={Containment.permissive?(containment_profile(@settings))} data-containment>
+        <div class="run-context-label">CONTAINMENT</div>
+        <div class="run-context">
+          <span class="run-context-chip">
+            containment_profile=<span>permissive</span>
+          </span>
+        </div>
+        <div class="escalations-sub">
+          See docs/enforcement.md for what the permissive profile relaxes.
+        </div>
       </div>
 
       <div :if={@amendments != []} data-amendments>

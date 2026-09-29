@@ -691,6 +691,18 @@ fieldset {
   border: 1px solid var(--halted);
 }
 
+.containment-chip {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  padding: 4px var(--sp-10);
+  border-radius: var(--r-chip);
+  background: var(--raised);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+}
+
 .topbar-clock {
   margin-left: auto;
   display: flex;

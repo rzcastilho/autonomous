@@ -7,7 +7,7 @@ defmodule SpeckitOrchestrator.Web.ConfigLiveTest do
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
 
-  alias SpeckitOrchestrator.{Config, Ledger}
+  alias SpeckitOrchestrator.{Config, Coordinator, Feature, Ledger}
 
   @endpoint SpeckitOrchestrator.Web.Endpoint
 
@@ -16,13 +16,15 @@ defmodule SpeckitOrchestrator.Web.ConfigLiveTest do
       models: Config.models(),
       pr_base: Application.get_env(:speckit_orchestrator, :pr_base),
       pr_remote: Application.get_env(:speckit_orchestrator, :pr_remote),
-      budget_usd: Ledger.snapshot().budget
+      budget_usd: Ledger.snapshot().budget,
+      containment_profile: Application.get_env(:speckit_orchestrator, :containment_profile)
     }
 
     on_exit(fn ->
       Application.put_env(:speckit_orchestrator, :models, prior.models)
       restore(:pr_base, prior.pr_base)
       restore(:pr_remote, prior.pr_remote)
+      restore(:containment_profile, prior.containment_profile)
       Ledger.set_budget(prior.budget_usd)
     end)
 
@@ -101,5 +103,37 @@ defmodule SpeckitOrchestrator.Web.ConfigLiveTest do
     assert html =~ "upstream"
     assert Config.pr_base() == "release"
     assert Config.pr_remote() == "upstream"
+  end
+
+  # ---- 030: containment profile visibility (US3, contracts/operator-surfaces.md)
+
+  test "shows the containment_profile default row only when the default is permissive", %{
+    conn: conn
+  } do
+    {:ok, _view, html} = live(conn, "/config")
+    refute html =~ "containment_profile default:"
+
+    Application.put_env(:speckit_orchestrator, :containment_profile, :permissive)
+    {:ok, _view, html} = live(conn, "/config")
+    assert html =~ "containment_profile default: permissive"
+  end
+
+  test "shows the live run's containment_profile row only when that run is permissive", %{
+    conn: conn
+  } do
+    {:ok, pid} =
+      Coordinator.start_link(
+        name: Coordinator,
+        features: [%Feature{id: "cfg1", number: 1, slug: "cfg1", path: "cfg1.md"}],
+        runner: fn _feature, _notify -> :ok end,
+        owner: self(),
+        context: %{containment_profile: "permissive"}
+      )
+
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    {:ok, _view, html} = live(conn, "/config")
+
+    assert html =~ "containment_profile (live run): permissive"
   end
 end

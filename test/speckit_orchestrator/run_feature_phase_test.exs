@@ -103,7 +103,8 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhaseTest do
       cost_total: 0.0,
       history: [],
       resume_phase: nil,
-      resume_prompt: nil
+      resume_prompt: nil,
+      containment: "strict"
     }
 
     %{agent: %{state: Map.merge(base, state_overrides)}}
@@ -160,6 +161,75 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhaseTest do
 
   defp restore(app, key, nil), do: Application.delete_env(app, key)
   defp restore(app, key, val), do: Application.put_env(app, key, val)
+
+  # 030, T016: every RunRequest built for RunFeaturePhase carries
+  # SPECKIT_ORCHESTRATED=1 (env markers set under both containment profiles,
+  # research R3) — verified end-to-end through the real PhaseRequest.build/3
+  # + adapter option-building seam, not just PhaseRequest's own unit tests.
+  defmodule EnvCapturingSDK do
+    alias ClaudeAgentSDK.Message
+
+    def query(_prompt, opts) do
+      send(self(), {:captured_env, opts.env})
+
+      [
+        %Message{
+          type: :result,
+          subtype: :success,
+          data: %{
+            session_id: "sess-env",
+            result: "ok",
+            num_turns: 1,
+            duration_ms: 1,
+            is_error: false,
+            total_cost_usd: 0.0,
+            usage: %{input_tokens: 0, output_tokens: 0},
+            model: "m"
+          },
+          raw: %{}
+        }
+      ]
+    end
+  end
+
+  describe "containment env markers (030, T016)" do
+    setup do
+      original = Application.get_env(:jido_claude, :sdk_module)
+      Application.put_env(:jido_claude, :sdk_module, EnvCapturingSDK)
+      on_exit(fn -> restore(:jido_claude, :sdk_module, original) end)
+      :ok
+    end
+
+    test "strict-profile session carries SPECKIT_ORCHESTRATED=1 and profile strict" do
+      assert {:ok, _} = RunFeaturePhase.run(%{phase: :analyze}, context(%{containment: "strict"}))
+      assert_received {:captured_env, env}
+      assert env["SPECKIT_ORCHESTRATED"] == "1"
+      assert env["SPECKIT_CONTAINMENT_PROFILE"] == "strict"
+    end
+
+    test "permissive-profile session carries SPECKIT_ORCHESTRATED=1 and profile permissive" do
+      assert {:ok, _} =
+               RunFeaturePhase.run(%{phase: :analyze}, context(%{containment: "permissive"}))
+
+      assert_received {:captured_env, env}
+      assert env["SPECKIT_ORCHESTRATED"] == "1"
+      assert env["SPECKIT_CONTAINMENT_PROFILE"] == "permissive"
+    end
+
+    test "an implement chunk session (scoped) also carries the marker" do
+      tp = %SpeckitOrchestrator.TaskPlan.TaskPhase{ordinal: 1, number: "1", title: "Setup", tasks: []}
+
+      assert {:ok, _} =
+               RunFeaturePhase.run(
+                 %{phase: :implement, scope: {:task_phase, tp}},
+                 context(%{containment: "permissive"})
+               )
+
+      assert_received {:captured_env, env}
+      assert env["SPECKIT_ORCHESTRATED"] == "1"
+      assert env["SPECKIT_CONTAINMENT_PROFILE"] == "permissive"
+    end
+  end
 
   @all_phases [:specify, :clarify, :plan, :tasks, :analyze, :implement]
 

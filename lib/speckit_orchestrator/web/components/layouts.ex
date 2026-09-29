@@ -71,9 +71,16 @@ defmodule SpeckitOrchestrator.Web.Layouts do
       reserved: ledger.reserved * 1.0,
       budget: ledger.budget * 1.0,
       tripped?: ledger.tripped?,
-      clock: DateTime.utc_now() |> DateTime.to_time() |> Time.to_string()
+      clock: DateTime.utc_now() |> DateTime.to_time() |> Time.to_string(),
+      containment_profile: containment_profile(status)
     }
   end
+
+  # 030, contracts/operator-surfaces.md: `nil` unless the live run's profile
+  # is permissive (`Coordinator`'s snapshot only ever carries the key then) —
+  # every view's topbar renders the chip only in that case (FR-015).
+  defp containment_profile(nil), do: nil
+  defp containment_profile(status), do: Map.get(status, :containment_profile)
 
   defp title_for(nil, _parked?), do: "No active run"
   defp title_for(_status, true), do: "Parked run"

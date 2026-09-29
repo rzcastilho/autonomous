@@ -92,7 +92,8 @@ defmodule SpeckitOrchestrator.Actions.RunFeaturePhase do
         resume_prompt: resume_prompt_for(state, phase, params),
         layout: state.layout,
         scope: scope,
-        clarify_answers: if(phase == :clarify, do: Map.get(params, :operator_answers))
+        clarify_answers: if(phase == :clarify, do: Map.get(params, :operator_answers)),
+        containment: state.containment
       )
 
     case Jido.Harness.run_request(:claude, request, []) do

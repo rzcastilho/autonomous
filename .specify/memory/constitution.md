@@ -1,5 +1,51 @@
 <!--
 Sync Impact Report
+Version change: 5.0.0 → 6.0.0
+Bump rationale: MAJOR. Principle III was unconditional: the scope-guard hook
+  "MUST deny out-of-tree writes and dangerous Bash" and per-phase permissions
+  "MUST further narrow tools per phase", for every session in a target repo.
+  Both are now conditional on a per-run containment profile. That redefines a
+  principle guarantee, the same class of change as the 3.0.0, 4.0.0 and 5.0.0
+  amendments. `strict` is the default and keeps every earlier MUST verbatim,
+  and push and network denial are now named explicitly (they were enforced by
+  the pack's settings.json before). `permissive` is an explicit, recorded,
+  resume-locked opt-in with no pack deny list and no floor (feature 030,
+  Clarifications 2026-09-28). Fail-closed parsing and strict-on-undecided
+  origin hold under every profile. Human-started interactive sessions are no
+  longer subject to pack denials.
+Modified principles:
+  - III. Least-Privilege Containment (Fail-Closed): the title is unchanged.
+    The principle gains the strict/permissive profiles, session-origin rules,
+    the resume lock, the visibility obligation, and a 6.0.0 rationale
+    paragraph. The claim "the adapter runs the CLI with
+    `--dangerously-skip-permissions`" is dropped: the SDK path passes
+    `--permission-mode` (specs/030-permissive-containment/research.md R2).
+Modified sections:
+  - Quality & Test Discipline: hook red-team covers every profile and
+    origin, under a pinned environment.
+Added principles: none
+Added sections: none
+Removed sections: none
+Templates requiring updates:
+  ✅ .specify/templates/plan-template.md: the Constitution Check is
+     principle-agnostic
+  ✅ .specify/templates/spec-template.md: no principle-specific references
+  ✅ .specify/templates/tasks-template.md: no principle-specific references
+  ✅ .specify/templates/checklist-template.md: generic, no change
+  ⚠️ docs/enforcement.md, docs/runbook.md, docs/harness-contract.md and
+     CLAUDE.md describe current code, including the stale
+     `--dangerously-skip-permissions` claim. They are updated in the same
+     change as the feature 030 implementation (spec FR-017), not ahead of the
+     code.
+  ⚠️ priv/target_pack/.claude/ (settings.json deny list, scope_guard.py) still
+     implements the 5.0.0 rule set until feature 030 lands. Under `strict` that
+     is decision-compatible with 6.0.0 for orchestrator sessions. Only the
+     human-session and permissive clauses wait on the code.
+Follow-up TODOs: none. Operator decisions recorded in
+  specs/030-permissive-containment/spec.md Clarifications: no host-destroying
+  floor, full tool set for every phase, `strict` as the shipped default.
+
+Prior report (5.0.0):
 Version change: 4.0.0 → 5.0.0
 Bump rationale: MAJOR. Principle V's clarify escalation was unconditional:
   "MUST escalate … on an unresolved `## NEEDS HUMAN`". Under a per-run opt-in
@@ -360,17 +406,74 @@ an upgraded install — and therefore the cases where silence is most costly.
 
 ### III. Least-Privilege Containment (Fail-Closed)
 
-Because the adapter runs the CLI with `--dangerously-skip-permissions`,
-containment MUST live in the committed target-repo pack, not in CLI prompts. The
-PreToolUse scope-guard hook MUST deny out-of-tree writes and dangerous Bash, and
-MUST fail closed on malformed input. `settings.json` MUST grant least privilege,
-and per-phase permissions (`PhaseRequest`) MUST further narrow tools per phase.
-Enforcement MUST be layered (hook + per-phase permissions + container recipe),
-never a single point of trust.
+Headless sessions run without a human to approve tool calls, so containment
+MUST live in the committed target-repo pack and in per-phase permissions, not
+in CLI prompts. Every run has exactly one **containment profile**, fixed when
+the run starts and recorded with the run: `strict` or `permissive`.
+
+**`strict` is the default** for every run and for the shipped configuration.
+Under `strict`:
+
+- the PreToolUse scope-guard hook MUST deny out-of-tree writes, dangerous
+  Bash, pushes to a remote, and network access (download tools, web fetch,
+  web search);
+- `settings.json` MUST grant least privilege, and per-phase permissions
+  (`PhaseRequest`) MUST further narrow tools per phase (read-only phases stay
+  read-only);
+- enforcement MUST be layered (hook + per-phase permissions + container
+  recipe), never a single point of trust.
+
+A run MAY opt into **`permissive`**, per run or through the configured global
+default, subject to all of:
+
+- the pack keeps **no deny list** for well-formed requests, with no floor, and
+  every phase gets the same full tool set (file writes, Bash, network). The
+  only tool exclusions left are the headless subagent and scheduling tools,
+  which exist to keep sessions from ending while they wait on background work,
+  not to contain them;
+- the profile is recorded on the run at start. Resume, continue, and
+  publish-only resume MUST reuse the recorded profile and MUST refuse a
+  different one. A profile change needs a fresh run;
+- a permissive run MUST NOT start against a committed pack that cannot honor
+  the profile. Preflight fails loudly instead of running under other rules;
+- every operator surface that describes the run, and every PR body for a
+  feature built under it, MUST state that containment was relaxed
+  (Principle VII);
+- the container recipe is the recommended outer boundary, because no pack
+  deny list remains;
+- the correctness gates (branch drift, artifact substance, incomplete
+  session, analyze, clarify), the cost breaker, and the session deadlines are
+  not containment. They MUST behave identically under both profiles.
+
+Under **every** profile and session origin:
+
+- the hook MUST fail closed on malformed input: it denies file writes and
+  Bash when it cannot read the request;
+- every orchestrator-started session MUST carry a positive orchestrator
+  marker and its run's profile. The pack MUST resolve a session with no
+  marker and no positively identified interactive origin to `strict`, so
+  origin detection can only fail toward strict;
+- every pack denial MUST name the profile and the rule that fired.
+
+A Claude Code session that a human starts interactively in a target repo is
+not an orchestrator session. The pack MUST NOT add denials to it. That session
+stays under the human's own Claude Code permission settings and prompts.
 
 Rationale: The orchestrator executes model-authored actions against real repos.
 Defense in depth that fails closed is the only safe default when the executing
-agent's output is not pre-reviewed.
+agent's output is not pre-reviewed. That is why `strict` is the default and
+keeps every earlier guarantee.
+
+6.0.0 makes those guarantees conditional, deliberately. The pack's denials also
+hit the operator's own attended sessions, where a human already approves each
+action. They also stop autonomous phases from doing legitimate work: fetching
+documentation, reaching a sibling directory, pushing a branch. An operator who
+runs the orchestrator on their own machine and accepts that risk had no way to
+say so. The relaxation is explicit, per run, recorded, locked for the life of
+the run, and visible on every surface and every PR. Two things are not
+relaxed: fail-closed parsing, and strict for any session whose origin is in
+doubt. So the pack can never be silently turned off by a missing marker, a
+changed default, or a resume.
 
 ### IV. Cost-Bounded Autonomy (Drain, Don't Kill)
 
@@ -773,7 +876,9 @@ four permitted keyframes.
 - Real-harness and out-of-tree side effects MUST sit behind opt-in
   (`--include integration`) so the default suite stays hermetic.
 - Enforcement code (the scope-guard hook) MUST be tested against the real hook,
-  red-team style, not a mock.
+  red-team style, not a mock, for every profile and session origin, with a
+  pinned environment so the result does not depend on the shell running the
+  suite.
 
 ## Development Workflow
 
@@ -803,4 +908,4 @@ deviation already is. Reviews and PRs MUST verify compliance with these
 principles; the constitution and the implementation plan together are the
 runtime guidance for autonomous and human contributors alike.
 
-**Version**: 5.0.0 | **Ratified**: 2026-07-11 | **Last Amended**: 2026-09-24
+**Version**: 6.0.0 | **Ratified**: 2026-07-11 | **Last Amended**: 2026-09-28

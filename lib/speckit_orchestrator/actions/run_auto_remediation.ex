@@ -36,7 +36,8 @@ defmodule SpeckitOrchestrator.Actions.RunAutoRemediation do
       PhaseRequest.build_remediation(state.feature, model,
         cwd: worktree_path(state.worktree),
         layout: state.layout,
-        prompt: prompt
+        prompt: prompt,
+        containment: state.containment
       )
 
     case Jido.Harness.run_request(:claude, request, []) do

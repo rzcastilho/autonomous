@@ -16,7 +16,7 @@ defmodule SpeckitOrchestrator.PhaseRequest do
   """
 
   alias Jido.Harness.RunRequest
-  alias SpeckitOrchestrator.{Config, Feature, Layout, Prompts, Worktree}
+  alias SpeckitOrchestrator.{Config, Containment, Feature, Layout, Prompts, Worktree}
   alias SpeckitOrchestrator.TaskPlan.TaskPhase
 
   @slash %{
@@ -42,6 +42,11 @@ defmodule SpeckitOrchestrator.PhaseRequest do
   # interactive `/loop` scheduler, meaningless in a one-shot session.
   @headless_disallowed ~w(Agent Task ScheduleWakeup)
 
+  # Full tool set under `permissive` (030, FR-005–FR-007) — `WebFetch`/`WebSearch`
+  # join the write/Bash set; the FR-008 exclusions (`Agent`/`Task`/`ScheduleWakeup`)
+  # are the only thing still disallowed.
+  @permissive_allowed_tools ~w(Read Write Edit MultiEdit NotebookEdit Bash Grep Glob WebFetch WebSearch)
+
   @doc """
   Build the RunRequest for `feature` at `phase`.
 
@@ -64,10 +69,16 @@ defmodule SpeckitOrchestrator.PhaseRequest do
       clarify re-run, appended after `:resume_prompt`'s section so both may
       appear (contracts/needs-human-format.md Answer-folding instruction).
       `nil`/absent leaves the prompt byte-identical to today (FR-002).
+    * `:containment` — (030) `"strict"` (default) or `"permissive"`. Under
+      `"strict"` the built request is byte-identical to today except for the
+      env markers now carried in `metadata["claude"][:env]`. Under
+      `"permissive"` every phase gets `:bypass_permissions` and the full tool
+      set (contracts/run-options.md).
   """
   @spec build(Feature.t(), atom(), keyword()) :: RunRequest.t()
   def build(%Feature{} = feature, phase, opts \\ []) when is_atom(phase) do
     layout = Keyword.get(opts, :layout)
+    containment = Keyword.get(opts, :containment, "strict")
 
     %{
       prompt:
@@ -77,11 +88,12 @@ defmodule SpeckitOrchestrator.PhaseRequest do
         |> append_resume_prompt(Keyword.get(opts, :resume_prompt))
         |> append_clarify_answers(Keyword.get(opts, :clarify_answers)),
       cwd: Keyword.get(opts, :cwd, Config.repo()),
-      model: Config.model_for(phase)
+      model: Config.model_for(phase),
+      metadata: %{"claude" => %{env: Containment.session_env(containment)}}
     }
     |> maybe_put(:max_turns, max_turns(phase))
     |> maybe_put(:session_id, Keyword.get(opts, :session_id))
-    |> Map.merge(permissions(phase))
+    |> Map.merge(permissions(phase, containment))
     |> RunRequest.new!()
   end
 
@@ -96,21 +108,23 @@ defmodule SpeckitOrchestrator.PhaseRequest do
       breakdown ref (same as `build/3`).
     * `:prompt` — the operator's verbatim remediation instruction, appended
       after a short framing header.
+    * `:containment` — (030) `"strict"` (default) or `"permissive"`, same
+      effect as `build/3`.
 
   No `session_id` (fresh session, like every phase).
   """
   @spec build_remediation(Feature.t(), String.t(), keyword()) :: RunRequest.t()
   def build_remediation(%Feature{} = feature, model, opts \\ []) when is_binary(model) do
     layout = Keyword.get(opts, :layout)
+    containment = Keyword.get(opts, :containment, "strict")
 
     %{
       prompt: remediation_prompt(feature, layout, Keyword.get(opts, :prompt)),
       cwd: Keyword.get(opts, :cwd, Config.repo()),
       model: model,
-      permission_mode: :accept_edits,
-      allowed_tools: @write_bash_tools,
-      disallowed_tools: @headless_disallowed
+      metadata: %{"claude" => %{env: Containment.session_env(containment)}}
     }
+    |> Map.merge(remediation_permissions(containment))
     |> RunRequest.new!()
   end
 
@@ -261,10 +275,26 @@ defmodule SpeckitOrchestrator.PhaseRequest do
   defp max_turns(:implement), do: Config.implement_max_turns()
   defp max_turns(_), do: nil
 
+  # `permissive` (030): every phase — including analyze/clarify/describe,
+  # which are read-only under `strict` — gets the full tool set (FR-007, the
+  # operator declined a read-only-phases floor at clarify). `strict` keeps
+  # today's per-phase table byte-identical (SC-003).
+  defp permissions(_phase, "permissive"), do: permissive_permissions()
+
+  defp permissions(phase, _strict), do: strict_permissions(phase)
+
+  defp permissive_permissions do
+    %{
+      permission_mode: :bypass_permissions,
+      allowed_tools: @permissive_allowed_tools,
+      disallowed_tools: @headless_disallowed
+    }
+  end
+
   # analyze is read-only. The phases that run Spec Kit scripts and/or write repo
   # files (specify, plan, tasks, implement, converge) get non-interactive
   # write+Bash. clarify only edits the spec, so it needs no Bash.
-  defp permissions(:analyze) do
+  defp strict_permissions(:analyze) do
     %{
       permission_mode: :plan,
       allowed_tools: ~w(Read Grep Glob),
@@ -272,7 +302,7 @@ defmodule SpeckitOrchestrator.PhaseRequest do
     }
   end
 
-  defp permissions(:clarify) do
+  defp strict_permissions(:clarify) do
     %{
       permission_mode: :accept_edits,
       allowed_tools: ~w(Read Write Edit Grep Glob),
@@ -281,7 +311,7 @@ defmodule SpeckitOrchestrator.PhaseRequest do
   end
 
   # describe is read-only but needs Bash to inspect the diff (git diff/log/status).
-  defp permissions(:describe) do
+  defp strict_permissions(:describe) do
     %{
       permission_mode: :plan,
       allowed_tools: ~w(Read Grep Glob Bash),
@@ -289,7 +319,7 @@ defmodule SpeckitOrchestrator.PhaseRequest do
     }
   end
 
-  defp permissions(phase) when phase in [:specify, :plan, :tasks, :implement, :converge] do
+  defp strict_permissions(phase) when phase in [:specify, :plan, :tasks, :implement, :converge] do
     %{
       permission_mode: :accept_edits,
       allowed_tools: @write_bash_tools,
@@ -297,7 +327,17 @@ defmodule SpeckitOrchestrator.PhaseRequest do
     }
   end
 
-  defp permissions(_phase), do: %{}
+  defp strict_permissions(_phase), do: %{}
+
+  defp remediation_permissions("permissive"), do: permissive_permissions()
+
+  defp remediation_permissions(_strict) do
+    %{
+      permission_mode: :accept_edits,
+      allowed_tools: @write_bash_tools,
+      disallowed_tools: @headless_disallowed
+    }
+  end
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)

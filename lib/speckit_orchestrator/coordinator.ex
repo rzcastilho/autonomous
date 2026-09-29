@@ -52,7 +52,7 @@ defmodule SpeckitOrchestrator.Coordinator do
 
   use GenServer
 
-  alias SpeckitOrchestrator.{Feature, Ledger, Release, Store}
+  alias SpeckitOrchestrator.{Containment, Feature, Ledger, Release, Store}
   alias SpeckitOrchestrator.Store.{Health, Query, Writer}
 
   @type status :: Feature.status()
@@ -304,7 +304,7 @@ defmodule SpeckitOrchestrator.Coordinator do
 
     done = ids(grouped, :done)
 
-    %{
+    base = %{
       done: done,
       escalated: ids(grouped, :escalated),
       halted: ids(grouped, :halted),
@@ -316,7 +316,24 @@ defmodule SpeckitOrchestrator.Coordinator do
       advanced_with_findings: advanced_with_findings(state, done),
       clarify_rounds: clarify_rounds_report(state)
     }
+
+    with_containment_profile(base, state)
   end
+
+  # 030, contracts/operator-surfaces.md: present only for a permissive run —
+  # a strict run's report stays byte-identical to pre-030 (FR-002).
+  defp with_containment_profile(map, state) do
+    profile = containment_profile(state)
+
+    if Containment.permissive?(profile) do
+      Map.put(map, :containment_profile, profile)
+    else
+      map
+    end
+  end
+
+  defp containment_profile(%__MODULE__{context: %{containment_profile: profile}}), do: profile
+  defp containment_profile(_state), do: nil
 
   # 029, data-model.md Coordinator report, research.md R15: `%{}` when the
   # mode is off (no rounds ever opened) or this Coordinator isn't store-backed
@@ -389,6 +406,7 @@ defmodule SpeckitOrchestrator.Coordinator do
       layout: state.layout,
       context: state.context
     }
+    |> with_containment_profile(state)
   end
 
   defp elapsed_ms(state, id) do

@@ -18,6 +18,7 @@ defmodule SpeckitOrchestrator.Web.ConfigLive do
 
   alias SpeckitOrchestrator.{
     Config,
+    Containment,
     ConsoleProjection,
     Coordinator,
     Ledger,
@@ -38,8 +39,19 @@ defmodule SpeckitOrchestrator.Web.ConfigLive do
       models: Config.models(),
       budget_usd: Ledger.snapshot().budget,
       pr_base: Config.pr_base(),
-      pr_remote: Config.pr_remote()
+      pr_remote: Config.pr_remote(),
+      containment_default: Atom.to_string(Config.containment_profile()),
+      containment_live: live_containment_profile()
     )
+  end
+
+  # 030, contracts/operator-surfaces.md: `nil` unless the live run's profile
+  # is permissive — `Coordinator`'s snapshot only ever carries the key then.
+  defp live_containment_profile do
+    case coordinator_status() do
+      nil -> nil
+      status -> Map.get(status, :containment_profile)
+    end
   end
 
   # ---- apply (T068 dispatch, T070 display) -----------------------------
@@ -195,6 +207,24 @@ defmodule SpeckitOrchestrator.Web.ConfigLive do
               PR_REMOTE
               <input type="text" name="pr_remote" value={@pr_remote} />
             </label>
+          </div>
+        </fieldset>
+
+        <fieldset
+          :if={Containment.permissive?(@containment_default) or Containment.permissive?(@containment_live)}
+          class="config-pr form-panel"
+          data-containment
+        >
+          <legend class="sr-only">Containment</legend>
+          <div :if={Containment.permissive?(@containment_default)} class="config-toggle-row">
+            <div class="config-toggle-title">
+              containment_profile default: {@containment_default}
+            </div>
+          </div>
+          <div :if={Containment.permissive?(@containment_live)} class="config-toggle-row">
+            <div class="config-toggle-title">
+              containment_profile (live run): {@containment_live}
+            </div>
           </div>
         </fieldset>
 

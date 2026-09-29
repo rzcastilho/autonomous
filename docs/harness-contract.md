@@ -101,11 +101,22 @@ Consequences for later phases:
 ### Runtime contract (`Jido.Claude.Adapter.runtime_contract/0`)
 
 - Invokes the `claude` CLI with `-p --output-format stream-json
-  --include-partial-messages --no-session-persistence --verbose
-  --dangerously-skip-permissions`, wrapped in a `timeout 180` guard.
-  - ⚠️ **`--dangerously-skip-permissions` is in the template.** In-tree scope
-    enforcement therefore leans entirely on the committed `.claude/settings.json`
-    + PreToolUse hook (Phase 5) and/or container isolation. Flag for Phase 5.
+  --include-partial-messages --no-session-persistence --verbose`, wrapped in a
+  `timeout 180` guard.
+  - **Superseded finding (030, research.md R2):** an earlier read of this
+    template found `--dangerously-skip-permissions` here. The real SDK path
+    passes `--permission-mode <mode>` instead — sourced from
+    `PhaseRequest.build/3`'s `permission_mode` field (`:plan`/`:accept_edits`/
+    `:bypass_permissions` per phase and containment profile, feature 030) —
+    and `--dangerously-skip-permissions` is not emitted. Per-phase permissions
+    therefore genuinely govern tool access rather than being pure
+    belt-and-suspenders over an ignored flag. In-tree scope enforcement still
+    layers the committed `.claude/settings.json` + PreToolUse hook (Phase 5)
+    on top — the hook is what applies uniformly regardless of which
+    `--permission-mode` a given phase/profile requests, and under the
+    `permissive` containment profile (030) it is the *only* layer, since that
+    profile's `permission_mode` is `:bypass_permissions` with no tool
+    exclusion beyond FR-008 — see `docs/enforcement.md`.
 - Auth: one of `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY` /
   `CLAUDE_CODE_API_KEY` must be in the host env.
 - Compatibility probe: `claude --help` must show `--output-format`,

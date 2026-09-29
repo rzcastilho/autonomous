@@ -192,6 +192,65 @@ The console's Trigger Run page supplies this from its package picker.
 
 ---
 
+## Containment profile (030)
+
+Every run picks a containment profile, `strict` (default) or `permissive`,
+recorded once at run start and locked for the run's lifetime.
+
+```elixir
+iex> SpeckitOrchestrator.run(containment_profile: :permissive)
+```
+
+Or leave it unset to take `Config.containment_profile/0` (`config
+:speckit_orchestrator, containment_profile: :permissive` to change the
+default). The Trigger Run console page exposes the same two-option control,
+with a one-line consequence note when `permissive` is selected.
+
+**`permissive` requires an upgraded, committed pack.** Preflight rejects the
+run otherwise:
+
+```elixir
+iex> SpeckitOrchestrator.run(containment_profile: :permissive)
+{:error, {:preflight, [{:pack_outdated, "/path/to/target", "re-run TargetPack.install/2 and commit"}]}}
+```
+
+Fix by re-running `TargetPack.install/2` against the target and committing
+the result (`git add .claude && git commit`), then re-run.
+
+**The profile never renegotiates.** `resume/2`, `continue_run/1`, and
+`resume_run/1` all read the profile from the recorded run; an explicit
+`:containment_profile` opt that disagrees with it is refused before any side
+effect:
+
+```elixir
+iex> SpeckitOrchestrator.resume("r000012", containment_profile: :strict)
+{:error, {:preflight, [{:containment_profile_locked, "permissive"}]}}
+```
+
+Omit the opt (or pass the same value) to resume normally — it silently
+inherits the recorded profile.
+
+**Visibility.** A `permissive` run shows `containment: permissive` on the
+final report, `iex> SpeckitOrchestrator.print_status/0`, the console topbar
+(every view), Run Detail's CONTAINMENT block, the Configuration page, and the
+PR body. A `strict` run's surfaces are byte-identical to before this feature —
+no marker anywhere. See `docs/enforcement.md` for what `permissive` actually
+relaxes, and `specs/030-permissive-containment/contracts/operator-surfaces.md`
+for the exact surface list.
+
+**Human sessions are never blocked, under either profile.** The pack's hook
+tells an operator's own interactive `claude` session (run directly in a target
+repo, outside the orchestrator) apart from an orchestrator-driven one via
+`SPECKIT_ORCHESTRATED`/`SPECKIT_CONTAINMENT_PROFILE` env markers the
+orchestrator sets on every session it starts, falling back to
+`CLAUDE_CODE_ENTRYPOINT=cli` to detect a human shell with neither marker set.
+**Known limitation:** this detection has not been verified against every
+`claude` CLI version/invocation shape — if a future CLI version stops setting
+`CLAUDE_CODE_ENTRYPOINT=cli` for an interactive session, that session would
+fall through to `strict`'s rule set (fail closed, the safe direction) rather
+than silently going unenforced. Re-verify after a CLI upgrade if operator
+sessions start seeing unexpected denials.
+
 ## Single-spec run (no backlog required)
 
 To drive **exactly one** feature from a free-text description — no
