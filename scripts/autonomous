@@ -2,13 +2,14 @@
 # The documented entry point for operating the orchestrator (feature 031, FR-003).
 # Contract: specs/031-containerized-runtime/contracts/wrapper-cli.md
 #
-#   scripts/autonomous build
+#   scripts/autonomous build [--release] [--web] [--desktop] [--android]
 #   scripts/autonomous shell   --target <repo> [--port <n>] [--with-login]
 #   scripts/autonomous console --target <repo> [--port <n>] [--with-login]
 #   scripts/autonomous release --target <repo> [--port <n>] [--with-login]
 #   scripts/autonomous remote  --target <repo>
 #   scripts/autonomous port    --target <repo>
 #   scripts/autonomous stop    --target <repo> [--purge]
+#   scripts/autonomous viewer  --target <repo>
 #   scripts/autonomous test  [mix test args]
 #
 # Requires Docker Engine + Compose v2 on Linux (other engines are unsupported).
@@ -30,18 +31,25 @@ usage() {
   cat >&2 <<'EOF'
 usage: scripts/autonomous <command> [options]
 
-  build [--release]                      build the dev image (autonomous-dev:local); --release also
-                                         builds autonomous-release:local
+  build [--release] [--web] [--desktop] [--android]
+                                         build the dev image (autonomous-dev:local); --release also
+                                         builds autonomous-release:local; --web/--desktop/--android
+                                         add the opt-in testing capabilities (default: none)
   shell --target <repo> [--port <n>]     interactive iex with the console served
   console --target <repo> [--port <n>]   detached console (mix phx.server)
   release --target <repo> [--port <n>]   detached release instance (needs build --release)
   remote  --target <repo>                remote console into a running release
   port  --target <repo>                  print the console address of a running instance
+  viewer --target <repo>                 print the desktop viewer address of a running --viewer instance
   stop  --target <repo> [--purge]        stop the instance; --purge also removes build volumes
   test  [mix test args]                  run the test suite inside the dev image
 
 options:
   --with-login                           mount the host agent login (opt-in)
+  --viewer                               serve the virtual display through noVNC on loopback
+                                         (needs an image built with --desktop)
+  --android                              Android support at start: pass /dev/kvm through when present
+                                         (needs an image built with --android)
 EOF
   exit 2
 }
@@ -55,10 +63,14 @@ port=""
 with_login=0
 purge=0
 build_release=0
+with_web=0
+with_desktop=0
+with_android=0
+viewer=0
 test_args=""
 
 case "$cmd" in
-  build | shell | console | release | remote | port | stop | test) ;;
+  build | shell | console | release | remote | port | viewer | stop | test) ;;
   -h | --help | help) usage ;;
   *) err "unknown command '$cmd'"; usage ;;
 esac
@@ -76,6 +88,10 @@ else
       --with-login) with_login=1; shift ;;
       --purge) purge=1; shift ;;
       --release) build_release=1; shift ;;
+      --web) with_web=1; shift ;;
+      --desktop) with_desktop=1; shift ;;
+      --android) with_android=1; shift ;;
+      --viewer) viewer=1; shift ;;
       *) err "unknown option '$1'"; usage ;;
     esac
   done
@@ -110,6 +126,19 @@ if [ "$with_login" = 1 ]; then
   [ -d "$HOME/.claude" ] && [ -f "$HOME/.claude.json" ] \
     || die 2 "--with-login needs \$HOME/.claude and \$HOME/.claude.json (log in with the agent CLI on the host first)"
   compose_files="$compose_files -f compose.claude-login.yaml"
+fi
+
+if [ "$viewer" = 1 ]; then
+  compose_files="$compose_files -f compose.desktop-viewer.yaml"
+fi
+if [ "$with_android" = 1 ] && [ "$cmd" != build ]; then
+  if [ -c /dev/kvm ] && [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
+    AUTONOMOUS_KVM_GID="$(stat -c '%g' /dev/kvm)"
+    export AUTONOMOUS_KVM_GID
+    compose_files="$compose_files -f compose.android.yaml"
+  else
+    err "warning: /dev/kvm is not usable here; Android sessions need the host adb fallback (see docs/container.md)"
+  fi
 fi
 
 require_image() {
@@ -229,6 +258,9 @@ case "$cmd" in
     export AUTONOMOUS_REPO
     services="dev"
     [ "$build_release" = 1 ] && services="dev release"
+    # Capabilities are build args; each is a no-op in the Dockerfile unless 1.
+    WITH_WEB="$with_web"; WITH_DESKTOP="$with_desktop"; WITH_ANDROID="$with_android"
+    export WITH_WEB WITH_DESKTOP WITH_ANDROID
     # shellcheck disable=SC2086
     exec docker compose -p autonomous-bootstrap $compose_files build $services
     ;;
@@ -355,5 +387,20 @@ PY
     published="$(docker port "$cid" 4000/tcp 2>/dev/null | head -n1)"
     [ -n "$published" ] || die 1 "instance for $target publishes no console port"
     say "console  http://${published}/"
+    ;;
+
+  viewer)
+    resolve_target
+    require_image "$DEV_IMAGE"
+
+    identity="$(lookup_identity)" || die 1 "could not derive the instance identity for $target"
+    segment="$(env_value "$identity" AUTONOMOUS_INSTANCE_SEGMENT)"
+    [ -n "$segment" ] || die 1 "could not derive the instance identity for $target"
+
+    cid="$(docker ps -q --filter "label=com.docker.compose.project=autonomous-$segment" | head -n1)"
+    [ -n "$cid" ] || die 1 "no running instance for $target"
+    published="$(docker port "$cid" 6080/tcp 2>/dev/null | head -n1)"
+    [ -n "$published" ] || die 1 "instance for $target publishes no viewer; start it with --viewer"
+    say "viewer   http://${published}/vnc.html"
     ;;
 esac

@@ -150,18 +150,18 @@ Single OTP project. New container files at repo root (`Dockerfile`, `compose*.ya
 
 ### Tests for User Story 5
 
-- [ ] T044 [P] [US5] Extend `test/autonomous/scope_guard_test.exs` (real hook, origin `orchestrated`, profile `strict`, tool `Bash`) with the full matrix from `contracts/hook-allowlist.md`: allow `emulator … > /dev/null 2>&1 &`, `npx playwright test 2>/dev/null`, `xvfb-run -a npm test &>/dev/null`, `> /dev/stdout`/`> /dev/stderr`, `adb shell input tap 10 10`, `import -window root shot.png`, `./gradlew connectedAndroidTest`; deny `> /dev/sda`, `> /dev/nullx`, `> /dev/null/../../etc/passwd`, `> /tmp/x` (`bash_redirect_outside_worktree`) and `curl http://x > /dev/null` (`bash_curl`); all existing cases unchanged; `permissive`/`interactive` rows allow (SC-010)
+- [X] T044 [P] [US5] Extend `test/autonomous/scope_guard_test.exs` (real hook, origin `orchestrated`, profile `strict`, tool `Bash`) with the full matrix from `contracts/hook-allowlist.md`: allow `emulator … > /dev/null 2>&1 &`, `npx playwright test 2>/dev/null`, `xvfb-run -a npm test &>/dev/null`, `> /dev/stdout`/`> /dev/stderr`, `adb shell input tap 10 10`, `import -window root shot.png`, `./gradlew connectedAndroidTest`; deny `> /dev/sda`, `> /dev/nullx`, `> /dev/null/../../etc/passwd`, `> /tmp/x` (`bash_redirect_outside_worktree`) and `curl http://x > /dev/null` (`bash_curl`); all existing cases unchanged; `permissive`/`interactive` rows allow (SC-010)
 
 ### Implementation for User Story 5
 
-- [ ] T045 [US5] Edit `priv/target_pack/.claude/hooks/scope_guard.py` `check_bash/2`: add `DEVICE_SINKS = {"/dev/null", "/dev/stdout", "/dev/stderr"}`; skip a redirect whose captured target matches exactly, before `within(root, target)`; no other rule/order/profile change; `PACK_CONTRACT` stays 3 (R12) — makes T044 pass
-- [ ] T046 [P] [US5] Add `WITH_WEB` block to `/Dockerfile`: `ARG PLAYWRIGHT_VERSION`; `RUN if [ "$WITH_WEB" = 1 ]; then npx playwright@… install --with-deps chromium firefox webkit; fi` into `PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright` (world-readable); `ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1` (FR-024)
-- [ ] T047 [US5] Add `WITH_DESKTOP` block to `/Dockerfile` (after T046, same file): `xvfb`, `xdotool`, `imagemagick`, `x11vnc`, `novnc`, `websockify`, `dbus-x11`, fonts, Electron libs (`libnss3`, `libgtk-3-0`, `libasound2`, `libgbm1`, `libxss1`) behind `if [ "$WITH_DESKTOP" = 1 ]`; no-op when off (FR-023)
-- [ ] T048 [US5] Add display handling to `scripts/container-entrypoint.sh`: `AUTONOMOUS_DISPLAY=1` starts `Xvfb :99` and exports `DISPLAY=:99`; `AUTONOMOUS_DISPLAY_VIEWER=1` starts x11vnc + websockify/noVNC on 6080 (FR-025)
-- [ ] T049 [P] [US5] Create `/compose.desktop-viewer.yaml` (`127.0.0.1:${AUTONOMOUS_VIEWER_PORT:-}:6080`, `AUTONOMOUS_DISPLAY_VIEWER=1`); wrapper `--viewer` adds it; `shm_size: 1gb` already in base compose
-- [ ] T050 [US5] Wire `build --web --desktop` options in `scripts/autonomous` to `--build-arg WITH_WEB/WITH_DESKTOP`
-- [ ] T051 [US5] Extend `scripts/container-smoke.sh`: with all capabilities off, listed binaries (`xvfb-run`, `xdotool`, `playwright` browsers dir, `emulator`) absent (SC FR-023/US5-5); with web on, sample test in 3 engines passes offline; with desktop on, sample click + screenshot written (SC-009)
-- [ ] T052 [P] [US5] Document in `docs/container.md`: capability→build-option map, Playwright version match, Chromium sandbox workaround (`chromiumSandbox: false`, no extra privileges), dependency pre-fetch procedure (FR-027a), iOS/macOS/Windows on external runner (FR-028)
+- [X] T045 [US5] Edit `priv/target_pack/.claude/hooks/scope_guard.py` `check_bash/2`: add `DEVICE_SINKS = {"/dev/null", "/dev/stdout", "/dev/stderr"}`; skip a redirect whose captured target matches exactly, before `within(root, target)`; no other rule/order/profile change; `PACK_CONTRACT` stays 3 (R12) — makes T044 pass
+- [X] T046 [P] [US5] Add `WITH_WEB` block to `/Dockerfile`: `ARG PLAYWRIGHT_VERSION`; `RUN if [ "$WITH_WEB" = 1 ]; then npx playwright@… install --with-deps chromium firefox webkit; fi` into `PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright` (world-readable); `ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1` (FR-024)
+- [X] T047 [US5] Add `WITH_DESKTOP` block to `/Dockerfile` (after T046, same file): `xvfb`, `xdotool`, `imagemagick`, `x11vnc`, `novnc`, `websockify`, `dbus-x11`, fonts, Electron libs (`libnss3`, `libgtk-3-0`, `libasound2`, `libgbm1`, `libxss1`) behind `if [ "$WITH_DESKTOP" = 1 ]`; no-op when off (FR-023)
+- [X] T048 [US5] Add display handling to `scripts/container-entrypoint.sh`: `AUTONOMOUS_DISPLAY=1` starts `Xvfb :99` and exports `DISPLAY=:99`; `AUTONOMOUS_DISPLAY_VIEWER=1` starts x11vnc + websockify/noVNC on 6080 (FR-025)
+- [X] T049 [P] [US5] Create `/compose.desktop-viewer.yaml` (`127.0.0.1:${AUTONOMOUS_VIEWER_PORT:-}:6080`, `AUTONOMOUS_DISPLAY_VIEWER=1`); wrapper `--viewer` adds it; `shm_size: 1gb` already in base compose
+- [X] T050 [US5] Wire `build --web --desktop` options in `scripts/autonomous` to `--build-arg WITH_WEB/WITH_DESKTOP`
+- [X] T051 [US5] Extend `scripts/container-smoke.sh`: with all capabilities off, listed binaries (`xvfb-run`, `xdotool`, `playwright` browsers dir, `emulator`) absent (SC FR-023/US5-5); with web on, sample test in 3 engines passes offline; with desktop on, sample click + screenshot written (SC-009)
+- [X] T052 [P] [US5] Document in `docs/container.md`: capability→build-option map, Playwright version match, Chromium sandbox workaround (`chromiumSandbox: false`, no extra privileges), dependency pre-fetch procedure (FR-027a), iOS/macOS/Windows on external runner (FR-028)
 
 **Checkpoint**: US5 verified; `scope_guard_test` green with unchanged denials.
 
@@ -175,11 +175,11 @@ Single OTP project. New container files at repo root (`Dockerfile`, `compose*.ya
 
 ### Implementation for User Story 6
 
-- [ ] T053 [US6] Add `WITH_ANDROID` block to `/Dockerfile`: JDK 17, Android cmdline-tools, `platform-tools`, `emulator`, `ARG ANDROID_SYSTEM_IMAGE` (pinned), AVD created at build time under `/opt/android`, `ENV ANDROID_HOME=/opt/android`; no-op when off
-- [ ] T054 [P] [US6] Create `scripts/android-emulator` (on `PATH`): with `/dev/kvm` start `emulator -no-window -no-audio -accel on`, wait `adb wait-for-device` + `sys.boot_completed`; else use `ADB_SERVER_SOCKET=tcp:host.docker.internal:5037`; with neither, exit non-zero naming both options (FR-026)
-- [ ] T055 [P] [US6] Create `/compose.android.yaml` (`devices: ["/dev/kvm"]`, `group_add` kvm gid, `extra_hosts: ["host.docker.internal:host-gateway"]`); wrapper `--android` at start adds it, `build --android` sets `WITH_ANDROID=1`
-- [ ] T056 [US6] Extend `scripts/container-smoke.sh`: emulator boots with kvm; host-adb fallback works; neither ⇒ message naming both options (SC-009 Android modes)
-- [ ] T057 [P] [US6] Document Android modes, kvm group id, host adb fallback and image-size note in `docs/container.md`
+- [X] T053 [US6] Add `WITH_ANDROID` block to `/Dockerfile`: JDK 17, Android cmdline-tools, `platform-tools`, `emulator`, `ARG ANDROID_SYSTEM_IMAGE` (pinned), AVD created at build time under `/opt/android`, `ENV ANDROID_HOME=/opt/android`; no-op when off
+- [X] T054 [P] [US6] Create `scripts/android-emulator` (on `PATH`): with `/dev/kvm` start `emulator -no-window -no-audio -accel on`, wait `adb wait-for-device` + `sys.boot_completed`; else use `ADB_SERVER_SOCKET=tcp:host.docker.internal:5037`; with neither, exit non-zero naming both options (FR-026)
+- [X] T055 [P] [US6] Create `/compose.android.yaml` (`devices: ["/dev/kvm"]`, `group_add` kvm gid, `extra_hosts: ["host.docker.internal:host-gateway"]`); wrapper `--android` at start adds it, `build --android` sets `WITH_ANDROID=1`
+- [X] T056 [US6] Extend `scripts/container-smoke.sh`: emulator boots with kvm; host-adb fallback works; neither ⇒ message naming both options (SC-009 Android modes)
+- [X] T057 [P] [US6] Document Android modes, kvm group id, host adb fallback and image-size note in `docs/container.md`
 
 **Checkpoint**: All six stories independently functional.
 
@@ -187,11 +187,11 @@ Single OTP project. New container files at repo root (`Dockerfile`, `compose*.ya
 
 ## Phase 9: Polish & Cross-Cutting Concerns
 
-- [ ] T058 [P] Update `docs/enforcement.md`: container layer is now real; record open gaps — no egress restriction (FR-029), package-manager downloads (`npm install`/`pip install`/`mix deps.get`) not denied by the hook, `bash_curl`/`bash_wget` anchored at command start (R12 recorded gap)
-- [ ] T059 [P] Update `README.md` and `CLAUDE.md`: contributor guide points at the container for operation, host remains valid for `mise exec -- mix compile|test`; correct Phase list/status lines as needed
+- [X] T058 [P] Update `docs/enforcement.md`: container layer is now real; record open gaps — no egress restriction (FR-029), package-manager downloads (`npm install`/`pip install`/`mix deps.get`) not denied by the hook, `bash_curl`/`bash_wget` anchored at command start (R12 recorded gap)
+- [X] T059 [P] Update `README.md` and `CLAUDE.md`: contributor guide points at the container for operation, host remains valid for `mise exec -- mix compile|test`; correct Phase list/status lines as needed
 - [x] T060 Align spec FR-027 and the edge-case wording ("the download is denied by the hook") with the R12 finding in `specs/031-containerized-runtime/spec.md`, and record the package-manager gap in plan.md Complexity Tracking (done during `/speckit-analyze` remediation)
-- [ ] T061 Implement secret scan (R15, SC-012) in `scripts/container-smoke.sh`: `docker history --no-trunc`, `docker save | tar -x` + grep for values from local `.env` (never printed), `git grep` for the same values
-- [ ] T062 Run full host suite: `mise exec -- mix test` and `mise exec -- mix test --cover`; confirm warnings-as-errors clean and `design_contract_test` green
+- [X] T061 Implement secret scan (R15, SC-012) in `scripts/container-smoke.sh`: `docker history --no-trunc`, `docker save | tar -x` + grep for values from local `.env` (never printed), `git grep` for the same values
+- [X] T062 Run full host suite: `mise exec -- mix test` and `mise exec -- mix test --cover`; confirm warnings-as-errors clean and `design_contract_test` green
 - [ ] T063 Run `quickstart.md` end to end (including manual SC-004 smoke run and SC-007 second-machine check) and record outcome
 
 ---

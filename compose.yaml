@@ -13,6 +13,8 @@ x-instance: &instance
   user: "${AUTONOMOUS_UID}:${AUTONOMOUS_GID}"
   init: true
   shm_size: 1gb
+  extra_hosts:
+    - "host.docker.internal:host-gateway" # host-adb fallback for Android (US6)
   entrypoint: ["/workspace/scripts/container-entrypoint.sh"]
   env_file:
     - path: .env
@@ -50,6 +52,10 @@ services:
       args:
         UID: "${AUTONOMOUS_UID:-1000}"
         GID: "${AUTONOMOUS_GID:-1000}"
+        WITH_WEB: "${WITH_WEB:-0}"
+        WITH_DESKTOP: "${WITH_DESKTOP:-0}"
+        WITH_ANDROID: "${WITH_ANDROID:-0}"
+        PLAYWRIGHT_VERSION: "${PLAYWRIGHT_VERSION:-1.49.1}" # keep equal to the Dockerfile default
     environment:
       <<: *instance-env
       AUTONOMOUS_SERVICE: dev
@@ -82,6 +88,10 @@ services:
       args:
         UID: "${AUTONOMOUS_UID:-1000}"
         GID: "${AUTONOMOUS_GID:-1000}"
+        WITH_WEB: "${WITH_WEB:-0}"
+        WITH_DESKTOP: "${WITH_DESKTOP:-0}"
+        WITH_ANDROID: "${WITH_ANDROID:-0}"
+        PLAYWRIGHT_VERSION: "${PLAYWRIGHT_VERSION:-1.49.1}" # keep equal to the Dockerfile default
     environment:
       <<: *instance-env
       AUTONOMOUS_SERVICE: release

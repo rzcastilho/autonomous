@@ -1,0 +1,69 @@
+#!/bin/sh
+# Provide an Android device for orchestrated sessions (feature 031, FR-026).
+# Installed on PATH by the Dockerfile when built with WITH_ANDROID=1.
+#
+#   in-container emulator  /dev/kvm is present (start with --android, which adds
+#                          compose.android.yaml)
+#   host adb fallback      ADB_SERVER_SOCKET points at the host adb server, or
+#                          host.docker.internal:5037 answers
+#
+# With neither, exit 1 naming both options. Exit 0 = a device is ready.
+set -eu
+
+say() { printf 'android-emulator: %s\n' "$*" >&2; }
+
+if ! command -v adb >/dev/null 2>&1; then
+  say "adb not found: this image was built without Android support (scripts/autonomous build --android)"
+  exit 1
+fi
+
+boot_wait() {
+  adb wait-for-device
+  i=0
+  until [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = 1 ]; do
+    i=$((i + 1))
+    [ "$i" -le "${ANDROID_BOOT_TIMEOUT:-300}" ] || { say "emulator did not finish booting within ${ANDROID_BOOT_TIMEOUT:-300}s"; exit 1; }
+    sleep 1
+  done
+}
+
+host_adb_reachable() {
+  python3 - "$1" "$2" <<'PY'
+import socket, sys
+s = socket.socket()
+s.settimeout(2)
+try:
+    s.connect((sys.argv[1], int(sys.argv[2])))
+except OSError:
+    sys.exit(1)
+PY
+}
+
+if [ -n "${ADB_SERVER_SOCKET:-}" ]; then
+  say "using host adb server $ADB_SERVER_SOCKET"
+  boot_wait
+  exit 0
+fi
+
+if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
+  say "starting headless emulator (kvm acceleration)"
+  nohup emulator -avd autonomous -no-window -no-audio -no-boot-anim -accel on \
+    >/tmp/android-emulator.log 2>&1 &
+  boot_wait
+  say "emulator ready"
+  exit 0
+fi
+
+if host_adb_reachable host.docker.internal 5037; then
+  ADB_SERVER_SOCKET="tcp:host.docker.internal:5037"
+  export ADB_SERVER_SOCKET
+  say "no /dev/kvm; using host adb at $ADB_SERVER_SOCKET (export it in the session to reuse)"
+  boot_wait
+  printf 'export ADB_SERVER_SOCKET=%s\n' "$ADB_SERVER_SOCKET"
+  exit 0
+fi
+
+say "no Android device available. Choose one:"
+say "  1. in-container emulator: start with 'scripts/autonomous <cmd> --android' on a host with /dev/kvm (adds compose.android.yaml)"
+say "  2. host adb: run 'adb -a -P 5037 nodaemon server' on the host with a device or emulator attached, then start with --android"
+exit 1

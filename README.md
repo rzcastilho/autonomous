@@ -12,10 +12,11 @@ Control plane = Jido/OTP. Data plane = the `claude` CLI wrapped by the
 
 ## Status
 
-Phases 0–6 of `docs/autonomous-implementation-plan.md` are built:
-pure core, harness data plane, feature vertical, control plane, enforcement, and
-observability. Phase 7 (the LedgerLite greenfield validation run, which needs a
-paid live CLI) is the remaining gate before fleet use.
+Phases 0–7 of `docs/autonomous-implementation-plan.md` are built:
+pure core, harness data plane, feature vertical, control plane, enforcement,
+observability, and the LedgerLite greenfield validation run. Feature 031 makes
+the runtime containerized: operate through `scripts/autonomous` (see
+`docs/container.md`).
 
 ## Requirements
 
@@ -31,6 +32,15 @@ paid live CLI) is the remaining gate before fleet use.
   (it clobbers `constitution.md`).
 
 ## Quick start
+
+Operate inside the container (Docker Engine + Compose v2):
+
+```
+scripts/autonomous build
+scripts/autonomous shell --target /path/to/target-repo
+```
+
+Or on the host, for development only:
 
 ```elixir
 iex -S mix
@@ -58,11 +68,12 @@ ClaudeAgentSDK catalog rejects `claude-opus-4-8`. Pin reproducibility with the
 - `docs/enforcement.md` — scope-guard pack, install, upgrade, container recipe.
 - `docs/breakdown-format.md` — the `NNN-*.md` backlog format the parser expects.
 - `docs/runbook.md` — operator runbook.
+- `docs/container.md` — containerized runtime: wrapper, state, console, release image, web/desktop/Android testing.
 - `CLAUDE.md` — architecture + build/test commands.
 
 ## Development
 
-Run everything through mise (the bare shell PATH is a stale Elixir):
+The host stays valid for compile and test. Run everything through mise (the bare shell PATH is a stale Elixir):
 
 ```
 mise exec -- mix test

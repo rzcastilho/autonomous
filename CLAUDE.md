@@ -57,6 +57,13 @@ came back without a new `history` entry. Each implement chunk session is its
 own `:implement_chunk` phase-attempt row (no cost entry — the `:implement`
 roll-up carries the step's actual summed cost).
 
+## Containerized runtime (feature 031)
+
+Operate the orchestrator through the container: `scripts/autonomous` (build,
+shell, console, release, stop) — see `docs/container.md`. The host remains
+valid for `mise exec -- mix compile|test` and development. Smoke checks:
+`scripts/container-smoke.sh [us1..us6|secrets]` (by hand, not in the suite).
+
 ## Toolchain — read first
 
 Run every Elixir command through mise; the plain shell PATH is a stale global

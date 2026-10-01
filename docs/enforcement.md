@@ -103,22 +103,28 @@ without losing enforcement:
 5. `specify self check` to confirm the CLI version, and record the tag in
    `config.exs` (`:speckit_version`).
 
-## Container isolation (optional, recommended for `permissive`)
+## Container isolation (feature 031)
 
-The scope-guard hook has known enforcement gaps on some CLI versions, and
-under `permissive` it enforces nothing at all. For defense in depth, run the
-whole orchestrator + CLI inside a devcontainer/Docker with only the repo
-mounted:
+The container layer is real: the orchestrator and the `claude` CLI run inside
+the image from `/Dockerfile`, started by `scripts/autonomous`. Only the target
+repo, its worktree root, and the instance state directory are mounted
+read-write. The process runs as the host user, never root, so `sudo` and system
+writes fail at the OS layer even if the hook is bypassed or its deny list is
+empty (`permissive`). See `docs/container.md` for operation.
 
-- Mount the target repo (and worktree root) read-write; mount nothing else
-  writable.
-- Drop network egress except the Anthropic API host (the constitution's
-  "no network access" MUST is about the *product*, not the agent's API calls)
-  — a `permissive` run's whole point is usually that one feature needs
-  broader network access, so scope the egress allowlist to what that feature
-  actually needs rather than opening it wide.
-- Run as a non-root user so `sudo`/system writes fail at the OS layer even if
-  the hook is bypassed or its deny list is empty.
+This bounds blast radius to the mounted paths regardless of hook coverage — the
+one layer `permissive` cannot remove.
 
-This bounds blast radius to the mounted repo (and allowed egress) regardless
-of hook coverage — the one layer `permissive` cannot remove.
+### Open gaps
+
+- **No egress restriction (FR-029).** The container has unrestricted outbound
+  network. An egress allowlist (Anthropic API host plus whatever a feature
+  needs) is not implemented; add one at the Docker/host firewall level if the
+  run needs it.
+- **Package-manager downloads are not denied by the hook.** `npm install`,
+  `pip install` and `mix deps.get` pass `scope_guard.py` under `strict`. They
+  write inside the worktree and the container, and are bounded by the container
+  layer, not the hook.
+- **`bash_curl` / `bash_wget` are anchored at command start (R12).** A download
+  that is not the first token of the command (for example after `cd x &&` or in
+  a pipeline) is not matched. Recorded gap, not fixed in 031.

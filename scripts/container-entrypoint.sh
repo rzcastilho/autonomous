@@ -174,6 +174,27 @@ say "budget is per instance (AUTONOMOUS_BUDGET_USD=$warn_budget); total spend is
 
 say "instance $AUTONOMOUS_NODE_NAME serving $AUTONOMOUS_REPO"
 
+# ---- 6. Virtual display (FR-025, opt-in) ----------------------------------------
+# AUTONOMOUS_DISPLAY=1 starts Xvfb for desktop-application tests;
+# AUTONOMOUS_DISPLAY_VIEWER=1 also serves it through noVNC on 6080 (the wrapper's
+# --viewer publishes that on loopback only). Needs a --desktop image.
+if [ "${AUTONOMOUS_DISPLAY:-}" = 1 ] || [ "${AUTONOMOUS_DISPLAY_VIEWER:-}" = 1 ]; then
+  command -v Xvfb >/dev/null 2>&1 \
+    || die "AUTONOMOUS_DISPLAY needs an image built with --desktop (scripts/autonomous build --desktop)"
+  Xvfb :99 -screen 0 "${AUTONOMOUS_DISPLAY_SIZE:-1280x800x24}" -nolisten tcp >/dev/null 2>&1 &
+  export DISPLAY=:99
+  i=0
+  until xdpyinfo -display :99 >/dev/null 2>&1 || [ -e /tmp/.X11-unix/X99 ]; do
+    i=$((i + 1)); [ "$i" -le 50 ] || die "Xvfb did not start"; sleep 0.1
+  done
+  say "virtual display $DISPLAY"
+  if [ "${AUTONOMOUS_DISPLAY_VIEWER:-}" = 1 ]; then
+    x11vnc -display :99 -forever -shared -nopw -localhost -rfbport 5900 -quiet >/dev/null 2>&1 &
+    websockify --web /usr/share/novnc 6080 localhost:5900 >/dev/null 2>&1 &
+    say "display viewer on container port 6080 (vnc.html)"
+  fi
+fi
+
 # ---- 7. Hand over to the VM (fd 9 stays open: the lock lives as long as it does) --
 export AUTONOMOUS_INSTANCE_LOCKED="$AUTONOMOUS_INSTANCE_LOCK"
 cookie="$(cat "$AUTONOMOUS_COOKIE_PATH")"

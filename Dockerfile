@@ -23,6 +23,16 @@ ARG GID=1000
 ARG GH_VERSION=2.102.0
 ARG NODE_MAJOR=22
 ARG CLAUDE_CODE_VERSION=2.1.286
+# Opt-in testing capabilities (feature 031 US5/US6). Every block below is a no-op
+# when its flag is not 1 (FR-023); set through `scripts/autonomous build --web ...`.
+ARG WITH_WEB=0
+ARG WITH_DESKTOP=0
+ARG WITH_ANDROID=0
+# Must match the @playwright/test version the target's tests use (docs/container.md).
+ARG PLAYWRIGHT_VERSION=1.49.1
+ARG ANDROID_CMDLINE_TOOLS=11076708
+ARG ANDROID_SYSTEM_IMAGE=system-images;android-34;google_apis;x86_64
+ARG ANDROID_PLATFORM=platforms;android-34
 
 ENV DEBIAN_FRONTEND=noninteractive \
     AUTONOMOUS_CONTAINER=1 \
@@ -58,6 +68,56 @@ RUN (getent group "${GID}" >/dev/null || groupadd -g "${GID}" autonomous) \
 # The only repositories in the container are the ones deliberately mounted, and
 # their owner is the host operator (FR-008).
 RUN git config --system safe.directory '*'
+
+# ---- Opt-in: web testing (FR-024) -----------------------------------------------
+# Three engines installed into a world-readable path; downloads are disabled at
+# runtime so tests work offline and never write into $HOME.
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright \
+    PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
+    NODE_PATH=/usr/lib/node_modules
+RUN if [ "$WITH_WEB" = 1 ]; then \
+      mkdir -p "$PLAYWRIGHT_BROWSERS_PATH" \
+   && npm install -g "playwright@${PLAYWRIGHT_VERSION}" \
+   && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=0 playwright install --with-deps chromium firefox webkit \
+   && chmod -R a+rX "$PLAYWRIGHT_BROWSERS_PATH" \
+   && npm cache clean --force \
+   && rm -rf /var/lib/apt/lists/*; \
+    fi
+
+# ---- Opt-in: desktop testing (FR-023, FR-025) -----------------------------------
+# Virtual display + input/screenshot tools; the optional viewer (x11vnc + noVNC)
+# is started by the entrypoint only when AUTONOMOUS_DISPLAY_VIEWER=1.
+RUN if [ "$WITH_DESKTOP" = 1 ]; then \
+      apt-get update \
+   && apt-get install -y --no-install-recommends \
+        xvfb xauth xdotool imagemagick x11vnc novnc websockify dbus-x11 \
+        fonts-liberation fonts-noto-color-emoji \
+        libnss3 libgtk-3-0 libasound2 libgbm1 libxss1 \
+   && rm -rf /var/lib/apt/lists/*; \
+    fi
+
+# ---- Opt-in: Android testing (FR-026) --------------------------------------------
+# JDK 17 + SDK tools + one pinned system image + an AVD created at build time.
+# Writable by any uid: the container runs as the operator's host uid.
+ENV ANDROID_HOME=/opt/android \
+    ANDROID_SDK_ROOT=/opt/android \
+    ANDROID_AVD_HOME=/opt/android/avd
+RUN if [ "$WITH_ANDROID" = 1 ]; then \
+      apt-get update \
+   && apt-get install -y --no-install-recommends openjdk-17-jdk-headless unzip libpulse0 libnss3 libx11-6 libxcb1 \
+   && rm -rf /var/lib/apt/lists/* \
+   && mkdir -p "$ANDROID_HOME/cmdline-tools" "$ANDROID_AVD_HOME" \
+   && curl -fsSL -o /tmp/cmdline-tools.zip "https://dl.google.com/android/repository/commandlinetools-linux-${ANDROID_CMDLINE_TOOLS}_latest.zip" \
+   && unzip -q /tmp/cmdline-tools.zip -d "$ANDROID_HOME/cmdline-tools" \
+   && mv "$ANDROID_HOME/cmdline-tools/cmdline-tools" "$ANDROID_HOME/cmdline-tools/latest" \
+   && rm /tmp/cmdline-tools.zip \
+   && yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null \
+   && "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platform-tools" "emulator" "${ANDROID_PLATFORM}" "${ANDROID_SYSTEM_IMAGE}" \
+   && echo no | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd -n autonomous -k "${ANDROID_SYSTEM_IMAGE}" --force \
+   && chmod -R a+rwX "$ANDROID_HOME"; \
+    fi
+ENV PATH=${PATH}:/opt/android/cmdline-tools/latest/bin:/opt/android/platform-tools:/opt/android/emulator
+COPY --chmod=0755 scripts/android-emulator /usr/local/bin/android-emulator
 
 # ---------------------------------------------------------------------------
 FROM base AS toolchain

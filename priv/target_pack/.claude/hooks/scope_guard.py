@@ -27,6 +27,11 @@ FILE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 PROFILES = {"strict", "permissive"}
 HUMAN_ENTRYPOINTS = {"cli"}
 
+# Redirect targets that are device files, not paths in or out of the worktree
+# (feature 031, FR-027). Exact match only: /dev/nullx, /dev/sda and
+# /dev/null/../x are still checked by within().
+DEVICE_SINKS = {"/dev/null", "/dev/stdout", "/dev/stderr"}
+
 # (rule_id, pattern, detail) — checked in order, first match wins.
 DANGEROUS_BASH = [
     ("bash_rm_rf_root", r"\brm\s+-rf\s+/(?:\s|$)", "rm -rf /"),
@@ -92,6 +97,8 @@ def check_bash(cmd, root):
             return rule_id, detail
     for match in re.finditer(r">>?\s*\"?(/[^\"\s]+)", cmd):
         target = match.group(1)
+        if target in DEVICE_SINKS:
+            continue
         if not within(root, target):
             return "bash_redirect_outside_worktree", "redirect outside worktree: " + target
     return None

@@ -4,7 +4,7 @@
 # FAIL. Sections are added per user story — see
 # specs/031-containerized-runtime/quickstart.md.
 #
-#   scripts/container-smoke.sh [us1|us2|us3|us4]
+#   scripts/container-smoke.sh [us1|us2|us3|us4|us5|us6|secrets]
 #
 # Needs: Docker Engine + Compose v2, the image built (scripts/autonomous build).
 # Agent-auth checks (SC-011) spend a few cents and run only with SMOKE_AGENT=1.
@@ -447,14 +447,155 @@ remote_eval() { # remote_eval <target> <code>
   rm -f "$out"
 }
 
+# ---- US5 / US6: opt-in testing capabilities (SC-009, FR-023) -------------------------
+# These build their own throwaway tags (never autonomous-dev:local), so the
+# default image is not replaced. `us5` downloads three browser engines and is slow
+# on a cold cache; `us6` downloads the Android SDK and one system image (GBs).
+build_caps() { # build_caps <tag> <build args...>
+  tag="$1"
+  shift
+  docker build -q --target dev -t "$tag" "$@" . >/dev/null 2>&1
+}
+
+us5() {
+  echo "== US5: web and desktop capabilities"
+  off=autonomous-smoke-off:local
+  on=autonomous-smoke-webdesktop:local
+
+  if build_caps "$off"; then pass "image builds with no capability options"; else fail "image builds with no capability options"; return; fi
+  for bin in xvfb-run xdotool x11vnc import; do
+    if docker run --rm --entrypoint sh "$off" -c "command -v $bin" >/dev/null 2>&1; then
+      fail "default image has no $bin"
+    else
+      pass "default image has no $bin"
+    fi
+  done
+  if docker run --rm --entrypoint sh "$off" -c 'ls /opt/ms-playwright/* >/dev/null 2>&1 || command -v emulator >/dev/null 2>&1'; then
+    fail "default image has no browsers and no emulator"
+  else
+    pass "default image has no browsers and no emulator"
+  fi
+
+  if build_caps "$on" --build-arg WITH_WEB=1 --build-arg WITH_DESKTOP=1; then
+    pass "image builds with --web --desktop"
+  else
+    fail "image builds with --web --desktop"
+    return
+  fi
+
+  # Offline: --network none proves no download is attempted. Run as the operator's
+  # uid, the way a session runs. chromiumSandbox:false needs no extra privilege.
+  js='const pw=require("playwright");(async()=>{for(const [n,t] of [["chromium",pw.chromium],["firefox",pw.firefox],["webkit",pw.webkit]]){const b=await t.launch(n==="chromium"?{chromiumSandbox:false}:{});const p=await b.newPage();await p.setContent("<title>ok</title>");if(await p.title()!=="ok")process.exit(1);await b.close();console.log("ENGINE-OK "+n);}})().catch(e=>{console.error(e);process.exit(1)})'
+  out="$(docker run --rm --network none --shm-size=1gb --user "$(id -u):$(id -g)" -e HOME=/tmp --entrypoint node "$on" -e "$js" 2>&1)"
+  for engine in chromium firefox webkit; do
+    case "$out" in
+      *"ENGINE-OK $engine"*) pass "playwright $engine runs a page offline" ;;
+      *) fail "playwright $engine runs a page offline: $(printf '%s' "$out" | tail -n2)" ;;
+    esac
+  done
+
+  out="$(docker run --rm --network none --user "$(id -u):$(id -g)" -e HOME=/tmp --entrypoint sh "$on" -c \
+    'xvfb-run -a sh -c "xdotool mousemove 10 10 click 1 && import -window root /tmp/shot.png" && test -s /tmp/shot.png && echo SHOT-OK' 2>&1)"
+  case "$out" in
+    *SHOT-OK*) pass "desktop: click + screenshot written under a virtual display" ;;
+    *) fail "desktop: click + screenshot written: $(printf '%s' "$out" | tail -n2)" ;;
+  esac
+
+  # A strict orchestrated session is allowed to run those commands (hook matrix).
+  hook=priv/target_pack/.claude/hooks/scope_guard.py
+  verdict="$(printf '%s' '{"tool_name":"Bash","tool_input":{"command":"npx playwright test 2>/dev/null"},"cwd":"/tmp/wt"}' \
+    | AUTONOMOUS_ORCHESTRATED=1 AUTONOMOUS_CONTAINMENT_PROFILE=strict python3 "$hook")"
+  if [ -z "$verdict" ]; then pass "strict hook allows the device-sink redirect"; else fail "strict hook allows the device-sink redirect: $verdict"; fi
+}
+
+us6() {
+  echo "== US6: Android capability"
+  img=autonomous-smoke-android:local
+  if build_caps "$img" --build-arg WITH_ANDROID=1; then pass "image builds with --android"; else fail "image builds with --android"; return; fi
+
+  run_emu() { docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp "$@" --entrypoint android-emulator "$img"; }
+
+  # Neither kvm nor a host adb: the message names both options.
+  out="$(run_emu 2>&1)"; code=$?
+  if [ "$code" -ne 0 ] && printf '%s' "$out" | grep -qi 'in-container emulator' && printf '%s' "$out" | grep -qi 'host adb'; then
+    pass "no device: non-zero exit naming the emulator and host-adb options"
+  else
+    fail "no device: expected non-zero exit naming both options (exit $code): $out"
+  fi
+
+  if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
+    if run_emu --device /dev/kvm --group-add "$(stat -c '%g' /dev/kvm)" >/dev/null 2>&1; then
+      pass "emulator boots with /dev/kvm"
+    else
+      fail "emulator boots with /dev/kvm"
+    fi
+  else
+    skip "emulator boot (no usable /dev/kvm on this host)"
+  fi
+
+  if command -v adb >/dev/null 2>&1 && adb devices 2>/dev/null | sed 1d | grep -q 'device$'; then
+    if run_emu --add-host host.docker.internal:host-gateway -e ADB_SERVER_SOCKET=tcp:host.docker.internal:5037 >/dev/null 2>&1; then
+      pass "host adb fallback reaches the host device"
+    else
+      fail "host adb fallback reaches the host device (run 'adb -a nodaemon server' on the host)"
+    fi
+  else
+    skip "host adb fallback (no host adb with an attached device)"
+  fi
+}
+
+secrets() {
+  echo "== Secrets: image layers, saved image and tracked files hold no operator secret"
+  # Candidate values: local .env plus the credential variables of this shell. Never printed.
+  vals="$(mktemp)"
+  {
+    [ -f .env ] && sed -n 's/^[A-Za-z_][A-Za-z0-9_]*=//p' .env
+    printf '%s\n' "${ANTHROPIC_API_KEY:-}" "${CLAUDE_CODE_OAUTH_TOKEN:-}" "${GH_TOKEN:-}" "${GITHUB_TOKEN:-}"
+  } | sed -e 's/^["'\'']//' -e 's/["'\'']$//' | awk 'length($0) >= 8' | sort -u >"$vals"
+  if [ ! -s "$vals" ]; then
+    skip "secret scan (no .env values or credential variables of length >= 8 to look for)"
+    rm -f "$vals"
+    return
+  fi
+  pass "scanning for $(wc -l <"$vals" | tr -d ' ') candidate secret value(s)"
+
+  if docker history --no-trunc "$IMAGE" 2>/dev/null | grep -qFf "$vals"; then
+    fail "docker history --no-trunc leaks a secret value"
+  else
+    pass "docker history --no-trunc is clean"
+  fi
+
+  saved="$(mktemp -d)"
+  if docker save "$IMAGE" 2>/dev/null | tar -x -C "$saved" 2>/dev/null; then
+    if grep -rqFf "$vals" "$saved" 2>/dev/null; then
+      fail "saved image layers leak a secret value"
+    else
+      pass "saved image layers are clean"
+    fi
+  else
+    fail "docker save $IMAGE"
+  fi
+  rm -rf "$saved"
+
+  if git grep -qFf "$vals" -- . ':!.env' 2>/dev/null; then
+    fail "tracked files leak a secret value (git grep)"
+  else
+    pass "tracked files are clean (git grep)"
+  fi
+  rm -f "$vals"
+}
+
 section="${1:-all}"
 case "$section" in
   us1) us1 ;;
   us2) us2 ;;
   us3) us3 ;;
   us4) us4 ;;
-  all) us1; us2; us3; us4 ;;
-  *) echo "usage: scripts/container-smoke.sh [us1|us2|us3|us4]" >&2; exit 2 ;;
+  us5) us5 ;;
+  us6) us6 ;;
+  secrets) secrets ;;
+  all) us1; us2; us3; us4; us5; us6; secrets ;;
+  *) echo "usage: scripts/container-smoke.sh [us1|us2|us3|us4|us5|us6|secrets]" >&2; exit 2 ;;
 esac
 
 echo
