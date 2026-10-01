@@ -1217,7 +1217,7 @@ passes.
 The usual cause is a plan session that dispatched research subagents and then
 ended its turn: headless, ending the turn ends the session, and nothing collects
 the subagents afterwards. That is also what the incomplete-session gate detects
-directly. Both outcomes are retried once (`AUTONOMOUS_PHASE_MAX_RETRIES`, default 1)
+directly. Both outcomes are retried once (`config :autonomous, phase_max_retries:`, default 1)
 before the feature fails, because a fresh session is the most likely fix and
 neither reproduces deterministically. A *plainly* missing `plan.md` is not
 retried — see the `plan_stack` note below.
