@@ -28,6 +28,10 @@ x-instance: &instance
     # Loopback only (FR-021); empty host port = Docker picks a free one.
     - "127.0.0.1:${AUTONOMOUS_HOST_PORT:-}:4000"
 
+x-state-mounts: &state-mounts
+  - "${AUTONOMOUS_REPO}:${AUTONOMOUS_REPO}"
+  - "${AUTONOMOUS_ROOT}:${AUTONOMOUS_ROOT}"
+
 x-dev-mounts: &dev-mounts
   - "${AUTONOMOUS_REPO}:${AUTONOMOUS_REPO}"
   - "${AUTONOMOUS_ROOT}:${AUTONOMOUS_ROOT}"
@@ -63,6 +67,30 @@ services:
       AUTONOMOUS_IMAGE: autonomous-dev:local
     volumes: *dev-mounts
     command: ["console"]
+
+  # Self-contained release (feature 031 US4): no source mount, no toolchain. The
+  # entrypoint in this image is copied to /usr/local/bin (the dev one is the
+  # bind-mounted script).
+  release:
+    <<: *instance
+    image: autonomous-release:local
+    pull_policy: never
+    entrypoint: ["/usr/local/bin/container-entrypoint.sh"]
+    build:
+      context: .
+      target: release
+      args:
+        UID: "${AUTONOMOUS_UID:-1000}"
+        GID: "${AUTONOMOUS_GID:-1000}"
+    environment:
+      <<: *instance-env
+      AUTONOMOUS_SERVICE: release
+      AUTONOMOUS_IMAGE: autonomous-release:local
+      # Interpolated from the shell or .env; empty when neither has it, which the
+      # release refuses by name (runtime.exs), never silently accepts.
+      AUTONOMOUS_SECRET_KEY_BASE: "${AUTONOMOUS_SECRET_KEY_BASE:-}"
+    volumes: *state-mounts
+    command: ["release"]
 
 # Declared without `name:` so Compose scopes them per project: two concurrent
 # dev instances never share a _build.

@@ -9,7 +9,19 @@ defmodule Autonomous.MixProject do
       start_permanent: Mix.env() == :prod,
       elixirc_options: [warnings_as_errors: true],
       elixirc_paths: elixirc_paths(Mix.env()),
-      deps: deps()
+      deps: deps(),
+      releases: releases()
+    ]
+  end
+
+  # 031: the release image runs `bin/autonomous start` with no build toolchain at
+  # runtime. Node name and cookie come from rel/env.sh.eex (set by the entrypoint).
+  defp releases do
+    [
+      autonomous: [
+        include_executables_for: [:unix],
+        applications: [autonomous: :permanent]
+      ]
     ]
   end
 

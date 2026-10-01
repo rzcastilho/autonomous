@@ -104,6 +104,21 @@ defmodule Autonomous.InstanceTest do
       assert expected == i.node_name
     end
 
+    test "a non-distributed VM (no --sname) is a node mismatch before Mnesia opens", %{i: i} do
+      assert {:error, {:instance_mismatch, :node, _expected, :nonode@nohost}} =
+               Instance.verify(
+                 %{locked: i.lock_path, node: :nonode@nohost, store_dir: i.store_dir},
+                 i
+               )
+    end
+
+    test "right short name on the wrong host is a node mismatch", %{i: i} do
+      wrong = String.to_atom("autonomous_a-111111@somewhere-else")
+
+      assert {:error, {:instance_mismatch, :node, _, ^wrong}} =
+               Instance.verify(%{locked: i.lock_path, node: wrong, store_dir: i.store_dir}, i)
+    end
+
     test "wrong store dir is a store_dir mismatch", %{i: i} do
       assert {:error, {:instance_mismatch, :store_dir, expected, "/elsewhere"}} =
                Instance.verify(

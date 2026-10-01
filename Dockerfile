@@ -6,6 +6,9 @@
 #              non-root user. The release image is built from this later.
 #   toolchain  base + build deps + mise + the repository's mise.toml toolchain.
 #   dev        toolchain; source is bind-mounted at /workspace, not copied.
+#   build      toolchain + the sources; compiles `mix release` (MIX_ENV=prod).
+#   release    base + the release only: no mise, no Erlang/Elixir install, no
+#              sources at runtime (FR-002). Started by `bin/autonomous start`.
 #
 # Erlang/Elixir versions are NOT restated here (FR-010): `mise install` reads
 # mise.toml, the single version source. No secret is a build arg or ENV (FR-015).
@@ -104,3 +107,41 @@ ENV SHELL=/bin/bash
 
 ENTRYPOINT ["/workspace/scripts/container-entrypoint.sh"]
 CMD ["shell"]
+
+# ---------------------------------------------------------------------------
+FROM toolchain AS build
+
+ENV MIX_ENV=prod
+WORKDIR /build
+
+# Dependency layers first: cached until mix.exs / mix.lock / config change.
+COPY --chown=autonomous mix.exs mix.lock ./
+COPY --chown=autonomous config config
+RUN mise exec -- mix deps.get --only prod \
+ && mise exec -- mix deps.compile
+
+COPY --chown=autonomous lib lib
+COPY --chown=autonomous priv priv
+COPY --chown=autonomous rel rel
+RUN mise exec -- mix release autonomous --path /build/release
+
+# ---------------------------------------------------------------------------
+FROM base AS release
+
+# The release bundles its ERTS; these are the shared libraries it links against
+# (the base already carries libssl3 through curl, listed here to pin the intent).
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libstdc++6 libncurses6 libssl3 \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY --from=build --chown=autonomous /build/release /app
+COPY --chmod=0755 scripts/container-entrypoint.sh /usr/local/bin/container-entrypoint.sh
+
+USER autonomous
+WORKDIR /app
+
+# erlexec (the agent CLI transport) refuses to start without SHELL.
+ENV SHELL=/bin/bash
+
+ENTRYPOINT ["/usr/local/bin/container-entrypoint.sh"]
+CMD ["release"]

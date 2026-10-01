@@ -95,11 +95,11 @@ Single OTP project. New container files at repo root (`Dockerfile`, `compose*.ya
 
 ### Implementation for User Story 2
 
-- [ ] T028 [US2] Verify and harden the entrypoint lock/ownership path in `scripts/container-entrypoint.sh`: lock held by the VM lineage (fd 9 inherited via `exec`), `instance.json` fields per data-model.md (segment, repo, compose_project, service, started_at, console_port, image), exit 75 message names target and live instance (FR-018a)
-- [ ] T029 [P] [US2] Verify `hostname: autonomous` on every service in `/compose.yaml` and that `Instance.verify!/0` refuses an ad hoc `--sname` with `{:instance_mismatch, :node, …}` before Mnesia opens; add that case to `test/autonomous/instance_test.exs` (spec edge case)
-- [ ] T030 [P] [US2] Audit live write paths for `cwd`-relative roots inside the container (legacy `worktree_root` default `../.speckit-worktrees`, R6): `grep -rn 'speckit-worktrees\|File.cwd' lib/`; fix any live path or record in `docs/container.md` that none exists
-- [ ] T031 [US2] Extend `scripts/container-smoke.sh` for US2: recreate instance from rebuilt image and assert no `schema_node_mismatch`, history listed; second instance for same target exits 75 naming the live instance; two different targets run concurrently with distinct ports (SC-005, SC-007a); worktree validity via `git -C <target> worktree list` from host (SC-006)
-- [ ] T032 [P] [US2] Document the fresh-store behaviour (FR-020: old `~/.autonomous/mnesia` neither read nor deleted; worktrees/exports stay), the `flock`-on-local-filesystem limit (R4), and same-path rule in `docs/container.md` (new file; later phases append sections)
+- [x] T028 [US2] Verify and harden the entrypoint lock/ownership path in `scripts/container-entrypoint.sh`: lock held by the VM lineage (fd 9 inherited via `exec`), `instance.json` fields per data-model.md (segment, repo, compose_project, service, started_at, console_port, image), exit 75 message names target and live instance (FR-018a)
+- [x] T029 [P] [US2] Verify `hostname: autonomous` on every service in `/compose.yaml` and that `Instance.verify!/0` refuses an ad hoc `--sname` with `{:instance_mismatch, :node, …}` before Mnesia opens; add that case to `test/autonomous/instance_test.exs` (spec edge case)
+- [x] T030 [P] [US2] Audit live write paths for `cwd`-relative roots inside the container (legacy `worktree_root` default `../.speckit-worktrees`, R6): `grep -rn 'speckit-worktrees\|File.cwd' lib/`; fix any live path or record in `docs/container.md` that none exists
+- [x] T031 [US2] Extend `scripts/container-smoke.sh` for US2: recreate instance from rebuilt image and assert no `schema_node_mismatch`, history listed; second instance for same target exits 75 naming the live instance; two different targets run concurrently with distinct ports (SC-005, SC-007a); worktree validity via `git -C <target> worktree list` from host (SC-006)
+- [x] T032 [P] [US2] Document the fresh-store behaviour (FR-020: old `~/.autonomous/mnesia` neither read nor deleted; worktrees/exports stay), the `flock`-on-local-filesystem limit (R4), and same-path rule in `docs/container.md` (new file; later phases append sections)
 
 **Checkpoint**: US1 + US2 both work; resume after recreation verified.
 
@@ -113,10 +113,10 @@ Single OTP project. New container files at repo root (`Dockerfile`, `compose*.ya
 
 ### Implementation for User Story 3
 
-- [ ] T033 [US3] Implement wrapper commands `console` (detached `up -d console`) and `port` in `scripts/autonomous`; print address after start; support `--port`/random (R9)
-- [ ] T034 [P] [US3] Finish the `console` dispatch in `scripts/container-entrypoint.sh` (`elixir --sname … --cookie … -S mix phx.server`) — confirm `PHX_SERVER=true` reaches the endpoint via `runtime.exs` (T012)
-- [ ] T035 [P] [US3] Show served repository and instance node in the Configuration view (mono, real identifiers; no new colors — Principle VII): edit the Configuration LiveView under `lib/autonomous/web/` and keep `test/autonomous/design_contract_test.exs` green
-- [ ] T036 [US3] Extend `scripts/container-smoke.sh`: console responds on printed loopback address; published binding is `127.0.0.1` (not `0.0.0.0`); busy `--port` yields exit 76 (SC-007, FR-021); second-machine reachability stays a manual step in `quickstart.md`
+- [x] T033 [US3] Implement wrapper commands `console` (detached `up -d console`) and `port` in `scripts/autonomous`; print address after start; support `--port`/random (R9)
+- [x] T034 [P] [US3] Finish the `console` dispatch in `scripts/container-entrypoint.sh` (`elixir --sname … --cookie … -S mix phx.server`) — confirm `PHX_SERVER=true` reaches the endpoint via `runtime.exs` (T012)
+- [x] T035 [P] [US3] Show served repository and instance node in the Configuration view (mono, real identifiers; no new colors — Principle VII): edit the Configuration LiveView under `lib/autonomous/web/` and keep `test/autonomous/design_contract_test.exs` green
+- [x] T036 [US3] Extend `scripts/container-smoke.sh`: console responds on printed loopback address; published binding is `127.0.0.1` (not `0.0.0.0`); busy `--port` yields exit 76 (SC-007, FR-021); second-machine reachability stays a manual step in `quickstart.md`
 
 **Checkpoint**: US3 verified independently.
 
@@ -130,13 +130,13 @@ Single OTP project. New container files at repo root (`Dockerfile`, `compose*.ya
 
 ### Implementation for User Story 4
 
-- [ ] T037 [US4] Add `releases: [autonomous: [include_executables_for: [:unix], applications: [autonomous: :permanent]]]` to `mix.exs`
-- [ ] T038 [P] [US4] Create `rel/env.sh.eex` (`RELEASE_DISTRIBUTION=sname`, `RELEASE_NODE=$AUTONOMOUS_NODE_NAME`, `RELEASE_COOKIE=$(cat $AUTONOMOUS_COOKIE_PATH)`) and `rel/vm.args.eex` only if release defaults need it (R10)
-- [ ] T039 [US4] Add `build` and `release` stages to `/Dockerfile`: `build` compiles `MIX_ENV=prod mix release` from `toolchain`; `release` copies the release onto `base` (+ tools/capabilities, not `toolchain`): no mise, no Elixir sources at runtime — depends on T014, T037, T038
-- [ ] T040 [US4] Add service `release` to `/compose.yaml` (image target `release`, `image: autonomous-release:local`, command `release`, same hostname/user/mounts minus `/workspace`, same port mapping) — depends on T039
-- [ ] T041 [US4] Add `release` dispatch to `scripts/container-entrypoint.sh` (derive identity via `bin/autonomous eval 'Autonomous.Instance.print_env()'`, then `exec bin/autonomous start`; `segment` command via `eval`, used by the wrapper's lookup against the release image) and wrapper commands `release` and `remote` (`exec release bin/autonomous remote`) in `scripts/autonomous`
-- [ ] T042 [US4] Extend `scripts/container-smoke.sh`: release refuses without `AUTONOMOUS_SECRET_KEY_BASE` naming it (US3 scenario 3, FR-022); release starts, `remote` attaches, restart keeps history with no node mismatch (SC-008)
-- [ ] T043 [P] [US4] Document release shape, secret generation (`openssl rand -base64 48`) and remote console in `docs/container.md` and `docs/runbook.md`
+- [x] T037 [US4] Add `releases: [autonomous: [include_executables_for: [:unix], applications: [autonomous: :permanent]]]` to `mix.exs`
+- [x] T038 [P] [US4] Create `rel/env.sh.eex` (`RELEASE_DISTRIBUTION=sname`, `RELEASE_NODE=$AUTONOMOUS_NODE_NAME`, `RELEASE_COOKIE=$(cat $AUTONOMOUS_COOKIE_PATH)`) and `rel/vm.args.eex` only if release defaults need it (R10)
+- [x] T039 [US4] Add `build` and `release` stages to `/Dockerfile`: `build` compiles `MIX_ENV=prod mix release` from `toolchain`; `release` copies the release onto `base` (+ tools/capabilities, not `toolchain`): no mise, no Elixir sources at runtime — depends on T014, T037, T038
+- [x] T040 [US4] Add service `release` to `/compose.yaml` (image target `release`, `image: autonomous-release:local`, command `release`, same hostname/user/mounts minus `/workspace`, same port mapping) — depends on T039
+- [x] T041 [US4] Add `release` dispatch to `scripts/container-entrypoint.sh` (derive identity via `bin/autonomous eval 'Autonomous.Instance.print_env()'`, then `exec bin/autonomous start`; `segment` command via `eval`, used by the wrapper's lookup against the release image) and wrapper commands `release` and `remote` (`exec release bin/autonomous remote`) in `scripts/autonomous`
+- [x] T042 [US4] Extend `scripts/container-smoke.sh`: release refuses without `AUTONOMOUS_SECRET_KEY_BASE` naming it (US3 scenario 3, FR-022); release starts, `remote` attaches, restart keeps history with no node mismatch (SC-008)
+- [x] T043 [P] [US4] Document release shape, secret generation (`openssl rand -base64 48`) and remote console in `docs/container.md` and `docs/runbook.md`
 
 **Checkpoint**: US4 verified independently.
 

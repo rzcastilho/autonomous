@@ -46,7 +46,14 @@ sections below.
   when they are unset). `--with-login` mounts the host `~/.claude` and
   `~/.claude.json` instead (opt-in; a token in `.env` still wins).
 - **Console.** Published on `127.0.0.1` only. The wrapper prints the address; use
-  `--port <n>` to choose it (exit `76` when busy).
+  `--port <n>` to choose it (exit `76` when busy). To run the console without an
+  operator shell: `scripts/autonomous console --target <repo>` (detached; waits until
+  the console answers, then prints the address) and `scripts/autonomous port --target
+  <repo>` to print it again. The console is not reachable from another machine; to
+  watch it remotely, tunnel it (`ssh -L`).
+- **Ending a session.** Leave `iex` with `System.stop()`, not Ctrl+C-Ctrl+C or
+  `System.halt/1`: a hard halt right after a write lost the last record of the Mnesia
+  log in the smoke checks (a release `docker compose restart` kept history).
 - **State.** Each target gets its own store under
   `~/.autonomous/instances/<segment>/`. The pre-031 `~/.autonomous/mnesia` is
   neither read nor deleted; worktrees and exports stay where they were.
@@ -55,6 +62,23 @@ sections below.
 - `scripts/autonomous stop --target <repo>` removes the containers (state root
   untouched); `--purge` also removes that target's build volumes.
 - `scripts/autonomous test [args]` runs `mix test` inside the image.
+
+### Release image (self-contained)
+
+For a long-lived instance with no toolchain at runtime:
+
+```bash
+openssl rand -base64 48                  # put the output in .env as AUTONOMOUS_SECRET_KEY_BASE
+scripts/autonomous build --release       # autonomous-release:local (and the dev image)
+scripts/autonomous release --target /path/to/target-repo   # detached; prints the console address
+scripts/autonomous remote  --target /path/to/target-repo   # remote iex into the running release
+scripts/autonomous stop    --target /path/to/target-repo
+```
+
+The release refuses to start without `AUTONOMOUS_SECRET_KEY_BASE` (at least 64 bytes),
+naming the variable. History is kept under `~/.autonomous/instances/<segment>/`, so
+`docker compose -p autonomous-<segment> restart release` keeps it. Details:
+[container.md](container.md).
 
 Host use is limited to `mise exec -- mix compile` and `mise exec -- mix test`.
 

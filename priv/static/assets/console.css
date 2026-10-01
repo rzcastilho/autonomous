@@ -2253,6 +2253,11 @@ textarea {
   margin-top: 4px;
 }
 
+.config-instance-id {
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
 .config-pr-fields {
   display: grid;
   grid-template-columns: 1fr 1fr;

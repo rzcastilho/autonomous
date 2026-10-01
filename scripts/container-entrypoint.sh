@@ -3,7 +3,11 @@
 # contracts/compose-services.md. Identity is derived only in Elixir
 # (`mix autonomous.instance`); this script never recomputes it.
 #
-#   entrypoint <shell|console|test [mix test args]|segment|identity>
+#   dev image:     entrypoint <shell|console|test [mix test args]|segment|identity>
+#   release image: entrypoint <release|segment|identity>
+#
+# The image decides the shape: the release image carries /app/bin/autonomous and
+# no mise; the dev image is the opposite.
 #
 # Exit codes: 75 = target already served by another instance (lock held).
 set -eu
@@ -35,15 +39,22 @@ prepare_build() {
   mise exec -- mix compile || die "mix compile failed"
 }
 
-case "$cmd" in
-  shell | console | segment | identity) MIX_ENV=dev ;;
-  test) MIX_ENV=test ;;
-  *) die "unknown command '$cmd' (shell|console|test|segment|identity)" ;;
-esac
-export MIX_ENV
+RELEASE_BIN="${AUTONOMOUS_RELEASE_BIN:-/app/bin/autonomous}"
+if [ -x "$RELEASE_BIN" ]; then shape=release; else shape=dev; fi
 
-# stdout stays clean: `segment`/`identity` are parsed by the wrapper.
-prepare_build >&2
+case "$shape:$cmd" in
+  dev:shell | dev:console | dev:segment | dev:identity) MIX_ENV=dev ;;
+  dev:test) MIX_ENV=test ;;
+  release:release | release:segment | release:identity) ;;
+  dev:*) die "unknown command '$cmd' for the dev image (shell|console|test|segment|identity)" ;;
+  release:*) die "unknown command '$cmd' for the release image (release|segment|identity)" ;;
+esac
+
+if [ "$shape" = dev ]; then
+  export MIX_ENV
+  # stdout stays clean: `segment`/`identity` are parsed by the wrapper.
+  prepare_build >&2
+fi
 
 # `test` needs neither an identity nor the instance lock: it is the host suite
 # (require_container is false in the test config) run inside the image.
@@ -52,15 +63,34 @@ if [ "$cmd" = "test" ]; then
 fi
 
 # ---- 1. Derive the identity ---------------------------------------------------
-identity="$(mise exec -- mix autonomous.instance --repo "$AUTONOMOUS_REPO" \
-  --root "$AUTONOMOUS_ROOT" --format env | grep '^AUTONOMOUS_')" \
+# The derivation lives in Elixir only (Autonomous.Instance); dev asks the Mix
+# task, the release evaluates the same function.
+derive_identity() {
+  if [ "$shape" = dev ]; then
+    mise exec -- mix autonomous.instance --repo "$AUTONOMOUS_REPO" \
+      --root "$AUTONOMOUS_ROOT" --format env | grep '^AUTONOMOUS_'
+  else
+    "$RELEASE_BIN" eval 'Autonomous.Instance.print_env()' | grep '^AUTONOMOUS_'
+  fi
+}
+
+# A release evaluates runtime.exs even for `eval`, which refuses to run without
+# a secret. Looking an identity up serves no HTTP, so give it a placeholder for
+# that call only; `release` (which does serve) never gets one and refuses by name.
+secret="${AUTONOMOUS_SECRET_KEY_BASE:-}"
+if [ "$shape" = release ] && { [ "$cmd" = segment ] || [ "$cmd" = identity ]; } \
+  && [ "${#secret}" -lt 64 ]; then
+  AUTONOMOUS_SECRET_KEY_BASE="identity-lookup-only-$(printf '%064d' 0)"
+  export AUTONOMOUS_SECRET_KEY_BASE
+fi
+
+identity="$(derive_identity)" \
   || die "could not derive the instance identity for $AUTONOMOUS_REPO"
 
 if [ "$cmd" = "segment" ]; then
   # Used only by the wrapper to name the Compose project: no lock, no
   # instance.json, no VM.
-  mise exec -- mix autonomous.instance --repo "$AUTONOMOUS_REPO" \
-    --root "$AUTONOMOUS_ROOT" --format segment
+  printf '%s\n' "$identity" | sed -n 's/^AUTONOMOUS_INSTANCE_SEGMENT=//p'
   exit 0
 fi
 
@@ -108,9 +138,13 @@ record = {
     "console_port": int(port) if port else None,
     "image": os.environ.get("AUTONOMOUS_IMAGE", ""),
 }
-with open(sys.argv[1], "w") as f:
+# Atomic: a second instance reading the owner record mid-write must never see a
+# truncated file (the kernel lock, not this file, is authoritative).
+tmp = sys.argv[1] + ".tmp"
+with open(tmp, "w") as f:
     json.dump(record, f, indent=2)
     f.write("\n")
+os.replace(tmp, sys.argv[1])
 PY
 
 if [ ! -f "$AUTONOMOUS_COOKIE_PATH" ]; then
@@ -150,5 +184,10 @@ case "$cmd" in
     ;;
   console)
     exec mise exec -- elixir --sname "$AUTONOMOUS_NODE_NAME" --cookie "$cookie" -S mix phx.server
+    ;;
+  release)
+    # rel/env.sh.eex turns AUTONOMOUS_NODE_NAME / AUTONOMOUS_COOKIE_PATH into
+    # RELEASE_NODE / RELEASE_COOKIE.
+    exec "$RELEASE_BIN" start
     ;;
 esac
