@@ -9,7 +9,60 @@ Everything here was validated against the LedgerLite Phase 7 target — see
 
 ---
 
+## Run in the container (031) — the primary path
+
+The orchestrator starts **only inside its container**. A host `iex -S mix` or
+`mix phx.server` is refused at boot, before the store opens, with the message
+`autonomous refuses to start outside its container`. `mix compile` and
+`mix test` still run on the host. The check prevents accidental host starts; it
+is not a security boundary.
+
+Requires Docker Engine + Compose v2 on Linux (other engines are unsupported).
+
+```bash
+cp .env.example .env            # fill in credentials (git-ignored)
+scripts/autonomous build        # once, and after Dockerfile / mise.toml changes
+scripts/autonomous shell --target /path/to/target-repo
+```
+
+`shell` opens `iex` inside the container with the operator API
+(`Autonomous.run/1`, `status/0`, …) and prints the target, the instance node,
+the console address and the budget note. Use `Autonomous.*` exactly as in the
+sections below.
+
+- **One target per instance.** The container serves the repository named by
+  `--target`; a facade call naming another repository raises
+  `Autonomous.Instance.NotServedError`. Start a second instance with another
+  `--target` to work on two repositories at once. A second instance for a target
+  already served exits `75` naming the live instance.
+- **Same-path mounts.** The target and `~/.autonomous` are mounted at the same
+  absolute path inside and outside the container, so `git worktree` paths resolve
+  from both sides. `git -C <target> worktree list` works from the host.
+- **Credentials** come from `.env` at run time, never from the image:
+  `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` for the agent, `GH_TOKEN` for
+  push and `gh pr create`, optional `GIT_AUTHOR_*` / `GIT_COMMITTER_*` for the
+  commit identity, and `ANTHROPIC_DEFAULT_OPUS_MODEL` /
+  `ANTHROPIC_DEFAULT_SONNET_MODEL` to pin the model aliases (the entrypoint warns
+  when they are unset). `--with-login` mounts the host `~/.claude` and
+  `~/.claude.json` instead (opt-in; a token in `.env` still wins).
+- **Console.** Published on `127.0.0.1` only. The wrapper prints the address; use
+  `--port <n>` to choose it (exit `76` when busy).
+- **State.** Each target gets its own store under
+  `~/.autonomous/instances/<segment>/`. The pre-031 `~/.autonomous/mnesia` is
+  neither read nor deleted; worktrees and exports stay where they were.
+- **Budget is per instance.** `AUTONOMOUS_BUDGET_USD` caps each instance's own
+  breaker; total spend is the sum across running instances.
+- `scripts/autonomous stop --target <repo>` removes the containers (state root
+  untouched); `--purge` also removes that target's build volumes.
+- `scripts/autonomous test [args]` runs `mix test` inside the image.
+
+Host use is limited to `mise exec -- mix compile` and `mise exec -- mix test`.
+
+---
+
 ## Prerequisites
+
+(Host run path — compile/test only since 031; the image provides all of this.)
 
 1. **Toolchain.** Elixir 1.20.2 / OTP 28 — run every command through mise
    (`mise exec -- mix …`); the bare PATH is a stale global Elixir.

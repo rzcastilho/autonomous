@@ -1,5 +1,10 @@
 import Config
 
+# 031: the orchestrator boots only inside its container image
+# (AUTONOMOUS_CONTAINER=1). The :test block below is the one override, so
+# `mix test` runs on the host and in the image alike (FR-004).
+config :autonomous, require_container: true
+
 # Keep test output readable — the runner logs a line per phase transition.
 if config_env() == :test do
   config :logger, level: :warning
@@ -11,6 +16,7 @@ if config_env() == :test do
   # pin it too, or every facade-preflight test would create real dirs under the
   # developer's actual `~/.autonomous`.
   config :autonomous,
+    require_container: false,
     transcript_root: Path.join(System.tmp_dir!(), "speckit_test_transcripts"),
     autonomous_root: Path.join(System.tmp_dir!(), "speckit_test_autonomous")
 end

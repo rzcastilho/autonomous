@@ -1,0 +1,15 @@
+# Build-context noise (031). Never exclude mise.toml, mix.exs, mix.lock,
+# config/, lib/, priv/ or rel/ — the image build needs them.
+_build
+deps
+.env
+.git
+.elixir_ls
+*.beam
+erl_crash.dump
+MnesiaCore.*
+/cover
+/tmp
+specs/
+docs/
+.playwright-mcp

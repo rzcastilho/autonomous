@@ -1,0 +1,212 @@
+#!/bin/sh
+# The documented entry point for operating the orchestrator (feature 031, FR-003).
+# Contract: specs/031-containerized-runtime/contracts/wrapper-cli.md
+#
+#   scripts/autonomous build
+#   scripts/autonomous shell --target <repo> [--port <n>] [--with-login]
+#   scripts/autonomous stop  --target <repo> [--purge]
+#   scripts/autonomous test  [mix test args]
+#
+# Requires Docker Engine + Compose v2 on Linux (other engines are unsupported).
+# Exit codes: 2 usage, 3 not Compose v2, 4 target not a git repo, 5 image not
+# built, 75 target already served, 76 console port busy.
+set -eu
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$root"
+
+DEV_IMAGE="autonomous-dev:local"
+
+say() { printf 'autonomous: %s\n' "$*"; }
+err() { printf 'autonomous: %s\n' "$*" >&2; }
+die() { code="$1"; shift; err "$*"; exit "$code"; }
+
+usage() {
+  cat >&2 <<'EOF'
+usage: scripts/autonomous <command> [options]
+
+  build                                  build the dev image (autonomous-dev:local)
+  shell --target <repo> [--port <n>]     interactive iex with the console served
+  stop  --target <repo> [--purge]        stop the instance; --purge also removes build volumes
+  test  [mix test args]                  run the test suite inside the dev image
+
+options:
+  --with-login                           mount the host agent login (opt-in)
+EOF
+  exit 2
+}
+
+[ "$#" -ge 1 ] || usage
+cmd="$1"
+shift
+
+target=""
+port=""
+with_login=0
+purge=0
+test_args=""
+
+case "$cmd" in
+  build | shell | stop | test) ;;
+  -h | --help | help) usage ;;
+  *) err "unknown command '$cmd'"; usage ;;
+esac
+
+if [ "$cmd" = "test" ]; then
+  # Everything after `test` belongs to mix test.
+  :
+else
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --target) [ "$#" -ge 2 ] || usage; target="$2"; shift 2 ;;
+      --target=*) target="${1#--target=}"; shift ;;
+      --port) [ "$#" -ge 2 ] || usage; port="$2"; shift 2 ;;
+      --port=*) port="${1#--port=}"; shift ;;
+      --with-login) with_login=1; shift ;;
+      --purge) purge=1; shift ;;
+      *) err "unknown option '$1'"; usage ;;
+    esac
+  done
+fi
+
+# ---- engine ----------------------------------------------------------------------
+compose_version="$(docker compose version --short 2>/dev/null || true)"
+compose_major="$(printf '%s' "$compose_version" | sed 's/^v//' | cut -d. -f1)"
+case "$compose_major" in
+  '' | *[!0-9]*) die 3 "Docker Compose v2 is required (found: ${compose_version:-none}); other engines are unsupported" ;;
+esac
+[ "$compose_major" -ge 2 ] \
+  || die 3 "Docker Compose v2 is required (found: $compose_version); other engines are unsupported"
+
+# ---- environment shared by every compose call ------------------------------------
+state_root="$HOME/.autonomous"
+# Bind-mount sources must exist: Docker would otherwise create them root-owned.
+mkdir -p "$state_root" "$root/_build" "$root/deps"
+
+AUTONOMOUS_UID="$(id -u)"
+AUTONOMOUS_GID="$(id -g)"
+AUTONOMOUS_ROOT="$state_root"
+export AUTONOMOUS_UID AUTONOMOUS_GID AUTONOMOUS_ROOT
+
+if [ -f .env ] && grep -Eq '^(AUTONOMOUS_REPO|AUTONOMOUS_ROOT)=' .env; then
+  err "warning: .env sets AUTONOMOUS_REPO/AUTONOMOUS_ROOT; ignored (the wrapper sets them from --target and \$HOME)"
+fi
+
+compose_files="-f compose.yaml"
+if [ "$with_login" = 1 ]; then
+  # Missing sources would be created root-owned by Docker.
+  [ -d "$HOME/.claude" ] && [ -f "$HOME/.claude.json" ] \
+    || die 2 "--with-login needs \$HOME/.claude and \$HOME/.claude.json (log in with the agent CLI on the host first)"
+  compose_files="$compose_files -f compose.claude-login.yaml"
+fi
+
+require_image() {
+  docker image inspect "$1" >/dev/null 2>&1 \
+    || die 5 "image $1 not found; run scripts/autonomous build"
+}
+
+resolve_target() {
+  [ -n "$target" ] || { err "--target is required"; usage; }
+  [ -d "$target" ] || die 4 "target $target is not a git repository"
+  target="$(cd "$target" && pwd -P)"
+  git -C "$target" rev-parse --git-dir >/dev/null 2>&1 \
+    || die 4 "target $target is not a git repository"
+  AUTONOMOUS_REPO="$target"
+  export AUTONOMOUS_REPO
+}
+
+port_busy() {
+  python3 -c '
+import socket, sys
+s = socket.socket()
+try:
+    s.bind(("127.0.0.1", int(sys.argv[1])))
+except OSError:
+    sys.exit(0)
+sys.exit(1)
+' "$1"
+}
+
+free_port() {
+  python3 -c '
+import socket
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+'
+}
+
+# The identity is derived in Elixir only (never recomputed in shell): ask the
+# image, under a fixed bootstrap project, via the entrypoint's `identity` command.
+lookup_identity() {
+  AUTONOMOUS_HOST_PORT="" docker compose -p autonomous-bootstrap $compose_files \
+    run --rm --no-deps -T dev identity | grep '^AUTONOMOUS_'
+}
+
+env_value() { printf '%s\n' "$1" | sed -n "s/^$2=//p"; }
+
+case "$cmd" in
+  build)
+    AUTONOMOUS_REPO="$root"
+    export AUTONOMOUS_REPO
+    exec docker compose -p autonomous-bootstrap $compose_files build dev
+    ;;
+
+  test)
+    require_image "$DEV_IMAGE"
+    AUTONOMOUS_REPO="$root"
+    export AUTONOMOUS_REPO
+    tty_flag=""
+    [ -t 0 ] || tty_flag="-T"
+    # shellcheck disable=SC2086
+    exec docker compose -p autonomous-test $compose_files \
+      run --rm --no-deps $tty_flag dev test "$@"
+    ;;
+
+  stop)
+    resolve_target
+    require_image "$DEV_IMAGE"
+    identity="$(lookup_identity)" || die 1 "could not derive the instance identity for $target"
+    segment="$(env_value "$identity" AUTONOMOUS_INSTANCE_SEGMENT)"
+    down_flags=""
+    [ "$purge" = 1 ] && down_flags="-v"
+    # shellcheck disable=SC2086
+    exec docker compose -p "autonomous-$segment" $compose_files down $down_flags
+    ;;
+
+  shell)
+    resolve_target
+    require_image "$DEV_IMAGE"
+
+    identity="$(lookup_identity)" || die 1 "could not derive the instance identity for $target"
+    segment="$(env_value "$identity" AUTONOMOUS_INSTANCE_SEGMENT)"
+    node_name="$(env_value "$identity" AUTONOMOUS_NODE_NAME)"
+    [ -n "$segment" ] || die 1 "could not derive the instance identity for $target"
+
+    # A port is always chosen here, so it can be printed before the foreground
+    # session takes the terminal. 76 on a busy explicit port (FR-021).
+    if [ -n "$port" ]; then
+      case "$port" in
+        *[!0-9]*) die 2 "usage: --port expects a number" ;;
+      esac
+      if port_busy "$port"; then
+        die 76 "console port $port is already in use on 127.0.0.1"
+      fi
+    else
+      port="$(free_port)"
+    fi
+    AUTONOMOUS_HOST_PORT="$port"
+    export AUTONOMOUS_HOST_PORT
+
+    say "target   $target"
+    say "instance $node_name"
+    say "console  http://127.0.0.1:$port/"
+    say "budget   per instance (AUTONOMOUS_BUDGET_USD=${AUTONOMOUS_BUDGET_USD:-config default}); total spend is the sum across running instances"
+
+    tty_flag=""
+    [ -t 0 ] || tty_flag="-T"
+    # shellcheck disable=SC2086
+    exec docker compose -p "autonomous-$segment" $compose_files \
+      run --rm --service-ports $tty_flag dev shell
+    ;;
+esac

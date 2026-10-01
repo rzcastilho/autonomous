@@ -1,0 +1,13 @@
+# Opt-in (FR-012): mount the host's coding-agent login into the container.
+# Added by `scripts/autonomous ... --with-login`. A token in .env
+# (ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN) still wins over the login.
+#
+# These mounts are read-write on purpose: the agent CLI refreshes its own login.
+
+services:
+  dev:
+    volumes: &login-mounts
+      - "${HOME}/.claude:/home/autonomous/.claude"
+      - "${HOME}/.claude.json:/home/autonomous/.claude.json"
+  console:
+    volumes: *login-mounts

@@ -5,7 +5,12 @@ defmodule Autonomous.Application do
 
   @impl true
   def start(_type, _args) do
+    # 031: refuse before anything else — a host start must never open the
+    # store. Order is the contract (boot-guard.md): container marker, retired
+    # settings, instance identity, then the store.
+    Autonomous.ContainerGuard.check!()
     check_no_retired_settings!()
+    Autonomous.Instance.verify!()
 
     # Store.Boot runs before any child spec (018, FR-009): a run can never
     # begin spending money it cannot record. A failure aborts the OTP
