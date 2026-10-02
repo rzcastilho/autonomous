@@ -61,6 +61,17 @@ defmodule Autonomous.Web.ConfigLiveTest do
     assert html =~ Config.pr_remote()
   end
 
+  # 031: the served repository and the instance node are shown read-only.
+  test "shows the served repository and instance node as read-only identifiers", %{conn: conn} do
+    {:ok, view, html} = live(conn, "/config")
+
+    assert html =~ "data-instance-repo"
+    assert html =~ Path.expand(Config.repo())
+    assert html =~ "data-instance-node"
+    assert html =~ Atom.to_string(node())
+    refute has_element?(view, "[data-instance] input")
+  end
+
   # 019: no concurrency slider or PR-workflow toggle renders anymore — every
   # run is already the one stacked sequential shape.
   test "renders no concurrency slider or PR-workflow toggle", %{conn: conn} do

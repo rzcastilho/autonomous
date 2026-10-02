@@ -15,6 +15,7 @@ defmodule Autonomous do
     Feature,
     FeatureRunner,
     InteractiveClarify,
+    Instance,
     Layout,
     Ledger,
     Pipeline,
@@ -467,6 +468,7 @@ defmodule Autonomous do
   """
   @spec workers(String.t()) :: [Autonomous.Workers.entry()]
   def workers(repo \\ Config.repo()) do
+    Instance.assert_served!(repo)
     Workers.in_flight(RepoIdentity.partition(repo))
   end
 
@@ -481,7 +483,7 @@ defmodule Autonomous do
   """
   @spec pending_questions(keyword()) :: [map()]
   def pending_questions(opts \\ []) do
-    repo_id = RepoIdentity.partition(Keyword.get(opts, :repo, Config.repo()))
+    repo_id = RepoIdentity.partition(served_repo(opts))
 
     case Store.current_run_key(repo_id) do
       nil -> []
@@ -530,7 +532,7 @@ defmodule Autonomous do
           | {:error, {:missing_answer, String.t()}}
           | {:error, :empty_answer}
   def answer(feature_id, seq, answers, opts \\ []) do
-    repo_id = RepoIdentity.partition(Keyword.get(opts, :repo, Config.repo()))
+    repo_id = RepoIdentity.partition(served_repo(opts))
 
     case Store.current_run_key(repo_id) do
       nil ->
@@ -725,7 +727,7 @@ defmodule Autonomous do
   end
 
   defp find_parked_run(opts) do
-    repo = Keyword.get(opts, :repo, Config.repo())
+    repo = served_repo(opts)
     repo_id = RepoIdentity.partition(repo)
 
     case Store.parked_run(repo_id) do
@@ -1149,6 +1151,8 @@ defmodule Autonomous do
           | {:error, :corrupt_manifest}
           | {:error, term()}
   def resumable(repo_id) do
+    Instance.assert_served!(repo_id)
+
     case Store.current_run_key(repo_id) do
       nil ->
         {:error, :no_manifest}
@@ -1207,7 +1211,7 @@ defmodule Autonomous do
   """
   @spec run_history(keyword()) :: {:ok, [map()]} | {:error, term()}
   def run_history(opts \\ []) do
-    repo = Keyword.get(opts, :repo, Config.repo())
+    repo = served_repo(opts)
     repo_id = RepoIdentity.partition(repo)
     Store.runs(repo_id, Keyword.take(opts, [:outcome, :feature, :limit, :before]))
   end
@@ -1366,7 +1370,7 @@ defmodule Autonomous do
   # per-row estimate for its control rows, contracts/capacity-and-prune.md §
   # Prune rule 5), fed to the pure `Prune.plan/3`.
   defp build_prune_plan(opts) do
-    repo = Keyword.get(opts, :repo, Config.repo())
+    repo = served_repo(opts)
     repo_id = RepoIdentity.partition(repo)
 
     case Store.runs(repo_id) do
@@ -1443,6 +1447,9 @@ defmodule Autonomous do
   @spec prune(keyword()) ::
           {:ok, %{removed: [String.t()], bytes_reclaimed: non_neg_integer()}} | {:error, term()}
   def prune(opts \\ []) do
+    # Refuse a foreign repository even before the confirmation check (031).
+    _ = served_repo(opts)
+
     if Keyword.get(opts, :confirm, false) do
       with {:ok, repo_id, plan} <- build_prune_plan(opts) do
         {removed, bytes_reclaimed} = prune_removable(repo_id, plan.removable)
@@ -1486,7 +1493,7 @@ defmodule Autonomous do
   """
   @spec export_run(String.t(), String.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
   def export_run(run_id, path, opts \\ []) do
-    repo = Keyword.get(opts, :repo, Config.repo())
+    repo = served_repo(opts)
     repo_id = RepoIdentity.partition(repo)
 
     with {:ok, detail} <- Store.run({repo_id, run_id}) do
@@ -1550,7 +1557,7 @@ defmodule Autonomous do
   @spec run_detail(String.t(), keyword()) ::
           {:ok, map()} | {:error, :absent} | {:error, {:damaged, term(), term()}}
   def run_detail(run_id, opts \\ []) do
-    repo = Keyword.get(opts, :repo, Config.repo())
+    repo = served_repo(opts)
     repo_id = RepoIdentity.partition(repo)
 
     with {:ok, detail} <- Store.run({repo_id, run_id}) do
@@ -1575,6 +1582,8 @@ defmodule Autonomous do
   """
   @spec current_run_id(String.t()) :: String.t() | nil
   def current_run_id(repo \\ Config.repo()) do
+    Instance.assert_served!(repo)
+
     case Store.current_run_key(RepoIdentity.partition(repo)) do
       nil -> nil
       {_repo_id, run_id} -> run_id
@@ -1608,7 +1617,7 @@ defmodule Autonomous do
   """
   @spec record_pr(binary(), binary(), keyword()) :: :ok | {:error, term()}
   def record_pr(feature_id, url, opts \\ []) when is_binary(feature_id) and is_binary(url) do
-    repo_id = RepoIdentity.partition(Keyword.get(opts, :repo, Config.repo()))
+    repo_id = RepoIdentity.partition(served_repo(opts))
 
     run_key =
       case Keyword.get(opts, :run_id) do
@@ -1782,7 +1791,17 @@ defmodule Autonomous do
   end
 
   defp guard_repo_id(opts) do
-    RepoIdentity.partition(Keyword.get(opts, :repo, Config.repo()))
+    RepoIdentity.partition(served_repo(opts))
+  end
+
+  # 031 (FR-007): the one place a `:repo` option is read. In a container this
+  # instance serves exactly one target, so a call naming another repository
+  # raises `Instance.NotServedError` instead of touching its store. A public
+  # function that gains a `:repo` option must read it through here.
+  defp served_repo(opts) do
+    repo = Keyword.get(opts, :repo, Config.repo())
+    Instance.assert_served!(repo)
+    repo
   end
 
   # 030, FR-004: the containment profile is fixed at run start and never
@@ -2334,7 +2353,7 @@ defmodule Autonomous do
   # bare scope with no built `%Layout{}` (no segment/IO needed for this pure
   # path join).
   defp gather_taken_ids(opts) do
-    repo = Keyword.get(opts, :repo, Config.repo())
+    repo = served_repo(opts)
     ad_hoc_dir = Keyword.get(opts, :ad_hoc_dir, Path.join(repo, Layout.in_repo_rel(:ad_hoc)))
 
     breakdown_ids(ad_hoc_dir) ++ branch_ids(repo)

@@ -4,7 +4,8 @@ defmodule Autonomous.Web.ConfigLive do
   base/remote, applying forward-only to the live run
   (`specs/008-control-plane/tasks.md` T068-T070). 019: every run is a
   stacked sequential run — there is no concurrency or PR-workflow toggle
-  left to configure.
+  left to configure. 031: also shows, read-only, the repository this instance
+  serves and its node name (real identifiers, not editable settings).
 
   Renders `Config.*` + `Ledger.snapshot/1`; submits through
   `LiveConfig.apply/1`. On success it broadcasts a `:reconciled` message on
@@ -40,6 +41,8 @@ defmodule Autonomous.Web.ConfigLive do
       budget_usd: Ledger.snapshot().budget,
       pr_base: Config.pr_base(),
       pr_remote: Config.pr_remote(),
+      served_repo: Path.expand(Config.repo()),
+      instance_node: Atom.to_string(node()),
       containment_default: Atom.to_string(Config.containment_profile()),
       containment_live: live_containment_profile()
     )
@@ -224,6 +227,22 @@ defmodule Autonomous.Web.ConfigLive do
           <div :if={Containment.permissive?(@containment_live)} class="config-toggle-row">
             <div class="config-toggle-title">
               containment_profile (live run): {@containment_live}
+            </div>
+          </div>
+        </fieldset>
+
+        <fieldset class="config-pr form-panel" data-instance>
+          <legend class="sr-only">Instance</legend>
+          <div class="config-toggle-row">
+            <div>
+              <div class="config-toggle-title">Served repository</div>
+              <div class="config-toggle-sub config-instance-id" data-instance-repo>{@served_repo}</div>
+            </div>
+          </div>
+          <div class="config-toggle-row">
+            <div>
+              <div class="config-toggle-title">Instance node</div>
+              <div class="config-toggle-sub config-instance-id" data-instance-node>{@instance_node}</div>
             </div>
           </div>
         </fieldset>

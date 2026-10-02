@@ -221,6 +221,49 @@ defmodule Autonomous.ScopeGuardTest do
     end
   end
 
+  describe "device-sink redirect allowance (feature 031, FR-027, SC-010)" do
+    @allowed_cmds [
+      "emulator -avd t -no-window > /dev/null 2>&1 &",
+      "npx playwright test 2>/dev/null",
+      "xvfb-run -a npm test &>/dev/null",
+      "echo x > /dev/stdout",
+      "echo x > /dev/stderr",
+      "adb shell input tap 10 10",
+      "import -window root shot.png",
+      "./gradlew connectedAndroidTest"
+    ]
+
+    @denied_cmds [
+      {"echo x > /dev/sda", "bash_redirect_outside_worktree"},
+      {"echo x > /dev/nullx", "bash_redirect_outside_worktree"},
+      {"echo x > /dev/null/../../etc/passwd", "bash_redirect_outside_worktree"},
+      {"echo x > /tmp/x", "bash_redirect_outside_worktree"},
+      {"curl http://x > /dev/null", "bash_curl"}
+    ]
+
+    for cmd <- @allowed_cmds do
+      test "allow under orchestrated-strict: #{cmd}" do
+        assert {:allow, 0} = guard(bash(unquote(cmd)), orchestrated("strict"))
+      end
+    end
+
+    for {cmd, rule} <- @denied_cmds do
+      test "deny under orchestrated-strict: #{cmd}" do
+        assert {:deny, reason} = guard(bash(unquote(cmd)), orchestrated("strict"))
+        assert reason =~ unquote(rule)
+      end
+    end
+
+    test "every row allows under permissive and interactive" do
+      cmds = @allowed_cmds ++ Enum.map(@denied_cmds, &elem(&1, 0))
+
+      for cmd <- cmds do
+        assert {:allow, 0} = guard(bash(cmd), orchestrated("permissive"))
+        assert {:allow, 0} = guard(bash(cmd), interactive())
+      end
+    end
+  end
+
   describe "SC-002 probe: orchestrated-permissive allows every action class" do
     test "push, web fetch, web search, download, out-of-tree write, rm -rf / all allow" do
       env = orchestrated("permissive")

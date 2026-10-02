@@ -1,0 +1,109 @@
+# Always-containerized runtime (feature 031). Contract:
+# specs/031-containerized-runtime/contracts/compose-services.md
+#
+# Start through scripts/autonomous — it exports AUTONOMOUS_REPO, AUTONOMOUS_ROOT,
+# AUTONOMOUS_UID, AUTONOMOUS_GID, AUTONOMOUS_HOST_PORT and COMPOSE_PROJECT_NAME (autonomous-<segment>).
+#
+# The target repository and the state root are mounted at the SAME absolute path
+# inside and outside the container (FR-017/FR-019): `git worktree` records
+# absolute paths, so worktrees must resolve from both sides.
+
+x-instance: &instance
+  hostname: autonomous # fixed: the Erlang node name's host part (FR-018)
+  user: "${AUTONOMOUS_UID}:${AUTONOMOUS_GID}"
+  init: true
+  shm_size: 1gb
+  extra_hosts:
+    - "host.docker.internal:host-gateway" # host-adb fallback for Android (US6)
+  entrypoint: ["/workspace/scripts/container-entrypoint.sh"]
+  env_file:
+    - path: .env
+      required: false
+  environment: &instance-env
+    # Set here, after env_file, so a stray .env value cannot override them.
+    AUTONOMOUS_REPO: "${AUTONOMOUS_REPO}"
+    AUTONOMOUS_ROOT: "${AUTONOMOUS_ROOT}"
+    AUTONOMOUS_HOST_PORT: "${AUTONOMOUS_HOST_PORT:-}"
+    COMPOSE_PROJECT_NAME: "${COMPOSE_PROJECT_NAME:-}"
+    PHX_SERVER: "true"
+  ports:
+    # Loopback only (FR-021); empty host port = Docker picks a free one.
+    - "127.0.0.1:${AUTONOMOUS_HOST_PORT:-}:4000"
+
+x-state-mounts: &state-mounts
+  - "${AUTONOMOUS_REPO}:${AUTONOMOUS_REPO}"
+  - "${AUTONOMOUS_ROOT}:${AUTONOMOUS_ROOT}"
+
+x-dev-mounts: &dev-mounts
+  - "${AUTONOMOUS_REPO}:${AUTONOMOUS_REPO}"
+  - "${AUTONOMOUS_ROOT}:${AUTONOMOUS_ROOT}"
+  - ".:/workspace"
+  - "autonomous-build:/workspace/_build"
+  - "autonomous-deps:/workspace/deps"
+
+services:
+  dev:
+    <<: *instance
+    image: autonomous-dev:local # explicit: one build serves every per-target project
+    pull_policy: never
+    build:
+      context: .
+      target: dev
+      args:
+        UID: "${AUTONOMOUS_UID:-1000}"
+        GID: "${AUTONOMOUS_GID:-1000}"
+        WITH_WEB: "${WITH_WEB:-0}"
+        WITH_DESKTOP: "${WITH_DESKTOP:-0}"
+        WITH_ANDROID: "${WITH_ANDROID:-0}"
+        PLAYWRIGHT_VERSION: "${PLAYWRIGHT_VERSION:-1.49.1}" # keep equal to the Dockerfile default
+    environment:
+      <<: *instance-env
+      AUTONOMOUS_SERVICE: dev
+      AUTONOMOUS_IMAGE: autonomous-dev:local
+    volumes: *dev-mounts
+    command: ["shell"]
+
+  console:
+    <<: *instance
+    image: autonomous-dev:local
+    pull_policy: never
+    environment:
+      <<: *instance-env
+      AUTONOMOUS_SERVICE: console
+      AUTONOMOUS_IMAGE: autonomous-dev:local
+    volumes: *dev-mounts
+    command: ["console"]
+
+  # Self-contained release (feature 031 US4): no source mount, no toolchain. The
+  # entrypoint in this image is copied to /usr/local/bin (the dev one is the
+  # bind-mounted script).
+  release:
+    <<: *instance
+    image: autonomous-release:local
+    pull_policy: never
+    entrypoint: ["/usr/local/bin/container-entrypoint.sh"]
+    build:
+      context: .
+      target: release
+      args:
+        UID: "${AUTONOMOUS_UID:-1000}"
+        GID: "${AUTONOMOUS_GID:-1000}"
+        WITH_WEB: "${WITH_WEB:-0}"
+        WITH_DESKTOP: "${WITH_DESKTOP:-0}"
+        WITH_ANDROID: "${WITH_ANDROID:-0}"
+        PLAYWRIGHT_VERSION: "${PLAYWRIGHT_VERSION:-1.49.1}" # keep equal to the Dockerfile default
+    environment:
+      <<: *instance-env
+      AUTONOMOUS_SERVICE: release
+      AUTONOMOUS_IMAGE: autonomous-release:local
+      # Interpolated from the shell or .env; empty when neither has it, which the
+      # release refuses by name (runtime.exs), never silently accepts.
+      AUTONOMOUS_SECRET_KEY_BASE: "${AUTONOMOUS_SECRET_KEY_BASE:-}"
+    volumes: *state-mounts
+    command: ["release"]
+
+# Declared without `name:` so Compose scopes them per project: two concurrent
+# dev instances never share a _build.
+volumes:
+  autonomous-build:
+  autonomous-deps:

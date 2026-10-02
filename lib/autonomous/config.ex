@@ -220,6 +220,11 @@ defmodule Autonomous.Config do
   Directory the Mnesia store lives under (018). Default
   `<autonomous_root/0>/mnesia`, expanded at read time; never inside a target
   repository tree (FR-005).
+
+  In the container (031) `AUTONOMOUS_STORE_DIR` — exported from the
+  `Autonomous.Instance` derivation — sets it to
+  `<state_root>/instances/<segment>/mnesia`, one store per target. The default
+  path is unchanged for host/test.
   """
   @spec store_dir() :: String.t()
   def store_dir, do: get(:store_dir, Path.join(autonomous_root(), "mnesia")) |> Path.expand()

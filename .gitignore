@@ -30,3 +30,6 @@ autonomous-*.tar
 # Playwright MCP session scratch (traces, screenshots) — driven by the browser
 # tooling, never part of the console's own test fixtures.
 /.playwright-mcp/
+
+# Container runtime credentials (031, FR-015): .env.example stays tracked.
+/.env

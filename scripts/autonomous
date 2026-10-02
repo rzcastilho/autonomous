@@ -1,0 +1,406 @@
+#!/bin/sh
+# The documented entry point for operating the orchestrator (feature 031, FR-003).
+# Contract: specs/031-containerized-runtime/contracts/wrapper-cli.md
+#
+#   scripts/autonomous build [--release] [--web] [--desktop] [--android]
+#   scripts/autonomous shell   --target <repo> [--port <n>] [--with-login]
+#   scripts/autonomous console --target <repo> [--port <n>] [--with-login]
+#   scripts/autonomous release --target <repo> [--port <n>] [--with-login]
+#   scripts/autonomous remote  --target <repo>
+#   scripts/autonomous port    --target <repo>
+#   scripts/autonomous stop    --target <repo> [--purge]
+#   scripts/autonomous viewer  --target <repo>
+#   scripts/autonomous test  [mix test args]
+#
+# Requires Docker Engine + Compose v2 on Linux (other engines are unsupported).
+# Exit codes: 2 usage, 3 not Compose v2, 4 target not a git repo, 5 image not
+# built, 75 target already served, 76 console port busy.
+set -eu
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$root"
+
+DEV_IMAGE="autonomous-dev:local"
+RELEASE_IMAGE="autonomous-release:local"
+
+say() { printf 'autonomous: %s\n' "$*"; }
+err() { printf 'autonomous: %s\n' "$*" >&2; }
+die() { code="$1"; shift; err "$*"; exit "$code"; }
+
+usage() {
+  cat >&2 <<'EOF'
+usage: scripts/autonomous <command> [options]
+
+  build [--release] [--web] [--desktop] [--android]
+                                         build the dev image (autonomous-dev:local); --release also
+                                         builds autonomous-release:local; --web/--desktop/--android
+                                         add the opt-in testing capabilities (default: none)
+  shell --target <repo> [--port <n>]     interactive iex with the console served
+  console --target <repo> [--port <n>]   detached console (mix phx.server)
+  release --target <repo> [--port <n>]   detached release instance (needs build --release)
+  remote  --target <repo>                remote console into a running release
+  port  --target <repo>                  print the console address of a running instance
+  viewer --target <repo>                 print the desktop viewer address of a running --viewer instance
+  stop  --target <repo> [--purge]        stop the instance; --purge also removes build volumes
+  test  [mix test args]                  run the test suite inside the dev image
+
+options:
+  --with-login                           mount the host agent login (opt-in)
+  --viewer                               serve the virtual display through noVNC on loopback
+                                         (needs an image built with --desktop)
+  --android                              Android support at start: pass /dev/kvm through when present
+                                         (needs an image built with --android)
+EOF
+  exit 2
+}
+
+[ "$#" -ge 1 ] || usage
+cmd="$1"
+shift
+
+target=""
+port=""
+with_login=0
+purge=0
+build_release=0
+with_web=0
+with_desktop=0
+with_android=0
+viewer=0
+test_args=""
+
+case "$cmd" in
+  build | shell | console | release | remote | port | viewer | stop | test) ;;
+  -h | --help | help) usage ;;
+  *) err "unknown command '$cmd'"; usage ;;
+esac
+
+if [ "$cmd" = "test" ]; then
+  # Everything after `test` belongs to mix test.
+  :
+else
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --target) [ "$#" -ge 2 ] || usage; target="$2"; shift 2 ;;
+      --target=*) target="${1#--target=}"; shift ;;
+      --port) [ "$#" -ge 2 ] || usage; port="$2"; shift 2 ;;
+      --port=*) port="${1#--port=}"; shift ;;
+      --with-login) with_login=1; shift ;;
+      --purge) purge=1; shift ;;
+      --release) build_release=1; shift ;;
+      --web) with_web=1; shift ;;
+      --desktop) with_desktop=1; shift ;;
+      --android) with_android=1; shift ;;
+      --viewer) viewer=1; shift ;;
+      *) err "unknown option '$1'"; usage ;;
+    esac
+  done
+fi
+
+# ---- engine ----------------------------------------------------------------------
+compose_version="$(docker compose version --short 2>/dev/null || true)"
+compose_major="$(printf '%s' "$compose_version" | sed 's/^v//' | cut -d. -f1)"
+case "$compose_major" in
+  '' | *[!0-9]*) die 3 "Docker Compose v2 is required (found: ${compose_version:-none}); other engines are unsupported" ;;
+esac
+[ "$compose_major" -ge 2 ] \
+  || die 3 "Docker Compose v2 is required (found: $compose_version); other engines are unsupported"
+
+# ---- environment shared by every compose call ------------------------------------
+state_root="$HOME/.autonomous"
+# Bind-mount sources must exist: Docker would otherwise create them root-owned.
+mkdir -p "$state_root" "$root/_build" "$root/deps"
+
+AUTONOMOUS_UID="$(id -u)"
+AUTONOMOUS_GID="$(id -g)"
+AUTONOMOUS_ROOT="$state_root"
+export AUTONOMOUS_UID AUTONOMOUS_GID AUTONOMOUS_ROOT
+
+if [ -f .env ] && grep -Eq '^(AUTONOMOUS_REPO|AUTONOMOUS_ROOT)=' .env; then
+  err "warning: .env sets AUTONOMOUS_REPO/AUTONOMOUS_ROOT; ignored (the wrapper sets them from --target and \$HOME)"
+fi
+
+compose_files="-f compose.yaml"
+if [ "$with_login" = 1 ]; then
+  # Missing sources would be created root-owned by Docker.
+  [ -d "$HOME/.claude" ] && [ -f "$HOME/.claude.json" ] \
+    || die 2 "--with-login needs \$HOME/.claude and \$HOME/.claude.json (log in with the agent CLI on the host first)"
+  compose_files="$compose_files -f compose.claude-login.yaml"
+fi
+
+if [ "$viewer" = 1 ]; then
+  compose_files="$compose_files -f compose.desktop-viewer.yaml"
+fi
+if [ "$with_android" = 1 ] && [ "$cmd" != build ]; then
+  if [ -c /dev/kvm ] && [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
+    AUTONOMOUS_KVM_GID="$(stat -c '%g' /dev/kvm)"
+    export AUTONOMOUS_KVM_GID
+    compose_files="$compose_files -f compose.android.yaml"
+  else
+    err "warning: /dev/kvm is not usable here; Android sessions need the host adb fallback (see docs/container.md)"
+  fi
+fi
+
+require_image() {
+  docker image inspect "$1" >/dev/null 2>&1 \
+    || die 5 "image $1 not found; run scripts/autonomous build"
+}
+
+resolve_target() {
+  [ -n "$target" ] || { err "--target is required"; usage; }
+  [ -d "$target" ] || die 4 "target $target is not a git repository"
+  target="$(cd "$target" && pwd -P)"
+  git -C "$target" rev-parse --git-dir >/dev/null 2>&1 \
+    || die 4 "target $target is not a git repository"
+  AUTONOMOUS_REPO="$target"
+  export AUTONOMOUS_REPO
+}
+
+port_busy() {
+  python3 -c '
+import socket, sys
+s = socket.socket()
+try:
+    s.bind(("127.0.0.1", int(sys.argv[1])))
+except OSError:
+    sys.exit(0)
+sys.exit(1)
+' "$1"
+}
+
+free_port() {
+  python3 -c '
+import socket
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+'
+}
+
+# The identity is derived in Elixir only (never recomputed in shell): ask the
+# image, under a fixed bootstrap project, via the entrypoint's `identity` command.
+lookup_identity() { # lookup_identity [dev|release]
+  AUTONOMOUS_HOST_PORT="" docker compose -p autonomous-bootstrap $compose_files \
+    run --rm --no-deps -T "${1:-dev}" identity | grep '^AUTONOMOUS_'
+}
+
+env_value() { printf '%s\n' "$1" | sed -n "s/^$2=//p"; }
+
+# Sets $port: validates --port (76 when busy, FR-021) or picks a free loopback
+# port, so the address can be printed before a foreground session takes the
+# terminal.
+choose_port() {
+  if [ -n "$port" ]; then
+    case "$port" in
+      *[!0-9]*) die 2 "usage: --port expects a number" ;;
+    esac
+    if port_busy "$port"; then
+      die 76 "console port $port is already in use on 127.0.0.1"
+    fi
+  else
+    port="$(free_port)"
+  fi
+  AUTONOMOUS_HOST_PORT="$port"
+  export AUTONOMOUS_HOST_PORT
+}
+
+print_summary() {
+  say "target   $target"
+  say "instance $node_name"
+  say "console  http://127.0.0.1:$port/"
+  say "budget   per instance (AUTONOMOUS_BUDGET_USD=${AUTONOMOUS_BUDGET_USD:-config default}); total spend is the sum across running instances"
+}
+
+console_responds() {
+  python3 -c '
+import sys, urllib.request
+try:
+    urllib.request.urlopen("http://127.0.0.1:%s/" % sys.argv[1], timeout=2)
+except Exception as e:
+    # Any HTTP status means the endpoint is up; only connection errors mean not yet.
+    sys.exit(0 if hasattr(e, "code") else 1)
+' "$1" >/dev/null 2>&1
+}
+
+# Wait for a detached instance to serve the console, or to die. A target that is
+# already served exits 75 in the entrypoint; surface that instead of timing out.
+wait_for_console() { # wait_for_console <project> <service>
+  deadline=$(( $(date +%s) + ${AUTONOMOUS_START_TIMEOUT:-900} ))
+  say "waiting for the console (first start of a target builds its dependencies)..."
+  while :; do
+    # shellcheck disable=SC2086
+    cid="$(docker compose -p "$1" $compose_files ps -aq "$2" 2>/dev/null | head -n1)"
+    if [ -n "$cid" ]; then
+      state="$(docker inspect -f '{{.State.Status}} {{.State.ExitCode}}' "$cid" 2>/dev/null || true)"
+      case "$state" in
+        exited* | dead*)
+          code="${state#* }"
+          # shellcheck disable=SC2086
+          logs="$(docker compose -p "$1" $compose_files logs --no-log-prefix "$2" 2>&1 | tail -n 20)"
+          if [ "$code" = 75 ]; then
+            err "$(printf '%s\n' "$logs" | grep 'already served' | tail -n1 | sed 's/^autonomous: //')"
+            exit 75
+          fi
+          printf '%s\n' "$logs" >&2
+          die "$code" "console instance exited with status $code"
+          ;;
+      esac
+    fi
+    console_responds "$port" && return 0
+    [ "$(date +%s)" -lt "$deadline" ] || die 1 "console did not answer on 127.0.0.1:$port within ${AUTONOMOUS_START_TIMEOUT:-900}s"
+    sleep 2
+  done
+}
+
+case "$cmd" in
+  build)
+    AUTONOMOUS_REPO="$root"
+    export AUTONOMOUS_REPO
+    services="dev"
+    [ "$build_release" = 1 ] && services="dev release"
+    # Capabilities are build args; each is a no-op in the Dockerfile unless 1.
+    WITH_WEB="$with_web"; WITH_DESKTOP="$with_desktop"; WITH_ANDROID="$with_android"
+    export WITH_WEB WITH_DESKTOP WITH_ANDROID
+    # shellcheck disable=SC2086
+    exec docker compose -p autonomous-bootstrap $compose_files build $services
+    ;;
+
+  test)
+    require_image "$DEV_IMAGE"
+    AUTONOMOUS_REPO="$root"
+    export AUTONOMOUS_REPO
+    tty_flag=""
+    [ -t 0 ] || tty_flag="-T"
+    # shellcheck disable=SC2086
+    exec docker compose -p autonomous-test $compose_files \
+      run --rm --no-deps $tty_flag dev test "$@"
+    ;;
+
+  stop)
+    resolve_target
+    require_image "$DEV_IMAGE"
+    identity="$(lookup_identity)" || die 1 "could not derive the instance identity for $target"
+    segment="$(env_value "$identity" AUTONOMOUS_INSTANCE_SEGMENT)"
+    down_flags=""
+    [ "$purge" = 1 ] && down_flags="-v"
+    # shellcheck disable=SC2086
+    exec docker compose -p "autonomous-$segment" $compose_files down $down_flags
+    ;;
+
+  shell)
+    resolve_target
+    require_image "$DEV_IMAGE"
+
+    identity="$(lookup_identity)" || die 1 "could not derive the instance identity for $target"
+    segment="$(env_value "$identity" AUTONOMOUS_INSTANCE_SEGMENT)"
+    node_name="$(env_value "$identity" AUTONOMOUS_NODE_NAME)"
+    [ -n "$segment" ] || die 1 "could not derive the instance identity for $target"
+
+    choose_port
+    print_summary
+
+    tty_flag=""
+    [ -t 0 ] || tty_flag="-T"
+    # shellcheck disable=SC2086
+    exec docker compose -p "autonomous-$segment" $compose_files \
+      run --rm --service-ports $tty_flag dev shell
+    ;;
+  console | release)
+    service="$cmd"
+    image="$DEV_IMAGE"
+    [ "$service" = release ] && image="$RELEASE_IMAGE"
+    resolve_target
+    require_image "$image"
+
+    lookup_service="dev"
+    [ "$service" = release ] && lookup_service="release"
+    identity="$(lookup_identity "$lookup_service")" || die 1 "could not derive the instance identity for $target"
+    segment="$(env_value "$identity" AUTONOMOUS_INSTANCE_SEGMENT)"
+    node_name="$(env_value "$identity" AUTONOMOUS_NODE_NAME)"
+    [ -n "$segment" ] || die 1 "could not derive the instance identity for $target"
+
+    project="autonomous-$segment"
+    # `up -d` would recreate a running instance of this project with the new port
+    # and silently replace it; refuse instead (the entrypoint lock covers the
+    # other-project case, FR-018a).
+    live="$(docker ps --filter "label=com.docker.compose.project=$project" --format '{{.Names}}' | head -n1)"
+    if [ -n "$live" ]; then
+      owner="$(python3 - "$state_root/instances/$segment/instance.json" <<'PY' 2>/dev/null || true
+import json, sys
+o = json.load(open(sys.argv[1]))
+print("%s/%s since %s" % (o.get("compose_project", "?"), o.get("service", "?"), o.get("started_at", "?")))
+PY
+)"
+      die 75 "target $target is already served by ${owner:-$live}"
+    fi
+
+    choose_port
+    print_summary
+
+    # A port taken between the check above and the bind is translated too (76).
+    # shellcheck disable=SC2086
+    if ! up_out="$(docker compose -p "$project" $compose_files up -d --no-build --pull never "$service" 2>&1)"; then
+      if printf '%s' "$up_out" | grep -Eqi 'port is already allocated|address already in use'; then
+        die 76 "console port $port is already in use on 127.0.0.1"
+      fi
+      printf '%s\n' "$up_out" >&2
+      die 1 "could not start the $service for $target"
+    fi
+    wait_for_console "$project" "$service"
+    say "console ready at http://127.0.0.1:$port/"
+    ;;
+
+  remote)
+    resolve_target
+    require_image "$RELEASE_IMAGE"
+
+    identity="$(lookup_identity release)" || die 1 "could not derive the instance identity for $target"
+    segment="$(env_value "$identity" AUTONOMOUS_INSTANCE_SEGMENT)"
+    [ -n "$segment" ] || die 1 "could not derive the instance identity for $target"
+
+    project="autonomous-$segment"
+    # shellcheck disable=SC2086
+    running="$(docker compose -p "$project" $compose_files ps -q release 2>/dev/null | head -n1)"
+    [ -n "$running" ] || die 1 "no running release for $target; start it with scripts/autonomous release --target $target"
+
+    # `exec` sees the container's configured environment, not what the entrypoint
+    # exported, so hand the derived node name and cookie path to `remote`.
+    env_flags=""
+    for line in $identity; do env_flags="$env_flags -e $line"; done
+    tty_flag=""
+    [ -t 0 ] || tty_flag="-T"
+    # shellcheck disable=SC2086
+    exec docker compose -p "$project" $compose_files exec $tty_flag $env_flags release /app/bin/autonomous remote
+    ;;
+
+  port)
+    resolve_target
+    require_image "$DEV_IMAGE"
+
+    identity="$(lookup_identity)" || die 1 "could not derive the instance identity for $target"
+    segment="$(env_value "$identity" AUTONOMOUS_INSTANCE_SEGMENT)"
+    [ -n "$segment" ] || die 1 "could not derive the instance identity for $target"
+
+    # Any running service of the project (shell, console, release) publishes 4000.
+    cid="$(docker ps -q --filter "label=com.docker.compose.project=autonomous-$segment" | head -n1)"
+    [ -n "$cid" ] || die 1 "no running instance for $target"
+    published="$(docker port "$cid" 4000/tcp 2>/dev/null | head -n1)"
+    [ -n "$published" ] || die 1 "instance for $target publishes no console port"
+    say "console  http://${published}/"
+    ;;
+
+  viewer)
+    resolve_target
+    require_image "$DEV_IMAGE"
+
+    identity="$(lookup_identity)" || die 1 "could not derive the instance identity for $target"
+    segment="$(env_value "$identity" AUTONOMOUS_INSTANCE_SEGMENT)"
+    [ -n "$segment" ] || die 1 "could not derive the instance identity for $target"
+
+    cid="$(docker ps -q --filter "label=com.docker.compose.project=autonomous-$segment" | head -n1)"
+    [ -n "$cid" ] || die 1 "no running instance for $target"
+    published="$(docker port "$cid" 6080/tcp 2>/dev/null | head -n1)"
+    [ -n "$published" ] || die 1 "instance for $target publishes no viewer; start it with --viewer"
+    say "viewer   http://${published}/vnc.html"
+    ;;
+esac

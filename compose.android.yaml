@@ -1,0 +1,19 @@
+# Opt-in (feature 031 US6, FR-026): Android emulator support.
+# Added by `scripts/autonomous ... --android` (needs an image built with --android).
+#
+# - /dev/kvm passthrough for the in-container emulator; the wrapper exports
+#   AUTONOMOUS_KVM_GID from the host device so group_add matches.
+# Only added by the wrapper when the host has /dev/kvm; without it the host-adb
+# fallback needs no override (host.docker.internal is mapped in compose.yaml).
+# No extra privileges: no privileged mode, no added capabilities.
+
+x-android: &android
+  devices:
+    - "/dev/kvm:/dev/kvm"
+  group_add:
+    - "${AUTONOMOUS_KVM_GID}"
+
+services:
+  dev: *android
+  console: *android
+  release: *android

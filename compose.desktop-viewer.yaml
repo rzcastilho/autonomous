@@ -1,0 +1,16 @@
+# Opt-in (feature 031 US5, FR-025): serve the virtual display through noVNC.
+# Added by `scripts/autonomous ... --viewer` (needs an image built with --desktop).
+# Published on loopback only; empty AUTONOMOUS_VIEWER_PORT = Docker picks a free port.
+# Open http://127.0.0.1:<port>/vnc.html (`scripts/autonomous viewer` prints it).
+
+x-viewer: &viewer
+  ports:
+    - "127.0.0.1:${AUTONOMOUS_VIEWER_PORT:-}:6080"
+  environment:
+    AUTONOMOUS_DISPLAY: "1"
+    AUTONOMOUS_DISPLAY_VIEWER: "1"
+
+services:
+  dev: *viewer
+  console: *viewer
+  release: *viewer
