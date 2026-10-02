@@ -192,7 +192,7 @@ Single OTP project. New container files at repo root (`Dockerfile`, `compose*.ya
 - [x] T060 Align spec FR-027 and the edge-case wording ("the download is denied by the hook") with the R12 finding in `specs/031-containerized-runtime/spec.md`, and record the package-manager gap in plan.md Complexity Tracking (done during `/speckit-analyze` remediation)
 - [X] T061 Implement secret scan (R15, SC-012) in `scripts/container-smoke.sh`: `docker history --no-trunc`, `docker save | tar -x` + grep for values from local `.env` (never printed), `git grep` for the same values
 - [X] T062 Run full host suite: `mise exec -- mix test` and `mise exec -- mix test --cover`; confirm warnings-as-errors clean and `design_contract_test` green
-- [ ] T063 Run `quickstart.md` end to end (including manual SC-004 smoke run and SC-007 second-machine check) and record outcome
+- [X] T063 Run `quickstart.md` end to end (including manual SC-004 smoke run and SC-007 second-machine check) and record outcome (run outcome: containerized console on ledgerlite, 001-mvp wave 001-003 done with PRs #22-#24 on ledgerlite, history intact after stop/restart; SC-007 second-machine check not performed)
 
 ---
 
