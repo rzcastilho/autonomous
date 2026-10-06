@@ -139,6 +139,28 @@ defmodule Autonomous.ReportTest do
 
   # ---- 029 US4: the `awaiting:` line (contracts/facade-api.md Status) --------
 
+  describe "format_reason/1 (032 backgrounded_command)" do
+    test "phase atom, single command" do
+      assert Report.format_reason({:backgrounded_command, :implement, ["mix test"]}) ==
+               "implement ended waiting on backgrounded command: mix test"
+    end
+
+    test "truncates the command to 120 chars and counts the rest" do
+      long = String.duplicate("x", 300)
+
+      assert Report.format_reason({:backgrounded_command, :plan, [long, "b", "c"]}) ==
+               "plan ended waiting on backgrounded command: " <>
+                 String.duplicate("x", 120) <> " (+2 more)"
+    end
+
+    test "a chunk ref renders its task-phase label" do
+      ref = %Autonomous.TaskPhaseRef{ordinal: 3, number: "3", title: "Polish"}
+
+      assert Report.format_reason({:backgrounded_command, ref, ["npm run e2e"]}) ==
+               ~s(task-phase 3 "Polish" ended waiting on backgrounded command: npm run e2e)
+    end
+  end
+
   describe "format_status/1 awaiting: line" do
     test "shows STATUS awaiting_answers and the round/waited/left line when a feature is waiting" do
       now = DateTime.utc_now()

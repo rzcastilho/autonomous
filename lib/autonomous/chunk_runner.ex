@@ -173,7 +173,9 @@ defmodule Autonomous.ChunkRunner do
   defp loop(ctx, state, signals, agent) do
     case Chunking.next(state, signals) do
       {:dispatch, scope, state1} ->
-        {agent1, next_signals} = dispatch(ctx, state1, scope, agent)
+        {agent1, next_signals} =
+          dispatch(ctx, state1, scope, agent, Map.get(signals, :backgrounded))
+
         loop(ctx, state1, next_signals, agent1)
 
       {:skip, _tp, state1} ->
@@ -195,7 +197,7 @@ defmodule Autonomous.ChunkRunner do
 
   # ---- one chunk session ------------------------------------------------------
 
-  defp dispatch(ctx, state1, scope, agent0) do
+  defp dispatch(ctx, state1, scope, agent0, background_retry) do
     before_count = TaskPlan.completed_tasks(state1.plan)
     first_chunk? = state1.sessions_used == ctx.baseline_sessions_used + 1
     meta = chunk_meta(ctx, state1, scope)
@@ -210,7 +212,13 @@ defmodule Autonomous.ChunkRunner do
       signal =
         Signal.new!(
           "phase.run",
-          %{phase: :implement, scope: scope, first_chunk: first_chunk?, deadline_ms: deadline_ms},
+          %{
+            phase: :implement,
+            scope: scope,
+            first_chunk: first_chunk?,
+            deadline_ms: deadline_ms
+          }
+          |> put_background_retry(background_retry),
           source: "/chunk_runner"
         )
 
@@ -242,6 +250,7 @@ defmodule Autonomous.ChunkRunner do
           error: result && result.error
         }
         |> maybe_put_drift(drift)
+        |> maybe_put_backgrounded(agent1.state.last_signals[:backgrounded])
 
       stop_meta =
         Map.merge(meta, %{
@@ -297,6 +306,14 @@ defmodule Autonomous.ChunkRunner do
       true -> {:error, false}
     end
   end
+
+  # 032: the corrective-note list rides only a row-B re-dispatch, so every other
+  # chunk signal stays byte-identical.
+  defp put_background_retry(data, cmds) when cmds in [nil, []], do: data
+  defp put_background_retry(data, cmds), do: Map.put(data, :background_retry, cmds)
+
+  defp maybe_put_backgrounded(signals, cmds) when cmds in [nil, []], do: signals
+  defp maybe_put_backgrounded(signals, cmds), do: Map.put(signals, :backgrounded, cmds)
 
   defp maybe_put_drift(signals, nil), do: signals
   defp maybe_put_drift(signals, drift), do: Map.put(signals, :branch_drift, drift)

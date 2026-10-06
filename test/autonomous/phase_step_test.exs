@@ -8,7 +8,9 @@ defmodule Autonomous.PhaseStepTest do
   defmodule FakeSDK do
     alias ClaudeAgentSDK.Message
 
-    def query(_prompt, _options) do
+    def query(prompt, _options) do
+      capture_prompt(prompt)
+
       case Application.get_env(:autonomous, :phase_step_test_scenario, :happy) do
         :transient_once ->
           if first_call?(), do: transient_messages(), else: success_messages()
@@ -21,6 +23,20 @@ defmodule Autonomous.PhaseStepTest do
 
         :stranded_always ->
           stranded_messages()
+
+        # 032: success, but a Bash command was auto-backgrounded and never read back.
+        :background_once ->
+          if first_call?(), do: background_messages(), else: success_messages()
+
+        :background_always ->
+          background_messages()
+
+        # Strands only on a retry whose prompt carries no corrective note — used to
+        # prove the note is what reaches the model, not just that a retry happened.
+        :background_until_noted ->
+          if String.contains?(prompt, "Retry note"),
+            do: success_messages(),
+            else: background_messages()
 
         _ ->
           success_messages()
@@ -107,6 +123,58 @@ defmodule Autonomous.PhaseStepTest do
       ]
     end
 
+    defp background_messages do
+      [
+        %Message{type: :system, subtype: :init, data: %{session_id: "s"}, raw: %{}},
+        %Message{
+          type: :assistant,
+          data: %{
+            message: %{
+              "content" => [
+                %{
+                  "type" => "tool_use",
+                  "id" => "b1",
+                  "name" => "Bash",
+                  "input" => %{"command" => "npm run test:e2e"}
+                }
+              ]
+            }
+          },
+          raw: %{}
+        },
+        %Message{
+          type: :user,
+          data: %{
+            message: %{
+              "content" => [
+                %{
+                  "type" => "tool_result",
+                  "tool_use_id" => "b1",
+                  "content" =>
+                    "Command did not complete within its 600s timeout and was moved to the background (ID: bgx1). " <>
+                      "Output is being written to: /tmp/bgx1.output"
+                }
+              ]
+            }
+          },
+          raw: %{}
+        },
+        %Message{
+          type: :result,
+          subtype: :success,
+          data: %{session_id: "s", result: "waiting", is_error: false, total_cost_usd: 0.10},
+          raw: %{}
+        }
+      ]
+    end
+
+    defp capture_prompt(prompt) do
+      case Application.get_env(:autonomous, :phase_step_test_prompts) do
+        nil -> :ok
+        agent -> Agent.update(agent, &[prompt | &1])
+      end
+    end
+
     defp first_call? do
       case Application.get_env(:autonomous, :phase_step_test_counter) do
         nil -> false
@@ -127,6 +195,7 @@ defmodule Autonomous.PhaseStepTest do
 
       Application.delete_env(:autonomous, :phase_step_test_scenario)
       Application.delete_env(:autonomous, :phase_step_test_counter)
+      Application.delete_env(:autonomous, :phase_step_test_prompts)
     end)
 
     :ok
@@ -300,6 +369,80 @@ defmodule Autonomous.PhaseStepTest do
 
       assert agent.state.last_outcome == :error
       assert agent.state.last_signals == %{outstanding_work?: true}
+    end
+
+    test "retries a session that ended on a backgrounded command, then succeeds (032)" do
+      {:ok, counter} = Agent.start_link(fn -> 0 end)
+      Application.put_env(:autonomous, :phase_step_test_counter, counter)
+      Application.put_env(:autonomous, :phase_step_test_scenario, :background_once)
+
+      agent =
+        PhaseStep.run(start_agent!(), feature(), :clarify, step: 1, timeout: 5_000, retries: 1)
+
+      assert agent.state.last_outcome == :ok
+      assert length(agent.state.history) == 2
+      Agent.stop(counter)
+    end
+
+    test "gives up after one retry with the stranded command as a signal (032)" do
+      Application.put_env(:autonomous, :phase_step_test_scenario, :background_always)
+
+      agent =
+        PhaseStep.run(start_agent!(), feature(), :clarify, step: 1, timeout: 5_000, retries: 1)
+
+      assert agent.state.last_outcome == :error
+
+      assert agent.state.last_signals == %{
+               outstanding_work?: true,
+               backgrounded: ["npm run test:e2e"]
+             }
+
+      assert length(agent.state.history) == 2
+
+      assert Autonomous.Pipeline.next(:clarify, :error, agent.state.last_signals) ==
+               {:failed, {:backgrounded_command, :clarify, ["npm run test:e2e"]}}
+    end
+
+    test "both gates firing (backgrounded + outstanding) is one retry, not two (032)" do
+      Application.put_env(:autonomous, :phase_step_test_scenario, :background_always)
+
+      agent =
+        PhaseStep.run(start_agent!(), feature(), :clarify, step: 1, timeout: 5_000, retries: 3)
+
+      # retries: 3 would allow four sessions; the loop stops once the budget given is
+      # spent — assert exactly retries + 1 sessions, never an extra one per gate.
+      assert length(agent.state.history) == 4
+    end
+
+    test "the retry's prompt carries the corrective note; the first attempt does not (032, FR-002a)" do
+      {:ok, prompts} = Agent.start_link(fn -> [] end)
+      Application.put_env(:autonomous, :phase_step_test_prompts, prompts)
+      Application.put_env(:autonomous, :phase_step_test_scenario, :background_until_noted)
+
+      agent =
+        PhaseStep.run(start_agent!(), feature(), :implement, step: 1, timeout: 5_000, retries: 1)
+
+      assert agent.state.last_outcome == :ok
+      [first, second] = prompts |> Agent.get(& &1) |> Enum.reverse()
+      refute first =~ "Retry note"
+      assert second =~ "Retry note"
+      assert second =~ "- npm run test:e2e"
+      Agent.stop(prompts)
+    end
+
+    test "a retry for another reason carries no corrective note (032, FR-002a)" do
+      {:ok, prompts} = Agent.start_link(fn -> [] end)
+      {:ok, counter} = Agent.start_link(fn -> 0 end)
+      Application.put_env(:autonomous, :phase_step_test_prompts, prompts)
+      Application.put_env(:autonomous, :phase_step_test_counter, counter)
+      Application.put_env(:autonomous, :phase_step_test_scenario, :stranded_once)
+
+      PhaseStep.run(start_agent!(), feature(), :clarify, step: 1, timeout: 5_000, retries: 1)
+
+      assert [_, _] = all = prompts |> Agent.get(& &1) |> Enum.reverse()
+      refute Enum.any?(all, &(&1 =~ "Retry note"))
+      Agent.stop(prompts)
+      Agent.stop(counter)
     end
 
     test "retries an artifact left as an unfilled template" do

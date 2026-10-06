@@ -21,7 +21,7 @@ defmodule Autonomous.PhaseResult do
   ignored — `reduce/1` never crashes on an unrecognized event.
   """
 
-  alias Autonomous.PhaseResult
+  alias Autonomous.{BackgroundMarker, PhaseResult}
 
   defstruct final_text: "",
             session_id: nil,
@@ -229,6 +229,174 @@ defmodule Autonomous.PhaseResult do
       _event, acc ->
         acc
     end)
+  end
+
+  defmodule BackgroundedCommand do
+    @moduledoc """
+    A Bash command the CLI moved to the background during a session
+    (feature 032, data-model §1). `resolved?` is true when a **later** tool
+    event referenced its `task_id` or `output_path` — i.e. the model actually
+    went back for the result.
+    """
+    defstruct call_id: nil,
+              command: "(unknown command)",
+              mode: :explicit,
+              task_id: nil,
+              output_path: nil,
+              position: 0,
+              resolved?: false
+
+    @type t :: %__MODULE__{
+            call_id: String.t() | nil,
+            command: String.t(),
+            mode: BackgroundMarker.mode(),
+            task_id: String.t() | nil,
+            output_path: String.t() | nil,
+            position: non_neg_integer(),
+            resolved?: boolean()
+          }
+  end
+
+  @doc """
+  The commands the CLI moved to the background in this session, in call
+  order, each with its resolution state (feature 032, FR-001).
+
+  A command is backgrounded when its result carries a CLI marker
+  (`BackgroundMarker.parse/1`) or when its call set `run_in_background: true`
+  (a call with no recognised marker keeps `nil` identifiers and can then
+  never resolve). One entry per call.
+
+  **Resolution** is identifier-based: a tool event at an index *after* the
+  backgrounding result whose call input or result text contains the
+  `task_id` or the `output_path`. The marker's own event never counts. This
+  is deliberately name-agnostic — `Read` of the output file, a `TaskOutput`
+  style reader, or a `tail` in Bash all resolve it.
+  """
+  @spec backgrounded_commands(t() | nil) :: [BackgroundedCommand.t()]
+  def backgrounded_commands(%__MODULE__{tool_events: events}) do
+    indexed = Enum.with_index(events)
+
+    calls =
+      for {%{kind: :call, payload: %{"call_id" => id} = p}, _} <- indexed,
+          is_binary(id),
+          into: %{},
+          do: {id, p}
+
+    indexed
+    |> Enum.flat_map(&backgrounding_entry(&1, calls, indexed))
+    |> Enum.uniq_by(&(&1.call_id || &1.position))
+    |> Enum.map(&resolve(&1, indexed))
+  end
+
+  def backgrounded_commands(_), do: []
+
+  @doc """
+  The commands of the unresolved `backgrounded_commands/1`, in call order, for
+  a session that otherwise reported success. `[]` unless `status == :ok`
+  (FR-004) — a cut or failed session stays classified by `exhausted?/1` /
+  `transient?/1`.
+  """
+  @spec stranded_background(t() | nil) :: [String.t()]
+  def stranded_background(%__MODULE__{status: :ok} = r) do
+    for %BackgroundedCommand{resolved?: false, command: c} <- backgrounded_commands(r), do: c
+  end
+
+  def stranded_background(_), do: []
+
+  # A result event whose output carries a marker, or whose call was explicit.
+  defp backgrounding_entry({%{kind: :result, payload: p}, idx}, calls, _indexed) do
+    call = Map.get(calls, p["call_id"], %{})
+    input = Map.get(call, "input", %{})
+
+    case BackgroundMarker.parse(p["output"]) do
+      {:ok, m} ->
+        [entry(p["call_id"], input, m.mode, m.task_id, m.output_path, idx)]
+
+      :none ->
+        if BackgroundMarker.explicit_call?(input),
+          do: [entry(p["call_id"], input, :explicit, nil, nil, idx)],
+          else: []
+    end
+  end
+
+  # An explicit call that never returned a result at all.
+  defp backgrounding_entry(
+         {%{kind: :call, payload: %{"input" => input} = p}, idx},
+         _calls,
+         indexed
+       ) do
+    id = p["call_id"]
+
+    if BackgroundMarker.explicit_call?(input) and
+         not Enum.any?(indexed, fn {e, _} ->
+           e.kind == :result and is_binary(id) and e.payload["call_id"] == id
+         end),
+       do: [entry(id, input, :explicit, nil, nil, idx)],
+       else: []
+  end
+
+  defp backgrounding_entry(_event, _calls, _indexed), do: []
+
+  @doc """
+  Make a gate-signal map authoritative about `:backgrounded` across runs on the
+  same agent (feature 032).
+
+  `Jido` folds an action's state update into the agent with a **deep merge**, so
+  a fresh `last_signals` map does not clear keys a previous run on the same agent
+  left behind. A phase retried after a backgrounding would otherwise still carry
+  `backgrounded: [cmd]` on its clean second session and be re-classified. When
+  `signals` has no `:backgrounded` of its own but `previous` did, emit an
+  explicit `[]` (a non-keyword list is replaced, not merged). A run that never
+  backgrounded keeps its signal map byte-identical.
+  """
+  @spec reset_background(map(), map() | nil) :: map()
+  def reset_background(signals, previous) do
+    case {Map.has_key?(signals, :backgrounded), Map.get(previous || %{}, :backgrounded)} do
+      {false, [_ | _]} -> Map.put(signals, :backgrounded, [])
+      _ -> signals
+    end
+  end
+
+  defp entry(call_id, input, mode, task_id, path, position) do
+    %BackgroundedCommand{
+      call_id: call_id,
+      command: command_text(input),
+      mode: mode,
+      task_id: task_id,
+      output_path: path,
+      position: position
+    }
+  end
+
+  defp command_text(%{"command" => c}) when is_binary(c) and c != "", do: c
+  defp command_text(%{"description" => d}) when is_binary(d) and d != "", do: d
+  defp command_text(_), do: "(unknown command)"
+
+  defp resolve(%BackgroundedCommand{task_id: nil, output_path: nil} = c, _indexed), do: c
+
+  defp resolve(%BackgroundedCommand{} = c, indexed) do
+    keys = Enum.reject([c.task_id, c.output_path], &is_nil/1)
+
+    resolved? =
+      Enum.any?(indexed, fn {event, idx} ->
+        idx > c.position and Enum.any?(keys, &String.contains?(event_text(event), &1))
+      end)
+
+    %{c | resolved?: resolved?}
+  end
+
+  defp event_text(%{kind: :call, payload: p}), do: encode(Map.get(p, "input"))
+
+  defp event_text(%{kind: :result, payload: p}),
+    do: BackgroundMarker.flatten(p["output"]) || encode(p["output"])
+
+  defp event_text(_), do: ""
+
+  defp encode(term) do
+    case Jason.encode(term) do
+      {:ok, json} -> json
+      _ -> inspect(term)
+    end
   end
 
   @doc """

@@ -1,5 +1,15 @@
 <!--
 Sync Impact Report
+Version change: 6.0.0 → 6.0.1
+Bump rationale: PATCH. Clarification only (feature 032, research R10): the
+  Principle III permissive bullet now names the background-watcher tool
+  (`Monitor`) among the headless tool exclusions. It is a background-wait tool,
+  the stated purpose of that exclusion. No MUST is added, removed or relaxed.
+Modified principles: none (wording clarification in III).
+Templates requiring updates: none.
+Follow-up TODOs: none.
+
+Prior report (6.0.0):
 Version change: 5.0.0 → 6.0.0
 Bump rationale: MAJOR. Principle III was unconditional: the scope-guard hook
   "MUST deny out-of-tree writes and dangerous Bash" and per-phase permissions
@@ -428,8 +438,8 @@ default, subject to all of:
 
 - the pack keeps **no deny list** for well-formed requests, with no floor, and
   every phase gets the same full tool set (file writes, Bash, network). The
-  only tool exclusions left are the headless subagent and scheduling tools,
-  which exist to keep sessions from ending while they wait on background work,
+  only tool exclusions left are the headless subagent, scheduling and
+  background-watcher (`Monitor`) tools, which exist to keep sessions from ending while they wait on background work,
   not to contain them;
 - the profile is recorded on the run at start. Resume, continue, and
   publish-only resume MUST reuse the recorded profile and MUST refuse a
@@ -908,4 +918,4 @@ deviation already is. Reviews and PRs MUST verify compliance with these
 principles; the constitution and the implementation plan together are the
 runtime guidance for autonomous and human contributors alike.
 
-**Version**: 6.0.0 | **Ratified**: 2026-07-11 | **Last Amended**: 2026-09-28
+**Version**: 6.0.1 | **Ratified**: 2026-07-11 | **Last Amended**: 2026-10-05

@@ -16,20 +16,70 @@ defmodule Autonomous.TargetPack do
   """
 
   @template_marker "AUTONOMOUS_TEMPLATE"
-  @pack_contract "3"
+  @pack_contract "4"
 
   @doc """
   Copy the pack into `repo`. Always (over)writes `.claude/settings.json` and
-  `.claude/hooks/scope_guard.py` (they are ours); installs the template
-  `constitution.md` only if none exists. Returns `{:ok, summary}`.
+  `.claude/hooks/scope_guard.py` (they are ours), except that the target's own
+  `env` entries in `settings.json` win over the pack's (feature 032, see
+  `merge_settings/2`); installs the template `constitution.md` only if none
+  exists. Returns `{:ok, summary}`, or `{:error, {:invalid_settings, path}}`
+  — before writing anything — when the target's `settings.json` is not a JSON
+  object.
   """
-  @spec install(Path.t(), keyword()) :: {:ok, map()}
+  @spec install(Path.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def install(repo, _opts \\ []) do
+    with {:ok, settings_out} <- settings_to_write(repo) do
+      do_install(repo, settings_out)
+    end
+  end
+
+  @doc """
+  Merge the pack's `settings.json` with a target's existing one. The pack wins
+  everywhere except `env`, where the target's keys and values win and only
+  absent pack keys are added (feature 032, SC-004).
+  """
+  @spec merge_settings(map(), map()) :: map()
+  def merge_settings(pack, existing) do
+    env = Map.merge(Map.get(pack, "env", %{}), Map.get(existing, "env") |> env_map())
+    Map.put(pack, "env", env)
+  end
+
+  defp env_map(%{} = env), do: env
+  defp env_map(_other), do: %{}
+
+  @settings_rel ".claude/settings.json"
+
+  defp settings_to_write(repo) do
+    dest = Path.join(repo, @settings_rel)
+    pack_src = File.read!(pack("/.claude/settings.json"))
+
+    case File.read(dest) do
+      {:error, _reason} ->
+        {:ok, pack_src}
+
+      {:ok, existing_src} ->
+        case Jason.decode(existing_src) do
+          {:ok, %{} = existing} ->
+            merged = merge_settings(Jason.decode!(pack_src), existing)
+
+            # Already up to date: keep the bytes, so a re-install is a no-op.
+            if merged == existing,
+              do: {:ok, existing_src},
+              else: {:ok, Jason.encode!(merged, pretty: true) <> "\n"}
+
+          _invalid ->
+            {:error, {:invalid_settings, @settings_rel}}
+        end
+    end
+  end
+
+  defp do_install(repo, settings_out) do
     File.mkdir_p!(Path.join(repo, ".claude/hooks"))
     File.mkdir_p!(Path.join(repo, ".claude/skills"))
     File.mkdir_p!(Path.join(repo, ".specify/memory"))
 
-    File.cp!(pack("/.claude/settings.json"), Path.join(repo, ".claude/settings.json"))
+    File.write!(Path.join(repo, @settings_rel), settings_out)
 
     hook_dest = Path.join(repo, ".claude/hooks/scope_guard.py")
     File.cp!(pack("/.claude/hooks/scope_guard.py"), hook_dest)
@@ -56,7 +106,7 @@ defmodule Autonomous.TargetPack do
   the constitution is committed (git-tracked).
 
   `:profile` (030, default `"strict"`) — `"permissive"` adds
-  `check_pack_contract/2`: the **committed** pack must carry hook contract 3
+  `check_pack_contract/2`: the **committed** pack must carry hook contract 4
   and a `settings.json` with no `permissions.deny` entry, or the run refuses
   with `{:pack_outdated, path, hint}`. `"strict"` is unchanged from today —
   an un-upgraded target still enforces its own (older) rules and does not
@@ -82,9 +132,9 @@ defmodule Autonomous.TargetPack do
 
   @doc """
   Read the **committed** pack (`git -C repo show HEAD:…`) and confirm it is
-  contract 3: the hook prints `3` for `--contract`, and `settings.json` carries
+  contract 4: the hook prints `4` for `--contract`, and `settings.json` carries
   no non-empty `permissions.deny`. Any failure (git show failure — including an
-  uncommitted upgrade — a non-`"3"` contract output, or a present `deny`) is
+  uncommitted upgrade — a non-`"4"` contract output, or a present `deny`) is
   `{:pack_outdated, ".claude/hooks/scope_guard.py", "re-run TargetPack.install/2 and commit"}`.
   """
   @spec check_pack_contract(Path.t()) :: :ok | {:error, term()}
@@ -97,7 +147,8 @@ defmodule Autonomous.TargetPack do
     else
       _ ->
         {:error,
-         {:pack_outdated, ".claude/hooks/scope_guard.py", "re-run TargetPack.install/2 and commit"}}
+         {:pack_outdated, ".claude/hooks/scope_guard.py",
+          "re-run TargetPack.install/2 and commit"}}
     end
   end
 

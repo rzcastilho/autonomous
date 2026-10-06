@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """PreToolUse scope guard for orchestrator-driven and human worktrees.
 
-Pack contract 3 (contract 2: feature 030; 3: AUTONOMOUS_* env markers). Decision order:
+Pack contract 4 (contract 2: feature 030; 3: AUTONOMOUS_* env markers;
+4: settings.json env shell timeouts (feature 032)). Decision order:
 
   1. Unparseable stdin -> deny, every origin, every profile.
   2. Resolve origin from the environment:
@@ -21,7 +22,7 @@ import os
 import re
 import json
 
-PACK_CONTRACT = 3
+PACK_CONTRACT = 4
 
 FILE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 PROFILES = {"strict", "permissive"}

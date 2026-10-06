@@ -20,13 +20,36 @@ defmodule Autonomous.ChunkRunnerTest do
       cwd = Map.get(options, :cwd)
 
       case scenario() do
-        {:no_progress, n} -> exhausted_no_progress(cwd, prompt, n)
-        {:exhaust_then_succeed, n} -> exhaust_then_succeed(cwd, prompt, n)
-        {:always_exhaust, n} -> always_exhaust(cwd, prompt, n)
-        :checkpoint_only -> checkpoint_only(cwd, prompt)
-        :terminal_error -> terminal_error_messages()
-        :branch_drift -> branch_drift_messages(cwd)
-        _ -> mark_and_succeed(cwd, prompt)
+        {:no_progress, n} ->
+          exhausted_no_progress(cwd, prompt, n)
+
+        {:exhaust_then_succeed, n} ->
+          exhaust_then_succeed(cwd, prompt, n)
+
+        {:always_exhaust, n} ->
+          always_exhaust(cwd, prompt, n)
+
+        :checkpoint_only ->
+          checkpoint_only(cwd, prompt)
+
+        :terminal_error ->
+          terminal_error_messages()
+
+        :branch_drift ->
+          branch_drift_messages(cwd)
+
+        # 032: strands on a Bash command the CLI backgrounded, until the prompt
+        # carries the corrective note (`:background_always` never recovers).
+        :background_once ->
+          if String.contains?(prompt, "Retry note"),
+            do: mark_and_succeed(cwd, prompt),
+            else: background_messages()
+
+        :background_always ->
+          background_messages()
+
+        _ ->
+          mark_and_succeed(cwd, prompt)
       end
     end
 
@@ -37,6 +60,58 @@ defmodule Autonomous.ChunkRunnerTest do
     defp branch_drift_messages(cwd) do
       System.cmd("git", ["checkout", "-b", "other"], cd: cwd)
       success_messages()
+    end
+
+    defp background_messages do
+      [
+        %Message{type: :system, subtype: :init, data: %{session_id: "s"}, raw: %{}},
+        %Message{
+          type: :assistant,
+          data: %{
+            message: %{
+              "content" => [
+                %{
+                  "type" => "tool_use",
+                  "id" => "b1",
+                  "name" => "Bash",
+                  "input" => %{"command" => "npm run test:e2e"}
+                }
+              ]
+            }
+          },
+          raw: %{}
+        },
+        %Message{
+          type: :user,
+          data: %{
+            message: %{
+              "content" => [
+                %{
+                  "type" => "tool_result",
+                  "tool_use_id" => "b1",
+                  "content" =>
+                    "Command did not complete within its 600s timeout and was moved to the background (ID: bgx1). " <>
+                      "Output is being written to: /tmp/bgx1.output"
+                }
+              ]
+            }
+          },
+          raw: %{}
+        },
+        %Message{
+          type: :result,
+          subtype: :success,
+          data: %{
+            session_id: "s",
+            result: "waiting",
+            num_turns: 3,
+            is_error: false,
+            total_cost_usd: 0.1,
+            usage: %{input_tokens: 0, output_tokens: 0}
+          },
+          raw: %{}
+        }
+      ]
     end
 
     defp mark_and_succeed(cwd, prompt) do
@@ -431,8 +506,8 @@ defmodule Autonomous.ChunkRunnerTest do
     assert agent.state.last_outcome == :error
 
     assert {:failed,
-            {:branch_drift, :implement,
-             %{expected: "feature/001-fake", observed: "other"}}} = agent.state.terminal_reason
+            {:branch_drift, :implement, %{expected: "feature/001-fake", observed: "other"}}} =
+             agent.state.terminal_reason
 
     # Neither branch moved: no boundary commit landed on the stray branch, and
     # the orchestrator's own branch is exactly where it started.
@@ -444,6 +519,46 @@ defmodule Autonomous.ChunkRunnerTest do
 
     {log, 0} = System.cmd("git", ["-C", root, "log", "--all", "--format=%s"])
     refute String.contains?(log, "implement task-phase")
+  end
+
+  test "background (032, US1): a stranded session is re-dispatched once with the corrective note, then proceeds",
+       %{root: root, feature: feature, worktree: worktree, pid: pid, prompts_agent: prompts_agent} do
+    Application.put_env(:autonomous, :chunk_runner_test_scenario, :background_once)
+
+    agent = ChunkRunner.run(ctx(%{pid: pid, feature: feature, worktree: worktree}))
+
+    prompts = captured_prompts(prompts_agent)
+    assert {agent.state.last_outcome, agent.state.terminal_reason} == {:ok, nil}
+
+    # Phase 1 stranded, Phase 1 retried (same scope + note), then 2 and 3 as usual.
+    assert Enum.at(prompts, 0) =~ ~s(Phase 1: Setup)
+    refute Enum.at(prompts, 0) =~ "Retry note"
+    assert Enum.at(prompts, 1) =~ ~s(Phase 1: Setup)
+    assert Enum.at(prompts, 1) =~ "Retry note"
+    assert Enum.at(prompts, 1) =~ "- npm run test:e2e"
+    assert Enum.at(prompts, 2) =~ ~s(Phase 2: Core)
+    # The flag reset on advance: phase 2 strands afresh, so it is retried too — never failed.
+    assert Enum.at(prompts, 3) =~ ~s(Phase 2: Core)
+    assert Enum.at(prompts, 3) =~ "Retry note"
+
+    assert File.read!(Path.join(root, "specs/001-fake/tasks.md")) =~ "[X] T003"
+  end
+
+  test "background (032, US1): a second backgrounding on the same scope fails the feature, naming the command",
+       %{feature: feature, worktree: worktree, pid: pid, prompts_agent: prompts_agent} do
+    Application.put_env(:autonomous, :chunk_runner_test_scenario, :background_always)
+
+    agent = ChunkRunner.run(ctx(%{pid: pid, feature: feature, worktree: worktree}))
+
+    assert agent.state.last_outcome == :error
+
+    assert {:failed,
+            {:backgrounded_command, %Autonomous.TaskPhaseRef{title: "Setup"},
+             ["npm run test:e2e"]}} =
+             agent.state.terminal_reason
+
+    # exactly two sessions on phase 1; nothing dispatched past it
+    assert [_, _] = captured_prompts(prompts_agent)
   end
 
   test "each chunk session is recorded in the store, without double-counting its cost",

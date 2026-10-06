@@ -4,6 +4,13 @@ defmodule Autonomous.PhaseRequestTest do
   alias Autonomous.{Feature, PhaseRequest}
   alias Autonomous.TaskPlan.{Task, TaskPhase}
 
+  # Default `Config.phase_timeout/0` is 50 min → the 032 shell timeouts below.
+  @default_timeouts %{
+    "BASH_DEFAULT_TIMEOUT_MS" => "1800000",
+    "BASH_MAX_TIMEOUT_MS" => "2700000"
+  }
+  @all_phases [:specify, :plan, :tasks, :analyze, :implement, :clarify, :converge, :describe]
+
   defp feature do
     %Feature{
       id: "001",
@@ -22,7 +29,10 @@ defmodule Autonomous.PhaseRequestTest do
     assert r.model == "sonnet"
     assert r.prompt =~ "SPECIFY_FEATURE_DIRECTORY=specs/001-core-ledger"
     assert r.prompt =~ "GIT_BRANCH_NAME=feature/001-core-ledger"
-    assert r.prompt =~ "reuse it (allow existing branch); never create or switch to another branch"
+
+    assert r.prompt =~
+             "reuse it (allow existing branch); never create or switch to another branch"
+
     assert r.cwd == "."
     assert r.max_turns == nil
     # specify runs a Spec Kit script (create-new-feature.sh) → Bash pre-approved.
@@ -66,7 +76,7 @@ defmodule Autonomous.PhaseRequestTest do
     assert r.prompt =~ "findings"
     assert r.permission_mode == :plan
     assert r.allowed_tools == ~w(Read Grep Glob)
-    assert r.disallowed_tools == ~w(Write Edit Agent Task ScheduleWakeup)
+    assert r.disallowed_tools == ~w(Write Edit Agent Task ScheduleWakeup Monitor)
     assert r.model == "opus"
   end
 
@@ -269,10 +279,9 @@ defmodule Autonomous.PhaseRequestTest do
                "Completing exactly these tasks is a successful outcome for this session."
     end
 
-    test "the :whole_list / absent / non-implement scope is byte-identical to today" do
+    test "the absent / non-implement scope is byte-identical to today" do
       base = PhaseRequest.build(feature(), :implement)
 
-      assert PhaseRequest.build(feature(), :implement, scope: :whole_list).prompt == base.prompt
       assert PhaseRequest.build(feature(), :implement, scope: nil).prompt == base.prompt
 
       tp = %TaskPhase{ordinal: 1, number: "1", title: "Setup", tasks: []}
@@ -308,10 +317,14 @@ defmodule Autonomous.PhaseRequestTest do
         assert default.disallowed_tools == explicit.disallowed_tools
         assert default.max_turns == explicit.max_turns
 
-        assert default.metadata["claude"][:env] == %{
-                 "AUTONOMOUS_ORCHESTRATED" => "1",
-                 "AUTONOMOUS_CONTAINMENT_PROFILE" => "strict"
-               }
+        assert default.metadata["claude"][:env] ==
+                 Map.merge(
+                   %{
+                     "AUTONOMOUS_ORCHESTRATED" => "1",
+                     "AUTONOMOUS_CONTAINMENT_PROFILE" => "strict"
+                   },
+                   @default_timeouts
+                 )
       end
     end
 
@@ -325,12 +338,17 @@ defmodule Autonomous.PhaseRequestTest do
                  ~w(Read Write Edit MultiEdit NotebookEdit Bash Grep Glob WebFetch WebSearch),
                "#{phase} allowed_tools"
 
-        assert r.disallowed_tools == ~w(Agent Task ScheduleWakeup), "#{phase} disallowed_tools"
+        assert r.disallowed_tools == ~w(Agent Task ScheduleWakeup Monitor),
+               "#{phase} disallowed_tools"
 
-        assert r.metadata["claude"][:env] == %{
-                 "AUTONOMOUS_ORCHESTRATED" => "1",
-                 "AUTONOMOUS_CONTAINMENT_PROFILE" => "permissive"
-               }
+        assert r.metadata["claude"][:env] ==
+                 Map.merge(
+                   %{
+                     "AUTONOMOUS_ORCHESTRATED" => "1",
+                     "AUTONOMOUS_CONTAINMENT_PROFILE" => "permissive"
+                   },
+                   @default_timeouts
+                 )
       end
     end
 
@@ -360,15 +378,23 @@ defmodule Autonomous.PhaseRequestTest do
           containment: "permissive"
         )
 
-      assert strict.metadata["claude"][:env] == %{
-               "AUTONOMOUS_ORCHESTRATED" => "1",
-               "AUTONOMOUS_CONTAINMENT_PROFILE" => "strict"
-             }
+      assert strict.metadata["claude"][:env] ==
+               Map.merge(
+                 %{
+                   "AUTONOMOUS_ORCHESTRATED" => "1",
+                   "AUTONOMOUS_CONTAINMENT_PROFILE" => "strict"
+                 },
+                 @default_timeouts
+               )
 
-      assert permissive.metadata["claude"][:env] == %{
-               "AUTONOMOUS_ORCHESTRATED" => "1",
-               "AUTONOMOUS_CONTAINMENT_PROFILE" => "permissive"
-             }
+      assert permissive.metadata["claude"][:env] ==
+               Map.merge(
+                 %{
+                   "AUTONOMOUS_ORCHESTRATED" => "1",
+                   "AUTONOMOUS_CONTAINMENT_PROFILE" => "permissive"
+                 },
+                 @default_timeouts
+               )
 
       assert permissive.permission_mode == :bypass_permissions
 
@@ -380,7 +406,7 @@ defmodule Autonomous.PhaseRequestTest do
       r = PhaseRequest.build_remediation(feature(), "sonnet", prompt: "fix it")
       assert r.permission_mode == :accept_edits
       assert r.allowed_tools == ~w(Read Write Edit Bash Grep Glob)
-      assert r.disallowed_tools == ~w(Agent Task ScheduleWakeup)
+      assert r.disallowed_tools == ~w(Agent Task ScheduleWakeup Monitor)
     end
   end
 
@@ -414,6 +440,143 @@ defmodule Autonomous.PhaseRequestTest do
     test "no session_id — fresh session" do
       r = PhaseRequest.build_remediation(feature(), "sonnet", prompt: "fix it")
       assert r.session_id == nil
+    end
+  end
+
+  describe ":background_retry option (032)" do
+    test "absent, nil and [] leave the prompt byte-identical" do
+      for phase <- [:specify, :plan, :implement, :converge] do
+        base = PhaseRequest.build(feature(), phase)
+        assert PhaseRequest.build(feature(), phase, background_retry: nil).prompt == base.prompt
+        assert PhaseRequest.build(feature(), phase, background_retry: []).prompt == base.prompt
+      end
+    end
+
+    test "a non-empty list names every command in the retry note" do
+      r = PhaseRequest.build(feature(), :implement, background_retry: ["mix test", "npm run e2e"])
+      assert r.prompt =~ "Retry note: the previous session"
+      assert r.prompt =~ "- mix test\n"
+      assert r.prompt =~ "- npm run e2e"
+    end
+
+    test "the note is the final block, after resume guidance and clarify answers" do
+      r =
+        PhaseRequest.build(feature(), :implement,
+          resume_prompt: "use the fast path",
+          clarify_answers: "---\nOperator answers: yes",
+          background_retry: ["mix test"]
+        )
+
+      {before_note, _note} = String.split(r.prompt, "\n\n---\nRetry note:") |> List.to_tuple()
+      assert before_note =~ "Operator guidance (resume): use the fast path"
+      assert before_note =~ "Operator answers: yes"
+      assert String.ends_with?(r.prompt, "- mix test")
+    end
+
+    test "each command is truncated to 200 chars" do
+      long = String.duplicate("x", 500)
+      r = PhaseRequest.build(feature(), :implement, background_retry: [long])
+
+      assert r.prompt =~ "- " <> String.duplicate("x", 200) <> "\n" or
+               String.ends_with?(r.prompt, "- " <> String.duplicate("x", 200))
+
+      refute r.prompt =~ String.duplicate("x", 201)
+    end
+  end
+
+  describe "shell timeouts (032, US2)" do
+    defp timeouts_in_env(r),
+      do: Map.take(r.metadata["claude"][:env], Map.keys(@default_timeouts))
+
+    defp timeouts_in_settings(r),
+      do: r.metadata["claude"][:settings] |> Jason.decode!() |> Map.fetch!("env")
+
+    test "every phase x both profiles carries equal values on env and --settings" do
+      for phase <- @all_phases, containment <- ["strict", "permissive"] do
+        r = PhaseRequest.build(feature(), phase, containment: containment)
+        assert timeouts_in_env(r) == @default_timeouts, "#{phase}/#{containment} env"
+        assert timeouts_in_settings(r) == @default_timeouts, "#{phase}/#{containment} settings"
+      end
+    end
+
+    test "build_remediation/3 carries both channels under both profiles" do
+      for containment <- ["strict", "permissive"] do
+        r = PhaseRequest.build_remediation(feature(), "sonnet", containment: containment)
+        assert timeouts_in_env(r) == @default_timeouts
+        assert timeouts_in_settings(r) == @default_timeouts
+      end
+    end
+
+    test "a chunk-sized deadline_ms changes the values; AUTONOMOUS_* markers unchanged" do
+      r = PhaseRequest.build(feature(), :implement, deadline_ms: 1_200_000)
+
+      assert timeouts_in_env(r) == %{
+               "BASH_DEFAULT_TIMEOUT_MS" => "900000",
+               "BASH_MAX_TIMEOUT_MS" => "900000"
+             }
+
+      assert timeouts_in_settings(r) == timeouts_in_env(r)
+      assert r.metadata["claude"][:env]["AUTONOMOUS_ORCHESTRATED"] == "1"
+      assert r.metadata["claude"][:env]["AUTONOMOUS_CONTAINMENT_PROFILE"] == "strict"
+
+      rem = PhaseRequest.build_remediation(feature(), "sonnet", deadline_ms: 1_200_000)
+      assert timeouts_in_env(rem) == timeouts_in_env(r)
+    end
+
+    test "ClaudeAgentSDK.Options.to_args/1 carries --settings with the JSON" do
+      r = PhaseRequest.build(feature(), :implement)
+      json = r.metadata["claude"][:settings]
+
+      args = ClaudeAgentSDK.Options.to_args(%ClaudeAgentSDK.Options{settings: json})
+      idx = Enum.find_index(args, &(&1 == "--settings"))
+      assert idx, "--settings missing from #{inspect(args)}"
+      assert Enum.at(args, idx + 1) == json
+    end
+  end
+
+  describe "headless rule (032, US3)" do
+    @rule_marker "This session is headless."
+
+    test "present for task-phase, sweep, whole-list and converge" do
+      tp = %TaskPhase{ordinal: 1, number: "1", title: "Setup", tasks: []}
+      sweep = [%Task{id: "T001", text: "x", complete?: false, line: 1}]
+
+      for scope <- [{:task_phase, tp}, {:sweep, sweep}, :whole_list] do
+        r = PhaseRequest.build(feature(), :implement, scope: scope)
+        assert r.prompt =~ "\n\n---\n" <> @rule_marker, "#{inspect(scope)}"
+        assert r.prompt =~ "Never use `run_in_background`"
+      end
+
+      c = PhaseRequest.build(feature(), :converge)
+      [before, after_rule] = String.split(c.prompt, "\n\n---\n" <> @rule_marker)
+      refute before =~ @rule_marker
+      assert String.ends_with?(String.trim_trailing(c.prompt), "Feature 001 (core-ledger).")
+      assert after_rule =~ "Feature 001 (core-ledger)."
+    end
+
+    test "absent for scope nil and every other phase" do
+      assert PhaseRequest.build(feature(), :implement).prompt == "/speckit.implement"
+
+      for phase <- [:specify, :clarify, :plan, :tasks, :analyze, :describe] do
+        refute PhaseRequest.build(feature(), phase).prompt =~ @rule_marker, "#{phase}"
+      end
+
+      refute PhaseRequest.build_remediation(feature(), "sonnet", prompt: "x").prompt =~
+               @rule_marker
+    end
+  end
+
+  describe "Monitor exclusion (032, US4)" do
+    test "disallowed for every phase and both remediation clauses, both profiles" do
+      for containment <- ["strict", "permissive"] do
+        for phase <- @all_phases do
+          r = PhaseRequest.build(feature(), phase, containment: containment)
+          assert "Monitor" in r.disallowed_tools, "#{phase}/#{containment}"
+        end
+
+        rem = PhaseRequest.build_remediation(feature(), "sonnet", containment: containment)
+        assert "Monitor" in rem.disallowed_tools
+      end
     end
   end
 end

@@ -56,6 +56,11 @@ with stale state; `PhaseStep.ensure_recorded/3` now fails a phase whose call
 came back without a new `history` entry. Each implement chunk session is its
 own `:implement_chunk` phase-attempt row (no cost entry — the `:implement`
 roll-up carries the step's actual summed cost).
+Shell timeouts (feature 032) derive from the same deadline
+(`ShellTimeouts.for_deadline/1`: max = min(45, d − 5) min), delivered through
+the launch env and `--settings`, so the session deadline always fires first;
+a command the CLI still moves to the background is caught by
+`PhaseResult.stranded_background/1` and fails as `{:backgrounded_command, …}`.
 
 ## Containerized runtime (feature 031)
 

@@ -158,3 +158,33 @@ Consequences for later phases:
 - Verify per-phase model **full strings** resolve on the org allowlist
   (`claude --model <string> -p "print your model id"`).
 - Confirm `analyze` JSON-tail parsing against a real transcript.
+
+## Background-wait findings (feature 032, `claude` 2.1.287)
+
+**Re-check on every CLI bump** — all wording below is read from the pinned
+binary and isolated in `Autonomous.BackgroundMarker`.
+
+- **Built-in Bash cap.** The CLI runs a Bash call in the foreground for at most
+  `BASH_MAX_TIMEOUT_MS` (built-in 600 000 ms = 10 min; default per call
+  `BASH_DEFAULT_TIMEOUT_MS`, built-in 120 000 ms). A longer command is moved to
+  the background and the turn goes on.
+- **Four marker wordings** in the Bash tool result (case-sensitive):
+  `Command did not complete within its Ns timeout and was moved to the background (ID: x)`,
+  `Command was moved to the background (ID: x)`,
+  `Command was manually backgrounded by user with ID: x.`,
+  `Command running in background with ID: x` (`run_in_background: true`),
+  plus `Output is being written to: <path>`. Headless, ending the turn ends the
+  session, so a model "waiting" on such a command finishes with a success the
+  command never earned. `PhaseResult.stranded_background/1` detects it.
+- **Shell timeouts.** The orchestrator sets `BASH_DEFAULT_TIMEOUT_MS` /
+  `BASH_MAX_TIMEOUT_MS` per session from its deadline (`ShellTimeouts`):
+  max = min(45 min, d − 5 min), default = min(30 min, max); deadlines ≤ 10 min
+  keep the built-ins. Delivered on the launch env and as `--settings` JSON.
+- **Precedence.** `--settings` is meant to win over the project's
+  `.claude/settings.json` `env`; the launch env does not. **Patched locally:** upstream `jido_claude` (checked `main` `be65644`)
+  drops `:settings` in `normalize_map_keys/1` (not in `@option_keys`), so we
+  vendor it at `vendor/jido_claude` with the key added (`PATCHES.md`). Drop the
+  vendor copy once upstream carries it.
+- **`Monitor` tool.** A background watcher; excluded from every headless
+  session (`@headless_disallowed`) alongside `Agent`, `Task`, `ScheduleWakeup`.
+

@@ -20,7 +20,20 @@ defmodule Autonomous.Actions.RunRemediation do
     description: "Run the pre-phase remediation step and record the result into agent state",
     schema: []
 
-  alias Autonomous.{BranchGuard, Config, Cost, Ledger, PhaseRequest, PhaseResult, PhaseSession, Worktree}
+  require Logger
+
+  @step "remediation"
+
+  alias Autonomous.{
+    BranchGuard,
+    Config,
+    Cost,
+    Ledger,
+    PhaseRequest,
+    PhaseResult,
+    PhaseSession,
+    Worktree
+  }
 
   @impl true
   def run(_params, context) do
@@ -38,7 +51,8 @@ defmodule Autonomous.Actions.RunRemediation do
         cwd: worktree_path(state.worktree),
         layout: state.layout,
         prompt: state.remediation_prompt,
-        containment: state.containment
+        containment: state.containment,
+        deadline_ms: Config.phase_timeout()
       )
 
     case Jido.Harness.run_request(:claude, request, []) do
@@ -52,7 +66,7 @@ defmodule Autonomous.Actions.RunRemediation do
          %{
            last_result: result,
            last_outcome: outcome,
-           last_signals: signals,
+           last_signals: PhaseResult.reset_background(signals, Map.get(state, :last_signals)),
            session_id: result.session_id || state.session_id,
            cost_total: (state.cost_total || 0.0) + amount,
            history: [entry(outcome, amount) | state.history]
@@ -68,8 +82,26 @@ defmodule Autonomous.Actions.RunRemediation do
   # itself reported.
   defp classify(worktree, result) do
     case branch_drift(worktree) do
-      nil -> {outcome_of(result), %{}}
+      nil -> classify_background(result)
       drift -> {:error, %{branch_drift: drift}}
+    end
+  end
+
+  # Background-wait gate (032, US1): a session that ended while a command the CLI
+  # moved to the background was still running is an incomplete session, never a
+  # success. No suppression here — remediation has no artifact gate to vouch for it.
+  defp classify_background(result) do
+    case PhaseResult.stranded_background(result) do
+      [_ | _] = cmds ->
+        Logger.warning(
+          "#{@step} ended waiting on backgrounded command(s): " <>
+            "#{Enum.join(cmds, "; ")} — treating as incomplete"
+        )
+
+        {:error, %{outstanding_work?: true, backgrounded: cmds}}
+
+      [] ->
+        {outcome_of(result), %{}}
     end
   end
 

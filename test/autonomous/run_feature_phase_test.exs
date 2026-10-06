@@ -93,6 +93,69 @@ defmodule Autonomous.Actions.RunFeaturePhaseTest do
     end
   end
 
+  # 032: a session that reports success after a Bash command was auto-backgrounded
+  # at the CLI's 10-min cap and never read back — every call id is matched, so the
+  # pre-032 outstanding-work gate sees nothing wrong.
+  defmodule BackgroundingSDK do
+    alias ClaudeAgentSDK.Message
+
+    def query(prompt, _opts) do
+      send(self(), {:captured_prompt, prompt})
+
+      [
+        %Message{
+          type: :assistant,
+          data: %{
+            message: %{
+              "content" => [
+                %{
+                  "type" => "tool_use",
+                  "id" => "bg-1",
+                  "name" => "Bash",
+                  "input" => %{"command" => "npm run test:e2e"}
+                }
+              ]
+            }
+          },
+          raw: %{}
+        },
+        %Message{
+          type: :user,
+          data: %{
+            message: %{
+              "content" => [
+                %{
+                  "type" => "tool_result",
+                  "tool_use_id" => "bg-1",
+                  "is_error" => false,
+                  "content" =>
+                    "Command did not complete within its 600s timeout and was moved to the background (ID: bgx1). " <>
+                      "Output is being written to: /tmp/bgx1.output"
+                }
+              ]
+            }
+          },
+          raw: %{}
+        },
+        %Message{
+          type: :result,
+          subtype: :success,
+          data: %{
+            session_id: "sess-bg",
+            result: "Waiting for the e2e run.",
+            num_turns: 2,
+            duration_ms: 1,
+            is_error: false,
+            total_cost_usd: 0.0,
+            usage: %{input_tokens: 0, output_tokens: 0},
+            model: "m"
+          },
+          raw: %{}
+        }
+      ]
+    end
+  end
+
   defp context(state_overrides \\ %{}) do
     base = %{
       feature: %Feature{id: "001", number: 1, slug: "s", path: "p.md"},
@@ -155,7 +218,7 @@ defmodule Autonomous.Actions.RunFeaturePhaseTest do
     for {params, expected?} <- calls do
       assert {:ok, _} = RunFeaturePhase.run(params, ctx)
       assert_received {:captured_prompt, prompt}
-      assert (prompt =~ "Operator guidance (resume): T105: defer M3/M4/M7") == expected?
+      assert prompt =~ "Operator guidance (resume): T105: defer M3/M4/M7" == expected?
     end
   end
 
@@ -352,7 +415,11 @@ defmodule Autonomous.Actions.RunFeaturePhaseTest do
 
       # 001's plan.md exists and would have satisfied a specs/**/plan.md glob.
       assert File.regular?(Path.join(tmp, "specs/001-core/plan.md"))
-      assert update.last_signals == %{missing_artifact: "plan.md", artifact_absent_at_start?: true}
+
+      assert update.last_signals == %{
+               missing_artifact: "plan.md",
+               artifact_absent_at_start?: true
+             }
     end
 
     test "the plan gate passes on the feature's own plan.md" do
@@ -368,7 +435,11 @@ defmodule Autonomous.Actions.RunFeaturePhaseTest do
       tmp = stacked_worktree(own_files: [])
 
       assert {:ok, update} = RunFeaturePhase.run(%{phase: :tasks}, feature_002_ctx(tmp))
-      assert update.last_signals == %{missing_artifact: "tasks.md", artifact_absent_at_start?: true}
+
+      assert update.last_signals == %{
+               missing_artifact: "tasks.md",
+               artifact_absent_at_start?: true
+             }
     end
 
     test "the clarify gate does not escalate on a marker left in another feature's spec" do
@@ -429,7 +500,11 @@ defmodule Autonomous.Actions.RunFeaturePhaseTest do
       assert {:ok, update} = RunFeaturePhase.run(%{phase: :plan}, feature_orphan_ctx(tmp))
 
       assert File.regular?(Path.join(tmp, "specs/002-next/plan.md"))
-      assert update.last_signals == %{missing_artifact: "plan.md", artifact_absent_at_start?: true}
+
+      assert update.last_signals == %{
+               missing_artifact: "plan.md",
+               artifact_absent_at_start?: true
+             }
     end
 
     test "the clarify gate does not escalate on a marker in either ambiguous candidate" do
@@ -575,6 +650,95 @@ defmodule Autonomous.Actions.RunFeaturePhaseTest do
     end
   end
 
+  describe "the background-wait gate (032, US1)" do
+    defp with_backgrounding_sdk do
+      original = Application.get_env(:jido_claude, :sdk_module)
+      Application.put_env(:jido_claude, :sdk_module, BackgroundingSDK)
+      on_exit(fn -> restore(:jido_claude, :sdk_module, original) end)
+    end
+
+    defp tmp_repo(tag) do
+      tmp = Path.join(System.tmp_dir!(), "rfp_bg_#{tag}_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(Path.join(tmp, "specs/001-s"))
+      System.cmd("git", ["init"], cd: tmp)
+      on_exit(fn -> File.rm_rf(tmp) end)
+      tmp
+    end
+
+    test "an ungated phase is an error carrying the stranded command" do
+      with_backgrounding_sdk()
+
+      assert {:ok, update} = RunFeaturePhase.run(%{phase: :clarify}, context())
+      assert update.last_outcome == :error
+      assert update.last_signals == %{outstanding_work?: true, backgrounded: ["npm run test:e2e"]}
+    end
+
+    test "suppressed for plan when its artifact gate is satisfied" do
+      with_backgrounding_sdk()
+      tmp = tmp_repo("plan_ok")
+      File.write!(Path.join(tmp, "specs/001-s/plan.md"), "# Plan: real\n\nElixir.\n")
+
+      assert {:ok, update} =
+               RunFeaturePhase.run(%{phase: :plan}, context(%{worktree: %{path: tmp}}))
+
+      assert update.last_outcome == :ok
+      refute Map.has_key?(update.last_signals, :backgrounded)
+    end
+
+    test "not suppressed for plan when its artifact is missing" do
+      with_backgrounding_sdk()
+      tmp = tmp_repo("plan_bad")
+
+      assert {:ok, update} =
+               RunFeaturePhase.run(%{phase: :plan}, context(%{worktree: %{path: tmp}}))
+
+      assert update.last_outcome == :error
+      assert update.last_signals.backgrounded == ["npm run test:e2e"]
+    end
+
+    test "never suppressed for a scoped implement chunk" do
+      with_backgrounding_sdk()
+      tmp = tmp_repo("chunk")
+
+      tp = %Autonomous.TaskPlan.TaskPhase{ordinal: 1, number: "1", title: "Setup", tasks: []}
+
+      assert {:ok, update} =
+               RunFeaturePhase.run(
+                 %{phase: :implement, scope: {:task_phase, tp}},
+                 context(%{worktree: %{path: tmp}})
+               )
+
+      assert update.last_outcome == :error
+      assert update.last_signals.backgrounded == ["npm run test:e2e"]
+    end
+
+    test "a session without backgrounding is unchanged" do
+      original = Application.get_env(:jido_claude, :sdk_module)
+      Application.put_env(:jido_claude, :sdk_module, CapturingSDK)
+      on_exit(fn -> restore(:jido_claude, :sdk_module, original) end)
+
+      assert {:ok, update} = RunFeaturePhase.run(%{phase: :clarify}, context())
+      assert update.last_outcome == :ok
+      assert update.last_signals == %{needs_human?: false}
+    end
+
+    test "background_retry reaches the prompt as the corrective note" do
+      original = Application.get_env(:jido_claude, :sdk_module)
+      Application.put_env(:jido_claude, :sdk_module, CapturingSDK)
+      on_exit(fn -> restore(:jido_claude, :sdk_module, original) end)
+
+      assert {:ok, _} =
+               RunFeaturePhase.run(
+                 %{phase: :implement, background_retry: ["npm run test:e2e"]},
+                 context()
+               )
+
+      assert_received {:captured_prompt, prompt}
+      assert prompt =~ "Retry note"
+      assert prompt =~ "- npm run test:e2e"
+    end
+  end
+
   describe "artifact_absent_at_start? probe (net two arming signal)" do
     setup do
       original = Application.get_env(:jido_claude, :sdk_module)
@@ -682,7 +846,10 @@ defmodule Autonomous.Actions.RunFeaturePhaseTest do
                RunFeaturePhase.run(%{phase: :clarify}, context(%{worktree: worktree}))
 
       assert update.last_outcome == :error
-      assert update.last_signals == %{branch_drift: %{expected: "feature/001-s", observed: "other"}}
+
+      assert update.last_signals == %{
+               branch_drift: %{expected: "feature/001-s", observed: "other"}
+             }
     end
 
     test "a detached HEAD counts as drift too" do
@@ -690,7 +857,9 @@ defmodule Autonomous.Actions.RunFeaturePhaseTest do
       Application.put_env(:jido_claude, :sdk_module, CapturingSDK)
       on_exit(fn -> restore(:jido_claude, :sdk_module, original) end)
 
-      tmp = Path.join(System.tmp_dir!(), "rfp_drift_detached_#{System.unique_integer([:positive])}")
+      tmp =
+        Path.join(System.tmp_dir!(), "rfp_drift_detached_#{System.unique_integer([:positive])}")
+
       File.mkdir_p!(tmp)
       {_, 0} = System.cmd("git", ["init", "-b", "feature/001-s"], cd: tmp)
       File.write!(Path.join(tmp, "README.md"), "seed\n")
@@ -714,6 +883,7 @@ defmodule Autonomous.Actions.RunFeaturePhaseTest do
                RunFeaturePhase.run(%{phase: :clarify}, context(%{worktree: worktree}))
 
       assert update.last_outcome == :error
+
       assert %{branch_drift: %{expected: "feature/001-s", observed: {:detached, _sha}}} =
                update.last_signals
     end

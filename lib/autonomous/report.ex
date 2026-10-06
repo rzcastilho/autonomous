@@ -14,7 +14,12 @@ defmodule Autonomous.Report do
       |> Map.get(:per_feature, %{})
       |> Enum.sort_by(fn {id, _} -> id end)
       |> Enum.map(fn {id, info} ->
-        [id, spec_number(Map.get(info, :spec_number)), to_string(info.status), elapsed(info.elapsed_ms)]
+        [
+          id,
+          spec_number(Map.get(info, :spec_number)),
+          to_string(info.status),
+          elapsed(info.elapsed_ms)
+        ]
       end)
 
     [
@@ -121,7 +126,21 @@ defmodule Autonomous.Report do
     do: "needs human — orchestrator restarted while awaiting answers"
 
   def format_reason({:empty_checkpoint, phase}), do: "#{phase} committed no change"
+
+  # 032: a session that ended waiting on a command the CLI moved to the background.
+  # `where` is the phase atom, or a chunk's task-phase ref.
+  def format_reason({:backgrounded_command, where, [cmd | rest]}) do
+    "#{background_where(where)} ended waiting on backgrounded command: " <>
+      String.slice(cmd, 0, 120) <>
+      if(rest == [], do: "", else: " (+#{length(rest)} more)")
+  end
+
   def format_reason(reason), do: PublishOutcome.describe(reason) || inspect(reason)
+
+  defp background_where(%Autonomous.TaskPhaseRef{} = ref),
+    do: ~s(task-phase #{ref.number || ref.ordinal} "#{ref.title}")
+
+  defp background_where(where), do: to_string(where)
 
   defp run_state(%{finished?: true}), do: "state:  finished"
   defp run_state(_), do: "state:  running"

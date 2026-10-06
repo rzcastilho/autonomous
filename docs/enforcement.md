@@ -70,6 +70,8 @@ specify init . --integration claude --integration-options="--skills"
 #    template constitution only if none exists — never clobbers yours)
 #    from iex against the repo path:
 Autonomous.TargetPack.install("/path/to/target/repo")
+#    (returns {:error, {:invalid_settings, _}} if the target's settings.json
+#    is not valid JSON; an existing settings.json `env` is kept, pack keys added)
 
 # 3. Write a real constitution with checkable MUSTs, then commit everything
 git add .specify .claude && git commit -m "spec kit + enforcement pack"
@@ -79,7 +81,7 @@ git add .specify .claude && git commit -m "spec kit + enforcement pack"
 Autonomous.TargetPack.verify("/path/to/target/repo")  # => :ok
 
 # 4a. A run that will use `containment_profile: :permissive` additionally
-#     requires the committed pack to be at contract 3 (this hook + this
+#     requires the committed pack to be at contract 4 (this hook + this
 #     settings.json, both committed) — verify explicitly:
 Autonomous.TargetPack.verify("/path/to/target/repo", profile: "permissive")  # => :ok
 ```

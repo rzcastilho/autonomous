@@ -1,0 +1,261 @@
+# Jido Claude
+
+[![Hex.pm](https://img.shields.io/hexpm/v/jido_claude.svg)](https://hex.pm/packages/jido_claude)
+[![Hex Docs](https://img.shields.io/badge/hex-docs-lightgreen.svg)](https://hexdocs.pm/jido_claude/)
+[![CI](https://github.com/agentjido/jido_claude/actions/workflows/ci.yml/badge.svg)](https://github.com/agentjido/jido_claude/actions/workflows/ci.yml)
+[![License](https://img.shields.io/hexpm/l/jido_claude.svg)](https://github.com/agentjido/jido_claude/blob/main/LICENSE)
+[![Website](https://img.shields.io/badge/website-jido.run-0f172a.svg)](https://jido.run)
+[![Ecosystem](https://img.shields.io/badge/ecosystem-jido.run-0ea5e9.svg)](https://jido.run/ecosystem)
+[![Discord](https://img.shields.io/badge/discord-join-5865F2.svg?logo=discord&logoColor=white)](https://jido.run/discord)
+
+Claude Code integration for the Jido Agent framework.
+
+## Installation
+
+Add `jido_claude` to your list of dependencies in `mix.exs`:
+
+```elixir
+def deps do
+  [
+    {:jido_harness, github: "agentjido/jido_harness", branch: "main", override: true},
+    {:jido_claude, github: "agentjido/jido_claude", branch: "main"}
+  ]
+end
+```
+
+This repo is currently aligned as part of the GitHub-based harness package set rather than a Hex release line.
+
+## Prerequisites
+
+1. **Claude Code CLI** must be installed and authenticated:
+   ```bash
+   npm install -g @anthropic-ai/claude-code
+   claude  # authenticate via browser
+   ```
+
+2. The SDK uses the CLI's stored authentication - no API keys needed in your Elixir app.
+
+## Claude Runtime Env Support
+
+`jido_claude` now forwards Claude runtime env overrides from:
+
+1. `~/.claude/settings.json` (`env` object), then
+2. process env vars (which override settings values), then
+3. `config :jido_claude, :env_overrides` (highest priority).
+
+This includes ZAI-compatible settings such as:
+
+- `ANTHROPIC_BASE_URL`
+- `ANTHROPIC_AUTH_TOKEN`
+- `ANTHROPIC_DEFAULT_HAIKU_MODEL`
+- `ANTHROPIC_DEFAULT_SONNET_MODEL`
+- `ANTHROPIC_DEFAULT_OPUS_MODEL`
+
+You can also set a package-level default model with:
+
+- `JIDO_CLAUDE_DEFAULT_MODEL` or
+- `config :jido_claude, :default_model, "..."`
+
+## Architecture
+
+Jido.Claude provides a two-agent pattern for running Claude Code sessions:
+
+```
+┌─────────────────────────────────────────┐
+│  Parent Agent (Orchestrator)            │
+│  - Spawns ClaudeSessionAgent children   │
+│  - Receives signals from all sessions   │
+│  - Tracks status in sessions registry   │
+└─────────────────────────────────────────┘
+          │ SpawnAgent
+          ▼
+┌─────────────────────────────────────────┐
+│  ClaudeSessionAgent                     │
+│  - Owns single Claude session           │
+│  - Runs SDK in background Task          │
+│  - Emits turn signals to parent         │
+└─────────────────────────────────────────┘
+          │ Task
+          ▼
+┌─────────────────────────────────────────┐
+│  StreamRunner                           │
+│  - Calls ClaudeAgentSDK.query/3         │
+│  - Dispatches messages as signals       │
+└─────────────────────────────────────────┘
+```
+
+## Usage
+
+### Single Session
+
+```elixir
+alias Jido.Claude.ClaudeSessionAgent
+alias Jido.Claude.Actions.StartSession
+
+# Start a session agent
+{:ok, pid} = Jido.Agent.Server.start_link(
+  agent: ClaudeSessionAgent,
+  name: {:via, Registry, {MyRegistry, "claude-1"}}
+)
+
+# Run a prompt
+Jido.Agent.Server.cmd(pid, {StartSession, %{
+  prompt: "Analyze this codebase",
+  model: "sonnet",
+  max_turns: 25
+}})
+```
+
+### Multi-Session (Parent Agent)
+
+```elixir
+defmodule MyOrchestrator do
+  use Jido.Agent,
+    name: "orchestrator",
+    schema: [
+      sessions: [type: :map, default: %{}]
+    ]
+
+  alias Jido.Claude.Parent.{SpawnSession, HandleSessionEvent, CancelSession}
+
+  def signal_routes do
+    [
+      {"claude.session.started", {HandleSessionEvent, &extract_params/1}},
+      {"claude.session.success", {HandleSessionEvent, &extract_params/1}},
+      {"claude.session.error", {HandleSessionEvent, &extract_params/1}}
+    ]
+  end
+
+  defp extract_params(signal) do
+    %{
+      session_id: signal.data.session_id,
+      event_type: signal.type,
+      data: signal.data
+    }
+  end
+
+  def actions do
+    [SpawnSession, CancelSession]
+  end
+end
+
+# Spawn multiple concurrent sessions
+{agent, _} = MyOrchestrator.cmd(agent, {SpawnSession, %{
+  session_id: "review-pr-123",
+  prompt: "Review PR #123 for security issues"
+}})
+
+{agent, _} = MyOrchestrator.cmd(agent, {SpawnSession, %{
+  prompt: "Analyze dependencies"  # auto-generates session_id
+}})
+
+# Check status
+agent.state.sessions
+# => %{
+#   "review-pr-123" => %{status: :running, turns: 3, ...},
+#   "claude-a1b2c3d4" => %{status: :running, turns: 1, ...}
+# }
+
+# Cancel a session
+{agent, _} = MyOrchestrator.cmd(agent, {CancelSession, %{
+  session_id: "review-pr-123"
+}})
+```
+
+## Signal Types
+
+| Signal | Description |
+|--------|-------------|
+| `claude.session.started` | Session initialized with model info |
+| `claude.turn.text` | Claude's text response |
+| `claude.turn.tool_use` | Claude is calling a tool |
+| `claude.turn.tool_result` | Tool execution result |
+| `claude.session.success` | Session completed successfully |
+| `claude.session.error` | Session failed |
+
+## Live Integration Tests
+
+`jido_claude` includes opt-in live integration tests for both local adapter execution and sprite-backed execution.
+
+Local adapter run:
+
+```bash
+mix test --include integration test/jido_claude/integration/adapter_live_integration_test.exs
+```
+
+Sprite-backed run:
+
+```bash
+mix test --include integration test/jido_claude/integration/sprite_shell_integration_test.exs
+```
+
+The tests load `.env` automatically.
+
+Local adapter knobs:
+
+- `JIDO_CLAUDE_LIVE_PROMPT` - override the default prompt
+- `JIDO_CLAUDE_LIVE_CWD` - override the working directory
+- `JIDO_CLAUDE_LIVE_MODEL` - force a specific model/alias
+- `JIDO_CLAUDE_LIVE_MAX_TURNS` - override the max-turns cap (default `1`)
+- `JIDO_CLAUDE_LIVE_TIMEOUT_MS` - extend the per-run timeout
+- `JIDO_CLAUDE_RAW_CLI=1` - use the local raw CLI compatibility stream when current CLI output is ahead of `claude_agent_sdk`
+- `JIDO_CLAUDE_REQUIRE_SUCCESS=1` - optional strict mode (fail unless the terminal event is successful)
+
+Sprite-backed knobs:
+
+- `SPRITE_TOKEN` (or `SPRITES_TEST_TOKEN`) - required
+- `SPRITE_BASE_URL` (or `SPRITES_TEST_BASE_URL`) - optional
+- `JIDO_CLAUDE_SPRITE_NAME` - optional fixed sprite name (otherwise a unique name is generated)
+- `JIDO_CLAUDE_REQUIRE_SUCCESS=1` - optional strict mode (fail unless Claude run ends in `:success`)
+
+By default, integration tests are excluded from `mix test`.
+If `jido_shell` or `sprites-ex` is unavailable in the test runtime, the integration test is skipped with a clear reason.
+
+## Configuration Options
+
+### StartSession / SpawnSession
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `prompt` | string | required | The prompt to send to Claude |
+| `model` | string | default model config or "sonnet" | Claude model/alias (for example: `haiku`, `sonnet`, `opus`, or custom backend alias) |
+| `max_turns` | integer | 25 | Maximum agentic loop iterations |
+| `allowed_tools` | list | ["Read", "Glob", "Grep", "Bash"] | Tools Claude can use |
+| `cwd` | string | current dir | Working directory for tools |
+| `system_prompt` | string | nil | Custom system prompt |
+| `sdk_timeout_ms` | integer | 600_000 | SDK-level timeout (10 min) |
+| `target` | atom | `:local` | Execution target: `:local`, `:shell`, or `:sprite` |
+| `shell` | map | `%{}` | Shell executor options (workspace/backend/session options) |
+| `execution_context` | map | `%{}` | Per-run limits/network context forwarded to `jido_shell` |
+| `meta` | map | %{} | Custom metadata (SpawnSession only) |
+
+Shell-backed runs require adding `jido_shell` to your dependencies. For Sprite execution,
+set `target: :sprite` and pass Sprite backend config via `shell`:
+
+```elixir
+Jido.Agent.Server.cmd(pid, {StartSession, %{
+  prompt: "Analyze this codebase",
+  target: :sprite,
+  shell: %{
+    backend: {Jido.Shell.Backend.Sprite, %{
+      sprite_name: "my-sprite",
+      token: System.fetch_env!("SPRITES_TOKEN"),
+      create: true
+    }}
+  }
+}})
+```
+
+## License
+
+Apache 2.0
+
+## Package Purpose
+
+`jido_claude` is the Claude adapter package for `jido_harness`, exposing normalized runs while keeping Claude-specific mapping and runtime contract details isolated.
+
+## Testing Paths
+
+- Unit/contract tests: `mix test`
+- Full quality gate: `mix quality`
+- Optional live/sprite checks: run tests tagged `:integration` when credentials and CLI are available

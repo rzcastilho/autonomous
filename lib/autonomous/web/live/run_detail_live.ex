@@ -495,5 +495,9 @@ defmodule Autonomous.Web.RunDetailLive do
   defp format_reason(reason), do: PublishOutcome.describe(reason) || format_legacy_reason(reason)
 
   defp format_legacy_reason({:empty_checkpoint, phase}), do: "#{phase} committed no change"
+
+  defp format_legacy_reason({:backgrounded_command, _, _} = reason),
+    do: Autonomous.Report.format_reason(reason)
+
   defp format_legacy_reason(reason), do: inspect(reason)
 end
