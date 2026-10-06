@@ -167,13 +167,17 @@ defmodule Autonomous.TargetPackTest do
       assert Enum.any?(problems, &match?({:pack_outdated, ".claude/hooks/scope_guard.py", _}, &1))
     end
 
-    test "profile permissive fails when the committed hook is contract 2" do
+    test "profile permissive fails when the committed hook is contract 3" do
       repo = committed_target()
       hook = Path.join(repo, ".claude/hooks/scope_guard.py")
 
-      File.write!(hook, String.replace(File.read!(hook), "PACK_CONTRACT = 3", "PACK_CONTRACT = 2"))
+      File.write!(
+        hook,
+        String.replace(File.read!(hook), "PACK_CONTRACT = 4", "PACK_CONTRACT = 3")
+      )
+
       git!(repo, ["add", "-A"])
-      git!(repo, ["commit", "-q", "-m", "contract 2 hook"])
+      git!(repo, ["commit", "-q", "-m", "contract 3 hook"])
 
       assert {:error, problems} = TargetPack.verify(repo, profile: "permissive")
       assert Enum.any?(problems, &match?({:pack_outdated, ".claude/hooks/scope_guard.py", _}, &1))
@@ -187,7 +191,7 @@ defmodule Autonomous.TargetPackTest do
       git!(repo, ["add", "-A"])
       git!(repo, ["commit", "-q", "-m", "downgrade hook"])
 
-      # Re-install (contract 3 again) but leave it uncommitted — HEAD: still
+      # Re-install (contract 4 again) but leave it uncommitted — HEAD: still
       # sees the downgraded hook, so this must fail exactly like a missing
       # upgrade.
       {:ok, _} = TargetPack.install(repo)
@@ -213,6 +217,96 @@ defmodule Autonomous.TargetPackTest do
     test "check_pack_contract/1 passes once the upgrade is committed" do
       repo = committed_target()
       assert :ok = TargetPack.check_pack_contract(repo)
+    end
+  end
+
+  describe "install/2 settings merge (032)" do
+    defp pack_settings,
+      do: File.read!(Path.join(:code.priv_dir(:autonomous), "target_pack/.claude/settings.json"))
+
+    defp write_settings(repo, content) do
+      File.mkdir_p!(Path.join(repo, ".claude"))
+      File.write!(Path.join(repo, ".claude/settings.json"), content)
+    end
+
+    defp read_settings(repo), do: File.read!(Path.join(repo, ".claude/settings.json"))
+
+    test "no existing settings: pack file written as-is" do
+      repo = tmp_repo()
+      assert {:ok, _} = TargetPack.install(repo)
+      assert read_settings(repo) == pack_settings()
+    end
+
+    test "existing env is preserved; only absent pack keys are added (SC-004)" do
+      repo = tmp_repo()
+      write_settings(repo, ~s({"env": {"BASH_MAX_TIMEOUT_MS": "60000", "FOO": "bar"}}))
+      assert {:ok, _} = TargetPack.install(repo)
+
+      env = Jason.decode!(read_settings(repo))["env"]
+      assert env["BASH_MAX_TIMEOUT_MS"] == "60000"
+      assert env["FOO"] == "bar"
+      assert env["BASH_DEFAULT_TIMEOUT_MS"] == "1800000"
+    end
+
+    test "non-env keys keep overwrite semantics" do
+      repo = tmp_repo()
+      write_settings(repo, ~s({"permissions": {"defaultMode": "plan", "deny": ["Bash"]}}))
+      assert {:ok, _} = TargetPack.install(repo)
+
+      assert Jason.decode!(read_settings(repo))["permissions"] ==
+               Jason.decode!(pack_settings())["permissions"]
+    end
+
+    test "a second install is byte-identical" do
+      repo = tmp_repo()
+      write_settings(repo, ~s({"env": {"FOO": "bar"}}))
+      {:ok, _} = TargetPack.install(repo)
+      first = read_settings(repo)
+      {:ok, _} = TargetPack.install(repo)
+      assert read_settings(repo) == first
+    end
+
+    test "unparseable or non-object settings: error, nothing written" do
+      for bad <- ["{not json", "[1, 2]", ~s("str")] do
+        repo = tmp_repo()
+        write_settings(repo, bad)
+
+        assert {:error, {:invalid_settings, ".claude/settings.json"}} = TargetPack.install(repo)
+        assert read_settings(repo) == bad
+        refute File.exists?(Path.join(repo, ".claude/hooks/scope_guard.py"))
+        refute File.exists?(Path.join(repo, ".specify/memory/constitution.md"))
+      end
+    end
+
+    test "merge_settings/2 is pack-wins except env" do
+      pack = %{"env" => %{"A" => "1", "B" => "2"}, "x" => 1}
+      existing = %{"env" => %{"B" => "9"}, "x" => 2, "y" => 3}
+
+      assert TargetPack.merge_settings(pack, existing) == %{
+               "env" => %{"A" => "1", "B" => "9"},
+               "x" => 1
+             }
+    end
+
+    test "permissive preflight refuses a contract 3 pack, accepts 4; strict unchanged" do
+      repo = committed_target()
+      assert :ok = TargetPack.verify(repo, profile: "permissive")
+
+      hook = Path.join(repo, ".claude/hooks/scope_guard.py")
+
+      File.write!(
+        hook,
+        String.replace(File.read!(hook), "PACK_CONTRACT = 4", "PACK_CONTRACT = 3")
+      )
+
+      git!(repo, ["add", "-A"])
+      git!(repo, ["commit", "-q", "-m", "contract 3"])
+
+      assert {:error, [{:pack_outdated, ".claude/hooks/scope_guard.py", hint}]} =
+               TargetPack.verify(repo, profile: "permissive")
+
+      assert hint =~ "TargetPack.install/2"
+      assert :ok = TargetPack.verify(repo, profile: "strict")
     end
   end
 end

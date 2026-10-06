@@ -417,6 +417,42 @@ defmodule Autonomous.PipelineTest do
     end
   end
 
+  describe "background-wait gate (032, US1)" do
+    test "a stranded backgrounded command fails the phase, naming the commands" do
+      for phase <- Pipeline.phases() do
+        assert Pipeline.next(phase, :error, %{outstanding_work?: true, backgrounded: ["mix test"]}) ==
+                 {:failed, {:backgrounded_command, phase, ["mix test"]}}
+      end
+    end
+
+    test "takes precedence over the plain incomplete-session clause" do
+      assert Pipeline.next(:implement, :error, %{outstanding_work?: true}) ==
+               {:failed, {:incomplete_session, :implement}}
+
+      assert Pipeline.next(:implement, :error, %{
+               outstanding_work?: true,
+               backgrounded: ["a", "b"]
+             }) ==
+               {:failed, {:backgrounded_command, :implement, ["a", "b"]}}
+    end
+
+    test "an empty list is not a backgrounding" do
+      assert Pipeline.next(:plan, :error, %{outstanding_work?: true, backgrounded: []}) ==
+               {:failed, {:incomplete_session, :plan}}
+    end
+
+    test "branch drift still wins" do
+      d = %{expected: "feature/001-s", observed: "other"}
+
+      assert Pipeline.next(:plan, :error, %{branch_drift: d, backgrounded: ["mix test"]}) ==
+               {:failed, {:branch_drift, :plan, d}}
+    end
+
+    test "the signal does not divert a successful phase" do
+      assert Pipeline.next(:plan, :ok, %{backgrounded: ["mix test"]}) == {:cont, :tasks}
+    end
+  end
+
   describe "branch-drift gate (027, US2)" do
     test "branch drift fails the phase that caused it, by name, from every phase" do
       d = %{expected: "feature/001-s", observed: "other"}

@@ -44,7 +44,10 @@ defmodule Autonomous.Actions.RunFeaturePhase do
       # an interactive-clarify round is answered. Folded into the prompt only
       # at `phase == :clarify` (below) — `nil` everywhere else, byte-identical
       # to today (FR-002).
-      operator_answers: [type: {:or, [nil, :string]}, required: false, default: nil]
+      operator_answers: [type: {:or, [nil, :string]}, required: false, default: nil],
+      # 032: commands the previous attempt left backgrounded; folded into the
+      # prompt as a corrective note. `nil` everywhere but a backgrounding retry.
+      background_retry: [type: :any, required: false, default: nil]
     ]
 
   require Logger
@@ -86,6 +89,8 @@ defmodule Autonomous.Actions.RunFeaturePhase do
     # observability/cancellation, but never resume it into the next phase's
     # request (that would hit the adapter's resume path). Mid-pipeline session
     # resume is a v2 concern.
+    deadline_ms = Map.get(params, :deadline_ms) || Config.phase_timeout()
+
     request =
       PhaseRequest.build(state.feature, phase,
         cwd: worktree_path(state.worktree),
@@ -93,16 +98,22 @@ defmodule Autonomous.Actions.RunFeaturePhase do
         layout: state.layout,
         scope: scope,
         clarify_answers: if(phase == :clarify, do: Map.get(params, :operator_answers)),
-        containment: state.containment
+        containment: state.containment,
+        background_retry: Map.get(params, :background_retry),
+        deadline_ms: deadline_ms
       )
 
     case Jido.Harness.run_request(:claude, request, []) do
       {:ok, stream} ->
-        result =
-          PhaseSession.reduce(stream, Map.get(params, :deadline_ms) || Config.phase_timeout())
+        result = PhaseSession.reduce(stream, deadline_ms)
 
         {outcome, signals} = classify(phase, result, state, scope)
-        signals = put_artifact_absent_at_start(signals, artifact_absent?)
+
+        signals =
+          signals
+          |> put_artifact_absent_at_start(artifact_absent?)
+          |> PhaseResult.reset_background(Map.get(state, :last_signals))
+
         {amount, _source} = Cost.for_phase(phase, result)
         record_cost(state.ledger, amount)
 
@@ -122,7 +133,7 @@ defmodule Autonomous.Actions.RunFeaturePhase do
          %{
            phase: phase,
            last_outcome: :error,
-           last_signals: %{},
+           last_signals: PhaseResult.reset_background(%{}, Map.get(state, :last_signals)),
            last_result: nil,
            history: [%{phase: phase, outcome: :error, error: reason} | state.history]
          }}
@@ -203,7 +214,37 @@ defmodule Autonomous.Actions.RunFeaturePhase do
   # keeps the detector from second-guessing a phase that demonstrably worked,
   # and leaves it as the generic net for the phases that have no artifact gate
   # at all (`:specify`, `:clarify`, `:analyze`, `:converge`, `:describe`).
+  #
+  # Background-wait gate (032, US1) sits ahead of it: a command the CLI moved to
+  # the background and the model never went back for is the same "ended its turn
+  # mid-flight" failure, but one `outstanding_work?/1` cannot see — the backgrounding
+  # *result* returned, so every call id is matched. It is suppressed only for
+  # `:plan`/`:tasks` whose artifact gate is satisfied (same rationale as below);
+  # never for `:implement`, where the artifact gate says nothing about whether the
+  # verification the model backgrounded ever ran.
   defp classify_after_drift(phase, %PhaseResult{status: :ok} = r, state, scope) do
+    case PhaseResult.stranded_background(r) do
+      [_ | _] = cmds ->
+        if phase in [:plan, :tasks] and gate_satisfied?(phase, state, scope) do
+          classify_incomplete(phase, r, state, scope)
+        else
+          Logger.warning(
+            "phase #{phase} ended waiting on backgrounded command(s): " <>
+              "#{Enum.join(cmds, "; ")} — treating as incomplete"
+          )
+
+          {:error, %{outstanding_work?: true, backgrounded: cmds}}
+        end
+
+      [] ->
+        classify_incomplete(phase, r, state, scope)
+    end
+  end
+
+  defp classify_after_drift(phase, %PhaseResult{} = r, state, scope),
+    do: classify_gate(phase, r, state, scope)
+
+  defp classify_incomplete(phase, %PhaseResult{} = r, state, scope) do
     if PhaseResult.outstanding_work?(r) and not gate_satisfied?(phase, state, scope) do
       Logger.warning(
         "phase #{phase} reported success with unreturned tool calls " <>
@@ -215,9 +256,6 @@ defmodule Autonomous.Actions.RunFeaturePhase do
       classify_gate(phase, r, state, scope)
     end
   end
-
-  defp classify_after_drift(phase, %PhaseResult{} = r, state, scope),
-    do: classify_gate(phase, r, state, scope)
 
   # True when `phase` has an artifact gate and it passes. A scoped implement
   # chunk counts as satisfied — its gate is deferred to `ChunkRunner`'s roll-up

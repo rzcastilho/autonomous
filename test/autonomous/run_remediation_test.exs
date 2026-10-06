@@ -57,6 +57,69 @@ defmodule Autonomous.Actions.RunRemediationTest do
     end
   end
 
+  # 032: a session that reports success after a Bash command was auto-backgrounded
+  # at the CLI's 10-min cap and never read back — every call id is matched, so the
+  # pre-032 outstanding-work gate sees nothing wrong.
+  defmodule BackgroundingSDK do
+    alias ClaudeAgentSDK.Message
+
+    def query(prompt, _opts) do
+      send(self(), {:captured_prompt, prompt})
+
+      [
+        %Message{
+          type: :assistant,
+          data: %{
+            message: %{
+              "content" => [
+                %{
+                  "type" => "tool_use",
+                  "id" => "bg-1",
+                  "name" => "Bash",
+                  "input" => %{"command" => "npm run test:e2e"}
+                }
+              ]
+            }
+          },
+          raw: %{}
+        },
+        %Message{
+          type: :user,
+          data: %{
+            message: %{
+              "content" => [
+                %{
+                  "type" => "tool_result",
+                  "tool_use_id" => "bg-1",
+                  "is_error" => false,
+                  "content" =>
+                    "Command did not complete within its 600s timeout and was moved to the background (ID: bgx1). " <>
+                      "Output is being written to: /tmp/bgx1.output"
+                }
+              ]
+            }
+          },
+          raw: %{}
+        },
+        %Message{
+          type: :result,
+          subtype: :success,
+          data: %{
+            session_id: "sess-bg",
+            result: "Waiting for the e2e run.",
+            num_turns: 2,
+            duration_ms: 1,
+            is_error: false,
+            total_cost_usd: 0.0,
+            usage: %{input_tokens: 0, output_tokens: 0},
+            model: "m"
+          },
+          raw: %{}
+        }
+      ]
+    end
+  end
+
   defp context(state_overrides \\ %{}) do
     base = %{
       feature: %Feature{id: "001", number: 1, slug: "s", path: "p.md"},
@@ -144,6 +207,18 @@ defmodule Autonomous.Actions.RunRemediationTest do
       assert_received {:captured_env, env}
       assert env["AUTONOMOUS_ORCHESTRATED"] == "1"
       assert env["AUTONOMOUS_CONTAINMENT_PROFILE"] == "permissive"
+    end
+  end
+
+  describe "the background-wait gate (032, US1)" do
+    test "a remediation that ends on a backgrounded command is an error, not a success" do
+      original = Application.get_env(:jido_claude, :sdk_module)
+      Application.put_env(:jido_claude, :sdk_module, BackgroundingSDK)
+      on_exit(fn -> restore(:jido_claude, :sdk_module, original) end)
+
+      assert {:ok, update} = RunRemediation.run(%{}, context())
+      assert update.last_outcome == :error
+      assert update.last_signals == %{outstanding_work?: true, backgrounded: ["npm run test:e2e"]}
     end
   end
 end

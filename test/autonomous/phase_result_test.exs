@@ -250,4 +250,172 @@ defmodule Autonomous.PhaseResultTest do
       assert PhaseResult.outstanding_calls(nil) == []
     end
   end
+
+  describe "backgrounded_commands/1 and stranded_background/1 (032)" do
+    @timeout_marker "Command did not complete within its 600s timeout and was moved to the background (ID: b1). " <>
+                      "Output is being written to: /tmp/x.out"
+
+    defp bash(id, input \\ %{"command" => "mix test"}),
+      do: ev(:tool_call, %{"name" => "Bash", "input" => input, "call_id" => id}, "s")
+
+    defp out(id, text),
+      do: ev(:tool_result, %{"output" => text, "call_id" => id, "is_error" => false}, "s")
+
+    defp backgrounded_session(extra \\ [], opts \\ []) do
+      session([bash("c1"), out("c1", @timeout_marker)] ++ extra, opts)
+    end
+
+    test "1: marker with nothing after it is stranded" do
+      r = backgrounded_session()
+      assert PhaseResult.stranded_background(r) == ["mix test"]
+
+      assert [
+               %PhaseResult.BackgroundedCommand{
+                 mode: :timeout,
+                 task_id: "b1",
+                 output_path: "/tmp/x.out",
+                 resolved?: false
+               }
+             ] =
+               PhaseResult.backgrounded_commands(r)
+    end
+
+    test "2: a Read of the output path resolves it" do
+      r =
+        backgrounded_session([
+          ev(
+            :tool_call,
+            %{"name" => "Read", "input" => %{"file_path" => "/tmp/x.out"}, "call_id" => "r1"},
+            "s"
+          ),
+          out("r1", "all passed")
+        ])
+
+      assert PhaseResult.stranded_background(r) == []
+    end
+
+    test "3: any later event containing the task id resolves it" do
+      r = backgrounded_session([call("m1", "Monitor"), out("m1", "watching b1")])
+      assert PhaseResult.stranded_background(r) == []
+    end
+
+    test "4: unrelated later calls leave it stranded" do
+      r =
+        backgrounded_session([
+          bash("c2", %{"command" => "ls"}),
+          out("c2", "a b"),
+          call("e1", "Edit"),
+          out("e1", "ok")
+        ])
+
+      assert PhaseResult.stranded_background(r) == ["mix test"]
+    end
+
+    test "5: explicit run_in_background with marker, never read" do
+      r =
+        session([
+          bash("c1", %{"command" => "sleep 5", "run_in_background" => true}),
+          out(
+            "c1",
+            "Command running in background with ID: be1. Output is being written to: /tmp/e.out"
+          )
+        ])
+
+      assert PhaseResult.stranded_background(r) == ["sleep 5"]
+      assert [%{mode: :explicit, task_id: "be1"}] = PhaseResult.backgrounded_commands(r)
+    end
+
+    test "6: explicit call with no marker and no ids is stranded forever" do
+      r =
+        session([
+          bash("c1", %{"command" => "sleep 5", "run_in_background" => true}),
+          out("c1", "started"),
+          call("x", "Read"),
+          out("x", "started")
+        ])
+
+      assert PhaseResult.stranded_background(r) == ["sleep 5"]
+      assert [%{task_id: nil, output_path: nil}] = PhaseResult.backgrounded_commands(r)
+    end
+
+    test "6b: explicit call that never returned a result is stranded" do
+      r = session([bash("c1", %{"command" => "sleep 5", "run_in_background" => true})])
+      assert PhaseResult.stranded_background(r) == ["sleep 5"]
+    end
+
+    test "7: the marker result never resolves itself" do
+      # the marker text contains its own id and path
+      assert PhaseResult.stranded_background(backgrounded_session()) == ["mix test"]
+    end
+
+    test "8: non-:ok sessions return []" do
+      assert PhaseResult.stranded_background(backgrounded_session([], is_error: true)) == []
+
+      incomplete = PhaseResult.reduce([bash("c1"), out("c1", @timeout_marker)])
+      assert incomplete.status == :incomplete
+      assert PhaseResult.stranded_background(incomplete) == []
+      assert PhaseResult.stranded_background(nil) == []
+    end
+
+    test "9: sessions without backgrounding return []" do
+      r = session([call("a", "Read"), result("a"), bash("b"), out("b", "12 tests, 0 failures")])
+      assert PhaseResult.stranded_background(r) == []
+      assert PhaseResult.backgrounded_commands(r) == []
+      assert PhaseResult.stranded_background(session([])) == []
+    end
+
+    test "10: SC-001 replay fixture is stranded" do
+      events =
+        "../fixtures/sessions/background_wait_014.exs"
+        |> Path.expand(__DIR__)
+        |> Code.eval_file()
+        |> elem(0)
+        |> Enum.map(fn {type, payload} -> ev(type, payload, "3e935ca9") end)
+
+      r = PhaseResult.reduce(events)
+      assert r.status == :ok
+      assert PhaseResult.stranded_background(r) == ["npm run test:e2e -- --reporter=line"]
+      # the pre-032 gate saw every call return: no outstanding work
+      refute PhaseResult.outstanding_work?(r)
+    end
+
+    test "reset_background/2 clears a stale list only when the new run has none" do
+      assert PhaseResult.reset_background(%{}, %{backgrounded: ["a"]}) == %{backgrounded: []}
+
+      assert PhaseResult.reset_background(%{x: 1}, %{backgrounded: ["a"]}) == %{
+               x: 1,
+               backgrounded: []
+             }
+
+      assert PhaseResult.reset_background(%{backgrounded: ["b"]}, %{backgrounded: ["a"]}) == %{
+               backgrounded: ["b"]
+             }
+
+      # runs that never backgrounded stay byte-identical
+      assert PhaseResult.reset_background(%{x: 1}, %{}) == %{x: 1}
+      assert PhaseResult.reset_background(%{x: 1}, nil) == %{x: 1}
+      assert PhaseResult.reset_background(%{x: 1}, %{backgrounded: []}) == %{x: 1}
+    end
+
+    test "command falls back to description, then a placeholder" do
+      r =
+        session([
+          bash("c1", %{"description" => "run e2e"}),
+          out("c1", @timeout_marker),
+          out("orphan", "Command was moved to the background (ID: b9)")
+        ])
+
+      assert PhaseResult.stranded_background(r) == ["run e2e", "(unknown command)"]
+    end
+
+    test "one entry per call even when matched by marker and explicit" do
+      r =
+        session([
+          bash("c1", %{"command" => "x", "run_in_background" => true}),
+          out("c1", "Command running in background with ID: be1")
+        ])
+
+      assert [%{mode: :explicit}] = PhaseResult.backgrounded_commands(r)
+    end
+  end
 end

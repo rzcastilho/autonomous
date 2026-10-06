@@ -39,14 +39,31 @@ defmodule Autonomous.PhaseStep do
     span_meta = Keyword.get(opts, :span_meta, %{})
     operator_answers = Keyword.get(opts, :operator_answers)
 
-    run_with_retry(pid, feature, phase, step, timeout, span_meta, retries, operator_answers)
+    run_with_retry(pid, feature, phase, step, timeout, span_meta, retries, operator_answers, nil)
   end
 
   # Re-run a phase that failed transiently (a server/API drop, not a real
   # error) up to `retries` times before giving up. Real errors and most gate
   # outcomes (signals, not `:error`) fall straight through.
-  defp run_with_retry(pid, feature, phase, step, timeout, span_meta, retries, operator_answers) do
-    agent = run_once(pid, feature, phase, step, timeout, span_meta, operator_answers)
+  #
+  # `background_retry` (032, FR-002a) is the stranded-command list from the
+  # previous attempt when — and only when — that attempt was retried for ending
+  # on a backgrounded command; it rides the retry's `"phase.run"` signal so the
+  # prompt carries the corrective note. Every other retry passes `nil`.
+  defp run_with_retry(
+         pid,
+         feature,
+         phase,
+         step,
+         timeout,
+         span_meta,
+         retries,
+         operator_answers,
+         background_retry
+       ) do
+    agent =
+      run_once(pid, feature, phase, step, timeout, span_meta, operator_answers, background_retry)
+
     st = agent.state
 
     case retries > 0 and retry_reason(st) do
@@ -61,17 +78,29 @@ defmodule Autonomous.PhaseStep do
           "feature #{feature.id} phase #{phase} #{reason} — retrying (#{retries} left)"
         )
 
-        run_with_retry(pid, feature, phase, step, timeout, span_meta, retries - 1, operator_answers)
+        run_with_retry(
+          pid,
+          feature,
+          phase,
+          step,
+          timeout,
+          span_meta,
+          retries - 1,
+          operator_answers,
+          background_cmds(st)
+        )
     end
   end
 
   # Why this attempt is worth repeating, or `nil` to accept it as final.
   #
-  # Beyond the original transient case, two outcomes are retried because both
+  # Beyond the original transient case, these outcomes are retried because both
   # are evidence the model *started* and stopped rather than deliberately
   # refusing, and neither reproduces deterministically — a fresh session is the
   # single most likely thing to fix them:
   #
+  #   * `backgrounded` (032) — the session ended while a command the CLI moved to
+  #     the background was still running; a retry carries a corrective note.
   #   * `outstanding_work?` — the session reported success with tool calls still
   #     unreturned, i.e. it ended its turn mid-flight.
   #   * `unfilled_artifact?` — the artifact exists but is the untouched Spec Kit
@@ -88,16 +117,38 @@ defmodule Autonomous.PhaseStep do
       # Branch drift (027, US2) is checked first, ahead of every other test:
       # a drifted session is never retried, not even as a transient one — a
       # fresh session would only write to the same wrong branch again.
-      Map.has_key?(signals, :branch_drift) -> nil
-      st.last_outcome != :error and not Map.get(signals, :unfilled_artifact?, false) -> nil
-      PhaseResult.transient?(st.last_result) and st.last_outcome == :error -> "failed transiently"
-      Map.get(signals, :outstanding_work?, false) -> "ended with work outstanding"
-      Map.get(signals, :unfilled_artifact?, false) -> "left its artifact as an unfilled template"
-      true -> nil
+      Map.has_key?(signals, :branch_drift) ->
+        nil
+
+      st.last_outcome == :error and background_cmds(st) != nil ->
+        "ended waiting on a backgrounded command"
+
+      st.last_outcome != :error and not Map.get(signals, :unfilled_artifact?, false) ->
+        nil
+
+      PhaseResult.transient?(st.last_result) and st.last_outcome == :error ->
+        "failed transiently"
+
+      Map.get(signals, :outstanding_work?, false) ->
+        "ended with work outstanding"
+
+      Map.get(signals, :unfilled_artifact?, false) ->
+        "left its artifact as an unfilled template"
+
+      true ->
+        nil
     end
   end
 
-  defp run_once(pid, feature, phase, step, timeout, span_meta, operator_answers) do
+  # The stranded-command list, or `nil` when the attempt did not strand any.
+  defp background_cmds(st) do
+    case Map.get(st.last_signals || %{}, :backgrounded) do
+      [_ | _] = cmds -> cmds
+      _ -> nil
+    end
+  end
+
+  defp run_once(pid, feature, phase, step, timeout, span_meta, operator_answers, background_retry) do
     meta =
       %{feature_id: feature.id, phase: phase, model: Config.model_for(phase), step: step}
       |> Map.merge(span_meta)
@@ -112,6 +163,11 @@ defmodule Autonomous.PhaseStep do
       signal_data =
         if operator_answers,
           do: Map.put(signal_data, :operator_answers, operator_answers),
+          else: signal_data
+
+      signal_data =
+        if background_retry,
+          do: Map.put(signal_data, :background_retry, background_retry),
           else: signal_data
 
       {:ok, agent} = call(pid, "phase.run", signal_data, PhaseSession.call_timeout(timeout))

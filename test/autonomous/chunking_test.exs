@@ -159,6 +159,105 @@ defmodule Autonomous.ChunkingTest do
     end
   end
 
+  describe "row B — backgrounded command (032, US1)" do
+    defp dispatched_first do
+      state = Chunking.start(five_phase_plan())
+      {:dispatch, {:task_phase, tp1}, state1} = Chunking.next(state, %{})
+      {tp1, state1}
+    end
+
+    test "first backgrounding re-dispatches the same scope with the flag set" do
+      {tp1, state1} = dispatched_first()
+      refute state1.background_retried?
+
+      assert {:dispatch, {:task_phase, ^tp1}, state2} =
+               Chunking.next(state1, %{outcome: :ok, backgrounded: ["mix test"]})
+
+      assert state2.background_retried?
+      assert state2.attempt == state1.attempt + 1
+      assert state2.sessions_used == state1.sessions_used + 1
+      assert state2.cursor == state1.cursor
+    end
+
+    test "a second backgrounding fails with the command and the scope's ref" do
+      {tp1, state1} = dispatched_first()
+
+      {:dispatch, _scope, state2} =
+        Chunking.next(state1, %{outcome: :ok, backgrounded: ["mix test"]})
+
+      assert {:failed, {:backgrounded_command, %TaskPhaseRef{} = ref, ["mix test"]}, _} =
+               Chunking.next(state2, %{outcome: :ok, backgrounded: ["mix test"]})
+
+      assert ref.ordinal == tp1.ordinal
+    end
+
+    test "ceiling reached fails as :session_ceiling, not as a retry" do
+      state = %ChunkState{Chunking.start(five_phase_plan()) | ceiling: 1}
+      {:dispatch, _scope, state1} = Chunking.next(state, %{})
+
+      assert {:failed, {:session_ceiling, 1}, _} =
+               Chunking.next(state1, %{outcome: :ok, backgrounded: ["mix test"]})
+    end
+
+    test "ahead of outcome rows: an :exhausted or :ok session with progress still retries" do
+      {tp1, state1} = dispatched_first()
+
+      for outcome <- [:ok, :exhausted] do
+        assert {:dispatch, {:task_phase, ^tp1}, %{background_retried?: true}} =
+                 Chunking.next(state1, %{outcome: outcome, progress?: true, backgrounded: ["x"]})
+      end
+    end
+
+    test "the flag resets when the cursor advances" do
+      {tp1, state1} = dispatched_first()
+      {:dispatch, _scope, state2} = Chunking.next(state1, %{outcome: :ok, backgrounded: ["x"]})
+      assert state2.background_retried?
+
+      plan_after = complete_task_phase(five_phase_plan(), tp1.ordinal)
+
+      assert {:dispatch, {:task_phase, tp2}, state3} =
+               Chunking.next(state2, %{outcome: :ok, plan: plan_after})
+
+      assert tp2.ordinal == tp1.ordinal + 1
+      refute state3.background_retried?
+    end
+
+    test "the flag resets when the sweep starts" do
+      plan = make_plan([make_task_phase(1, 2)])
+      state = Chunking.start(plan)
+      {:dispatch, {:task_phase, _}, state1} = Chunking.next(state, %{})
+      {:dispatch, _, state2} = Chunking.next(state1, %{outcome: :ok, backgrounded: ["x"]})
+      assert state2.background_retried?
+
+      # phase finished, one task still unchecked → sweep dispatched fresh
+      leftover = %{
+        plan
+        | task_phases: [
+            %{hd(plan.task_phases) | tasks: [make_task("T101", true), make_task("T102", false)]}
+          ]
+      }
+
+      assert {:dispatch, {:sweep, _}, state3} =
+               Chunking.next(state2, %{outcome: :ok, plan: leftover})
+
+      refute state3.background_retried?
+    end
+
+    test "an empty backgrounded list is ignored" do
+      {_tp1, state1} = dispatched_first()
+
+      assert {:dispatch, _, %{background_retried?: false}} =
+               Chunking.next(state1, %{outcome: :error, transient?: true, backgrounded: []})
+    end
+
+    test "failure_sentence/1 names the task-phase and the command" do
+      ref = %TaskPhaseRef{ordinal: 2, number: "2", title: "Core"}
+      s = Chunking.failure_sentence({:backgrounded_command, ref, ["npm run e2e", "other"]})
+      assert s =~ ~s(task-phase 2 "Core")
+      assert s =~ "npm run e2e"
+    end
+  end
+
   # ---- rows 3-5 — exhaustion ----------------------------------------------------
 
   describe "rows 3/5 — exhaustion continuation" do
@@ -371,7 +470,8 @@ defmodule Autonomous.ChunkingTest do
       plan = complete_task_phase(state1.plan, tp1.ordinal)
 
       assert Chunking.next(state1, %{outcome: :ok, plan: plan, drain?: true}) ==
-               {:halted, :superseded, %{state1 | plan: plan, cursor: 2, attempt: 1, no_progress: 0}}
+               {:halted, :superseded,
+                %{state1 | plan: plan, cursor: 2, attempt: 1, no_progress: 0}}
     end
 
     test "does not fire mid-scope (an exhaustion continuation ignores it)" do

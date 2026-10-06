@@ -52,8 +52,11 @@ defmodule Autonomous.MixProject do
        github: "agentjido/jido_harness",
        ref: "ae3751d7d0464a3097cb119ffbac98ccbedf607c",
        override: true},
+      # Fork of agentjido/jido_claude @ 51f8b6e plus one commit: `:settings` added to
+      # the adapter's @option_keys so `--settings` reaches the CLI (feature 032
+      # T029). Back to upstream once it carries the key.
       {:jido_claude,
-       github: "agentjido/jido_claude", ref: "51f8b6e30cbf3839533d307399e12a136baf734f"},
+       github: "rzcastilho/jido_claude", ref: "1b5d54a4222eab1e234d004133e67eca93120836"},
       {:stream_data, "~> 1.0", only: [:dev, :test]},
       # Control-plane console (008): Phoenix LiveView on Bandit. phoenix_pubsub
       # is already present transitively via jido_signal — promoted to a direct

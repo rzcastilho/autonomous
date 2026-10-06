@@ -77,6 +77,7 @@ defmodule Autonomous.Pipeline do
           optional(:missing_artifact) => String.t(),
           optional(:unfilled_artifact?) => boolean(),
           optional(:outstanding_work?) => boolean(),
+          optional(:backgrounded) => [String.t()],
           optional(:branch_drift) => Autonomous.BranchGuard.drift()
         }
 
@@ -137,6 +138,14 @@ defmodule Autonomous.Pipeline do
   # landed on the wrong branch, so the phase fails by naming the drift.
   def next(phase, :error, %{branch_drift: d}) when phase in @ordered do
     {:failed, {:branch_drift, phase, d}}
+  end
+
+  # Background-wait gate (032, US1) — ahead of the plain incomplete-session
+  # clause, which it also sets `outstanding_work?: true` alongside. A session that
+  # ended its turn while a command the CLI had moved to the background was still
+  # running names the command instead of the generic "incomplete session".
+  def next(phase, :error, %{backgrounded: [_ | _] = cmds}) when phase in @ordered do
+    {:failed, {:backgrounded_command, phase, cmds}}
   end
 
   # Incomplete-session gate — ahead of the generic error clause so the reason

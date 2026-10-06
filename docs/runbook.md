@@ -183,7 +183,12 @@ mise exec -- mix run --no-start -e \
 Spec Kit skills under `.claude/skills/`. `TargetPack.install` adds
 `.claude/settings.json` (least-privilege — but it **must allow `Bash`**, because
 the Spec Kit phase scripts run under Bash) and the `scope_guard.py` PreToolUse
-hook.
+hook. If the target already has a `.claude/settings.json`, install merges
+it: the pack's `env` shell timeouts (feature 032) are added only where the
+target has no value of its own, and every other key is replaced by the pack's.
+A `settings.json` that is not a JSON object returns
+`{:error, {:invalid_settings, ".claude/settings.json"}}` and writes nothing —
+fix or remove the file, then re-run.
 
 ### 2. Write a real constitution
 
@@ -291,8 +296,9 @@ iex> Autonomous.run(containment_profile: :permissive)
 {:error, {:preflight, [{:pack_outdated, "/path/to/target", "re-run TargetPack.install/2 and commit"}]}}
 ```
 
-Fix by re-running `TargetPack.install/2` against the target and committing
-the result (`git add .claude && git commit`), then re-run.
+(Pack contract 4, feature 032, adds the `env` shell timeouts; a contract 3 pack
+is refused the same way.) Fix by re-running `TargetPack.install/2` against the
+target and committing the result (`git add .claude && git commit`), then re-run.
 
 **The profile never renegotiates.** `resume/2`, `continue_run/1`, and
 `resume_run/1` all read the profile from the recorded run; an explicit
@@ -1320,6 +1326,30 @@ export AUTONOMOUS_PLAN_STACK="Python 3 (standard library only: argparse, unittes
 
 Read the feature's `plan` transcript (`transcript/1`, or `/runs/:run_id` in the
 console) to see exactly what plan said.
+
+---
+
+## Implement sweeps stall after a command moves to the background (032)
+
+**Symptom.** An implement chunk or sweep ends "successfully" with tasks
+unfinished, or the feature fails with
+`<where> ended waiting on backgrounded command: <cmd>`.
+
+**Cause.** The CLI caps a foreground Bash call (built-in 10 min) and moves a
+longer command to the background. A headless session that then waits ends its
+turn, which ends the session. The orchestrator now detects a backgrounded
+command that was never read back, retries the phase once with a corrective
+note, and then fails with `{:backgrounded_command, where, commands}`.
+
+**Fix.**
+
+1. Read the named command in the transcript. If it is a long verification gate,
+   check the session's shell timeouts were derived from its deadline
+   (`ShellTimeouts`, max = min(45, deadline − 5) min).
+2. Upgrade the target's enforcement pack to contract 4 (adds `env` shell
+   timeouts) and **commit** it: `Autonomous.TargetPack.install(repo)`, then
+   `git add .claude && git commit`. A `permissive` run refuses a contract 3 pack.
+3. `Autonomous.resume/2` the failed feature.
 
 ---
 

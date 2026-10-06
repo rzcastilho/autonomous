@@ -16,7 +16,7 @@ defmodule Autonomous.PhaseRequest do
   """
 
   alias Jido.Harness.RunRequest
-  alias Autonomous.{Config, Containment, Feature, Layout, Prompts, Worktree}
+  alias Autonomous.{Config, Containment, Feature, Layout, Prompts, ShellTimeouts, Worktree}
   alias Autonomous.TaskPlan.TaskPhase
 
   @slash %{
@@ -39,12 +39,14 @@ defmodule Autonomous.PhaseRequest do
   # into a subagent and let the model end its turn "waiting on results" —
   # headless, ending the turn ends the session and the subagent dies with it
   # (the incomplete-session gate then fails the phase). `ScheduleWakeup` is the
-  # interactive `/loop` scheduler, meaningless in a one-shot session.
-  @headless_disallowed ~w(Agent Task ScheduleWakeup)
+  # interactive `/loop` scheduler, meaningless in a one-shot session. `Monitor`
+  # (032) is the background watcher a model reaches for after a command is moved
+  # to the background — the exact stall shape the headless session cannot survive.
+  @headless_disallowed ~w(Agent Task ScheduleWakeup Monitor)
 
   # Full tool set under `permissive` (030, FR-005–FR-007) — `WebFetch`/`WebSearch`
   # join the write/Bash set; the FR-008 exclusions (`Agent`/`Task`/`ScheduleWakeup`)
-  # are the only thing still disallowed.
+  # (and `Monitor`, 032) are the only thing still disallowed.
   @permissive_allowed_tools ~w(Read Write Edit MultiEdit NotebookEdit Bash Grep Glob WebFetch WebSearch)
 
   @doc """
@@ -63,8 +65,8 @@ defmodule Autonomous.PhaseRequest do
     * `:scope` — a `ChunkScope.t()` (015), honoured **only** at `phase ==
       :implement`: appends a task-phase or sweep scoping block to the bare
       `/speckit.implement` prompt (contracts/chunk_session.md §1). `nil`/absent,
-      `:whole_list`, or any non-`:implement` phase leaves the prompt
-      byte-identical to today (SC-005).
+      or any non-`:implement` phase leaves the prompt byte-identical to
+      today (SC-005); `:whole_list` and the scoped blocks gain the 032 headless rule.
     * `:clarify_answers` — (029) the rendered "Operator answers" block for a
       clarify re-run, appended after `:resume_prompt`'s section so both may
       appear (contracts/needs-human-format.md Answer-folding instruction).
@@ -74,6 +76,13 @@ defmodule Autonomous.PhaseRequest do
       env markers now carried in `metadata["claude"][:env]`. Under
       `"permissive"` every phase gets `:bypass_permissions` and the full tool
       set (contracts/run-options.md).
+    * `:background_retry` — (032) list of command strings a previous session left
+      backgrounded. A non-empty list appends a corrective "Retry note" as the
+      **last** prompt block; `nil`/`[]` leaves the prompt byte-identical
+      (contracts/prompt-and-tools.md §2).
+    * `:deadline_ms` — (032) the wall-clock deadline `PhaseSession.reduce/2` will
+      enforce for this session; the Bash timeouts are derived from it
+      (`ShellTimeouts.for_deadline/1`). Defaults to `Config.phase_timeout/0`.
   """
   @spec build(Feature.t(), atom(), keyword()) :: RunRequest.t()
   def build(%Feature{} = feature, phase, opts \\ []) when is_atom(phase) do
@@ -86,10 +95,11 @@ defmodule Autonomous.PhaseRequest do
         |> prompt(phase, layout)
         |> apply_scope(phase, Keyword.get(opts, :scope))
         |> append_resume_prompt(Keyword.get(opts, :resume_prompt))
-        |> append_clarify_answers(Keyword.get(opts, :clarify_answers)),
+        |> append_clarify_answers(Keyword.get(opts, :clarify_answers))
+        |> append_background_retry(Keyword.get(opts, :background_retry)),
       cwd: Keyword.get(opts, :cwd, Config.repo()),
       model: Config.model_for(phase),
-      metadata: %{"claude" => %{env: Containment.session_env(containment)}}
+      metadata: session_metadata(containment, opts)
     }
     |> maybe_put(:max_turns, max_turns(phase))
     |> maybe_put(:session_id, Keyword.get(opts, :session_id))
@@ -110,6 +120,7 @@ defmodule Autonomous.PhaseRequest do
       after a short framing header.
     * `:containment` — (030) `"strict"` (default) or `"permissive"`, same
       effect as `build/3`.
+    * `:deadline_ms` — (032) same as `build/3`.
 
   No `session_id` (fresh session, like every phase).
   """
@@ -122,10 +133,26 @@ defmodule Autonomous.PhaseRequest do
       prompt: remediation_prompt(feature, layout, Keyword.get(opts, :prompt)),
       cwd: Keyword.get(opts, :cwd, Config.repo()),
       model: model,
-      metadata: %{"claude" => %{env: Containment.session_env(containment)}}
+      metadata: session_metadata(containment, opts)
     }
     |> Map.merge(remediation_permissions(containment))
     |> RunRequest.new!()
+  end
+
+  # 032: the Bash timeouts travel on two channels — the launch env and an inline
+  # `--settings` JSON — so a target's own settings cannot silently drop them
+  # (contracts/session-timeouts.md §2–§3). `AUTONOMOUS_*` markers are unchanged.
+  defp session_metadata(containment, opts) do
+    timeouts =
+      (Keyword.get(opts, :deadline_ms) || Config.phase_timeout())
+      |> ShellTimeouts.for_deadline()
+
+    %{
+      "claude" => %{
+        env: Map.merge(Containment.session_env(containment), timeouts),
+        settings: Jason.encode!(%{"env" => timeouts})
+      }
+    }
   end
 
   defp remediation_prompt(feature, layout, prompt) do
@@ -182,7 +209,7 @@ defmodule Autonomous.PhaseRequest do
   defp prompt(_feature, :implement, _layout), do: @slash.implement
 
   defp prompt(feature, :converge, _layout),
-    do: Prompts.load("converge") <> "\n\n" <> feature_tag(feature)
+    do: Prompts.load("converge") <> headless_rule() <> "\n\n" <> feature_tag(feature)
 
   defp prompt(feature, :describe, layout) do
     Prompts.load("describe") <>
@@ -200,9 +227,12 @@ defmodule Autonomous.PhaseRequest do
   # the built prompt stays byte-identical to today's bare `/speckit.implement`
   # (SC-005).
   defp apply_scope(prompt, :implement, {:task_phase, %TaskPhase{} = tp}),
-    do: prompt <> task_phase_block(tp)
+    do: prompt <> task_phase_block(tp) <> headless_rule()
 
-  defp apply_scope(prompt, :implement, {:sweep, tasks}), do: prompt <> sweep_block(tasks)
+  defp apply_scope(prompt, :implement, {:sweep, tasks}),
+    do: prompt <> sweep_block(tasks) <> headless_rule()
+
+  defp apply_scope(prompt, :implement, :whole_list), do: prompt <> headless_rule()
   defp apply_scope(prompt, _phase, _scope), do: prompt
 
   # The "[X] immediately, do not batch" clause is load-bearing, not style:
@@ -234,6 +264,10 @@ defmodule Autonomous.PhaseRequest do
       "Completing exactly these tasks is a successful outcome for this session."
   end
 
+  # 032: versioned headless rule (contracts/prompt-and-tools.md §1), appended only
+  # to the implement scopes and converge — every other prompt stays byte-identical.
+  defp headless_rule, do: "\n\n---\n" <> String.trim_trailing(Prompts.load("headless_rule"))
+
   # Blank (nil/""/whitespace-only) guidance leaves the prompt byte-identical to
   # the no-opt build — only a non-blank string gets the trailing section.
   defp append_resume_prompt(prompt, resume_prompt) do
@@ -254,6 +288,23 @@ defmodule Autonomous.PhaseRequest do
   # appear together on a resumed feature's re-run.
   defp append_clarify_answers(prompt, answers) do
     if blank?(answers), do: prompt, else: prompt <> "\n\n" <> answers
+  end
+
+  # 032: only a backgrounding retry passes this, so every other prompt stays
+  # byte-identical. Last block by design — it must be the final thing the model
+  # reads. Commands are truncated so a pathological one cannot bloat the prompt.
+  @background_retry_cmd_max 200
+
+  defp append_background_retry(prompt, cmds) when cmds in [nil, []], do: prompt
+
+  defp append_background_retry(prompt, cmds) when is_list(cmds) do
+    items = Enum.map_join(cmds, "\n", &("- " <> String.slice(&1, 0, @background_retry_cmd_max)))
+
+    prompt <>
+      "\n\n---\nRetry note: the previous session for this step ended while waiting on a\n" <>
+      "backgrounded command, so its result was never seen. Run each of these in the\n" <>
+      "foreground with an explicit long `timeout`, and do not end your turn until it\n" <>
+      "returns:\n" <> items
   end
 
   # Worktree-relative (resolves analyze finding I1): a phase runs with
