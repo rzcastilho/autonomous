@@ -181,10 +181,10 @@ binary and isolated in `Autonomous.BackgroundMarker`.
   max = min(45 min, d − 5 min), default = min(30 min, max); deadlines ≤ 10 min
   keep the built-ins. Delivered on the launch env and as `--settings` JSON.
 - **Precedence.** `--settings` is meant to win over the project's
-  `.claude/settings.json` `env`; the launch env does not. **Patched locally:** upstream `jido_claude` (checked `main` `be65644`)
-  drops `:settings` in `normalize_map_keys/1` (not in `@option_keys`), so we
-  vendor it at `vendor/jido_claude` with the key added (`PATCHES.md`). Drop the
-  vendor copy once upstream carries it.
+  `.claude/settings.json` `env`; the launch env does not. **Patched via fork:** upstream `jido_claude` (checked `main` `be65644`)
+  drops `:settings` in `normalize_map_keys/1` (not in `@option_keys`), so
+  `mix.exs` pins `rzcastilho/jido_claude` @ `1b5d54a` (upstream `51f8b6e` plus
+  the key). Go back to upstream once it carries it.
 - **`Monitor` tool.** A background watcher; excluded from every headless
   session (`@headless_disallowed`) alongside `Agent`, `Task`, `ScheduleWakeup`.
 
