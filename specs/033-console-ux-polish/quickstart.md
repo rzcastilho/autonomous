@@ -83,3 +83,12 @@ Verified live on a fresh second container instance (port 4001, throwaway target,
 ## Implementation notes — phase 9 (T075)
 
 Fresh console container (port 4001, rebuilt from current tree). Loaded `/ /dag /trigger /escalations /runs /runs/r000001 /transcripts /config` with Playwright: `browser_console_messages` reports 0 errors, 0 warnings per page after navigation. Pre-fix baseline (favicon 404, 2 unused font-preload warnings) no longer appears.
+
+## Implementation notes — T079 walkthrough
+
+Walked on a ledgerlite console at 1440×900 and 390×844; instance was idle (two completed runs, no run in flight). Screenshots: `.playwright-mcp/walk-*.png`.
+
+- Pass: #2 (`:completed` chips, per-status counts), #3 (formatting rendered, mono, no script elements), #4 (all selects/number inputs dark, border `#7a8296`), #8 (`answer_timeout_min`/`max_rounds` only when `interactive_clarify` on), #11 (dirty bar `1 unsaved`, Reset/Apply enabled), #12 (`12.345` refused beside the field, still dirty), #13 (multi-column cards, no ordinal, legend `Done` only, labelled Wave picker), strict-run #1 (no `__given__`, `%{`, quotes, containment key). SC-003: `scrollWidth == 390` on all 8 views, rail shows `MC PC TR ES RU TX CF`.
+- Completed on the throwaway `uitarget` console (:4001) with a seeded in-flight run (4 features, a live named `Coordinator` with a no-op runner — no `claude` call, no spend): #9 gauge `$0.00 + $0.00 / $2000.00` with a separate `breaker armed` chip; #10 single status strip, first row visible, `specify · 1/7`; #5 Start arms to `Supersede r000001 and start` + `drains and supersedes r000001` + Cancel, nothing started; #6 Cancel restores `Start run`, and re-armed then run ended also restores it; #11 Apply toast echoes `LiveConfig.apply(%{budget_usd: 12.34, model_specify: "opus"})`, plus `applies forward-only to r000001 · not saved as default` when a run is in flight; #1 permissive run shows `containment_profile=permissive` once, only in the CONTAINMENT block.
+- Not walked live: #7 (start with no run in flight — would launch a real `claude` session and spend); covered by `start_confirm_test.exs` and `trigger_live_test.exs` only.
+- Observations: budget input initial `value` attr renders `2.0e3` (float formatting) before first edit; `plan_stack` shows an empty value on Run Detail; Wave picker shows `002-improvements` while the source run is 004–007; nav items are 34px tall at 390px.

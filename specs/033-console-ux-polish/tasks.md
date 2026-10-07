@@ -229,7 +229,7 @@ Single OTP app. Web code in `lib/autonomous/web/` (`live/`, `components/`, `comp
 - [X] T076 [P] Update the "Console (Phase 8, feature 020 reconciliation)" paragraph in `CLAUDE.md`: three amended tokens, new guard rules (`G-contrast`, `G-input`, `G-breakpoint`, `G-inspect`), 033 pure view modules.
 - [X] T077 [P] Add a note to `docs/runbook.md` that Trigger Run now confirms supersession of an in-flight run (inline two-step).
 - [X] T078 Contrast sweep (SC-011): confirm no surface uses `--accent` as text and `--text-faint`/`--pending`/`--blocked` render on the intended surfaces; the guard's `G-contrast` is the mechanical check.
-- [ ] T079 Walk `specs/033-console-ux-polish/quickstart.md` end to end at 1440×900 and 390×844 against the audit screenshots in `.playwright-mcp/ui-0*.png`.
+- [X] T079 Walk `specs/033-console-ux-polish/quickstart.md` end to end at 1440×900 and 390×844 against the audit screenshots in `.playwright-mcp/ui-0*.png`.
 - [X] T080 Run `mise exec -- mix compile --warnings-as-errors` and the full `mise exec -- mix test`; the design-contract guard and every web test must pass (SC-009).
 - [X] T081 Confirm strict-run surfaces are byte-identical for containment (030 contract) and the 015 `phase_strip` golden test still passes.
 
