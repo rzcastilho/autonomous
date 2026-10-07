@@ -61,6 +61,10 @@ first attempt's `session_died`: the agent state deep-merges `last_signals`, so a
 stale `session_died` survived a retry that did not die. Fixed with
 `PhaseResult.reset_session_died/2` (same shape as `reset_background/2`).
 
+Re-walked after the fix: attempt 1 died `:start_failed` and the retry was logged;
+the retry ended with the plain error and the terminal reason was
+`{:specify, :error}` (no stale `session_died`); workers empty; spend $0.63.
+
 Restart the container. The copy is re-seeded from the host, and the run
 resumes normally.
 
