@@ -849,6 +849,10 @@ distinguishable from a normal completion. Unlike the pre-018 single manifest
 slot, **every prior run is retained** — see "Run history & detail" below to
 review any of them, not only the most recent.
 
+The console's Trigger Run page confirms supersession (033): when a run is
+in flight for the repository, Start shows an inline two-step confirm naming
+the run it will supersede; nothing starts until the operator confirms.
+
 ### Supersession drains before it supersedes (026)
 
 Superseding a run used to stop only the prior run's `Coordinator` — the

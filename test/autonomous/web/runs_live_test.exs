@@ -48,7 +48,14 @@ defmodule Autonomous.Web.RunsLiveTest do
       feature_ids
       |> Enum.with_index(1)
       |> Enum.map(fn {id, n} ->
-        %{feature_id: id, slug: "f-#{id}", path: "specs/#{id}", number: n, group: :backlog, created_at: nil}
+        %{
+          feature_id: id,
+          slug: "f-#{id}",
+          path: "specs/#{id}",
+          number: n,
+          group: :backlog,
+          created_at: nil
+        }
       end)
 
     {:ok, run_id} =
@@ -78,6 +85,20 @@ defmodule Autonomous.Web.RunsLiveTest do
     assert html =~ "in_flight"
     assert html =~ "001"
     assert html =~ "002"
+  end
+
+  test "feature summary is one dot and count per non-zero status, no per-feature chips (033)", %{
+    conn: conn,
+    repo_id: repo_id
+  } do
+    open(repo_id, ["001", "002", "003"])
+
+    {:ok, view, html} = live(conn, "/runs")
+
+    assert has_element?(view, "[data-status-counts]")
+    assert has_element?(view, ~s([data-status-counts] [data-status-count="pending"]))
+    assert html =~ ~r/data-status-count="pending"[^>]*>.*?3/s
+    refute html =~ "run-feature-chip"
   end
 
   test "empty repository renders an empty state, not an error", %{conn: conn} do
@@ -164,4 +185,20 @@ defmodule Autonomous.Web.RunsLiveTest do
 
   defp restore(key, nil), do: Application.delete_env(:autonomous, key)
   defp restore(key, v), do: Application.put_env(:autonomous, key, v)
+
+  test "the state renders as a status chip with the real atom (033)", %{
+    conn: conn,
+    repo_id: repo_id
+  } do
+    open(repo_id, ["001"], close: :all_done)
+    open(repo_id, ["002"])
+
+    {:ok, _view, html} = live(conn, "/runs")
+
+    assert html =~ ~r/data-status="running"[^>]*data-marker="state"/
+    assert html =~ ~r/data-status="done"[^>]*data-marker="state"/
+    assert html =~ ":in_flight"
+    assert html =~ ":completed"
+    refute html =~ "badge-neutral\" data-marker=\"state"
+  end
 end

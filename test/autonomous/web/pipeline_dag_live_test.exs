@@ -128,8 +128,11 @@ defmodule Autonomous.Web.PipelineDagLiveTest do
     node_002 = extract_node(html, "002")
     assert node_002 =~ "stacks on feature/001-core-ledger"
 
-    for status <- ~w(pending blocked running awaiting_answers escalated halted failed done) do
-      assert html =~ ~s(data-legend-status="#{status}")
+    # 033 FR-030: the legend lists only statuses a node actually has.
+    assert html =~ ~s(data-legend-status="pending")
+
+    for status <- ~w(blocked awaiting_answers escalated halted failed) do
+      refute html =~ ~s(data-legend-status="#{status}")
     end
   end
 
@@ -172,6 +175,7 @@ defmodule Autonomous.Web.PipelineDagLiveTest do
     # Two packages → the wave picker renders, defaulting to the first
     # alphabetical wave (alpha) since there is no matching-segment manifest.
     assert html =~ ~s(data-form="wave-picker")
+    assert html =~ ~s(<label for="wave-picker-select")
     assert html =~ "widget"
     refute html =~ "gadget"
 
@@ -337,8 +341,8 @@ defmodule Autonomous.Web.PipelineDagLiveTest do
     end
   end
 
-  describe "release-order badges (019: every run is sequential, structurally)" do
-    test "every node is numbered with its release position, no cap variant left to compare against",
+  describe "release order (019 sequential; 033 no positional ordinal element)" do
+    test "nodes keep release order in the DOM and carry no ordinal badge or connector",
          %{conn: conn} do
       point_backlog_at(@valid_dir)
 
@@ -356,23 +360,29 @@ defmodule Autonomous.Web.PipelineDagLiveTest do
 
       assert html =~ ~s(data-state="sequential-run")
       assert html =~ "one feature at a time"
+      refute html =~ "dag-release-badge"
+      refute html =~ "data-release-order"
 
-      # The fixture backlog linearizes to 001..007 — one badge per node, no gaps.
+      # One identifier per card: the feature id appears once in its node head.
+      node = extract_node(html, "001")
+      assert length(Regex.scan(~r/class="dag-node-id"/, node)) == 1
+
+      ids = Regex.scan(~r/data-dag-node="(\d+)"/, html) |> Enum.map(&List.last/1) |> Enum.uniq()
+      assert ids == Enum.sort(ids)
+
       for {id, position} <- Enum.with_index(~w(001 002 003 004 005 006 007), 1) do
-        node = extract_node(html, id)
-        assert node =~ ~s(data-release-order="#{position}")
-        assert node =~ ~s(data-chain-position="#{position}")
+        assert extract_node(html, id) =~ ~s(data-chain-position="#{position}")
       end
     end
 
-    test "no live run still renders badges from the static backlog order", %{conn: conn} do
+    test "the legend lists the ad-hoc entry only when an ad-hoc feature exists", %{conn: conn} do
       point_backlog_at(@valid_dir)
       refute Process.whereis(Coordinator)
 
       {:ok, _view, html} = live(conn, "/dag")
 
-      assert html =~ ~s(data-release-order="1")
-      assert html =~ ~s(data-state="sequential-run")
+      refute html =~ ~s(data-legend-origin="ad-hoc")
+      assert html =~ ~s(data-legend-status="pending")
     end
   end
 
@@ -638,7 +648,7 @@ defmodule Autonomous.Web.PipelineDagLiveTest do
 
   defp drawer_elapsed(drawer) do
     [_, value] =
-      Regex.run(~r/ELAPSED<\/div>\s*<div class="drawer-stat-value">(.*?)<\/div>/s, drawer)
+      Regex.run(~r/Elapsed<\/div>\s*<div class="drawer-stat-value">(.*?)<\/div>/s, drawer)
 
     value
   end
@@ -843,7 +853,7 @@ defmodule Autonomous.Web.PipelineDagLiveTest do
     assert html =~ ~s(id="feature-drawer")
     assert html =~ ~s(data-feature-id="099")
     assert html =~ "drawer-phase-timeline"
-    assert html =~ "ELAPSED"
+    assert html =~ "Elapsed"
     assert html =~ "SPEND"
   end
 

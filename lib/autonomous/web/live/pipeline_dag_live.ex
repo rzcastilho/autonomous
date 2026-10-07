@@ -305,7 +305,8 @@ defmodule Autonomous.Web.PipelineDagLive do
             class="dag-wave-picker"
             data-form="wave-picker"
           >
-            <select name="slug" data-package-select>
+            <label for="wave-picker-select" class="dag-wave-label">Wave</label>
+            <select id="wave-picker-select" name="slug" class="console-input" data-package-select>
               <option
                 :for={slug <- @packages}
                 value={slug}
@@ -339,7 +340,7 @@ defmodule Autonomous.Web.PipelineDagLive do
                 </a>
               </dd>
               <dt>state</dt>
-              <dd data-wave-source-state>{inspect(wave_source_run(@wave_source).state)}</dd>
+              <dd data-wave-source-state>{format_value(wave_source_run(@wave_source).state)}</dd>
             </dl>
           </div>
 
@@ -368,13 +369,6 @@ defmodule Autonomous.Web.PipelineDagLive do
             phx-value-id={link.feature.id}
           >
             <div class="dag-node-head">
-              <span
-                class="dag-release-badge"
-                data-release-order={link.position}
-                title="release order — this run runs one feature at a time"
-              >
-                {pad_ordinal(link.position)}
-              </span>
               <span class="dag-node-id">{link.feature.id}</span>
               <.status_pill status={node_status(@chain_view, link.feature.id)} />
             </div>
@@ -386,13 +380,14 @@ defmodule Autonomous.Web.PipelineDagLive do
               chunk={node_chunk(@chain_view, link.feature.id)}
               remediation={node_remediation(@chain_view, link.feature.id)}
             />
+            <.phase_position_label phases={node_phases(@chain_view, link.feature.id)} />
             <div class="dag-node-spend">${format_money(node_spend(@chain_view, link.feature.id))}</div>
           </div>
         </div>
 
         <div class="dag-legend">
           <div
-            :for={status <- statuses()}
+            :for={status <- legend_statuses(@backlog_links, @chain_view, @ad_hoc_links, @view)}
             class="dag-legend-item"
             data-legend-status={status}
           >
@@ -431,6 +426,7 @@ defmodule Autonomous.Web.PipelineDagLive do
               status={node_status(@view, link.feature.id)}
               remediation={node_remediation(@view, link.feature.id)}
             />
+            <.phase_position_label phases={node_phases(@view, link.feature.id)} />
             <div class="dag-node-spend">${format_money(node_spend(@view, link.feature.id))}</div>
           </div>
         </div>
@@ -513,6 +509,18 @@ defmodule Autonomous.Web.PipelineDagLive do
 
   defp wave_source_unavailable_run_id({:unavailable, %{run_id: run_id}}), do: run_id
   defp wave_source_unavailable_run_id(_source), do: nil
+
+  # 033 FR-030: the legend names only the statuses some node currently shows,
+  # in the shared `statuses/0` order.
+  defp legend_statuses(backlog_links, chain_view, ad_hoc_links, view) do
+    present =
+      MapSet.new(
+        Enum.map(backlog_links, &status_class(node_status(chain_view, &1.feature.id))) ++
+          Enum.map(ad_hoc_links, &status_class(node_status(view, &1.feature.id)))
+      )
+
+    Enum.filter(statuses(), &MapSet.member?(present, &1))
+  end
 
   defp node_status(view, id), do: get_in(view.per_feature, [id, :status]) || :pending
   defp node_spend(view, id), do: get_in(view.per_feature, [id, :spend]) || 0.0

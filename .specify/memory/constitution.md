@@ -1,5 +1,18 @@
 <!--
 Sync Impact Report
+Version change: 6.0.1 → 6.0.2
+Bump rationale: PATCH. Feature 033 (operator console UX polish, research R8).
+  Four `docs/design-constitution.md` §II token values move to meet the WCAG AA
+  4.5:1 text/chip-fill floor: `--text-faint` #5a6274→#7a8296, `--pending`
+  #64748b→#94a3b8, `--blocked` #475569→#828ea3, and `--failed` #f43f5e→#f6506a (4.32:1 in a chip fill
+  over `--raised`, caught by the new G-contrast guard). No principle added, removed or
+  relaxed; no MUST changes. Pending/blocked stay desaturated slate.
+Modified principles: none (Principle VII token values only, by reference).
+Templates requiring updates: none.
+Follow-up TODOs: none.
+
+Prior report (6.0.1):
+Sync Impact Report
 Version change: 6.0.0 → 6.0.1
 Bump rationale: PATCH. Clarification only (feature 032, research R10): the
   Principle III permissive bullet now names the background-watcher tool
@@ -918,4 +931,4 @@ deviation already is. Reviews and PRs MUST verify compliance with these
 principles; the constitution and the implementation plan together are the
 runtime guidance for autonomous and human contributors alike.
 
-**Version**: 6.0.1 | **Ratified**: 2026-07-11 | **Last Amended**: 2026-10-05
+**Version**: 6.0.2 | **Ratified**: 2026-07-11 | **Last Amended**: 2026-10-07

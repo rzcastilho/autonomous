@@ -37,7 +37,8 @@ defmodule Autonomous.Web.DesignContractTest do
             "lib/autonomous/web/components/feature_drawer.ex",
             "lib/autonomous/web/components/layouts.ex",
             "lib/autonomous/web/components/layouts/app.html.heex",
-            "lib/autonomous/web/components/layouts/root.html.heex"
+            "lib/autonomous/web/components/layouts/root.html.heex",
+            "lib/autonomous/web/transcript_markup.ex"
           ] ++
             ("lib/autonomous/web/live/*.ex"
              |> then(&Path.wildcard(Path.join(@root, &1)))
@@ -103,11 +104,122 @@ defmodule Autonomous.Web.DesignContractTest do
     test "a prohibited inline style in a view source fires :inline_style_color" do
       violations =
         DesignContract.scan(%{
-          "lib/autonomous/web/live/config_live.ex" =>
-            ~S(  style={"background: #{@c};"}) <> "\n"
+          "lib/autonomous/web/live/config_live.ex" => ~S(  style={"background: #{@c};"}) <> "\n"
         })
 
       assert_fires(violations, :inline_style_color, 1)
+    end
+  end
+
+  describe "033 extensions" do
+    test "the four amended token values are pinned" do
+      colors = Map.new(DesignContract.contract_colors())
+      assert colors["--text-faint"] == "#7a8296"
+      assert colors["--pending"] == "#94a3b8"
+      assert colors["--blocked"] == "#828ea3"
+      assert colors["--failed"] == "#f6506a"
+    end
+
+    test "G-contrast fires on a text token below 4.5:1", %{css: css} do
+      mutated =
+        String.replace(css, "--text-faint: #7a8296;", "--text-faint: #5a6274;", global: false)
+
+      violations = DesignContract.scan(%{"priv/static/assets/console.css" => mutated})
+      assert_fires_rule(violations, :contrast)
+    end
+
+    test "G-contrast fires on a status token below 4.5:1 in its chip fill", %{css: css} do
+      mutated = String.replace(css, "--blocked: #828ea3;", "--blocked: #475569;", global: false)
+      violations = DesignContract.scan(%{"priv/static/assets/console.css" => mutated})
+      assert_fires_rule(violations, :contrast)
+    end
+
+    test "G-contrast does not fire on the real tree", %{base: base} do
+      refute_fires(DesignContract.scan(base), :contrast)
+    end
+
+    test "G-input fires on an unthemed select" do
+      violations =
+        DesignContract.scan(%{
+          "lib/autonomous/web/live/config_live.ex" => ~S(<select name="x"></select>) <> "\n"
+        })
+
+      assert_fires(violations, :input_unthemed, 1)
+    end
+
+    test "G-input fires on an unthemed text input" do
+      violations =
+        DesignContract.scan(%{
+          "lib/autonomous/web/live/config_live.ex" => ~S(<input type="text" name="x" />) <> "\n"
+        })
+
+      assert_fires(violations, :input_unthemed, 1)
+    end
+
+    test "G-input does not fire on a themed control, a checkbox, a range or a hidden input" do
+      violations =
+        DesignContract.scan(%{
+          "lib/autonomous/web/live/config_live.ex" =>
+            ~S(<select name="x" class="console-input"></select>) <>
+              "\n" <>
+              ~S(<input type="checkbox" name="y" />) <>
+              "\n" <>
+              ~S(<input type="range" name="z" />) <>
+              "\n" <> ~S(<input type="hidden" name="h" />) <> "\n"
+        })
+
+      refute_fires(violations, :input_unthemed)
+    end
+
+    test "G-input does not fire on the real tree", %{base: base} do
+      refute_fires(DesignContract.scan(base), :input_unthemed)
+    end
+
+    test "G-inspect fires on inspect/1 inside a ~H interpolation" do
+      source =
+        "defmodule X do\n  def render(assigns) do\n    ~H\"\"\"\n    <p>{inspect(@x)}</p>\n    \"\"\"\n  end\nend\n"
+
+      violations = DesignContract.scan(%{"lib/autonomous/web/live/config_live.ex" => source})
+      assert_fires(violations, :inspect_in_heex, 4)
+    end
+
+    test "G-inspect fires on inspect/1 inside a .heex interpolation" do
+      violations =
+        DesignContract.scan(%{
+          "lib/autonomous/web/components/layouts/app.html.heex" => "<p>\n  {inspect(@x)}\n</p>\n"
+        })
+
+      assert_fires(violations, :inspect_in_heex, 2)
+    end
+
+    test "G-inspect does not fire in an Elixir function body" do
+      source =
+        "defmodule X do\n  def flash(reason), do: \"Failed: \#{inspect(reason)}\"\n\n" <>
+          "  def render(assigns) do\n    ~H\"\"\"\n    <p>{@x}</p>\n    \"\"\"\n  end\n" <>
+          "  defp fmt(r), do: inspect(r)\nend\n"
+
+      violations = DesignContract.scan(%{"lib/autonomous/web/live/config_live.ex" => source})
+      refute_fires(violations, :inspect_in_heex)
+    end
+
+    test "G-inspect does not fire on the real tree", %{base: base} do
+      refute_fires(DesignContract.scan(base), :inspect_in_heex)
+    end
+
+    test "G-breakpoint fires on a breakpoint outside 1120px/760px", %{css: css} do
+      mutated = css <> "\n@media (max-width: 900px) {\n  .foo { margin: 0; }\n}\n"
+      violations = DesignContract.scan(%{"priv/static/assets/console.css" => mutated})
+      assert_fires_rule(violations, :breakpoint)
+    end
+
+    test "G-breakpoint does not fire on 760px", %{css: css} do
+      mutated = css <> "\n@media (max-width: 760px) {\n  .foo { margin: 0; }\n}\n"
+      violations = DesignContract.scan(%{"priv/static/assets/console.css" => mutated})
+      refute_fires(violations, :breakpoint)
+    end
+
+    test "G-breakpoint does not fire on the real tree", %{base: base} do
+      refute_fires(DesignContract.scan(base), :breakpoint)
     end
   end
 
@@ -274,8 +386,7 @@ defmodule Autonomous.Web.DesignContractTest do
     test "status_color_in_elixir fires on a status name adjacent to a color literal" do
       violations =
         DesignContract.scan(%{
-          "lib/autonomous/web/live/config_live.ex" =>
-            "defp escalated_color, do: \"#fbbf24\"\n"
+          "lib/autonomous/web/live/config_live.ex" => "defp escalated_color, do: \"#fbbf24\"\n"
         })
 
       assert_fires_rule(violations, :status_color_in_elixir)

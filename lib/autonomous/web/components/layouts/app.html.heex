@@ -8,7 +8,7 @@
       <div class="console-logo-mark"><div class="console-logo-mark-inner"></div></div>
       <div>
         <div class="console-brand-name">autonomous</div>
-        <div class="console-brand-sub">CONTROL PLANE · v1</div>
+        <div class="console-brand-sub">Control plane · v1</div>
       </div>
     </div>
 
@@ -17,7 +17,10 @@
         :for={{path, label} <- nav}
         href={path}
         class={["nav-item", assigns[:current_path] == path && "nav-active"]}
+        aria-label={label}
+        title={label}
       >
+        <span class="nav-short" aria-hidden="true">{Autonomous.Web.Layouts.short_label(path)}</span>
         <span class="nav-label">{label}</span>
         <.badge
           :if={label == "Escalations" and escalations > 0}
@@ -28,8 +31,21 @@
     </nav>
 
     <div class="console-footer">
-      <div class="console-footer-label">TARGET REPO</div>
-      <div class="console-footer-value">{ctx.repo}</div>
+      <div class="console-footer-label">Target repo</div>
+      <div class="console-footer-value">
+        <span class="console-repo-path" data-repo-path={ctx.repo} title={ctx.repo}>
+          {Path.basename(ctx.repo)}
+        </span>
+        <button
+          type="button"
+          class="btn-link"
+          data-copy={ctx.repo}
+          aria-label="Copy repository path"
+          phx-click={Phoenix.LiveView.JS.dispatch("phx:copy", detail: %{text: ctx.repo})}
+        >
+          copy
+        </button>
+      </div>
       <div class="console-status-row">
         <span class="status-dot" data-health={ctx.cli_auth}></span>
         <span>claude CLI · <span class="console-status-value">{ctx.cli_auth}</span></span>
@@ -86,7 +102,7 @@
       <% end %>
 
       <div class="topbar-clock">
-        <span id="console-clock">{run.clock}</span>
+        <span id="console-clock">{run.clock} UTC</span>
       </div>
     </header>
 

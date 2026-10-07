@@ -45,6 +45,7 @@ defmodule Autonomous.Web do
     quote do
       import Phoenix.Component
       import Autonomous.Web.CoreComponents
+      import Autonomous.Web.RunSettingsView, only: [format_value: 1]
       import Autonomous.Web.FeatureDrawerComponent
     end
   end

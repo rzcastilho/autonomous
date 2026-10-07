@@ -5,3 +5,7 @@ let liveSocket = new LiveView.LiveSocket("/live", Phoenix.Socket, {
 
 liveSocket.connect();
 window.liveSocket = liveSocket;
+
+window.addEventListener("phx:copy", (e) => {
+  if (navigator.clipboard) navigator.clipboard.writeText(e.detail.text);
+});

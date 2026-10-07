@@ -55,6 +55,13 @@ defmodule Autonomous.Web.LayoutTest do
     {repo_id, run_id}
   end
 
+  test "root layout ships an inline icon and preloads no font", %{conn: conn} do
+    html = conn |> get("/") |> html_response(200)
+
+    assert html =~ ~s(<link rel="icon" href="data:,")
+    refute html =~ ~s(rel="preload")
+  end
+
   test "nav renders all six items with the six routes", %{conn: conn} do
     {:ok, _view, html} = live(conn, "/")
 
@@ -62,6 +69,84 @@ defmodule Autonomous.Web.LayoutTest do
       assert html =~ label
       assert html =~ ~s(href="#{path}")
     end
+  end
+
+  test "each nav item carries a short label, and aria-label/title equal the full label", %{
+    conn: conn
+  } do
+    {:ok, _view, html} = live(conn, "/")
+    [nav_section] = Regex.run(~r/<nav.*?<\/nav>/s, html)
+
+    shorts =
+      Enum.map(
+        Autonomous.Web.Layouts.nav_items(),
+        &Autonomous.Web.Layouts.short_label(elem(&1, 0))
+      )
+
+    assert shorts == ~w(MC PC TR ES RU TX CF)
+
+    for {path, label} <- Autonomous.Web.Layouts.nav_items() do
+      [item] = Regex.run(~r/<a href="#{Regex.escape(path)}"[^>]*>/s, nav_section)
+      assert item =~ ~s(aria-label="#{label}")
+      assert item =~ ~s(title="#{label}")
+      assert nav_section =~ ~s(>#{Autonomous.Web.Layouts.short_label(path)}</span>)
+    end
+
+    assert nav_section =~ "Pipeline Chain"
+    refute nav_section =~ "Pipeline DAG"
+  end
+
+  test "the active nav item keeps nav-active", %{conn: conn} do
+    {:ok, _view, html} = live(conn, "/runs")
+    [active] = Regex.run(~r/<a href="\/runs"[^>]*>/s, html)
+    assert active =~ "nav-active"
+  end
+
+  test "nav labels equal the page titles", %{conn: conn} do
+    titles = %{
+      "/" => "Mission Control",
+      "/dag" => "Pipeline Chain",
+      "/trigger" => "Trigger Run",
+      "/escalations" => "Escalations",
+      "/runs" => "Runs",
+      "/transcripts" => "Transcripts",
+      "/config" => "Configuration"
+    }
+
+    for {path, label} <- Autonomous.Web.Layouts.nav_items() do
+      assert titles[path] == label
+    end
+
+    _ = conn
+  end
+
+  test "the clock reads HH:MM:SS UTC", %{conn: conn} do
+    {:ok, _view, html} = live(conn, "/")
+
+    [clock] =
+      Regex.run(~r/<span id="console-clock">(.*?)<\/span>/s, html, capture: :all_but_first)
+
+    assert clock =~ ~r/^\d{2}:\d{2}:\d{2} UTC$/
+  end
+
+  test "the gauge shows band and amounts but no armed/tripped word", %{conn: conn} do
+    {:ok, pid} =
+      Coordinator.start_link(
+        name: Coordinator,
+        features: [feat("001")],
+        runner: fn _feature, _notify -> :ok end,
+        owner: self()
+      )
+
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    {:ok, _view, html} = live(conn, "/")
+    [gauge] = Regex.run(~r/<div[^>]*class="cost-gauge".*?<\/span>/s, html)
+
+    assert gauge =~ ~r/data-band="(safe|warning|tripped)"/
+    assert gauge =~ ~r/\$\d+\.\d{2} \+ \$\d+\.\d{2} \/ \$\d+\.\d{2}/
+    refute gauge =~ "armed"
+    refute gauge =~ "(tripped"
   end
 
   test "Escalations badge is hidden when no feature is escalated/halted/failed", %{conn: conn} do
@@ -268,5 +353,19 @@ defmodule Autonomous.Web.LayoutTest do
 
     assert mc_html =~ ~s(data-state="finished")
     assert esc_html =~ swatch
+  end
+
+  # ---- 033 US6: sidebar repository path ------------------------------------
+
+  test "sidebar shows the repository basename with the full path in data and title", %{conn: conn} do
+    {:ok, _view, html} = live(conn, "/config")
+
+    repo = Config.repo()
+    base = Path.basename(repo)
+
+    assert html =~ ~s(data-repo-path="#{repo}")
+    assert html =~ ~s(title="#{repo}")
+    assert html =~ ~r/data-repo-path="[^"]*"[^>]*>\s*#{Regex.escape(base)}\s*</
+    assert html =~ ~s(data-copy="#{repo}")
   end
 end

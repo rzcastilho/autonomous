@@ -46,7 +46,9 @@ Dark, near-black, low-chroma canvas. A single violet accent. Color carries **mea
 | `--text` | `#e6e9f0` | Primary |
 | `--text-secondary` | `#c3c9d6` | Values, body |
 | `--text-muted` | `#8b93a7` | Descriptions, secondary labels |
-| `--text-faint` | `#5a6274` | Mono metadata, uppercase eyebrows |
+| `--text-faint` | `#7a8296` | Mono metadata, uppercase eyebrows |
+
+> **Amendment (constitution 6.0.2, feature 033, research R8):** `--text-faint`, `--pending`, `--blocked` (`#5a6274`→`#7a8296`, `#64748b`→`#94a3b8`, `#475569`→`#828ea3`), and `--failed` (`#f43f5e`→`#f6506a`, found by the G-contrast guard: 4.32:1 in a chip fill over `--raised`) to meet the WCAG AA 4.5:1 floor on the surfaces and chip fills they render on. `--pending`/`--blocked` stay desaturated slate; no new hue.
 
 ### Accent — violet, used sparingly
 
@@ -66,9 +68,9 @@ Dark, near-black, low-chroma canvas. A single violet accent. Color carries **mea
 | `running` | `#38bdf8` |
 | `escalated` | `#fbbf24` |
 | `halted` | `#fb7185` |
-| `failed` | `#f43f5e` |
-| `pending` | `#64748b` |
-| `blocked` | `#475569` |
+| `failed` | `#f6506a` |
+| `pending` | `#94a3b8` |
+| `blocked` | `#828ea3` |
 | `awaiting` | `#fb923c` |
 
 **Rules**
@@ -84,11 +86,11 @@ Dark, near-black, low-chroma canvas. A single violet accent. Color carries **mea
 :root {
   --bg:#0b0d12; --panel:#0e1016; --card:#12151d; --raised:#161a23;
   --hairline:#14181f; --border-subtle:#1c212c; --border:#232936; --border-strong:#2a3142;
-  --text:#e6e9f0; --text-secondary:#c3c9d6; --text-muted:#8b93a7; --text-faint:#5a6274;
+  --text:#e6e9f0; --text-secondary:#c3c9d6; --text-muted:#8b93a7; --text-faint:#7a8296;
   --accent:#7c5cff; --accent-light:#a78bfa; --accent-hover:#c4b5fd;
   --accent-deep:#5a3fe0; --accent-shadow:#2a2350;
   --done:#34d399; --running:#38bdf8; --escalated:#fbbf24;
-  --halted:#fb7185; --failed:#f43f5e; --pending:#64748b; --blocked:#475569;
+  --halted:#fb7185; --failed:#f6506a; --pending:#94a3b8; --blocked:#828ea3;
   --awaiting:#fb923c;
 }
 ```

@@ -17,6 +17,7 @@ defmodule Autonomous.Web.RunsLive do
   use Autonomous.Web, :live_view
 
   alias Autonomous.{ConsoleProjection, PublishOutcome}
+  alias Autonomous.Web.RunStateView
 
   @outcome_options [:all_done, :escalated, :halted, :failed, :mixed]
 
@@ -103,7 +104,7 @@ defmodule Autonomous.Web.RunsLive do
       <form id="runs-filters-form" phx-change="filter" class="runs-filters" data-form="filters">
         <label class="field-label-inline">
           Outcome
-          <select name="outcome" class="resume-select" data-field="outcome">
+          <select name="outcome" class="console-input" data-field="outcome">
             <option value="">Any</option>
             <option :for={o <- @outcome_options} value={o} selected={o == @filters.outcome}>
               {o}
@@ -116,7 +117,7 @@ defmodule Autonomous.Web.RunsLive do
             type="text"
             name="feature"
             value={@filters.feature || ""}
-            class="resume-select"
+            class="console-input"
             placeholder="feature id"
             phx-debounce="300"
             data-field="feature"
@@ -154,7 +155,7 @@ defmodule Autonomous.Web.RunsLive do
             <%= if damaged?(run) do %>
               <td>{run.run_id}</td>
               <td colspan="6" class="field-error" data-cell="damaged">
-                Damaged record ({inspect(run.reason)})
+                Damaged record ({format_value(run.reason)})
               </td>
             <% else %>
               <td>
@@ -166,21 +167,28 @@ defmodule Autonomous.Web.RunsLive do
                   superseded by {run.superseded_by}
                 </span>
               </td>
-              <td>
-                <span class={"badge #{if run.state == :parked, do: "badge-warn", else: "badge-neutral"}"} data-marker="state">
-                  {run.state}
+              <td class="cell-status">
+                <span class="status-chip" data-status={RunStateView.status(run.state)} data-marker="state">
+                  {RunStateView.label(run.state)}
                 </span>
                 <span :if={run.state == :parked} class="run-context-chip" data-marker="stopped-by">
                   stopped at {run.stopped_by} ({describe_reason(run.stopped_reason)})
                 </span>
               </td>
-              <td>{run.outcome || "—"}</td>
-              <td>{format_datetime(run.started_at)}</td>
-              <td>{format_elapsed(run.duration_ms)}</td>
-              <td>${format_money(run.spend_usd)}</td>
-              <td>
-                <span :for={{id, status} <- run.feature_statuses} class="run-feature-chip">
-                  {id} <.status_pill status={status} />
+              <td class="cell-progress">{run.outcome || "—"}</td>
+              <td class="cell-secondary">{format_datetime(run.started_at)}</td>
+              <td class="cell-secondary">{format_elapsed(run.duration_ms)}</td>
+              <td class="cell-spend">${format_money(run.spend_usd)}</td>
+              <td class="cell-secondary">
+                <span class="run-status-counts" data-status-counts>
+                  <span
+                    :for={{name, count} <- RunStateView.status_counts(run.feature_statuses)}
+                    class="status-count"
+                    data-status-count={name}
+                  >
+                    <span class="status-dot status-count-dot" data-status={name}></span>
+                    <span class="status-count-n">{count}</span>
+                  </span>
                 </span>
               </td>
             <% end %>

@@ -153,8 +153,8 @@ defmodule Autonomous.Web.ReconcileTest do
     assert Ledger.breaker_tripped?()
 
     {:ok, view, html} = live(build_conn(), "/")
-    assert html =~ ~s(data-tripped)
-    assert html =~ "(tripped)"
+    assert html =~ ~s(data-band="tripped")
+    assert html =~ "breaker tripped"
 
     # The console never flips an in-flight feature's displayed status on its
     # own account — only an explicit notify (the runner finishing its phase

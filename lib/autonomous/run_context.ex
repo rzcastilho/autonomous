@@ -61,6 +61,10 @@ defmodule Autonomous.RunContext do
     :containment_profile
   ]
 
+  @doc "The recorded setting keys, in capture order — the console's allowlist (033)."
+  @spec keys() :: [atom()]
+  def keys, do: @keys
+
   @doc "Resolves each field from `opts`, falling back to live `Config` — the capture boundary."
   @spec capture(keyword()) :: t()
   def capture(opts) do

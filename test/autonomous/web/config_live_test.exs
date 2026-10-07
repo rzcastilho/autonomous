@@ -2,12 +2,12 @@ defmodule Autonomous.Web.ConfigLiveTest do
   # Mutates global app env (:models, :max_concurrency, :pr_*) and the
   # app-supervised default-named Ledger's budget — must not run concurrently
   # with another test claiming those globals.
-  use ExUnit.Case, async: false
+  use Autonomous.StoreCase, async: false
 
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
 
-  alias Autonomous.{Config, Coordinator, Feature, Ledger}
+  alias Autonomous.{Config, Coordinator, Feature, Ledger, RepoIdentity}
 
   @endpoint Autonomous.Web.Endpoint
 
@@ -51,6 +51,13 @@ defmodule Autonomous.Web.ConfigLiveTest do
     Map.merge(base, overrides)
   end
 
+  test "budget input renders plain decimals, never scientific notation", %{conn: conn} do
+    Ledger.set_budget(2000.0)
+    {:ok, _view, html} = live(conn, "/config")
+
+    assert html =~ ~s(value="2000.00")
+  end
+
   test "renders current model routing/budget/PR settings", %{conn: conn} do
     {:ok, _view, html} = live(conn, "/config")
 
@@ -90,7 +97,7 @@ defmodule Autonomous.Web.ConfigLiveTest do
 
     assert html =~ "Configuration applied"
     assert Ledger.snapshot().budget == 42.5
-    assert html =~ ~s(value="42.5")
+    assert html =~ ~s(value="42.50")
   end
 
   test "invalid input surfaces a field error and applies nothing", %{conn: conn} do
@@ -146,5 +153,120 @@ defmodule Autonomous.Web.ConfigLiveTest do
     {:ok, _view, html} = live(conn, "/config")
 
     assert html =~ "containment_profile (live run): permissive"
+  end
+
+  # ---- 033 US5: dirty tracking, cent-precise budget, sticky bar -----------
+
+  test "form is clean on mount: data-dirty absent and no unsaved count", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/config")
+
+    refute has_element?(view, ~s(#config-form[data-dirty="true"]))
+    refute has_element?(view, "[data-unsaved]")
+    assert has_element?(view, ~s([data-action="apply-config"]))
+    assert has_element?(view, ~s([data-action="reset-config"]))
+  end
+
+  test "editing marks the form dirty and counts unsaved fields; reset clears it", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/config")
+
+    view
+    |> form("#config-form", %{"model_plan" => "opus", "budget_usd" => "12.34"})
+    |> render_change()
+
+    # model_plan may already be opus in config; budget alone is a guaranteed change
+    assert has_element?(view, ~s(#config-form[data-dirty="true"]))
+    assert render(view) =~ "unsaved"
+
+    render_click(view, "reset", %{})
+    refute has_element?(view, ~s(#config-form[data-dirty="true"]))
+    refute has_element?(view, "[data-unsaved]")
+  end
+
+  test "budget is a cent-precise number input authority with no inline script", %{conn: conn} do
+    {:ok, view, html} = live(conn, "/config")
+
+    assert has_element?(
+             view,
+             ~s(input[type="number"][name="budget_usd"][step="0.01"].console-input)
+           )
+
+    refute html =~ "oninput"
+  end
+
+  test "a budget with more than two decimals is refused and the form stays dirty", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/config")
+    before = Ledger.snapshot().budget
+
+    params = submit_params(%{"budget_usd" => "12.345"})
+    view |> form("#config-form", params) |> render_change()
+    html = render_submit(view, "apply", params)
+
+    assert html =~ ~s(data-error="budget_usd")
+    assert has_element?(view, ~s(#config-form[data-dirty="true"]))
+    assert Ledger.snapshot().budget == before
+  end
+
+  test "apply toast echoes the call with changed keys only", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/config")
+
+    html = render_submit(view, "apply", submit_params(%{"pr_base" => "release-x"}))
+
+    assert html =~ ~s|LiveConfig.apply(%{pr_base: &quot;release-x&quot;})|
+    refute html =~ "forward-only"
+    refute has_element?(view, ~s(#config-form[data-dirty="true"]))
+  end
+
+  test "apply toast adds the forward-only line while a run is in flight", %{conn: conn} do
+    {:ok, run_id} =
+      Writer.open_run(RepoIdentity.partition(Config.repo()), %{
+        features: [
+          %{
+            feature_id: "cfg2",
+            slug: "cfg2",
+            path: "specs/cfg2",
+            number: 1,
+            group: :backlog,
+            created_at: nil
+          }
+        ],
+        settings: %{},
+        scope: :ad_hoc,
+        layout: %{}
+      })
+
+    {:ok, pid} =
+      Coordinator.start_link(
+        name: Coordinator,
+        features: [%Feature{id: "cfg2", number: 1, slug: "cfg2", path: "cfg2.md"}],
+        runner: fn _feature, _notify -> :ok end,
+        owner: self(),
+        context: %{}
+      )
+
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    {:ok, view, _html} = live(conn, "/config")
+    html = render_submit(view, "apply", submit_params(%{"pr_remote" => "up-x"}))
+
+    assert html =~ "LiveConfig.apply("
+    assert html =~ "applies forward-only to #{run_id}"
+    assert html =~ "not saved as default"
+  end
+
+  test "served repository and instance node sit in one record block", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/config")
+
+    assert has_element?(view, ".record-block [data-instance-repo]")
+
+    assert has_element?(view, ".record-block [data-instance-node]")
+  end
+
+  test "legends are screen-reader only; visible section titles use config-toggle-title", %{
+    conn: conn
+  } do
+    {:ok, view, _html} = live(conn, "/config")
+
+    refute has_element?(view, "legend:not(.sr-only)")
+    assert has_element?(view, ".config-toggle-title")
   end
 end
