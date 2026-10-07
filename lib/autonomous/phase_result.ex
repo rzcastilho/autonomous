@@ -102,6 +102,9 @@ defmodule Autonomous.PhaseResult do
   @spec transient?(t() | nil) :: boolean()
   def transient?(nil), do: true
   def transient?(%__MODULE__{status: :incomplete}), do: true
+  # 034: a session death has its own retry signal; the CLI's stderr excerpt
+  # must never be scanned for server-drop markers (no double-counted budgets).
+  def transient?(%__MODULE__{error: {:session_died, _, _}}), do: false
 
   def transient?(%__MODULE__{status: :error} = r) do
     blob = String.downcase("#{r.final_text} #{inspect(r.error)}")
@@ -134,6 +137,17 @@ defmodule Autonomous.PhaseResult do
   @spec deadline_exceeded?(t() | nil) :: boolean()
   def deadline_exceeded?(%__MODULE__{subtype: @deadline_subtype}), do: true
   def deadline_exceeded?(_), do: false
+
+  @doc """
+  The `SessionDeath` (`%{kind:, excerpt:}`, feature 034) when the session died
+  instead of finishing — `PhaseSession` folds that to
+  `error: {:session_died, kind, excerpt}` — or `nil`.
+  """
+  @spec session_died(t() | term()) :: %{kind: atom(), excerpt: String.t()} | nil
+  def session_died(%__MODULE__{error: {:session_died, kind, excerpt}}),
+    do: %{kind: kind, excerpt: excerpt}
+
+  def session_died(_), do: nil
 
   @doc """
   Fold `partial` (whatever the cut stream had produced — `nil` when nothing

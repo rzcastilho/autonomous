@@ -35,6 +35,7 @@ defmodule Autonomous.FeatureRunner do
     PhaseStep,
     Pipeline,
     Remediation,
+    SessionRetry,
     SpecDir,
     Store,
     Worktree,
@@ -166,7 +167,7 @@ defmodule Autonomous.FeatureRunner do
           )
 
         {status, reason, agent} =
-          case maybe_run_remediation(pid, feature, timeout, remediation_prompt, run_key) do
+          case maybe_run_remediation(pid, feature, timeout, remediation_prompt, run_key, ledger) do
             {:error, agent} ->
               {:failed, remediation_failure_reason(agent), agent}
 
@@ -226,12 +227,20 @@ defmodule Autonomous.FeatureRunner do
   # guarantees "at most once, before the target phase only" (FR-005/SC-003).
   # Blank prompt = zero overhead (FR-004/SC-002): no signal, no telemetry span,
   # no cost.
-  defp maybe_run_remediation(pid, feature, timeout, remediation_prompt, run_key) do
+  defp maybe_run_remediation(pid, feature, timeout, remediation_prompt, run_key, ledger) do
     if blank?(remediation_prompt) do
       :ok
     else
       agent =
-        remediation_with_retry(pid, feature, timeout, Config.phase_max_retries(), run_key)
+        remediation_with_retry(
+          pid,
+          feature,
+          timeout,
+          Config.phase_max_retries(),
+          run_key,
+          ledger,
+          false
+        )
 
       if agent.state.last_outcome == :error, do: {:error, agent}, else: :ok
     end
@@ -240,18 +249,40 @@ defmodule Autonomous.FeatureRunner do
   # Same transient-retry policy as a phase (FR-006): a server/API drop is
   # retried up to Config.phase_max_retries() times before it counts as a
   # genuine failure.
-  defp remediation_with_retry(pid, feature, timeout, retries, run_key) do
+  #
+  # 034: a session that *died* (CLI exited before or without a result) earns
+  # one fresh session through `SessionRetry.once/2` — its own budget, so it
+  # never double-counts with the transient one; breaker/drain suppress it.
+  defp remediation_with_retry(pid, feature, timeout, retries, run_key, ledger, died_retried?) do
     agent = run_remediation(pid, feature, timeout, run_key)
     st = agent.state
 
-    if retries > 0 and st.last_outcome == :error and PhaseResult.transient?(st.last_result) do
-      Logger.warning(
-        "feature #{feature.id} remediation failed transiently — retrying (#{retries} left)"
-      )
+    died_verdict =
+      SessionRetry.once(st.last_signals, %{
+        retried?: died_retried?,
+        breaker?: breaker_tripped?(ledger),
+        drain?: Workers.drain_requested?()
+      })
 
-      remediation_with_retry(pid, feature, timeout, retries - 1, run_key)
-    else
-      agent
+    cond do
+      died_verdict == :retry ->
+        Logger.warning(
+          "feature #{feature.id} remediation session died " <>
+            "(#{get_in(st.last_signals, [:session_died, :kind])}): " <>
+            "#{get_in(st.last_signals, [:session_died, :excerpt])} — retrying once"
+        )
+
+        remediation_with_retry(pid, feature, timeout, retries, run_key, ledger, true)
+
+      retries > 0 and st.last_outcome == :error and PhaseResult.transient?(st.last_result) ->
+        Logger.warning(
+          "feature #{feature.id} remediation failed transiently — retrying (#{retries} left)"
+        )
+
+        remediation_with_retry(pid, feature, timeout, retries - 1, run_key, ledger, died_retried?)
+
+      true ->
+        agent
     end
   end
 
@@ -287,6 +318,10 @@ defmodule Autonomous.FeatureRunner do
   # §3), rather than the generic `:remediation_failed`.
   defp remediation_failure_reason(%{state: %{last_signals: %{branch_drift: d}}}),
     do: {:branch_drift, :remediation, d}
+
+  # 034: a session that died on both attempts names the CLI's own message.
+  defp remediation_failure_reason(%{state: %{last_signals: %{session_died: d}}}),
+    do: {:session_died, {:remediation, 1}, d}
 
   defp remediation_failure_reason(_agent), do: :remediation_failed
 
@@ -473,7 +508,9 @@ defmodule Autonomous.FeatureRunner do
       # is the only place that evidence is ever available.
       {:escalated, {:needs_human, :rounds_exhausted} = reason} ->
         raw = questions_raw(agent.state, worktree, feature)
-        {:escalated, reason, with_diversion_evidence(agent, %{questions: raw, rounds_used: rounds_used})}
+
+        {:escalated, reason,
+         with_diversion_evidence(agent, %{questions: raw, rounds_used: rounds_used})}
 
       :await ->
         await_answers(%{
@@ -833,16 +870,17 @@ defmodule Autonomous.FeatureRunner do
   # `step_opts.clarify_answers` (`nil` on the first attempt and on every phase
   # but `:clarify` — a plain `PhaseStep.run/4` no-op there, byte-identical to
   # the generic clause below).
-  defp run_step(pid, feature, :clarify, step, timeout, _ledger, _worktree, _layout, step_opts) do
+  defp run_step(pid, feature, :clarify, step, timeout, ledger, _worktree, _layout, step_opts) do
     PhaseStep.run(pid, feature, :clarify,
       step: step,
       timeout: timeout,
+      ledger: ledger,
       operator_answers: Map.get(step_opts, :clarify_answers)
     )
   end
 
-  defp run_step(pid, feature, phase, step, timeout, _ledger, _worktree, _layout, _step_opts) do
-    PhaseStep.run(pid, feature, phase, step: step, timeout: timeout)
+  defp run_step(pid, feature, phase, step, timeout, ledger, _worktree, _layout, _step_opts) do
+    PhaseStep.run(pid, feature, phase, step: step, timeout: timeout, ledger: ledger)
   end
 
   # The same [:speckit, :phase] span every other phase gets, wrapping the
@@ -1045,7 +1083,14 @@ defmodule Autonomous.FeatureRunner do
   # 027, US2: a branch-drift terminal writes no further git state to either
   # branch — no commit, only `keep_for_inspection/1` for post-mortem (Principle
   # II; contracts/branch-guard.md §4-§5).
-  defp handle_worktree(_feature, _status, {:branch_drift, _, _}, %Worktree{} = wt, _message, _stack_base) do
+  defp handle_worktree(
+         _feature,
+         _status,
+         {:branch_drift, _, _},
+         %Worktree{} = wt,
+         _message,
+         _stack_base
+       ) do
     Worktree.keep_for_inspection(wt)
   end
 

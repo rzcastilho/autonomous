@@ -2,12 +2,16 @@
 # Added by `scripts/autonomous ... --with-login`. A token in .env
 # (ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN) still wins over the login.
 #
-# These mounts are read-write on purpose: the agent CLI refreshes its own login.
+# ~/.claude is read-write on purpose: the agent CLI refreshes its own login.
+# ~/.claude.json is mounted read-only at a seed path and copied atomically to a
+# container-private ~/.claude.json by the entrypoint (feature 034): a host CLI
+# writing that file mid-read must never tear what a session reads, and container
+# writes must never reach the host.
 
 services:
   dev:
     volumes: &login-mounts
       - "${HOME}/.claude:/home/autonomous/.claude"
-      - "${HOME}/.claude.json:/home/autonomous/.claude.json"
+      - "${HOME}/.claude.json:/home/autonomous/.claude.host.json:ro"
   console:
     volumes: *login-mounts

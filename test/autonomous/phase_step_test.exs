@@ -3,7 +3,7 @@ defmodule Autonomous.PhaseStepTest do
   use ExUnit.Case, async: false
 
   alias Jido.{AgentServer, Signal}
-  alias Autonomous.{Config, Feature, FeatureAgent, PhaseStep}
+  alias Autonomous.{Config, Feature, FeatureAgent, PhaseResult, PhaseStep}
 
   defmodule FakeSDK do
     alias ClaudeAgentSDK.Message
@@ -24,6 +24,13 @@ defmodule Autonomous.PhaseStepTest do
         :stranded_always ->
           stranded_messages()
 
+        # 034: the SDK client dies (linked to the fold Task) before any event.
+        :died_once ->
+          if first_call?(), do: dying_stream(), else: success_messages()
+
+        :died_always ->
+          dying_stream()
+
         # 032: success, but a Bash command was auto-backgrounded and never read back.
         :background_once ->
           if first_call?(), do: background_messages(), else: success_messages()
@@ -41,6 +48,23 @@ defmodule Autonomous.PhaseStepTest do
         _ ->
           success_messages()
       end
+    end
+
+    # Stands in for the SDK `Client` that exited during initialize: a process
+    # linked to whoever pulls the stream, dying abnormally with the CLI's stderr.
+    defp dying_stream do
+      Stream.resource(
+        fn ->
+          spawn_link(fn ->
+            exit({:initialize_failed, {:channel_exit, %{status: 1, stderr: "corrupt config"}}})
+          end)
+        end,
+        fn pid ->
+          Process.sleep(20)
+          if Process.alive?(pid), do: {[], pid}, else: {:halt, pid}
+        end,
+        fn _ -> :ok end
+      )
     end
 
     defp success_messages do
@@ -475,8 +499,6 @@ defmodule Autonomous.PhaseStepTest do
   end
 
   describe "ensure_recorded/3 — the swallowed-failure guard" do
-    alias Autonomous.PhaseResult
-
     defp agent_with(history, extra \\ %{}) do
       %{state: Map.merge(%{history: history, last_outcome: :ok, last_result: nil}, extra)}
     end
@@ -544,6 +566,104 @@ defmodule Autonomous.PhaseStepTest do
 
       # Exactly one session — the retry ladder never re-dispatched.
       assert length(agent.state.history) == 1
+    end
+  end
+
+  describe "session death (034)" do
+    defp died_entries(agent),
+      do: Enum.filter(agent.state.history, &match?(%{error: {:session_died, _, _}}, &1))
+
+    test "death -> retry -> success advances; the dead attempt stays visible (US1-2)" do
+      {:ok, counter} = Agent.start_link(fn -> 0 end)
+      Application.put_env(:autonomous, :phase_step_test_counter, counter)
+      Application.put_env(:autonomous, :phase_step_test_scenario, :died_once)
+
+      agent =
+        PhaseStep.run(start_agent!(), feature(), :clarify, step: 1, timeout: 5_000, retries: 1)
+
+      assert agent.state.last_outcome == :ok
+      assert length(agent.state.history) == 2
+      assert [%{error: {:session_died, :start_failed, "corrupt config"}}] = died_entries(agent)
+      Agent.stop(counter)
+    end
+
+    test "death -> retry -> death fails with the session_died reason" do
+      Application.put_env(:autonomous, :phase_step_test_scenario, :died_always)
+
+      agent =
+        PhaseStep.run(start_agent!(), feature(), :clarify, step: 1, timeout: 5_000, retries: 1)
+
+      assert agent.state.last_outcome == :error
+
+      assert %{session_died: %{kind: :start_failed, excerpt: "corrupt config"}} =
+               agent.state.last_signals
+
+      assert length(died_entries(agent)) == 2
+
+      assert {:failed, {:session_died, :clarify, %{kind: :start_failed}}} =
+               Autonomous.Pipeline.next(:clarify, :error, agent.state.last_signals)
+
+      refute PhaseResult.transient?(agent.state.last_result)
+    end
+
+    test "the retry budget is phase_max_retries" do
+      Application.put_env(:autonomous, :phase_step_test_scenario, :died_always)
+
+      agent =
+        PhaseStep.run(start_agent!(), feature(), :clarify, step: 1, timeout: 5_000, retries: 2)
+
+      assert length(agent.state.history) == 3
+    end
+
+    test "a tripped breaker suppresses the retry (FR-010)" do
+      {:ok, ledger} = Autonomous.Ledger.start_link(budget: 0.0, name: nil)
+      assert Autonomous.Ledger.breaker_tripped?(ledger)
+      Application.put_env(:autonomous, :phase_step_test_scenario, :died_always)
+
+      agent =
+        PhaseStep.run(start_agent!(), feature(), :clarify,
+          step: 1,
+          timeout: 5_000,
+          retries: 1,
+          ledger: ledger
+        )
+
+      assert agent.state.last_outcome == :error
+      assert length(agent.state.history) == 1
+    end
+
+    test "a requested drain suppresses the retry (FR-010)" do
+      me = self()
+      :ets.insert(Autonomous.Workers.DrainRequests, {me, DateTime.utc_now()})
+      on_exit(fn -> :ets.delete(Autonomous.Workers.DrainRequests, me) end)
+      Application.put_env(:autonomous, :phase_step_test_scenario, :died_always)
+
+      agent =
+        PhaseStep.run(start_agent!(), feature(), :clarify, step: 1, timeout: 5_000, retries: 1)
+
+      assert agent.state.last_outcome == :error
+      assert length(agent.state.history) == 1
+    end
+
+    test "a death is retried even though its excerpt is not scanned for transient markers" do
+      Application.put_env(:autonomous, :phase_step_test_scenario, :died_always)
+
+      agent =
+        PhaseStep.run(start_agent!(), feature(), :clarify, step: 1, timeout: 5_000, retries: 0)
+
+      # retries: 0 — exactly one session, no retry of any kind
+      assert length(agent.state.history) == 1
+    end
+
+    test "retry_reason strings are logged for each kind" do
+      Application.put_env(:autonomous, :phase_step_test_scenario, :died_always)
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          PhaseStep.run(start_agent!(), feature(), :clarify, step: 1, timeout: 5_000, retries: 1)
+        end)
+
+      assert log =~ "failed to start (corrupt config) — retrying"
     end
   end
 end

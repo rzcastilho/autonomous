@@ -515,4 +515,37 @@ defmodule Autonomous.PipelineTest do
 
     assert walk.(Pipeline.first(), walk) == {:done, :done}
   end
+
+  describe "session-death gate order (034, C3)" do
+    @died %{kind: :start_failed, excerpt: "corrupt config"}
+
+    test "a session death fails the phase with the detail" do
+      for phase <- Pipeline.phases() do
+        assert Pipeline.next(phase, :error, %{session_died: @died}) ==
+                 {:failed, {:session_died, phase, @died}}
+      end
+    end
+
+    test "branch drift beats session death" do
+      d = %{expected: "a", observed: "b"}
+
+      assert Pipeline.next(:plan, :error, %{branch_drift: d, session_died: @died}) ==
+               {:failed, {:branch_drift, :plan, d}}
+    end
+
+    test "session death beats backgrounded and outstanding work" do
+      assert Pipeline.next(:plan, :error, %{
+               session_died: @died,
+               backgrounded: ["mix test"],
+               outstanding_work?: true
+             }) == {:failed, {:session_died, :plan, @died}}
+    end
+
+    test "non-death error paths are unchanged" do
+      assert Pipeline.next(:plan, :error, %{outstanding_work?: true}) ==
+               {:failed, {:incomplete_session, :plan}}
+
+      assert Pipeline.next(:plan, :error, %{}) == {:failed, {:plan, :error}}
+    end
+  end
 end

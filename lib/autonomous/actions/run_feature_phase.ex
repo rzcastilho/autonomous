@@ -125,7 +125,7 @@ defmodule Autonomous.Actions.RunFeaturePhase do
            last_signals: signals,
            session_id: result.session_id || state.session_id,
            cost_total: (state.cost_total || 0.0) + amount,
-           history: [entry(phase, outcome, amount) | state.history]
+           history: [entry(phase, outcome, amount, result) | state.history]
          }}
 
       {:error, reason} ->
@@ -222,6 +222,18 @@ defmodule Autonomous.Actions.RunFeaturePhase do
   # `:plan`/`:tasks` whose artifact gate is satisfied (same rationale as below);
   # never for `:implement`, where the artifact gate says nothing about whether the
   # verification the model backgrounded ever ran.
+  # Session-death gate (034): the harness session died instead of finishing —
+  # checked after branch drift (027 keeps its "first" invariant), ahead of
+  # every other gate. The signal carries `%{kind:, excerpt:}`.
+  defp classify_after_drift(
+         _phase,
+         %PhaseResult{error: {:session_died, _, _}} = r,
+         _state,
+         _scope
+       ) do
+    {:error, %{session_died: PhaseResult.session_died(r)}}
+  end
+
   defp classify_after_drift(phase, %PhaseResult{status: :ok} = r, state, scope) do
     case PhaseResult.stranded_background(r) do
       [_ | _] = cmds ->
@@ -520,7 +532,16 @@ defmodule Autonomous.Actions.RunFeaturePhase do
 
   # ---- helpers ------------------------------------------------------------
 
-  defp entry(phase, outcome, amount), do: %{phase: phase, outcome: outcome, cost: amount}
+  # A session death (034) also records its error, so every dead attempt —
+  # including one that is then retried — stays visible in the history.
+  defp entry(phase, outcome, amount, %PhaseResult{} = result) do
+    base = %{phase: phase, outcome: outcome, cost: amount}
+
+    case result.error do
+      {:session_died, _, _} = error -> Map.put(base, :error, error)
+      _ -> base
+    end
+  end
 
   defp worktree_path(%{path: path}), do: path
   defp worktree_path(_), do: Autonomous.Config.repo()

@@ -1333,6 +1333,26 @@ console) to see exactly what plan said.
 
 ---
 
+## Session died at startup or ended without a result (034)
+
+**Symptom.** A feature fails within seconds with
+`<phase> session failed to start: <excerpt>` or
+`<phase> session ended without a result: <excerpt>` (task-phase and remediation
+variants name the chunk or attempt) instead of hanging to the phase deadline.
+
+**Cause.** The `claude` CLI exited before or during the session; the excerpt is
+its `stderr` (bounded to 2,000 characters). The usual trigger is an unreadable
+`~/.claude.json` (torn by a host write), a bad login, or a crashed CLI. The
+orchestrator retries once (not under a tripped breaker or drain), then fails
+with `{:session_died, phase, detail}`. A start failure costs $0.
+
+**Fix.**
+
+1. Read the excerpt in Run Detail or the transcript.
+2. In a `--with-login` container, restart it to re-seed `~/.claude.json` from the
+   host (see `docs/container.md`).
+3. Re-run with `Autonomous.resume/2`.
+
 ## Implement sweeps stall after a command moves to the background (032)
 
 **Symptom.** An implement chunk or sweep ends "successfully" with tasks

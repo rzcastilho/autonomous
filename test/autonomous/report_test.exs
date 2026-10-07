@@ -261,4 +261,33 @@ defmodule Autonomous.ReportTest do
       refute out =~ "clarify:"
     end
   end
+
+  describe "format_reason/1 (034 session_died)" do
+    test "phase atom, start_failed" do
+      d = %{kind: :start_failed, excerpt: "Invalid JSON"}
+
+      assert Report.format_reason({:session_died, :specify, d}) ==
+               "specify session failed to start: Invalid JSON"
+    end
+
+    test "task-phase ref, ended_early" do
+      ref = %Autonomous.TaskPhaseRef{ordinal: 3, number: "3", title: "Title"}
+      d = %{kind: :ended_early, excerpt: "cli gone"}
+
+      assert Report.format_reason({:session_died, ref, d}) ==
+               ~s(task-phase 3 "Title" session ended without a result: cli gone)
+    end
+
+    test "remediation attempt" do
+      d = %{kind: :start_failed, excerpt: "x"}
+
+      assert Report.format_reason({:session_died, {:remediation, 2}, d}) ==
+               "remediation attempt 2 session failed to start: x"
+    end
+
+    test "never a raw term" do
+      d = %{kind: :start_failed, excerpt: "x"}
+      refute Report.format_reason({:session_died, :plan, d}) =~ "%{"
+    end
+  end
 end

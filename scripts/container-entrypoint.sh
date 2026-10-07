@@ -22,6 +22,52 @@ say() { printf 'autonomous: %s\n' "$*" >&2; }
 warn() { printf 'autonomous: warning: %s\n' "$*" >&2; }
 die() { say "$*"; exit 1; }
 
+# ---- Host CLI config seeding (feature 034, --with-login) -----------------------
+# The host's ~/.claude.json is mounted read-only at a seed path, never at
+# ~/.claude.json: a host CLI writing that file mid-read tore it for every
+# session. Each container gets a private, atomically written copy instead.
+CLI_CONFIG_SEED="${AUTONOMOUS_CLI_CONFIG_SEED:-/home/autonomous/.claude.host.json}"
+
+seed_cli_config() {
+  [ -e "$CLI_CONFIG_SEED" ] || return 0
+  target="$HOME/.claude.json"
+  if [ -f /proc/self/mountinfo ] \
+    && awk -v t="$target" '$5 == t { found = 1 } END { exit !found }' /proc/self/mountinfo; then
+    die "$target is a mount point (stale compose override); remove the ~/.claude.json mount and use scripts/autonomous --with-login"
+  fi
+  attempt=1
+  while :; do
+    if err="$(python3 - "$CLI_CONFIG_SEED" <<'PY' 2>&1
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        ok = isinstance(json.load(f), dict)
+except Exception as e:
+    print(e)
+    sys.exit(1)
+if not ok:
+    print("top-level value is not a JSON object")
+    sys.exit(1)
+PY
+)"; then
+      break
+    fi
+    [ "$attempt" -lt 5 ] || die "host CLI config $CLI_CONFIG_SEED is not valid JSON: $err"
+    attempt=$((attempt + 1))
+    sleep 0.2
+  done
+  tmp="$target.tmp.$$"
+  (umask 077; cat "$CLI_CONFIG_SEED" > "$tmp")
+  chmod 600 "$tmp"
+  mv -f "$tmp" "$target"
+}
+
+# Smoke hook: seed and stop, before any build or identity work.
+if [ "$cmd" = "seed-config" ]; then
+  seed_cli_config
+  exit 0
+fi
+
 : "${AUTONOMOUS_REPO:?AUTONOMOUS_REPO must be set (start through scripts/autonomous)}"
 : "${AUTONOMOUS_ROOT:?AUTONOMOUS_ROOT must be set (start through scripts/autonomous)}"
 
@@ -160,6 +206,9 @@ if [ -n "${GH_TOKEN:-}" ]; then
 else
   warn "GH_TOKEN is not set; publishing (push + gh pr create) will fail"
 fi
+
+# ---- 4b. Private copy of the host CLI config (feature 034) -----------------------
+seed_cli_config
 
 # ---- 5. Warnings (FR-016) --------------------------------------------------------
 if [ -z "${ANTHROPIC_API_KEY:-}" ] && [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] \

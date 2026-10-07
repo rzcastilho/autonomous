@@ -69,7 +69,7 @@ defmodule Autonomous.Actions.RunRemediation do
            last_signals: PhaseResult.reset_background(signals, Map.get(state, :last_signals)),
            session_id: result.session_id || state.session_id,
            cost_total: (state.cost_total || 0.0) + amount,
-           history: [entry(outcome, amount) | state.history]
+           history: [entry(outcome, amount, result) | state.history]
          }}
 
       {:error, reason} ->
@@ -82,10 +82,16 @@ defmodule Autonomous.Actions.RunRemediation do
   # itself reported.
   defp classify(worktree, result) do
     case branch_drift(worktree) do
-      nil -> classify_background(result)
+      nil -> classify_died(result)
       drift -> {:error, %{branch_drift: drift}}
     end
   end
+
+  # Session-death gate (034) — after drift, ahead of the background-wait gate.
+  defp classify_died(%PhaseResult{error: {:session_died, _, _}} = result),
+    do: {:error, %{session_died: PhaseResult.session_died(result)}}
+
+  defp classify_died(result), do: classify_background(result)
 
   # Background-wait gate (032, US1): a session that ended while a command the CLI
   # moved to the background was still running is an incomplete session, never a
@@ -134,7 +140,10 @@ defmodule Autonomous.Actions.RunRemediation do
   defp outcome_of(%PhaseResult{status: :ok}), do: :ok
   defp outcome_of(%PhaseResult{}), do: :error
 
-  defp entry(outcome, amount), do: %{phase: :remediation, outcome: outcome, cost: amount}
+  defp entry(outcome, amount, %PhaseResult{error: {:session_died, _, _} = error}),
+    do: %{phase: :remediation, outcome: outcome, cost: amount, error: error}
+
+  defp entry(outcome, amount, _result), do: %{phase: :remediation, outcome: outcome, cost: amount}
 
   defp worktree_path(%{path: path}), do: path
   defp worktree_path(_), do: Config.repo()

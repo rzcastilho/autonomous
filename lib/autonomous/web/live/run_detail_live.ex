@@ -501,5 +501,8 @@ defmodule Autonomous.Web.RunDetailLive do
   defp format_legacy_reason({:backgrounded_command, _, _} = reason),
     do: Autonomous.Report.format_reason(reason)
 
+  defp format_legacy_reason({:session_died, _, %{kind: _, excerpt: _}} = reason),
+    do: Autonomous.Report.format_reason(reason)
+
   defp format_legacy_reason(reason), do: inspect(reason)
 end

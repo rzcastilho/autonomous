@@ -61,6 +61,14 @@ Shell timeouts (feature 032) derive from the same deadline
 the launch env and `--settings`, so the session deadline always fires first;
 a command the CLI still moves to the background is caught by
 `PhaseResult.stranded_background/1` and fails as `{:backgrounded_command, …}`.
+Session death (feature 034): the stream fold runs in a `Task.Supervisor.async_nolink`
+task under `Autonomous.SessionSup`, so a linked SDK server dying at startup (a
+torn `~/.claude.json`) can no longer take the caller down or hang to the deadline.
+`PhaseSession.reduce/2` returns `{:session_died, :start_failed | :ended_early,
+excerpt}` within seconds (`SessionExit.classify/2` pulls the CLI's `stderr`);
+`Pipeline` fails it as `{:session_died, phase, d}` (after branch-drift, ahead of
+backgrounded/incomplete-session), `PhaseStep`/`Chunking`/`SessionRetry.once/2`
+retry it once (never under breaker/drain), and `Report.format_reason/1` renders it.
 
 ## Containerized runtime (feature 031)
 
@@ -68,6 +76,10 @@ Operate the orchestrator through the container: `scripts/autonomous` (build,
 shell, console, release, stop) — see `docs/container.md`. The host remains
 valid for `mise exec -- mix compile|test` and development. Smoke checks:
 `scripts/container-smoke.sh [us1..us6|secrets]` (by hand, not in the suite).
+`--with-login` (feature 034) mounts the host `~/.claude.json` read-only at
+`/home/autonomous/.claude.host.json`; the entrypoint validates it and atomically
+seeds a container-private `~/.claude.json`, so a host CLI mid-write never tears
+what a session reads. Host login changes need a container restart.
 
 ## Toolchain — read first
 
