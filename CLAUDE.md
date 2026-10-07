@@ -244,6 +244,13 @@ unlisted keyframe, or a prohibited inline style returns —
 `specs/020-reconcile-console-design/compliance-inventory.md` records the
 judgment calls (mono-vs-sans role, recovery-path ranking, empty-state wording,
 …) the guard cannot decide.
+Feature 033 (console UX polish) amends three tokens (`--text-faint`,
+`--pending`, `--blocked`) to meet WCAG contrast, adds guard rules `G-contrast`
+(no `--accent` as text; token pairs meet minimum ratio), `G-input` (form
+controls use the shared class and `--border-input`), `G-breakpoint` (one
+narrow-screen breakpoint) and `G-inspect` (no raw `inspect/1` in console
+markup), and moves view logic into pure modules: `ConfigDiff`,
+`RunSettingsView`, `RunStateView`, `StartConfirm`, `TranscriptMarkup`.
 
 **Observability (Phase 6).** `FeatureRunner` wraps each phase in
 `:telemetry.span([:speckit, :phase], …)` (start/stop/exception) and emits

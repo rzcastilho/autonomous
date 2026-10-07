@@ -19,10 +19,24 @@ defmodule Autonomous.Web.TriggerLive do
 
   use Autonomous.Web, :live_view
 
-  alias Autonomous.{Backlog, Config, InteractiveClarify, Remediation, Severity}
+  alias Autonomous.{
+    Backlog,
+    Config,
+    ConsoleProjection,
+    Coordinator,
+    InteractiveClarify,
+    Remediation,
+    Severity
+  }
+
+  alias Autonomous.Web.StartConfirm
 
   @impl true
   def mount(_params, _session, socket) do
+    if connected?(socket) do
+      Phoenix.PubSub.subscribe(Autonomous.PubSub, ConsoleProjection.topic())
+    end
+
     packages = list_packages()
 
     {:ok,
@@ -41,6 +55,8 @@ defmodule Autonomous.Web.TriggerLive do
        clarify_rounds: to_string(Config.clarify_max_rounds()),
        clarify_error: nil,
        containment_profile: Config.containment_profile() |> to_string(),
+       active_run_id: active_run_id(),
+       confirm: %{backlog: :idle, single_spec: :idle},
        description: "",
        preview: nil,
        field_error: nil,
@@ -51,6 +67,54 @@ defmodule Autonomous.Web.TriggerLive do
      )
      |> refresh_backlog_preview()}
   end
+
+  # ---- in-flight run awareness (033, research R10) ---------------------------
+
+  @impl true
+  def handle_info({:console, _kind, _payload}, socket), do: {:noreply, sync_active_run(socket)}
+  def handle_info(_other, socket), do: {:noreply, socket}
+
+  # The run a fresh start would drain and supersede, or `nil`. A finished
+  # Coordinator is not live; a registered worker keeps a run active even with
+  # no Coordinator (026).
+  defp active_run_id do
+    if live_coordinator?() or Autonomous.workers() != [], do: Autonomous.current_run_id()
+  end
+
+  defp live_coordinator? do
+    case Process.whereis(Coordinator) do
+      nil -> false
+      pid -> not Coordinator.status(pid).finished?
+    end
+  catch
+    :exit, _reason -> false
+  end
+
+  defp sync_active_run(socket) do
+    run_id = active_run_id()
+
+    confirm =
+      Map.new(socket.assigns.confirm, fn {action, state} ->
+        {action, state |> StartConfirm.next({:active_run, run_id}, run_id) |> elem(0)}
+      end)
+
+    assign(socket, active_run_id: run_id, confirm: confirm)
+  end
+
+  # One click on a start action. The active run is re-read here, server-side,
+  # so a stale client can never skip the arm step. `:dispatch` means start now.
+  defp confirm_click(socket, action) do
+    run_id = active_run_id()
+    {state, effect} = StartConfirm.next(socket.assigns.confirm[action], :click, run_id)
+
+    {effect,
+     assign(socket,
+       active_run_id: run_id,
+       confirm: Map.put(socket.assigns.confirm, action, state)
+     )}
+  end
+
+  defp reset_confirm(socket), do: assign(socket, confirm: %{backlog: :idle, single_spec: :idle})
 
   # ---- breakdown package selection (FR-012, 012) -----------------------------
 
@@ -68,7 +132,12 @@ defmodule Autonomous.Web.TriggerLive do
   @impl true
   def handle_event("set_mode", %{"mode" => mode}, socket) do
     mode_atom = if mode == "single_spec", do: :single_spec, else: :backlog
-    socket = assign(socket, mode: mode_atom, start_error: nil, field_error: nil)
+
+    socket =
+      socket
+      |> assign(mode: mode_atom, start_error: nil, field_error: nil)
+      |> reset_confirm()
+
     socket = if mode_atom == :backlog, do: refresh_backlog_preview(socket), else: socket
     {:noreply, socket}
   end
@@ -120,6 +189,14 @@ defmodule Autonomous.Web.TriggerLive do
     {:noreply, assign(socket, containment_profile: profile)}
   end
 
+  def handle_event("cancel_start", %{"action" => action}, socket) do
+    case action do
+      "backlog" -> {:noreply, cancel_confirm(socket, :backlog)}
+      "single_spec" -> {:noreply, cancel_confirm(socket, :single_spec)}
+      _other -> {:noreply, socket}
+    end
+  end
+
   def handle_event("select_package", %{"slug" => slug}, socket) do
     {:noreply, socket |> assign(selected_package: slug) |> refresh_backlog_preview()}
   end
@@ -136,27 +213,9 @@ defmodule Autonomous.Web.TriggerLive do
 
   def handle_event("start_backlog", _params, socket) do
     if socket.assigns.backlog_preview.dag_valid? do
-      case start_opts(socket) do
-        {:ok, opts} ->
-          case run_unlinked(fn -> Autonomous.run(opts) end) do
-            {:ok, _pid} ->
-              {:noreply,
-               socket
-               |> put_flash(
-                 :info,
-                 "Backlog run started: Autonomous.run/1 #{inspect(opts)}"
-               )
-               |> push_navigate(to: "/")}
-
-            {:error, reason} ->
-              {:noreply, assign(socket, start_error: format_start_error(reason))}
-          end
-
-        {:error, {:remediation, error}} ->
-          {:noreply, assign(socket, remediation_error: error)}
-
-        {:error, {:interactive_clarify, error}} ->
-          {:noreply, assign(socket, clarify_error: error)}
+      case confirm_click(socket, :backlog) do
+        {:dispatch, socket} -> start_backlog(socket)
+        {:none, socket} -> {:noreply, socket}
       end
     else
       {:noreply, socket}
@@ -169,31 +228,70 @@ defmodule Autonomous.Web.TriggerLive do
     if blank?(description) do
       {:noreply, assign(socket, field_error: "Description is required")}
     else
-      case start_opts(socket) do
-        {:ok, opts} ->
-          case run_unlinked(fn -> Autonomous.run_spec(description, opts) end) do
-            {:ok, _pid} ->
-              {:noreply,
-               socket
-               |> put_flash(
-                 :info,
-                 "Feature started: Autonomous.run_spec/2 #{feature_ref(socket)}"
-               )
-               |> push_navigate(to: "/")}
-
-            {:error, :empty_description} ->
-              {:noreply, assign(socket, field_error: "Description is required")}
-
-            {:error, reason} ->
-              {:noreply, assign(socket, start_error: format_start_error(reason))}
-          end
-
-        {:error, {:remediation, error}} ->
-          {:noreply, assign(socket, remediation_error: error)}
-
-        {:error, {:interactive_clarify, error}} ->
-          {:noreply, assign(socket, clarify_error: error)}
+      case confirm_click(socket, :single_spec) do
+        {:dispatch, socket} -> start_single_spec(socket, description)
+        {:none, socket} -> {:noreply, socket}
       end
+    end
+  end
+
+  defp cancel_confirm(socket, action) do
+    {state, _effect} =
+      StartConfirm.next(socket.assigns.confirm[action], :cancel, socket.assigns.active_run_id)
+
+    assign(socket, confirm: Map.put(socket.assigns.confirm, action, state))
+  end
+
+  defp start_backlog(socket) do
+    case start_opts(socket) do
+      {:ok, opts} ->
+        case run_unlinked(fn -> Autonomous.run(opts) end) do
+          {:ok, _pid} ->
+            {:noreply,
+             socket
+             |> put_flash(
+               :info,
+               "Backlog run started: Autonomous.run/1 #{inspect(opts)}"
+             )
+             |> push_navigate(to: "/")}
+
+          {:error, reason} ->
+            {:noreply, assign(socket, start_error: format_start_error(reason))}
+        end
+
+      {:error, {:remediation, error}} ->
+        {:noreply, assign(socket, remediation_error: error)}
+
+      {:error, {:interactive_clarify, error}} ->
+        {:noreply, assign(socket, clarify_error: error)}
+    end
+  end
+
+  defp start_single_spec(socket, description) do
+    case start_opts(socket) do
+      {:ok, opts} ->
+        case run_unlinked(fn -> Autonomous.run_spec(description, opts) end) do
+          {:ok, _pid} ->
+            {:noreply,
+             socket
+             |> put_flash(
+               :info,
+               "Feature started: Autonomous.run_spec/2 #{feature_ref(socket)}"
+             )
+             |> push_navigate(to: "/")}
+
+          {:error, :empty_description} ->
+            {:noreply, assign(socket, field_error: "Description is required")}
+
+          {:error, reason} ->
+            {:noreply, assign(socket, start_error: format_start_error(reason))}
+        end
+
+      {:error, {:remediation, error}} ->
+        {:noreply, assign(socket, remediation_error: error)}
+
+      {:error, {:interactive_clarify, error}} ->
+        {:noreply, assign(socket, clarify_error: error)}
     end
   end
 
@@ -374,25 +472,11 @@ defmodule Autonomous.Web.TriggerLive do
     end
   end
 
-  # Show the meaningful tail of the source path, anchored at the `autonomous`
-  # namespace segment (…/autonomous/breakdown/<slug>) on one line; the full path
-  # is exposed via the dd's `title` tooltip on hover. Paths with no `autonomous`
-  # segment (legacy docs/breakdown fallback) fall back to a last-N-chars window.
-  @path_display_max 40
-  defp truncate_path(path) when is_binary(path) do
-    case String.split(path, "/autonomous/", parts: 2) do
-      [_prefix, rest] ->
-        "…/autonomous/" <> rest
-
-      [_] when byte_size(path) > @path_display_max ->
-        "…" <> String.slice(path, -@path_display_max, @path_display_max)
-
-      [_] ->
-        path
-    end
-  end
-
-  defp truncate_path(path), do: path
+  # The source path relative to the served repository, so its root is never
+  # hidden behind a leading ellipsis (033, FR-032); the dd's `title` carries the
+  # full path. A path outside the repository is shown whole.
+  defp relative_source(path) when is_binary(path), do: Path.relative_to(path, Config.repo())
+  defp relative_source(path), do: path
 
   # ---- render -----------------------------------------------------------
 
@@ -436,7 +520,7 @@ defmodule Autonomous.Web.TriggerLive do
           <dt :if={@packages != []}>Breakdown package</dt>
           <dd :if={@packages != []}>
             <form id="package-picker-form" phx-change="select_package" data-form="package-picker">
-              <select name="slug" data-package-select>
+              <select name="slug" class="console-input" data-package-select>
                 <option
                   :for={slug <- @packages}
                   value={slug}
@@ -449,11 +533,11 @@ defmodule Autonomous.Web.TriggerLive do
           </dd>
           <dt>Source</dt>
           <dd class="preview-path" title={@backlog_preview.source}>
-            {truncate_path(@backlog_preview.source)}
+            {relative_source(@backlog_preview.source)}
           </dd>
           <dt>Feature count</dt>
           <dd>{@backlog_preview.count}</dd>
-          <dt>DAG validated?</dt>
+          <dt>DAG validated</dt>
           <dd data-dag-valid={to_string(@backlog_preview.dag_valid?)}>
             {if @backlog_preview.dag_valid?, do: "yes", else: "no"}
           </dd>
@@ -504,29 +588,39 @@ defmodule Autonomous.Web.TriggerLive do
           against it.</span>
       </div>
 
-      <div class="pr-toggle-row auto-remediation-row">
-        <label class="pr-toggle">
-          <input
-            type="checkbox"
-            phx-click="toggle_auto_remediation"
-            checked={@auto_remediation?}
-            class="switch-input"
-          />
-          <span class="switch-track"><span class="switch-knob"></span></span>
-          <span>Analyze auto-remediation</span>
-        </label>
-        <span class="pr-hint" data-auto-remediation={to_string(@auto_remediation?)}>
-          {if @auto_remediation?, do: "on", else: "off"}
-        </span>
+      <fieldset class="option-group" data-option-group="auto_remediation">
+        <legend class="sr-only">auto_remediation</legend>
+        <div class="config-toggle-title">Analyze auto-remediation</div>
+
+        <div class="option-row">
+          <label class="pr-toggle">
+            <input
+              type="checkbox"
+              phx-click="toggle_auto_remediation"
+              checked={@auto_remediation?}
+              class="switch-input"
+            />
+            <span class="switch-track"><span class="switch-knob"></span></span>
+            <span class="option-name">auto_remediation</span>
+          </label>
+          <span class="pr-hint" data-auto-remediation={to_string(@auto_remediation?)}>
+            {if @auto_remediation?, do: "on", else: "off"}
+          </span>
+        </div>
 
         <form
           id="auto-remediation-form"
           phx-change="update_remediation"
-          class={not @auto_remediation? && "controls-disabled"}
+          class={["option-fields", not @auto_remediation? && "controls-disabled"]}
         >
-          <label class="field-label-inline">
-            Severity threshold
-            <select name="threshold" data-remediation-threshold disabled={not @auto_remediation?}>
+          <label class="option-row field-label-inline">
+            <span class="option-name">auto_remediation_threshold</span>
+            <select
+              name="threshold"
+              class="console-input"
+              data-remediation-threshold
+              disabled={not @auto_remediation?}
+            >
               <option
                 :for={severity <- Severity.values()}
                 value={severity}
@@ -537,11 +631,12 @@ defmodule Autonomous.Web.TriggerLive do
             </select>
           </label>
 
-          <label class="field-label-inline">
-            Attempt limit
+          <label class="option-row field-label-inline">
+            <span class="option-name">auto_remediation_attempt_limit</span>
             <input
               type="number"
               name="attempt_limit"
+              class="console-input"
               min="1"
               max="5"
               value={@remediation_limit}
@@ -550,10 +645,11 @@ defmodule Autonomous.Web.TriggerLive do
             />
           </label>
 
-          <label class="field-label-inline">
-            On exhaustion
+          <label class="option-row field-label-inline">
+            <span class="option-name">auto_remediation_exhaustion_policy</span>
             <select
               name="exhaustion_policy"
+              class="console-input"
               data-exhaustion-policy
               disabled={not @auto_remediation?}
             >
@@ -572,7 +668,7 @@ defmodule Autonomous.Web.TriggerLive do
             </select>
           </label>
         </form>
-      </div>
+      </fieldset>
 
       <.form_refusal
         :if={@remediation_error}
@@ -582,53 +678,59 @@ defmodule Autonomous.Web.TriggerLive do
         {elem(@remediation_error, 1)}
       </.form_refusal>
 
-      <div class="pr-toggle-row interactive-clarify-row">
-        <label class="pr-toggle">
-          <input
-            type="checkbox"
-            phx-click="toggle_interactive_clarify"
-            checked={@interactive_clarify?}
-            class="switch-input"
-          />
-          <span class="switch-track"><span class="switch-knob"></span></span>
-          <span>Interactive clarify</span>
-        </label>
-        <span class="pr-hint" data-interactive-clarify={to_string(@interactive_clarify?)}>
-          {if @interactive_clarify?, do: "on", else: "off"}
-        </span>
+      <fieldset class="option-group" data-option-group="interactive_clarify">
+        <legend class="sr-only">interactive_clarify</legend>
+        <div class="config-toggle-title">Interactive clarify</div>
+
+        <div class="option-row">
+          <label class="pr-toggle">
+            <input
+              type="checkbox"
+              phx-click="toggle_interactive_clarify"
+              checked={@interactive_clarify?}
+              class="switch-input"
+            />
+            <span class="switch-track"><span class="switch-knob"></span></span>
+            <span class="option-name">interactive_clarify</span>
+          </label>
+          <span class="pr-hint" data-interactive-clarify={to_string(@interactive_clarify?)}>
+            {if @interactive_clarify?, do: "on", else: "off"}
+          </span>
+        </div>
 
         <form
+          :if={@interactive_clarify?}
           id="interactive-clarify-form"
           phx-change="update_clarify"
-          class={not @interactive_clarify? && "controls-disabled"}
+          class="option-fields"
         >
-          <label class="field-label-inline">
-            Answer timeout (min)
+          <label class="option-row field-label-inline">
+            <span class="option-name">answer_timeout_min</span>
             <input
               type="number"
               name="answer_timeout_min"
+              class="console-input"
               min="1"
               max="1440"
               value={@clarify_timeout_min}
               data-clarify-timeout
-              disabled={not @interactive_clarify?}
             />
           </label>
 
-          <label class="field-label-inline">
-            Max rounds
+          <label class="option-row field-label-inline">
+            <span class="option-name">max_rounds</span>
             <input
               type="number"
               name="max_rounds"
+              class="console-input"
               min="1"
               max="5"
               value={@clarify_rounds}
               data-clarify-rounds
-              disabled={not @interactive_clarify?}
             />
           </label>
         </form>
-      </div>
+      </fieldset>
 
       <.form_refusal
         :if={@clarify_error}
@@ -638,46 +740,91 @@ defmodule Autonomous.Web.TriggerLive do
         {elem(@clarify_error, 1)}
       </.form_refusal>
 
-      <div class="pr-toggle-row containment-row" data-containment-control>
-        <label class="field-label-inline">
-          Containment
-          <form id="containment-form" phx-change="set_containment_profile">
-            <select name="profile" data-containment-select>
+      <fieldset class="option-group" data-option-group="containment_profile" data-containment-control>
+        <legend class="sr-only">containment_profile</legend>
+        <div class="config-toggle-title">Containment</div>
+
+        <form id="containment-form" phx-change="set_containment_profile">
+          <label class="option-row field-label-inline">
+            <span class="option-name">containment_profile</span>
+            <select name="profile" class="console-input" data-containment-select>
               <option value="strict" selected={@containment_profile == "strict"}>strict</option>
               <option value="permissive" selected={@containment_profile == "permissive"}>
                 permissive
               </option>
             </select>
-          </form>
-        </label>
+          </label>
+        </form>
 
         <p :if={@containment_profile == "permissive"} class="pr-hint" data-containment-note>
           Permissive: no pack deny list, full write/Bash/network access every phase.
           Container recipe recommended (docs/enforcement.md).
         </p>
-      </div>
+      </fieldset>
 
-      <button
+      <.start_controls
         :if={@mode == :backlog}
+        action="backlog"
+        state={@confirm.backlog}
+        data_action="start-backlog"
         type="button"
-        phx-click="start_backlog"
-        class="btn-primary"
-        data-action="start-backlog"
+        click="start_backlog"
         disabled={not @backlog_preview.dag_valid?}
-      >
-        Start run
-      </button>
+      />
 
-      <button
+      <.start_controls
         :if={@mode == :single_spec}
+        action="single_spec"
+        state={@confirm.single_spec}
+        data_action="start-single-spec"
         type="submit"
         form="single-spec-form"
+      />
+    </div>
+    """
+  end
+
+  # The start button and its inline two-step confirmation (033, FR-010). Armed
+  # state names the run that will be drained and superseded; Cancel disarms.
+  attr(:action, :string, required: true)
+  attr(:state, :any, required: true)
+  attr(:data_action, :string, required: true)
+  attr(:type, :string, required: true)
+  attr(:click, :string, default: nil)
+  attr(:form, :string, default: nil)
+  attr(:disabled, :boolean, default: false)
+
+  defp start_controls(assigns) do
+    assigns = assign(assigns, armed: armed_run(assigns.state))
+
+    ~H"""
+    <div class="start-controls" data-start-controls={@action}>
+      <button
+        type={@type}
+        form={@form}
+        phx-click={@click}
         class="btn-primary"
-        data-action="start-single-spec"
+        data-action={@data_action}
+        data-confirm-armed={@armed != nil}
+        disabled={@disabled}
       >
-        Start run
+        {if @armed, do: "Supersede #{@armed} and start", else: "Start run"}
+      </button>
+      <span :if={@armed} class="start-hint" data-start-hint>drains and supersedes {@armed}</span>
+      <button
+        :if={@armed}
+        type="button"
+        phx-click="cancel_start"
+        phx-value-action={@action}
+        class="btn-secondary"
+        data-action={"cancel-start-#{@action}"}
+      >
+        Cancel
       </button>
     </div>
     """
   end
+
+  defp armed_run({:armed, run_id}), do: run_id
+  defp armed_run(_state), do: nil
 end

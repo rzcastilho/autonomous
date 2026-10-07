@@ -18,6 +18,7 @@ defmodule Autonomous.Web.RunDetailLive do
   use Autonomous.Web, :live_view
 
   alias Autonomous.{Config, Containment, ConsoleProjection, PublishOutcome}
+  alias Autonomous.Web.{RunSettingsView, RunStateView, TranscriptMarkup}
 
   @impl true
   def mount(%{"run_id" => run_id}, _session, socket) do
@@ -188,8 +189,8 @@ defmodule Autonomous.Web.RunDetailLive do
   def render(assigns) do
     ~H"""
     <div class="view-run-detail" data-view="run-detail">
-      <p :if={@error} class="field-error" data-error={inspect(@error)}>
-        Run {@run_id} unavailable ({inspect(@error)}).
+      <p :if={@error} class="field-error" data-error={format_value(@error)}>
+        Run {@run_id} unavailable ({format_value(@error)}).
       </p>
 
       <div :if={@detail} data-run-detail={@run_id}>
@@ -239,7 +240,7 @@ defmodule Autonomous.Web.RunDetailLive do
                         type="button"
                         phx-click="toggle_transcript"
                         phx-value-ref={attempt_ref(a)}
-                        class="btn-secondary"
+                        class="btn-link"
                         data-action={"transcript-#{attempt_ref(a)}"}
                         aria-expanded={to_string(showing?(assigns, attempt_ref(a)))}
                       >
@@ -254,11 +255,13 @@ defmodule Autonomous.Web.RunDetailLive do
                   >
                     <td colspan="7">
                       <div class="transcript-panel" data-transcript={@transcript.ref}>
-                        <div class="checkpoint-box-label">TRANSCRIPT</div>
+                        <div class="checkpoint-box-label">Transcript</div>
                         <p :if={@transcript[:error]} class="field-error">
-                          {inspect(@transcript.error)}
+                          {format_value(@transcript.error)}
                         </p>
-                        <pre :if={@transcript[:body]} class="transcript-body">{@transcript.body}</pre>
+                        <div :if={@transcript[:body]} class="transcript-body">
+                          {TranscriptMarkup.render(@transcript.body)}
+                        </div>
                       </div>
                     </td>
                   </tr>
@@ -274,7 +277,7 @@ defmodule Autonomous.Web.RunDetailLive do
                 <dt>status</dt>
                 <dd>{f.checkpoint.status}</dd>
                 <dt>reason</dt>
-                <dd>{inspect(f.checkpoint.reason)}</dd>
+                <dd>{format_value(f.checkpoint.reason)}</dd>
               </dl>
               <a
                 :if={diverted?(f)}
@@ -287,7 +290,7 @@ defmodule Autonomous.Web.RunDetailLive do
             </div>
 
             <div :if={f.remediation_attempts != []} data-remediation-attempts>
-              <div class="run-context-label">REMEDIATION ATTEMPTS</div>
+              <div class="run-context-label">Remediation attempts</div>
               <div :for={r <- f.remediation_attempts} class="run-context" data-remediation={r.ordinal}>
                 <span class="run-context-chip">
                   #{pad_ordinal(r.ordinal)} severity=<span>{r.max_severity}</span>
@@ -300,7 +303,7 @@ defmodule Autonomous.Web.RunDetailLive do
             </div>
 
             <div :if={f.clarify_rounds != []} data-clarify-rounds>
-              <div class="run-context-label">INTERACTIVE CLARIFY</div>
+              <div class="run-context-label">Interactive clarify</div>
               <div :for={r <- f.clarify_rounds} class="clarify-block" data-round={r.round}>
                 <div>
                   round {r.round}/{r.max_rounds} · asked {format_datetime(r.started_at)}
@@ -331,7 +334,7 @@ defmodule Autonomous.Web.RunDetailLive do
             </div>
 
             <div :if={f.advanced_with_findings} data-advanced-with-findings>
-              <div class="run-context-label">ADVANCED WITH UNRESOLVED FINDINGS</div>
+              <div class="run-context-label">Advanced with unresolved findings</div>
               <div class="run-context">
                 <span class="run-context-chip">
                   auto_remediation_exhaustion_policy: {f.advanced_with_findings.policy}
@@ -353,7 +356,7 @@ defmodule Autonomous.Web.RunDetailLive do
             </div>
 
             <div :if={f.escalations != []} data-escalations>
-              <div class="run-context-label">ESCALATIONS</div>
+              <div class="run-context-label">Escalations</div>
               <div
                 :for={e <- f.escalations}
                 class="clarify-block"
@@ -366,7 +369,7 @@ defmodule Autonomous.Web.RunDetailLive do
                     resolved {format_datetime(e.resolution[:resolved_at])}
                   </span>
                 </div>
-                <pre>reason: {inspect(e.reason)} / evidence: {inspect(e.evidence)}</pre>
+                <pre>reason: {format_value(e.reason)} / evidence: {format_value(e.evidence)}</pre>
 
                 <div
                   :if={resolution_detail(e) != []}
@@ -405,26 +408,18 @@ defmodule Autonomous.Web.RunDetailLive do
     """
   end
 
-  attr(:run, :map, required: true)
-  attr(:settings, :map, required: true)
-  attr(:amendments, :list, required: true)
-
-  # 030, contracts/operator-surfaces.md: the generic SETTINGS chip list skips
-  # `containment_profile` when strict — a dedicated CONTAINMENT block covers
-  # the permissive case, so the strict view stays byte-identical to pre-030.
   # Recorded settings carry string keys in production (`RunContext.to_map/1`)
   # but existing tests seed this map with atom keys, so both are checked.
-  defp settings_chips(settings) do
-    if Containment.permissive?(containment_profile(settings)) do
-      settings
-    else
-      settings |> Map.delete("containment_profile") |> Map.delete(:containment_profile)
-    end
-  end
-
   defp containment_profile(settings) do
     Map.get(settings, "containment_profile") || Map.get(settings, :containment_profile)
   end
+
+  # 033 R1: these attrs belong to `run_header/1`. Declared above a different
+  # function they made LiveView wrap `settings_chips/1` as a component, which
+  # leaked its `__given__` bookkeeping key onto the page.
+  attr(:run, :map, required: true)
+  attr(:settings, :map, required: true)
+  attr(:amendments, :list, required: true)
 
   defp run_header(assigns) do
     ~H"""
@@ -436,23 +431,30 @@ defmodule Autonomous.Web.RunDetailLive do
         </span>
       </div>
       <div class="escalations-sub">
-        {@run.state} · {@run.outcome || "—"} · started {format_datetime(@run.started_at)}
+        <span class="status-chip" data-status={RunStateView.status(@run.state)} data-marker="state">
+          {RunStateView.label(@run.state)}
+        </span>
+        <span
+          :if={@run.outcome}
+          class="status-chip"
+          data-status={RunStateView.status(@run.outcome)}
+          data-marker="outcome"
+        >
+          {RunStateView.label(@run.outcome)}
+        </span>
+        <span :if={!@run.outcome}>—</span>
+        · started {format_datetime(@run.started_at)}
         · {format_elapsed(@run.duration_ms)} · ${format_money(@run.spend_usd)}
-        <span :if={@run.halt_reason}>· halted: {inspect(@run.halt_reason)}</span>
+        <span :if={@run.halt_reason}>· halted: {format_value(@run.halt_reason)}</span>
         <span :if={@run.stopped_by} data-marker="stopped-by">
           · stopped at {@run.stopped_by} ({format_reason(@run.stopped_reason)})
         </span>
       </div>
 
-      <div class="run-context-label">SETTINGS</div>
-      <div class="run-context">
-        <span :for={{k, v} <- settings_chips(@settings)} class="run-context-chip">
-          {k}=<span>{inspect(v)}</span>
-        </span>
-      </div>
+      <.record_block label="run settings" fields={RunSettingsView.rows(@settings)} />
 
       <div :if={Containment.permissive?(containment_profile(@settings))} data-containment>
-        <div class="run-context-label">CONTAINMENT</div>
+        <div class="run-context-label">Containment</div>
         <div class="run-context">
           <span class="run-context-chip">
             containment_profile=<span>permissive</span>
@@ -464,11 +466,11 @@ defmodule Autonomous.Web.RunDetailLive do
       </div>
 
       <div :if={@amendments != []} data-amendments>
-        <div class="run-context-label">AMENDMENTS</div>
+        <div class="run-context-label">Amendments</div>
         <div :for={a <- @amendments} class="run-context" data-amendment={a.ordinal}>
           <span class="run-context-chip">
-            #{pad_ordinal(a.ordinal)} {format_datetime(a.effective_at)} after=<span>{inspect(a.effective_after)}</span>
-            changes=<span>{inspect(a.changes)}</span>
+            #{pad_ordinal(a.ordinal)} {format_datetime(a.effective_at)} after=<span>{format_value(a.effective_after)}</span>
+            changes=<span>{format_value(a.changes)}</span>
           </span>
         </div>
       </div>

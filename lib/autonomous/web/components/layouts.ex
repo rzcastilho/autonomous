@@ -20,13 +20,27 @@ defmodule Autonomous.Web.Layouts do
 
   @nav_items [
     {"/", "Mission Control"},
-    {"/dag", "Pipeline DAG"},
+    {"/dag", "Pipeline Chain"},
     {"/trigger", "Trigger Run"},
     {"/escalations", "Escalations"},
     {"/runs", "Runs"},
     {"/transcripts", "Transcripts"},
     {"/config", "Configuration"}
   ]
+
+  @short_labels %{
+    "/" => "MC",
+    "/dag" => "PC",
+    "/trigger" => "TR",
+    "/escalations" => "ES",
+    "/runs" => "RU",
+    "/transcripts" => "TX",
+    "/config" => "CF"
+  }
+
+  @doc "Two-letter nav label shown on the compact (≤760px) rail (FR-015)."
+  @spec short_label(String.t()) :: String.t()
+  def short_label(path), do: Map.fetch!(@short_labels, path)
 
   @doc "The fixed left-nav items as `{path, label}` (FR-001; 018 adds `/runs`)."
   @spec nav_items() :: [{String.t(), String.t()}]
@@ -71,7 +85,7 @@ defmodule Autonomous.Web.Layouts do
       reserved: ledger.reserved * 1.0,
       budget: ledger.budget * 1.0,
       tripped?: ledger.tripped?,
-      clock: DateTime.utc_now() |> DateTime.to_time() |> Time.to_string(),
+      clock: DateTime.utc_now() |> DateTime.to_time() |> Time.truncate(:second) |> Time.to_string(),
       containment_profile: containment_profile(status)
     }
   end

@@ -173,7 +173,14 @@ defmodule Autonomous.Web.TranscriptsLiveTest do
     {:ok, run_id} =
       Writer.open_run(repo_id, %{
         features: [
-          %{feature_id: "t6", slug: "slug-t6", path: "t6.md", number: 6, group: :backlog, created_at: nil}
+          %{
+            feature_id: "t6",
+            slug: "slug-t6",
+            path: "t6.md",
+            number: 6,
+            group: :backlog,
+            created_at: nil
+          }
         ],
         settings: %{},
         scope: :ad_hoc,
@@ -231,7 +238,14 @@ defmodule Autonomous.Web.TranscriptsLiveTest do
     {:ok, run_id} =
       Writer.open_run(repo_id, %{
         features: [
-          %{feature_id: "t9", slug: "slug-t9", path: "t9.md", number: 9, group: :backlog, created_at: nil}
+          %{
+            feature_id: "t9",
+            slug: "slug-t9",
+            path: "t9.md",
+            number: 9,
+            group: :backlog,
+            created_at: nil
+          }
         ],
         settings: %{},
         scope: :ad_hoc,
@@ -253,5 +267,59 @@ defmodule Autonomous.Web.TranscriptsLiveTest do
 
     {:ok, _view, html} = live(Phoenix.ConnTest.build_conn(), "/transcripts")
     assert html =~ ~s(data-state="no-transcripts")
+  end
+
+  # ---- 033 US1
+
+  test "the run selector lists recent runs and defaults to the latest (033)", %{
+    conn: conn,
+    repo: repo
+  } do
+    run_a = seed_run(repo, [{"s1", :specify, "# a\n\nbody a"}])
+    run_b = seed_run(repo, [{"s2", :specify, "# b\n\nbody b"}])
+
+    {:ok, _view, html} = live(conn, "/transcripts?run_id=#{run_a}")
+
+    assert html =~ ~s(<select id="transcript-run" name="run_id" class="console-input")
+    assert html =~ ~s(value="#{run_a}" selected)
+    assert html =~ ~s(value="#{run_b}")
+    assert html =~ "body a"
+  end
+
+  test "changing the run selector patches to ?run_id= and loads that run (033)", %{
+    conn: conn,
+    repo: repo
+  } do
+    run_a = seed_run(repo, [{"s1", :specify, "# a\n\nbody a"}])
+    run_b = seed_run(repo, [{"s2", :specify, "# b\n\nbody b"}])
+
+    {:ok, view, _html} = live(conn, "/transcripts?run_id=#{run_a}")
+    render_change(view, "select_run", %{"run_id" => run_b})
+
+    assert_patch(view, "/transcripts?run_id=#{run_b}")
+    html = render(view)
+    assert html =~ "body b"
+    refute html =~ "body a"
+  end
+
+  test "transcript markup renders as formatted HTML and embedded tags stay inert (033)", %{
+    conn: conn,
+    repo: repo
+  } do
+    run_id =
+      seed_run(repo, [
+        {"m1", :plan,
+         "# Plan\n\nsome **bold** and `code`\n\n- one\n- two\n\n<script>alert(1)</script>"}
+      ])
+
+    {:ok, _view, html} = live(conn, "/transcripts?run_id=#{run_id}&feature=m1&phase=plan")
+
+    assert html =~ "<h1>Plan</h1>"
+    assert html =~ "<strong>bold</strong>"
+    assert html =~ "<code>code</code>"
+    assert html =~ "<ul><li>one</li><li>two</li></ul>"
+    assert html =~ "&lt;script&gt;alert(1)&lt;/script&gt;"
+    refute html =~ "<script>alert(1)"
+    refute html =~ "<pre class=\"transcript-body\">"
   end
 end

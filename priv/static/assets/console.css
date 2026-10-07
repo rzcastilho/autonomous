@@ -7,6 +7,8 @@
      § Complexity Tracking. */
 
 :root {
+  color-scheme: dark;
+
   /* Surfaces — never interchangeable (§II) */
   --bg: #0b0d12; --panel: #0e1016; --card: #12151d; --raised: #161a23;
 
@@ -14,7 +16,7 @@
   --hairline: #14181f; --border-subtle: #1c212c; --border: #232936; --border-strong: #2a3142;
 
   /* Text — four steps, no more (§II) */
-  --text: #e6e9f0; --text-secondary: #c3c9d6; --text-muted: #8b93a7; --text-faint: #5a6274;
+  --text: #e6e9f0; --text-secondary: #c3c9d6; --text-muted: #8b93a7; --text-faint: #7a8296;
 
   /* Accent — one violet hue (§II) */
   --accent: #7c5cff; --accent-light: #a78bfa; --accent-hover: #c4b5fd;
@@ -22,7 +24,7 @@
 
   /* Status — the only saturated colors in the system (§II) */
   --done: #34d399; --running: #38bdf8; --escalated: #fbbf24;
-  --halted: #fb7185; --failed: #f43f5e; --pending: #64748b; --blocked: #475569;
+  --halted: #fb7185; --failed: #f6506a; --pending: #94a3b8; --blocked: #828ea3;
   --awaiting: #fb923c;
 
   /* Radii (§IV; pip from §V) */
@@ -49,6 +51,12 @@
   --glow-accent: 0 0 0 1px var(--accent-shadow), 0 6px 16px rgba(124, 92, 255, 0.35); /* §IV active-node glow */
   --gradient-primary: linear-gradient(140deg, var(--accent), var(--accent-deep)); /* §II */
   --selection: #7c5cff55; /* §II `55` suffix */
+  --border-input: var(--text-faint); /* 033: form-control border, >=3:1 on --bg */
+
+  /* 033 layout tokens (contracts/design-guard-extensions.md §B) */
+  --measure-transcript: 96ch;
+  --rail-compact: 52px;
+  --card-min: 280px;
 
   /* DELIBERATE DIVERGENCE — see plan.md § Complexity Tracking.
      §VII.3 mandates hatched reserved spend; §II/§VIII prohibit background
@@ -375,7 +383,7 @@ fieldset {
   padding: var(--sp-4) var(--sp-8);
   font-family: var(--font-mono);
   font-size: var(--fs-meta);
-  color: var(--text-faint);
+  color: var(--text-secondary);
 }
 
 .cost-gauge-reserved,
@@ -440,6 +448,7 @@ fieldset {
   background: var(--raised);
   color: var(--text);
   box-shadow: var(--shadow-toast);
+  white-space: pre-line;
   animation: scFade 0.16s ease;
 }
 
@@ -527,7 +536,7 @@ fieldset {
 .console-nav .nav-active,
 .console-nav .nav-active:hover {
   background: var(--selection);
-  color: var(--accent);
+  color: var(--accent-light);
 }
 
 .console-footer {
@@ -548,7 +557,19 @@ fieldset {
   font-family: var(--font-mono);
   font-size: var(--fs-meta);
   color: var(--text-muted);
-  word-break: break-all;
+}
+
+.console-footer-value {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-8);
+}
+
+.console-repo-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .console-status-row {
@@ -577,6 +598,10 @@ fieldset {
 
 .console-status-value {
   font-family: var(--font-mono);
+}
+
+.status-dot[data-status] {
+  background: var(--sc);
 }
 
 /* Top bar (US1 / contracts/design-system.md §3) */
@@ -763,28 +788,46 @@ fieldset {
 }
 
 .status-count-strip {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(136px, 1fr));
-  gap: var(--sp-10);
-  margin-bottom: var(--sp-20);
-}
-
-.status-count-cell {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-8) var(--sp-18);
+  padding: var(--sp-10) var(--sp-14);
+  margin-bottom: var(--sp-14);
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: var(--r-card);
-  padding: var(--sp-14);
+}
+
+.status-count-cell {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--sp-8);
+  gap: var(--sp-6);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--text-secondary);
 }
 
 .status-count-cell .count {
-  font-family: var(--font-mono);
-  font-size: var(--fs-kpi);
   font-weight: 600;
-  flex-shrink: 0;
+  color: var(--text);
+}
+
+.status-count-cell[data-zero],
+.status-count-cell[data-zero] .count {
+  color: var(--text-muted);
+}
+
+.status-count-cell[data-zero] .status-dot {
+  opacity: 0.4;
+}
+
+.phase-position {
+  display: block;
+  margin-top: var(--sp-4);
+  font-family: var(--font-mono);
+  font-size: var(--fs-eyebrow);
+  color: var(--text-muted);
 }
 
 .backlog-table {
@@ -875,11 +918,27 @@ fieldset {
   flex: 0 0 auto;
 }
 
+.feed-id {
+  font-family: var(--font-mono);
+  font-size: var(--fs-eyebrow);
+  color: var(--text-secondary);
+  flex: 0 0 auto;
+}
+
 .feed-text {
   color: var(--text-muted);
 }
 
+.feed-entry .status-dot {
+  align-self: center;
+}
+
+.console-nav .nav-short {
+  display: none;
+}
+
 .empty-state {
+  font-size: var(--fs-body);
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: var(--r-panel);
@@ -996,11 +1055,9 @@ fieldset {
 }
 
 .dag-chain {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(var(--card-min), 1fr));
   gap: var(--sp-20);
-  max-width: 460px;
 }
 
 .dag-node {
@@ -1014,17 +1071,6 @@ fieldset {
 
 .dag-node[data-status="running"] {
   box-shadow: var(--glow-accent);
-}
-
-/* The link connecting a node to the one it stacks on. */
-.dag-chain .dag-node + .dag-node::before {
-  content: "";
-  position: absolute;
-  top: -20px;
-  left: 22px;
-  width: 1px;
-  height: 20px;
-  background: var(--border-strong);
 }
 
 .dag-node:hover {
@@ -1108,22 +1154,6 @@ fieldset {
   margin-top: var(--sp-18);
   padding-top: var(--sp-18);
   border-top: 1px dashed var(--border-strong);
-}
-
-/* Release-order badge — the run releases one feature at a time in ascending
-   number order, so a link's chain position is exactly its release order. */
-.dag-release-badge {
-  font-family: var(--font-mono);
-  font-size: var(--fs-eyebrow);
-  font-weight: 700;
-  line-height: 1;
-  color: var(--text);
-  background: var(--accent-deep);
-  border-radius: var(--r-chip);
-  min-width: 15px;
-  padding: 4px 4px;
-  text-align: center;
-  flex: none;
 }
 
 .dag-adhoc-badge {
@@ -1440,9 +1470,9 @@ fieldset {
 }
 
 .resume-textarea,
-.resume-select {
+.console-input {
   background: var(--bg);
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--border-input);
   border-radius: var(--r-input);
   padding: var(--sp-10) 12px;
   color: var(--text);
@@ -1924,17 +1954,17 @@ a.btn-primary {
   margin: 0 0 0 auto;
 }
 
+.dag-wave-label {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: var(--fs-eyebrow);
+  color: var(--text-faint);
+  margin-bottom: var(--sp-4);
+}
+
 .dag-wave-picker select {
   width: 100%;
   max-width: 320px;
-  background: var(--bg);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--r-input);
-  padding: 8px var(--sp-10);
-  color: var(--text);
-  font-family: var(--font-mono);
-  font-size: var(--fs-body);
-  outline: none;
 }
 
 /* Wave source receipt (028, FR-007/FR-010): names the run a wave's nodes are
@@ -2129,6 +2159,55 @@ textarea {
   opacity: 0.45;
 }
 
+/* Trigger option groups (033, FR-013): one control per row, the real option
+   name as the label, consistent label and control sizes. */
+.option-group {
+  margin-top: var(--sp-18);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-10);
+}
+
+.option-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-14);
+}
+
+.option-fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-10);
+}
+
+.option-fields .option-name {
+  flex: 0 0 var(--card-min);
+}
+
+.option-name {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+}
+
+/* Two-step start (033, FR-010): the armed button, its consequence hint, Cancel. */
+.start-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-14);
+  margin-top: var(--sp-18);
+  flex-wrap: wrap;
+}
+
+.start-hint {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--text-secondary);
+}
+
+.start-controls .btn-primary[data-confirm-armed] {
+  border-color: var(--accent-light);
+}
+
 /* Range sliders (Config's budget/concurrency) */
 
 .range-row-head {
@@ -2171,12 +2250,51 @@ textarea {
   margin-bottom: 0;
 }
 
-.config-models legend,
-.config-budget legend {
-  font-size: var(--fs-section);
-  font-weight: 600;
+/* A visible legend floats inside the panel instead of straddling its border. */
+.form-panel > legend:not(.sr-only) {
+  float: left;
+  width: 100%;
   padding: 0;
   margin-bottom: var(--sp-14);
+}
+
+.config-section-title {
+  margin-bottom: var(--sp-14);
+}
+
+.config-budget .console-input {
+  width: 100%;
+  margin-bottom: var(--sp-12);
+}
+
+.config-pr-fields .form-refusal {
+  margin-top: var(--sp-8);
+}
+
+/* Sticky Apply / Reset bar (FR-022) */
+
+.config-actionbar {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-12);
+  padding: var(--sp-12) 0;
+  background: var(--bg);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.config-unsaved {
+  margin-right: auto;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--text-secondary);
+}
+
+.config-actionbar .btn-secondary:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 /* Model routing rows + button-style radio pairs */
@@ -2275,20 +2393,20 @@ textarea {
 
 .config-pr-fields input {
   width: 100%;
-  background: var(--bg);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--r-input);
-  padding: var(--sp-8) var(--sp-10);
-  color: var(--text);
-  font-family: var(--font-mono);
-  font-size: var(--fs-section);
 }
 
 /* Transcripts: feature sidebar + phase tabs */
 
 .view-transcripts {
   display: flex;
+  flex-wrap: wrap;
   height: 100%;
+}
+
+.transcripts-run-select {
+  flex: 0 0 100%;
+  padding: var(--sp-14);
+  border-bottom: 1px solid var(--border-subtle);
 }
 
 .transcripts-sidebar {
@@ -2423,8 +2541,66 @@ textarea {
   font-size: var(--fs-transcript);
   line-height: 1.7;
   color: var(--text-secondary);
-  white-space: pre-wrap;
+  max-width: var(--measure-transcript);
+  white-space: normal;
+  overflow-wrap: anywhere;
   margin: 0;
+}
+
+/* Rendered transcript markup (033, TranscriptMarkup): prose reflows, fenced
+   code keeps its whitespace and scrolls inside the fence, never the page. */
+.transcript-body p,
+.transcript-body ul,
+.transcript-body ol,
+.transcript-body pre {
+  margin: 0 0 var(--sp-10);
+}
+
+.transcript-body p {
+  white-space: pre-line;
+}
+
+.transcript-body ul,
+.transcript-body ol {
+  padding-left: var(--sp-18);
+}
+
+.transcript-body h1,
+.transcript-body h2,
+.transcript-body h3,
+.transcript-body h4,
+.transcript-body h5,
+.transcript-body h6 {
+  font-family: var(--font-sans);
+  font-size: var(--fs-section);
+  font-weight: 600;
+  color: var(--text);
+  margin: var(--sp-14) 0 var(--sp-8);
+}
+
+.transcript-body strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.transcript-body pre {
+  white-space: pre;
+  overflow-x: auto;
+  padding: var(--sp-10) var(--sp-14);
+  background: var(--card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-chip);
+}
+
+.transcript-body code {
+  font-family: var(--font-mono);
+}
+
+.transcript-body p code,
+.transcript-body li code {
+  background: var(--raised);
+  padding: 0 var(--sp-4);
+  border-radius: var(--r-chip);
 }
 
 /* Run history (018 / contracts/console-runs.md) */
@@ -2440,14 +2616,34 @@ textarea {
   margin-bottom: var(--sp-14);
 }
 
-.run-feature-chip {
+.run-status-counts {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--sp-12);
+}
+
+.status-count {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  margin-right: var(--sp-10);
+  gap: var(--sp-6);
   font-family: var(--font-mono);
   font-size: var(--fs-meta);
-  color: var(--text-faint);
+}
+
+/* Text-style action for a table row (US6): no border, no fill. */
+.btn-link {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--accent-light);
+  font-family: var(--font-sans);
+  font-size: var(--fs-body);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.btn-link:hover {
+  color: var(--text);
 }
 
 /* Run detail (018 / contracts/console-runs.md) */
@@ -2458,4 +2654,111 @@ textarea {
 
 .run-detail-actions {
   margin: var(--sp-14) 0;
+}
+
+/* Narrow screens (feature 033, US3): the rail stays persistent as a compact
+   strip; tables become two-line rows; nothing scrolls the page sideways. */
+@media (max-width: 760px) {
+  .console-sidebar {
+    width: var(--rail-compact);
+    flex: 0 0 var(--rail-compact);
+    padding: var(--sp-12) var(--sp-4);
+    align-items: center;
+  }
+
+  .console-brand-name,
+  .console-brand-sub,
+  .console-footer-label,
+  .console-footer-value,
+  .console-status-row span:not(.status-dot),
+  .console-nav .nav-label {
+    display: none;
+  }
+
+  .console-logo {
+    padding: var(--sp-4) 0 var(--sp-12);
+  }
+
+  .console-footer {
+    padding: var(--sp-8) 0;
+  }
+
+  .console-nav {
+    width: 100%;
+  }
+
+  .console-nav .nav-item {
+    position: relative;
+    justify-content: center;
+    padding: var(--sp-10) var(--sp-4);
+  }
+
+  .console-nav .nav-short {
+    display: inline;
+    font-family: var(--font-mono);
+    font-size: var(--fs-meta);
+  }
+
+  .console-nav .badge {
+    position: absolute;
+    top: 0;
+    right: 0;
+  }
+
+  .console-topbar {
+    flex-wrap: wrap;
+    gap: var(--sp-8) var(--sp-12);
+    padding: var(--sp-8) var(--sp-12);
+  }
+
+  .topbar-divider,
+  .topbar-clock {
+    display: none;
+  }
+
+  .topbar-gauge {
+    flex: 1 1 100%;
+    order: 3;
+  }
+
+  .console-content {
+    padding: var(--sp-12);
+  }
+
+  .backlog-table,
+  .backlog-table tbody {
+    display: block;
+  }
+
+  .backlog-table thead {
+    display: none;
+  }
+
+  .backlog-table tbody tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: var(--sp-4) var(--sp-10);
+    padding: var(--sp-10) var(--sp-12);
+  }
+
+  .backlog-table td {
+    padding: 0;
+    min-width: 0;
+  }
+
+  .backlog-table td.cell-secondary {
+    display: none;
+  }
+
+  .backlog-table td.cell-status {
+    text-align: right;
+  }
+
+  .backlog-table td.cell-spend {
+    text-align: right;
+  }
+
+  .feature-drawer {
+    width: min(460px, 100vw);
+  }
 }

@@ -19,6 +19,7 @@ defmodule Autonomous.Web.FeatureDrawerComponent do
   use Phoenix.Component
 
   import Autonomous.Web.CoreComponents
+  import Autonomous.Web.RunSettingsView, only: [format_value: 1]
 
   alias Autonomous.Pipeline
 
@@ -55,7 +56,7 @@ defmodule Autonomous.Web.FeatureDrawerComponent do
 
       <div class="drawer-stats">
         <div class="drawer-stat">
-          <div class="drawer-stat-label">ELAPSED</div>
+          <div class="drawer-stat-label">Elapsed</div>
           <div class="drawer-stat-value">{format_elapsed(@feature && @feature[:elapsed_ms])}</div>
         </div>
         <div class="drawer-stat">
@@ -63,7 +64,7 @@ defmodule Autonomous.Web.FeatureDrawerComponent do
           <div class="drawer-stat-value">${format_money(@feature && @feature[:spend])}</div>
         </div>
         <div class="drawer-stat">
-          <div class="drawer-stat-label">PREREQS</div>
+          <div class="drawer-stat-label">Prereqs</div>
           <div class="drawer-stat-value drawer-prereqs">
             <span :if={prereqs(@feature) == []}>none</span>
             <span :for={p <- prereqs(@feature)} class="drawer-prereq">{p}</span>
@@ -72,12 +73,13 @@ defmodule Autonomous.Web.FeatureDrawerComponent do
       </div>
 
       <div class="drawer-timeline-section">
-        <div class="drawer-section-label">PHASE PIPELINE</div>
+        <div class="drawer-section-label">Phase pipeline</div>
         <.phase_strip
           :if={@feature}
           phases={@feature[:phases] || %{}}
           status={@feature[:status] || :pending}
         />
+        <.phase_position_label :if={@feature} phases={@feature[:phases] || %{}} />
         <ol class="drawer-phase-timeline">
           <li
             :for={{phase, ordinal} <- Enum.with_index(Pipeline.phases(), 1)}
@@ -95,7 +97,7 @@ defmodule Autonomous.Web.FeatureDrawerComponent do
                 <span class="timeline-meta">{timeline_meta(phase_cell(@feature, phase))}</span>
               </div>
               <div :if={phase_cell(@feature, phase)[:outcome]} class="timeline-note">
-                {inspect(phase_cell(@feature, phase).outcome)}
+                {format_value(phase_cell(@feature, phase).outcome)}
               </div>
             </div>
           </li>
@@ -169,7 +171,8 @@ defmodule Autonomous.Web.FeatureDrawerComponent do
   defp phase_cell_state(%{state: :active}, _status), do: "active"
   defp phase_cell_state(_cell, _status), do: "pending"
 
-  defp phase_state(feature, phase), do: phase_cell_state(phase_cell(feature, phase), feature && feature[:status])
+  defp phase_state(feature, phase),
+    do: phase_cell_state(phase_cell(feature, phase), feature && feature[:status])
 
   # §V: "✓ done, ● active, ! escalated, ✕ failed, ordinal pending" — `halted`
   # is not named in the doc's timeline enumeration; it shares `!` with

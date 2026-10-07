@@ -176,6 +176,40 @@ defmodule Autonomous.Web.CoreComponents do
     """
   end
 
+  @doc """
+  Current phase of a feature as `{phase, n, total}` (data-model §5): the
+  `:active` cell, else the last `:completed` one, else the first phase with
+  `n = 1`. Total: unknown or missing cells count as pending.
+  """
+  @spec phase_position(map() | nil) :: {atom(), pos_integer(), pos_integer()}
+  def phase_position(phases) do
+    phases = phases || %{}
+    ordered = Pipeline.phases()
+    indexed = Enum.with_index(ordered, 1)
+    state_of = fn phase -> phases |> Map.get(phase) |> then(&(&1 && Map.get(&1, :state))) end
+
+    found =
+      Enum.find(indexed, fn {phase, _n} -> state_of.(phase) == :active end) ||
+        indexed
+        |> Enum.filter(fn {phase, _n} -> state_of.(phase) == :completed end)
+        |> List.last() ||
+        List.first(indexed)
+
+    {phase, n} = found
+    {phase, n, length(ordered)}
+  end
+
+  attr(:phases, :map, required: true)
+
+  def phase_position_label(assigns) do
+    {phase, n, total} = phase_position(assigns.phases)
+    assigns = assign(assigns, phase: phase, n: n, total: total)
+
+    ~H"""
+    <span class="phase-position" data-phase-position>{@phase} · {@n}/{@total}</span>
+    """
+  end
+
   defp remediation_sublabel(%{attempt: attempt, limit: limit})
        when is_integer(attempt) and is_integer(limit),
        do: "attempt #{attempt}/#{limit}"
@@ -210,7 +244,9 @@ defmodule Autonomous.Web.CoreComponents do
   @doc """
   Cost-breaker gauge (`Ledger.snapshot/1` shape): fill = `(committed +
   reserved) / budget`, fill color signals proximity, `tripped?` shows the
-  armed/tripped indicator (FR-004, SC-007).
+  band color (FR-004, SC-007). The label is `$committed + $reserved /
+  $budget` in mono, outside the bar, with no breaker word (the breaker chip
+  owns that). The bar clamps at 100% when committed exceeds budget.
   """
   attr(:committed, :float, default: 0.0)
   attr(:reserved, :float, default: 0.0)
@@ -226,7 +262,8 @@ defmodule Autonomous.Web.CoreComponents do
         fill: fill,
         committed_fill: committed_fill,
         band: gauge_band(fill, assigns.tripped?),
-        spent_label: money(assigns.committed + assigns.reserved),
+        committed_label: money(assigns.committed),
+        reserved_label: money(assigns.reserved),
         budget_label: money(assigns.budget)
       )
 
@@ -241,8 +278,8 @@ defmodule Autonomous.Web.CoreComponents do
     >
       <div class="cost-gauge-reserved" style={"width: #{@fill}%;"}></div>
       <div class="cost-gauge-fill" style={"width: #{@committed_fill}%;"}></div>
-      <span class="cost-gauge-label" data-tripped={@tripped?}>
-        ${@spent_label} / ${@budget_label} ({if @tripped?, do: "tripped", else: "armed"})
+      <span class="cost-gauge-label">
+        ${@committed_label} + ${@reserved_label} / ${@budget_label}
       </span>
     </div>
     """

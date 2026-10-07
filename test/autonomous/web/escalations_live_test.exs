@@ -336,6 +336,7 @@ defmodule Autonomous.Web.EscalationsLiveTest do
 
     assert html =~ "restarted from phase 1"
     refute html =~ "decision_required"
+
     assert {:ok, %{run: %{state: :completed, outcome: :ended_by_operator}}} =
              Store.run(run_key)
   end
@@ -443,7 +444,8 @@ defmodule Autonomous.Web.EscalationsLiveTest do
     refute html =~ "unrelated content"
 
     assert html =~ "pr_base"
-    assert html =~ "main"
+    assert html =~ "pr_base=<span>main</span>"
+    refute html =~ "&quot;main&quot;"
   end
 
   test "guidance + start-phase override submit calls resume/2 and clears the escalation on success",
@@ -606,6 +608,7 @@ defmodule Autonomous.Web.EscalationsLiveTest do
     {:ok, _view, html} = live(conn, "/escalations")
 
     assert html =~ ~s(data-state="all-clear")
+    assert html =~ ~s(class="empty-state-title")
   end
 
   # ---- task-phase picker (US2, checkpoint-implement-chunk.md §4) ----------

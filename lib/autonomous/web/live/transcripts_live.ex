@@ -18,9 +18,21 @@ defmodule Autonomous.Web.TranscriptsLive do
   use Autonomous.Web, :live_view
 
   alias Autonomous.Pipeline
+  alias Autonomous.Web.TranscriptMarkup
 
   @impl true
-  def mount(params, _session, socket) do
+  def mount(_params, _session, socket) do
+    {:ok,
+     assign(socket,
+       page_title: "Transcripts",
+       current_path: "/transcripts"
+     )}
+  end
+
+  # The run selector `push_patch`es `?run_id=`, so the URL stays the receipt and
+  # selection lives here, not in `mount/3` (033, research R6).
+  @impl true
+  def handle_params(params, _uri, socket) do
     run_id = params["run_id"] || Autonomous.current_run_id() || latest_run_id()
     features = run_features(run_id)
 
@@ -28,12 +40,11 @@ defmodule Autonomous.Web.TranscriptsLive do
     selected_feature = find_feature(features, selected_feature_id)
     selected_index = resolve_attempt_index(selected_feature, params)
 
-    {:ok,
+    {:noreply,
      socket
      |> assign(
-       page_title: "Transcripts",
-       current_path: "/transcripts",
        run_id: run_id,
+       run_options: run_options(run_id),
        features: features,
        selected_feature_id: selected_feature_id,
        selected_index: selected_index
@@ -42,6 +53,10 @@ defmodule Autonomous.Web.TranscriptsLive do
   end
 
   @impl true
+  def handle_event("select_run", %{"run_id" => run_id}, socket) do
+    {:noreply, push_patch(socket, to: "/transcripts?" <> URI.encode_query(%{"run_id" => run_id}))}
+  end
+
   def handle_event("select_feature", %{"id" => id}, socket) do
     feature = find_feature(socket.assigns.features, id)
     index = default_index(feature)
@@ -76,6 +91,18 @@ defmodule Autonomous.Web.TranscriptsLive do
       {:ok, %{features: features}} -> features
       _ -> []
     end
+  end
+
+  # The 20 most recent runs; the current selection is kept in the list even when
+  # it is older, so the select always shows what the page is on.
+  defp run_options(selected) do
+    ids =
+      case Autonomous.run_history(limit: 20) do
+        {:ok, runs} -> for %{run_id: id} = run <- runs, not Map.get(run, :damaged, false), do: id
+        _ -> []
+      end
+
+    if selected && selected not in ids, do: ids ++ [selected], else: ids
   end
 
   defp latest_run_id do
@@ -164,6 +191,15 @@ defmodule Autonomous.Web.TranscriptsLive do
   def render(assigns) do
     ~H"""
     <div class="view-transcripts" data-view="transcripts">
+      <form :if={@run_options != []} id="transcript-run-form" phx-change="select_run" class="transcripts-run-select" data-form="run-select">
+        <label class="field-label-inline" for="transcript-run">
+          Run
+          <select id="transcript-run" name="run_id" class="console-input" data-field="run_id">
+            <option :for={id <- @run_options} value={id} selected={id == @run_id}>{id}</option>
+          </select>
+        </label>
+      </form>
+
       <div :if={@features == []} class="empty-state" data-state="no-transcripts">
         <p>No transcripts available yet.</p>
       </div>
@@ -214,7 +250,7 @@ defmodule Autonomous.Web.TranscriptsLive do
                   title={if is_nil(@doc.attempt.ended_at), do: "live — no finish record yet", else: "finished"}
                 ></span>
               </p>
-              <pre class="transcript-body">{@doc.body}</pre>
+              <div class="transcript-body">{TranscriptMarkup.render(@doc.body)}</div>
             </div>
 
             <div :if={@doc && not @doc.exists?} class="empty-state" data-state="not-yet-written">

@@ -239,13 +239,16 @@ defmodule Autonomous.Web.MissionControlLive do
       <div :if={(@view.active? or @recovered?) and not @view.finished?} class="run-live" data-state="live">
         <div class="mission-grid">
           <div class="mission-main">
-            <div class="status-count-strip">
+            <div class="status-count-strip" data-status-strip>
               <div
                 :for={{status, count} <- @status_counts}
                 class="status-count-cell"
                 data-status={status}
+                data-zero={count == 0}
               >
-                <.status_pill status={status} /> <span class="count">{count}</span>
+                <span class="status-dot" data-status={status}></span>
+                <span class="status-name">{status}</span>
+                <span class="count">{count}</span>
               </div>
             </div>
 
@@ -272,8 +275,8 @@ defmodule Autonomous.Web.MissionControlLive do
                   data-feature-row={id}
                 >
                   <td>{id}</td>
-                  <td>{f.slug}</td>
-                  <td>
+                  <td class="cell-secondary">{f.slug}</td>
+                  <td class="cell-status">
                     <.status_pill status={f.status} />
                     <span
                       :if={awaiting_meta(Map.get(@awaiting_by_feature, id))}
@@ -282,16 +285,17 @@ defmodule Autonomous.Web.MissionControlLive do
                       {awaiting_meta(Map.get(@awaiting_by_feature, id))}
                     </span>
                   </td>
-                  <td>
+                  <td class="cell-progress">
                     <.phase_strip
                       phases={f.phases}
                       status={f.status}
                       chunk={f[:chunk]}
                       remediation={f[:remediation]}
                     />
+                    <.phase_position_label phases={f.phases} />
                   </td>
-                  <td>{format_elapsed(f.elapsed_ms)}</td>
-                  <td>${format_money(f.spend)}</td>
+                  <td class="cell-secondary">{format_elapsed(f.elapsed_ms)}</td>
+                  <td class="cell-spend">${format_money(f.spend)}</td>
                 </tr>
               </tbody>
             </table>
@@ -306,6 +310,8 @@ defmodule Autonomous.Web.MissionControlLive do
                 data-feature-id={entry.feature_id}
               >
                 <span class="feed-time">{Calendar.strftime(entry.at, "%H:%M:%S")}</span>
+                <span class="status-dot" data-status={feed_status(@view, entry)}></span>
+                <span class="feed-id">{entry.feature_id}</span>
                 <span class="feed-text">{entry.text}</span>
               </li>
             </ul>
@@ -325,6 +331,13 @@ defmodule Autonomous.Web.MissionControlLive do
 
   defp awaiting_by_feature do
     Map.new(Autonomous.pending_questions(), &{&1.feature_id, &1})
+  end
+
+  defp feed_status(view, entry) do
+    case Map.get(view.per_feature, entry.feature_id) do
+      %{status: status} -> status_class(status)
+      _ -> "pending"
+    end
   end
 
   defp status_counts(view) do

@@ -2,12 +2,12 @@ defmodule Autonomous.Web.TriggerLiveTest do
   # Overrides global Config app env (repo/breakdown_dir) and may start the
   # real named Coordinator via a successful Start — must not run concurrently
   # with another test claiming that name or mutating Config.
-  use ExUnit.Case, async: false
+  use Autonomous.StoreCase, async: false
 
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
 
-  alias Autonomous.{Config, Coordinator}
+  alias Autonomous.{Config, ConsoleProjection, Coordinator, Feature, RepoIdentity}
 
   @endpoint Autonomous.Web.Endpoint
 
@@ -176,8 +176,7 @@ defmodule Autonomous.Web.TriggerLiveTest do
     setup do
       prior = %{
         auto_remediation: Application.get_env(:autonomous, :auto_remediation),
-        auto_remediation_threshold:
-          Application.get_env(:autonomous, :auto_remediation_threshold),
+        auto_remediation_threshold: Application.get_env(:autonomous, :auto_remediation_threshold),
         auto_remediation_attempt_limit:
           Application.get_env(:autonomous, :auto_remediation_attempt_limit)
       }
@@ -218,7 +217,7 @@ defmodule Autonomous.Web.TriggerLiveTest do
       assert html =~ ~s(data-auto-remediation="false")
       assert html =~ ~s(data-remediation-threshold="" disabled="")
       assert html =~ ~s(data-remediation-limit="" disabled="")
-      assert html =~ ~s(class="controls-disabled")
+      assert html =~ ~s(controls-disabled)
     end
 
     test "an out-of-range attempt limit is refused before the run starts (AS-9, FR-010e)", %{
@@ -343,8 +342,7 @@ defmodule Autonomous.Web.TriggerLiveTest do
     setup do
       prior = %{
         interactive_clarify: Application.get_env(:autonomous, :interactive_clarify),
-        clarify_answer_timeout_s:
-          Application.get_env(:autonomous, :clarify_answer_timeout_s),
+        clarify_answer_timeout_s: Application.get_env(:autonomous, :clarify_answer_timeout_s),
         clarify_max_rounds: Application.get_env(:autonomous, :clarify_max_rounds)
       }
 
@@ -371,20 +369,25 @@ defmodule Autonomous.Web.TriggerLiveTest do
       assert html =~ ~s(value="2")
     end
 
-    test "the timeout and rounds inputs are disabled while the switch is off, enabled once toggled on",
+    test "the timeout and rounds inputs are absent while the switch is off, present with defaults once toggled on",
          %{conn: conn} do
       point_backlog_at(@valid_dir)
 
       {:ok, view, html} = live(conn, "/trigger")
       assert html =~ ~s(data-interactive-clarify="false")
-      assert html =~ ~s(data-clarify-timeout="" disabled="")
-      assert html =~ ~s(data-clarify-rounds="" disabled="")
+      refute html =~ "data-clarify-timeout"
+      refute html =~ "data-clarify-rounds"
+      refute html =~ ~s(name="answer_timeout_min")
+      refute html =~ ~s(name="max_rounds")
 
       html = render_click(view, "toggle_interactive_clarify", %{})
 
       assert html =~ ~s(data-interactive-clarify="true")
+      assert html =~ ~s(name="answer_timeout_min")
+      assert html =~ ~s(name="max_rounds")
+      assert html =~ ~s(data-clarify-timeout)
+      assert html =~ ~s(data-clarify-rounds)
       refute html =~ ~s(data-clarify-timeout="" disabled)
-      refute html =~ ~s(data-clarify-rounds="" disabled)
     end
 
     test "an out-of-range timeout is refused before the run starts", %{conn: conn} do
@@ -429,6 +432,235 @@ defmodule Autonomous.Web.TriggerLiveTest do
       assert mc_html =~ "interactive_clarify: true"
       assert mc_html =~ "clarify_answer_timeout_s: 120"
       assert mc_html =~ "clarify_max_rounds: 1"
+    end
+  end
+
+  # ---- 033 US2: grouped options, honest summary
+
+  describe "option groups and summary (033)" do
+    test "options sit in three labelled fieldsets, one control per row", %{conn: conn} do
+      point_backlog_at(@valid_dir)
+
+      {:ok, _view, html} = live(conn, "/trigger")
+      doc = LazyHTML.from_document(html)
+
+      groups =
+        doc
+        |> LazyHTML.query("fieldset[data-option-group]")
+        |> LazyHTML.attribute("data-option-group")
+
+      assert groups == ["auto_remediation", "interactive_clarify", "containment_profile"]
+
+      for g <- groups do
+        fieldset = LazyHTML.query(doc, ~s(fieldset[data-option-group="#{g}"]))
+        assert fieldset |> LazyHTML.query(".config-toggle-title") |> Enum.count() == 1
+      end
+
+      assert html =~ "auto_remediation_threshold"
+      assert html =~ "auto_remediation_exhaustion_policy"
+      assert html =~ "containment_profile"
+    end
+
+    test "the backlog summary uses statement labels and a repo-relative source", %{conn: conn} do
+      point_backlog_at(@valid_dir)
+
+      {:ok, _view, html} = live(conn, "/trigger")
+
+      for label <- ["Source", "Feature count", "DAG validated", "Run shape", "Budget"],
+          do: assert(html =~ "<dt>#{label}</dt>")
+
+      refute html =~ "DAG validated?"
+      refute html =~ "…/autonomous"
+      assert html =~ ~s(title="#{@valid_dir}")
+    end
+
+    test "every select and text-like input carries console-input", %{conn: conn} do
+      point_backlog_at(@valid_dir)
+
+      {:ok, view, _html} = live(conn, "/trigger")
+      html = render_click(view, "toggle_interactive_clarify", %{})
+      doc = LazyHTML.from_document(html)
+
+      controls = LazyHTML.query(doc, "select, input[type=number], input[type=text]")
+      assert Enum.count(controls) >= 5
+
+      for el <- controls do
+        assert el |> LazyHTML.attribute("class") |> Enum.join(" ") =~ "console-input"
+      end
+    end
+
+    test "no data-confirm attribute exists anywhere", %{conn: conn} do
+      point_backlog_at(@valid_dir)
+      {:ok, _view, html} = live(conn, "/trigger")
+      refute html =~ "data-confirm="
+    end
+  end
+
+  # ---- 033 US2: two-step start while a run is in flight
+
+  describe "two-step start (033)" do
+    setup do
+      src = Path.expand("../../fixtures/breakdown_packages", __DIR__)
+      repo = Path.join(System.tmp_dir!(), "trigger_confirm_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(Path.join(repo, "specs/autonomous/breakdown"))
+      File.cp_r!(src, Path.join(repo, "specs/autonomous/breakdown"))
+      {_, 0} = System.cmd("git", ["init", "-q", repo])
+
+      {_, 0} =
+        System.cmd("git", ["-C", repo, "remote", "add", "origin", "git@example.com:test/t.git"])
+
+      on_exit(fn -> File.rm_rf(repo) end)
+      Application.put_env(:autonomous, :repo, repo)
+      Application.put_env(:autonomous, :breakdown_dir, "docs/breakdown")
+
+      {:ok, repo: repo, repo_id: RepoIdentity.partition(repo)}
+    end
+
+    # An in-flight run: a store row (what `current_run_id/0` reads) plus a live,
+    # unfinished Coordinator (what makes it "active").
+    defp start_active_run(repo_id) do
+      {:ok, run_id} =
+        Writer.open_run(repo_id, %{
+          features: [
+            %{
+              feature_id: "001",
+              slug: "f",
+              path: "specs/001",
+              number: 1,
+              group: :backlog,
+              created_at: nil
+            }
+          ],
+          settings: %{},
+          scope: :ad_hoc,
+          layout: %{}
+        })
+
+      feature = %Feature{id: "001", number: 1, slug: "f", path: "001.md"}
+
+      {:ok, pid} =
+        Coordinator.start_link(
+          name: Coordinator,
+          features: [feature],
+          runner: fn _feature, _notify -> :ok end,
+          owner: self()
+        )
+
+      {run_id, pid}
+    end
+
+    test "with a run in flight the first click arms and names the run; nothing starts", %{
+      conn: conn,
+      repo_id: repo_id
+    } do
+      {run_id, pid} = start_active_run(repo_id)
+
+      {:ok, view, html} = live(conn, "/trigger")
+      refute html =~ "data-confirm-armed"
+      refute html =~ "Supersede"
+
+      html = render_click(view, "start_backlog", %{})
+
+      assert html =~ "Supersede #{run_id} and start"
+      assert html =~ "data-confirm-armed"
+      assert html =~ "drains and supersedes #{run_id}"
+      assert html =~ ~s(data-action="cancel-start-backlog")
+      refute html =~ "data-confirm="
+      assert Process.whereis(Coordinator) == pid
+    end
+
+    test "Cancel returns the button to its normal state", %{conn: conn, repo_id: repo_id} do
+      {run_id, _pid} = start_active_run(repo_id)
+      {:ok, view, _html} = live(conn, "/trigger")
+      render_click(view, "start_backlog", %{})
+
+      html = render_click(view, "cancel_start", %{"action" => "backlog"})
+
+      refute html =~ "Supersede #{run_id}"
+      refute html =~ "data-confirm-armed"
+      assert html =~ "Start run"
+    end
+
+    test "the second click dispatches exactly as today", %{conn: conn, repo_id: repo_id} do
+      {_run_id, old} = start_active_run(repo_id)
+      {:ok, view, _html} = live(conn, "/trigger")
+      render_click(view, "start_backlog", %{})
+
+      result = render_click(view, "start_backlog", %{})
+
+      {:ok, _mc_view, mc_html} = follow_redirect(result, conn)
+      assert mc_html =~ "Backlog run started: Autonomous.run/1"
+      refute Process.alive?(old)
+    end
+
+    test "with no run in flight one click dispatches", %{conn: conn} do
+      {:ok, view, html} = live(conn, "/trigger")
+      refute html =~ "Supersede"
+
+      result = render_click(view, "start_backlog", %{})
+
+      {:ok, _mc_view, mc_html} = follow_redirect(result, conn)
+      assert mc_html =~ "Backlog run started"
+    end
+
+    test "single-spec start follows the same two steps", %{conn: conn, repo_id: repo_id} do
+      {run_id, _pid} = start_active_run(repo_id)
+      {:ok, view, _html} = live(conn, "/trigger")
+      render_click(view, "set_mode", %{"mode" => "single_spec"})
+
+      html = render_submit(view, "start_single_spec", %{"description" => "Add a health check"})
+
+      assert html =~ "Supersede #{run_id} and start"
+      assert html =~ ~s(data-action="cancel-start-single_spec")
+
+      result = render_submit(view, "start_single_spec", %{"description" => "Add a health check"})
+      {:ok, _mc_view, mc_html} = follow_redirect(result, conn)
+      assert mc_html =~ "Feature started"
+    end
+
+    test "an invalid description never arms the button", %{conn: conn, repo_id: repo_id} do
+      start_active_run(repo_id)
+      {:ok, view, _html} = live(conn, "/trigger")
+      render_click(view, "set_mode", %{"mode" => "single_spec"})
+
+      html = render_submit(view, "start_single_spec", %{"description" => "   "})
+
+      assert html =~ "Description is required"
+      refute html =~ "data-confirm-armed"
+    end
+
+    test "switching tabs disarms", %{conn: conn, repo_id: repo_id} do
+      {run_id, _pid} = start_active_run(repo_id)
+      {:ok, view, _html} = live(conn, "/trigger")
+      render_click(view, "start_backlog", %{})
+
+      render_click(view, "set_mode", %{"mode" => "single_spec"})
+      html = render_click(view, "set_mode", %{"mode" => "backlog"})
+
+      refute html =~ "Supersede #{run_id}"
+      refute html =~ "data-confirm-armed"
+    end
+
+    test "the in-flight run ending while armed returns the button to normal", %{
+      conn: conn,
+      repo_id: repo_id
+    } do
+      {run_id, pid} = start_active_run(repo_id)
+      {:ok, view, _html} = live(conn, "/trigger")
+      assert render_click(view, "start_backlog", %{}) =~ "Supersede #{run_id}"
+
+      GenServer.stop(pid)
+      :ok = Writer.close_run({repo_id, run_id}, :all_done, [])
+
+      Phoenix.PubSub.broadcast(
+        Autonomous.PubSub,
+        ConsoleProjection.topic(),
+        {:console, :reconciled, %{}}
+      )
+
+      html = render(view)
+      refute html =~ "Supersede"
+      refute html =~ "data-confirm-armed"
     end
   end
 end

@@ -92,6 +92,30 @@ defmodule Autonomous.Web.MissionControlLiveTest do
     assert running_cell =~ ">1<"
   end
 
+  test "status strip has one cell per status with data-zero on zeros; rows carry phase position",
+       %{conn: conn} do
+    pid = start_coordinator([feat("mc1"), feat("mc2")])
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    {:ok, _view, html} = live(conn, "/")
+
+    assert html =~ "data-status-strip"
+    [strip] = Regex.run(~r/<div class="status-count-strip".*?<table/s, html)
+    assert length(Regex.scan(~r/class="status-count-cell"/, strip)) == 8
+
+    [failed_cell] =
+      Regex.run(~r/<div class="status-count-cell" data-status="failed"[^>]*>/, strip)
+
+    assert failed_cell =~ "data-zero"
+
+    [running_cell] =
+      Regex.run(~r/<div class="status-count-cell" data-status="running"[^>]*>/, strip)
+
+    refute running_cell =~ "data-zero"
+
+    assert length(Regex.scan(~r/data-phase-position/, html)) >= 2
+  end
+
   test "a :feature_updated broadcast updates a row's phase without reload, and :feed prepends a feed entry",
        %{conn: conn} do
     pid = start_coordinator([feat("mc3")])
@@ -517,7 +541,14 @@ defmodule Autonomous.Web.MissionControlLiveTest do
     for {offset, i} <- Enum.with_index([0, 20_000, 40_000]) do
       :ok =
         Writer.record_phase_attempt(run_key, %{
-          attempt: attempt_at("e4", :implement_chunk, i + 1, DateTime.add(base, offset, :millisecond), 20_000)
+          attempt:
+            attempt_at(
+              "e4",
+              :implement_chunk,
+              i + 1,
+              DateTime.add(base, offset, :millisecond),
+              20_000
+            )
         })
     end
 
@@ -560,7 +591,8 @@ defmodule Autonomous.Web.MissionControlLiveTest do
 
     :ok =
       Writer.record_phase_attempt(run_key, %{
-        attempt: attempt_at("e6", :auto_remediation, 1, DateTime.add(base, 20_000, :millisecond), 20_000)
+        attempt:
+          attempt_at("e6", :auto_remediation, 1, DateTime.add(base, 20_000, :millisecond), 20_000)
       })
 
     :ok =
@@ -570,7 +602,8 @@ defmodule Autonomous.Web.MissionControlLiveTest do
 
     :ok =
       Writer.record_phase_attempt(run_key, %{
-        attempt: attempt_at("e6", :auto_remediation, 2, DateTime.add(base, 60_000, :millisecond), 20_000)
+        attempt:
+          attempt_at("e6", :auto_remediation, 2, DateTime.add(base, 60_000, :millisecond), 20_000)
       })
 
     :ok =
@@ -1247,7 +1280,14 @@ defmodule Autonomous.Web.MissionControlLiveTest do
         :telemetry.execute(
           [:speckit, :phase, :exception],
           %{duration: duration_native},
-          %{feature_id: "g4live", phase: phase, model: "sonnet", step: 1, kind: :error, reason: :needs_human}
+          %{
+            feature_id: "g4live",
+            phase: phase,
+            model: "sonnet",
+            step: 1,
+            kind: :error,
+            reason: :needs_human
+          }
         )
       else
         :telemetry.execute(

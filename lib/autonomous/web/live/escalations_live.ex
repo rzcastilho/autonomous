@@ -473,7 +473,8 @@ defmodule Autonomous.Web.EscalationsLive do
   defp answer_error_for({id, message}, id), do: message
   defp answer_error_for(_other, _id), do: nil
 
-  defp elapsed_label(started_at), do: duration_label(DateTime.diff(DateTime.utc_now(), started_at))
+  defp elapsed_label(started_at),
+    do: duration_label(DateTime.diff(DateTime.utc_now(), started_at))
 
   defp remaining_label(deadline_at) do
     duration_label(max(DateTime.diff(deadline_at, DateTime.utc_now()), 0))
@@ -644,7 +645,7 @@ defmodule Autonomous.Web.EscalationsLive do
           </span>
           <.status_pill status={e.feature.status} />
           <span :if={e.divert_reason} class="escalation-reason" data-divert-reason>
-            reason: {inspect(e.divert_reason)}
+            reason: {format_value(e.divert_reason)}
           </span>
         </div>
 
@@ -661,7 +662,7 @@ defmodule Autonomous.Web.EscalationsLive do
               <dt>session_id</dt>
               <dd>{e.checkpoint.session_id || "—"}</dd>
               <dt>reason</dt>
-              <dd>{inspect(e.checkpoint.reason)}</dd>
+              <dd>{format_value(e.checkpoint.reason)}</dd>
             </dl>
 
             <div class="run-context-label" data-resume-scope-note>
@@ -675,7 +676,7 @@ defmodule Autonomous.Web.EscalationsLive do
             </div>
             <div :if={e.run_context} class="run-context" data-run-context>
               <span :for={{k, v} <- e.run_context} class="run-context-chip">
-                {k}=<span>{inspect(v)}</span>
+                {k}=<span>{format_value(v)}</span>
               </span>
             </div>
 
@@ -710,7 +711,7 @@ defmodule Autonomous.Web.EscalationsLive do
             </label>
             <label class="field-label">
               :from (start phase; defaults to the checkpointed phase)
-              <select name="from" class="resume-select">
+              <select name="from" class="console-input">
                 <option :for={p <- Pipeline.phases()} value={p} selected={p == e.default_phase}>
                   {p}
                 </option>
@@ -718,7 +719,7 @@ defmodule Autonomous.Web.EscalationsLive do
             </label>
             <label :if={e.task_phase_picker} class="field-label" data-field="task-phase-picker">
               Starting task-phase
-              <select name="from_task_phase" class="resume-select" data-field="task-phase">
+              <select name="from_task_phase" class="console-input" data-field="task-phase">
                 <option
                   :for={tp <- e.task_phase_picker.task_phases}
                   value={tp.ordinal}
@@ -742,7 +743,7 @@ defmodule Autonomous.Web.EscalationsLive do
             </label>
             <label class="field-label">
               Remediation model
-              <select name="remediation_model" class="resume-select" data-field="remediation-model">
+              <select name="remediation_model" class="console-input" data-field="remediation-model">
                 <option value="">Default ({e.default_phase}'s own model)</option>
                 <option :for={m <- @remediation_models} value={m}>{m}</option>
               </select>

@@ -145,6 +145,19 @@ defmodule Autonomous.Web.RunDetailLiveTest do
     assert html =~ "reason: {:missing_artifact, :tasks, &quot;tasks.md&quot;}"
   end
 
+  test "the phase-row transcript toggle is a text button, not a secondary button (033)", %{
+    conn: conn,
+    repo_id: repo_id
+  } do
+    run_id = open(repo_id, ["001"])
+    record_attempt(repo_id, run_id, "001", :specify, 1)
+
+    {:ok, view, _html} = live(conn, "/runs/#{run_id}")
+
+    assert has_element?(view, "[data-action^='transcript-'].btn-link")
+    refute has_element?(view, "[data-action^='transcript-'].btn-secondary")
+  end
+
   test "on-demand transcript fetch renders the body verbatim only after the click", %{
     conn: conn,
     repo_id: repo_id
@@ -450,7 +463,7 @@ defmodule Autonomous.Web.RunDetailLiveTest do
     {:ok, _view, html} = live(conn, "/runs/#{run_id}")
 
     assert html =~ ~s(data-containment)
-    assert html =~ "CONTAINMENT"
+    assert html =~ "Containment"
     assert html =~ "containment_profile=<span>permissive</span>"
     assert html =~ "enforcement.md"
   end
@@ -461,7 +474,108 @@ defmodule Autonomous.Web.RunDetailLiveTest do
 
     {:ok, _view, html} = live(conn, "/runs/#{run_id}")
 
-    refute html =~ "CONTAINMENT"
+    refute html =~ "Containment"
     refute html =~ "containment_profile"
+  end
+
+  # ---- 033 US1: real, readable run data
+
+  defp open_with_settings(repo_id, settings) do
+    {:ok, run_id} =
+      Writer.open_run(repo_id, %{
+        features: [
+          %{
+            feature_id: "001",
+            slug: "f-001",
+            path: "specs/001",
+            number: 1,
+            group: :backlog,
+            created_at: nil
+          }
+        ],
+        settings: settings,
+        scope: :ad_hoc,
+        layout: %{}
+      })
+
+    run_id
+  end
+
+  defp occurrences(html, needle), do: length(String.split(html, needle)) - 1
+
+  test "run settings render once each with no bookkeeping keys or Elixir syntax (033)",
+       %{conn: conn, repo_id: repo_id} do
+    run_id =
+      open_with_settings(repo_id, %{
+        budget_usd: 100.0,
+        pr_base: "main",
+        auto_remediation_threshold: "high",
+        __given__: %{budget_usd: 100.0},
+        containment_profile: "permissive"
+      })
+
+    {:ok, _view, html} = live(conn, "/runs/#{run_id}")
+
+    refute html =~ "__given__"
+    refute html =~ "%{"
+    assert html =~ "run settings"
+    assert occurrences(html, "pr_base") == 1
+    assert occurrences(html, "auto_remediation_threshold") == 1
+    assert occurrences(html, "containment_profile") == 1
+    refute html =~ "&quot;main&quot;"
+  end
+
+  test "a strict run records containment_profile yet shows it nowhere (033, 030 contract)",
+       %{conn: conn, repo_id: repo_id} do
+    run_id = open_with_settings(repo_id, %{budget_usd: 100.0, containment_profile: "strict"})
+
+    {:ok, _view, html} = live(conn, "/runs/#{run_id}")
+
+    refute html =~ "containment_profile"
+    refute html =~ "Containment"
+  end
+
+  test "the run state renders as a status chip carrying the real atom (033)",
+       %{conn: conn, repo_id: repo_id} do
+    run_id = open(repo_id, ["001"])
+
+    {:ok, _view, html} = live(conn, "/runs/#{run_id}")
+
+    assert html =~ ~r/data-status="running"[^>]*data-marker="state"/
+    assert html =~ ":in_flight"
+  end
+
+  test "inline transcript markup renders and embedded HTML stays inert (033)",
+       %{conn: conn, repo_id: repo_id} do
+    run_id = open(repo_id, ["001"])
+
+    :ok =
+      Writer.record_phase_attempt({repo_id, run_id}, %{
+        attempt: %{
+          feature_id: "001",
+          phase: :specify,
+          ordinal: 1,
+          step: 1,
+          label: "specify-1",
+          started_at: DateTime.utc_now(),
+          ended_at: DateTime.utc_now(),
+          duration_ms: 10,
+          outcome: :ok,
+          model: "sonnet",
+          cost_usd: 0.1,
+          cost_kind: :actual
+        },
+        cost: %{amount_usd: 0.1, kind: :actual},
+        checkpoint: %{phase: :specify, last_completed_phase: :specify, status: :in_progress},
+        transcript: "# Heading\n\nsome **bold** <script>alert(1)</script>"
+      })
+
+    {:ok, view, _html} = live(conn, "/runs/#{run_id}")
+    html = render_click(view, "toggle_transcript", %{"ref" => "001::specify::1"})
+
+    assert html =~ "<h1>Heading</h1>"
+    assert html =~ "<strong>bold</strong>"
+    assert html =~ "&lt;script&gt;alert(1)&lt;/script&gt;"
+    refute html =~ "<script>alert(1)"
   end
 end

@@ -11,7 +11,10 @@ defmodule Autonomous.Web.DesignContract do
 
   The rule set is closed (G-4): what it decides is listed in
   `contracts/design-guard.md` §5 "Guard"; everything else is the judgment
-  half, recorded in `compliance-inventory.md`.
+  half, recorded in `compliance-inventory.md`. Feature 033 extends the set
+  (G-contrast, G-input, G-breakpoint, G-inspect) and moves three token values;
+  `specs/033-console-ux-polish/contracts/design-guard-extensions.md` is the
+  authority for those changes. No rule is relaxed.
   """
 
   defmodule Violation do
@@ -41,6 +44,7 @@ defmodule Autonomous.Web.DesignContract do
     "lib/autonomous/web/components/layouts.ex",
     "lib/autonomous/web/components/layouts/app.html.heex",
     "lib/autonomous/web/components/layouts/root.html.heex",
+    "lib/autonomous/web/transcript_markup.ex",
     "lib/autonomous/web/live/mission_control_live.ex",
     "lib/autonomous/web/live/pipeline_dag_live.ex",
     "lib/autonomous/web/live/trigger_live.ex",
@@ -91,7 +95,7 @@ defmodule Autonomous.Web.DesignContract do
     {"--text", "#e6e9f0"},
     {"--text-secondary", "#c3c9d6"},
     {"--text-muted", "#8b93a7"},
-    {"--text-faint", "#5a6274"},
+    {"--text-faint", "#7a8296"},
     {"--accent", "#7c5cff"},
     {"--accent-light", "#a78bfa"},
     {"--accent-hover", "#c4b5fd"},
@@ -101,9 +105,9 @@ defmodule Autonomous.Web.DesignContract do
     {"--running", "#38bdf8"},
     {"--escalated", "#fbbf24"},
     {"--halted", "#fb7185"},
-    {"--failed", "#f43f5e"},
-    {"--pending", "#64748b"},
-    {"--blocked", "#475569"},
+    {"--failed", "#f6506a"},
+    {"--pending", "#94a3b8"},
+    {"--blocked", "#828ea3"},
     {"--awaiting", "#fb923c"}
   ]
 
@@ -116,24 +120,27 @@ defmodule Autonomous.Web.DesignContract do
   @type_tokens ~w(--fs-kpi --fs-subject --fs-title --fs-card-title --fs-section --fs-transcript --fs-body --fs-meta --fs-eyebrow)
   @spacing_tokens ~w(--sp-4 --sp-6 --sp-8 --sp-10 --sp-12 --sp-14 --sp-18 --sp-20 --sp-22)
   @font_family_tokens ~w(--font-sans --font-mono)
-  @derived_tokens ~w(--scrim --shadow-drawer --shadow-toast --glow-accent --gradient-primary --selection --hatch-reserved)
+  @derived_tokens ~w(--scrim --shadow-drawer --shadow-toast --glow-accent --gradient-primary --selection --hatch-reserved --border-input)
+  @layout_tokens ~w(--measure-transcript --rail-compact --card-min)
 
   @allowed_root_names (@contract_colors |> Enum.map(&elem(&1, 0))) ++
                         @radius_tokens ++
                         @type_tokens ++
                         @spacing_tokens ++
                         @font_family_tokens ++
-                        @derived_tokens
+                        @derived_tokens ++
+                        @layout_tokens
 
   @status_hexes Enum.filter(@contract_colors, fn {name, _} ->
-                  name in
-                    ~w(--done --running --escalated --halted --failed --pending --blocked --awaiting)
+                  name in ~w(--done --running --escalated --halted --failed --pending --blocked --awaiting)
                 end)
 
   @status_names ~w(done running escalated halted failed pending blocked awaiting_answers)
 
   @spacing_grid [4, 6, 8, 10, 12, 14, 18, 20, 22]
-  @layout_named_values ~w(236px 460px 280px)
+  @layout_named_values ~w(236px 460px 280px 52px)
+
+  @allowed_breakpoints ~w(1120px 760px)
 
   @approved_keyframes ~w(scPulse scBlink scSlide scFade)
   @animation_referents ~w(running active live drawer scrim toast)
@@ -250,6 +257,7 @@ defmodule Autonomous.Web.DesignContract do
     token_violations(lines, root_span) ++
       motion_violations(lines) ++
       governing_source_violations(lines) ++
+      breakpoint_violations(lines) ++
       centered_body_text_violations(lines, root_span)
   end
 
@@ -337,7 +345,102 @@ defmodule Autonomous.Web.DesignContract do
     unexpected = unexpected_token_violations(decls)
     sub_floor = sub_floor_violations(decls)
 
-    missing ++ mismatched ++ collisions ++ retired ++ undeclared ++ unexpected ++ sub_floor
+    contrast = contrast_violations(decl_map)
+
+    missing ++
+      mismatched ++ collisions ++ retired ++ undeclared ++ unexpected ++ sub_floor ++ contrast
+  end
+
+  # ---- G-contrast (033) — WCAG 2.x relative luminance ---------------------
+
+  @surface_names ~w(--bg --panel --card --raised)
+  @text_names ~w(--text --text-secondary --text-muted --text-faint)
+  @status_token_names ~w(--done --running --escalated --halted --failed --pending --blocked --awaiting)
+  @chip_fill_alpha 0x1A / 255
+
+  defp contrast_violations(decl_map) do
+    hex = fn name ->
+      with {value, line} <- Map.get(decl_map, name),
+           [_, h] <- Regex.run(~r/^#([0-9a-fA-F]{6})$/, String.trim(value)) do
+        {rgb(h), line}
+      else
+        _ -> nil
+      end
+    end
+
+    text =
+      for t <- @text_names,
+          {fg, line} <- [hex.(t)],
+          s <- @surface_names,
+          {bg, _} <- [hex.(s)],
+          ratio(fg, bg) < 4.5 do
+        violation(:contrast, @css_path, line, "#{t} on #{s}: #{fmt_ratio(ratio(fg, bg))} < 4.5")
+      end
+
+    status =
+      for t <- @status_token_names,
+          {fg, line} <- [hex.(t)],
+          s <- ~w(--card --raised),
+          {bg, _} <- [hex.(s)],
+          fill = mix(fg, bg, @chip_fill_alpha),
+          ratio(fg, fill) < 4.5 do
+        violation(
+          :contrast,
+          @css_path,
+          line,
+          "#{t} in 1a fill over #{s}: #{fmt_ratio(ratio(fg, fill))} < 4.5"
+        )
+      end
+
+    accent =
+      for {fg, line} <- [hex.("--accent")], {bg, _} <- [hex.("--bg")], ratio(fg, bg) < 3.0 do
+        violation(:contrast, @css_path, line, "--accent on --bg: #{fmt_ratio(ratio(fg, bg))} < 3")
+      end
+
+    text ++ status ++ accent
+  end
+
+  defp rgb(<<r::binary-2, g::binary-2, b::binary-2>>),
+    do: {String.to_integer(r, 16), String.to_integer(g, 16), String.to_integer(b, 16)}
+
+  defp mix({fr, fg, fb}, {br, bg, bb}, a),
+    do: {fr * a + br * (1 - a), fg * a + bg * (1 - a), fb * a + bb * (1 - a)}
+
+  defp luminance({r, g, b}) do
+    lin = fn c ->
+      c = c / 255
+      if c <= 0.03928, do: c / 12.92, else: :math.pow((c + 0.055) / 1.055, 2.4)
+    end
+
+    0.2126 * lin.(r) + 0.7152 * lin.(g) + 0.0722 * lin.(b)
+  end
+
+  defp ratio(a, b) do
+    {l1, l2} = {luminance(a), luminance(b)}
+    {hi, lo} = if l1 >= l2, do: {l1, l2}, else: {l2, l1}
+    (hi + 0.05) / (lo + 0.05)
+  end
+
+  defp fmt_ratio(r), do: :erlang.float_to_binary(r, decimals: 2)
+
+  # ---- G-breakpoint (033) ---------------------------------------------------
+
+  defp breakpoint_violations(lines) do
+    lines
+    |> Enum.with_index()
+    |> Enum.flat_map(fn {line, idx} ->
+      if String.contains?(line, "@media") do
+        ~r/\((?:max|min)-width:\s*([^)\s]+)\s*\)/
+        |> Regex.scan(line)
+        |> Enum.flat_map(fn [_, width] ->
+          if width in @allowed_breakpoints,
+            do: [],
+            else: [violation(:breakpoint, @css_path, idx + 1, String.trim(line))]
+        end)
+      else
+        []
+      end
+    end)
   end
 
   defp collision_violations(decls) do
@@ -678,6 +781,72 @@ defmodule Autonomous.Web.DesignContract do
       |> add(shadow_on_resting(path, line, line_no, css?))
       |> add(unknown_status_selector(path, line, line_no, css?))
       |> add(status_color_in_elixir(path, line, line_no, elixir_web?))
+    end)
+    |> Kernel.++(if elixir_web?, do: input_violations(path, source), else: [])
+    |> Kernel.++(if elixir_web?, do: inspect_violations(path, lines), else: [])
+  end
+
+  # ---- G-inspect (033) ------------------------------------------------------
+  #
+  # `inspect/1` inside a HEEx `{…}` interpolation prints Elixir syntax (quotes,
+  # `%{…}`) on an operator surface. Only template spans are scanned: a `.heex`
+  # file whole, an `.ex` file between `~H"""` and its closing `"""`. Flash and
+  # error-message builders live in function bodies, so they are not matched.
+
+  @inspect_in_interpolation ~r/\{[^{}]*\binspect\(/
+
+  defp inspect_violations(path, lines) do
+    heex_file? = String.ends_with?(path, ".heex")
+
+    lines
+    |> Enum.with_index(1)
+    |> Enum.reduce({false, []}, fn {line, line_no}, {in_h?, acc} ->
+      trimmed = String.trim(line)
+
+      cond do
+        not heex_file? and not in_h? and String.contains?(line, "~H\"\"\"") ->
+          {true, acc}
+
+        not heex_file? and in_h? and trimmed == "\"\"\"" ->
+          {false, acc}
+
+        (heex_file? or in_h?) and Regex.match?(@inspect_in_interpolation, line) ->
+          {in_h?, [violation(:inspect_in_heex, path, line_no, trimmed) | acc]}
+
+        true ->
+          {in_h?, acc}
+      end
+    end)
+    |> elem(1)
+    |> Enum.reverse()
+  end
+
+  # ---- G-input (033) --------------------------------------------------------
+
+  @input_open_re ~r/<(select|input)\b([^>]*)>/s
+
+  defp input_violations(path, source) do
+    @input_open_re
+    |> Regex.scan(source, return: :index)
+    |> Enum.flat_map(fn [{start, _}, _, {as, al}] ->
+      attrs = binary_part(source, as, al)
+
+      type =
+        case Regex.run(~r/\btype=["{]*"?([a-z]+)/, attrs) do
+          [_, t] -> t
+          nil -> nil
+        end
+
+      textlike? = type in [nil, "text", "number", "search"]
+      themed? = Regex.match?(~r/class=(?:"[^"]*|\{[^}]*)\bconsole-input\b/, attrs)
+
+      if textlike? and not themed? do
+        line = source |> binary_part(0, start) |> String.graphemes() |> Enum.count(&(&1 == "\n"))
+        excerpt = binary_part(source, start, min(80, byte_size(source) - start))
+        [violation(:input_unthemed, path, line + 1, String.trim(excerpt))]
+      else
+        []
+      end
     end)
   end
 

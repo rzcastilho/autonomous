@@ -13,9 +13,15 @@ defmodule Autonomous.Web.ConfigLive do
   tick sends) so the status bar/gauge and every other mounted LiveView pick up
   the change immediately rather than waiting up to 2s (FR-030), and toasts the
   change (FR-005).
+
+  033 US5: the form tracks `edited` against `applied` (`ConfigDiff`), shows an
+  unsaved count with sticky Apply/Reset, takes the budget as a cent-precise
+  number input, and echoes the actual `LiveConfig.apply/1` call on success.
   """
 
   use Autonomous.Web, :live_view
+
+  alias Autonomous.Web.ConfigDiff
 
   alias Autonomous.{
     Config,
@@ -35,17 +41,35 @@ defmodule Autonomous.Web.ConfigLive do
      |> refresh()}
   end
 
+  # Re-reads the applied configuration; the form starts (and, after a
+  # successful apply or Reset, returns) clean — `edited == applied`.
   defp refresh(socket) do
-    assign(socket,
-      models: Config.models(),
-      budget_usd: Ledger.snapshot().budget,
-      pr_base: Config.pr_base(),
-      pr_remote: Config.pr_remote(),
+    applied = applied_fields()
+
+    socket
+    |> assign(
+      applied: applied,
       served_repo: Path.expand(Config.repo()),
       instance_node: Atom.to_string(node()),
       containment_default: Atom.to_string(Config.containment_profile()),
       containment_live: live_containment_profile()
     )
+    |> put_edited(applied)
+  end
+
+  defp applied_fields do
+    models = Map.new(Pipeline.phases(), fn phase -> {"model_#{phase}", Config.model_for(phase)} end)
+
+    Map.merge(models, %{
+      "budget_usd" => Ledger.snapshot().budget,
+      "pr_base" => Config.pr_base(),
+      "pr_remote" => Config.pr_remote()
+    })
+  end
+
+  defp put_edited(socket, edited) do
+    changes = ConfigDiff.diff(socket.assigns.applied, edited)
+    assign(socket, edited: edited, changes: changes, dirty: ConfigDiff.dirty?(changes))
   end
 
   # 030, contracts/operator-surfaces.md: `nil` unless the live run's profile
@@ -57,53 +81,79 @@ defmodule Autonomous.Web.ConfigLive do
     end
   end
 
-  # ---- apply (T068 dispatch, T070 display) -----------------------------
+  # ---- edit / reset / apply ---------------------------------------------
 
   @impl true
+  def handle_event("edit", params, socket) do
+    {:noreply, put_edited(socket, edited_from(params, socket.assigns.edited))}
+  end
+
+  def handle_event("reset", _params, socket) do
+    {:noreply, socket |> assign(errors: %{}) |> put_edited(socket.assigns.applied)}
+  end
+
   def handle_event("apply", params, socket) do
-    case LiveConfig.apply(build_change(params)) do
-      {:ok, change} ->
+    edited = edited_from(params, socket.assigns.edited)
+    socket = put_edited(socket, edited)
+    changes = socket.assigns.changes
+
+    case LiveConfig.apply(build_change(edited)) do
+      {:ok, _change} ->
         broadcast_reconcile()
+        lines = ["Configuration applied" | ConfigDiff.apply_echo(changes, active_run_id())]
 
         {:noreply,
          socket
          |> assign(errors: %{})
-         |> put_flash(:info, "Configuration applied: #{applied_summary(change)}")
+         |> put_flash(:info, Enum.join(lines, "\n"))
          |> refresh()}
 
       {:error, errors} ->
-        {:noreply, assign(socket, errors: errors)}
+        {:noreply, assign(socket, errors: refine_errors(errors, edited))}
     end
   end
 
-  defp build_change(params) do
-    %{
-      models: model_changes(params),
-      budget_usd: parse_number(params["budget_usd"]),
-      pr_base: params["pr_base"] || "",
-      pr_remote: params["pr_remote"] || ""
-    }
-  end
+  # The range slider mirrors the number input: whichever the operator touched
+  # last supplies the budget (`_target` names the changed control).
+  defp edited_from(params, prior) do
+    budget =
+      if params["_target"] == ["budget_range"],
+        do: params["budget_range"],
+        else: params["budget_usd"]
 
-  defp model_changes(params) do
-    Map.new(Pipeline.phases(), fn phase ->
-      {phase, params["model_#{phase}"] || Config.model_for(phase)}
+    prior
+    |> Map.new(fn {field, old} ->
+      {field, if(field == "budget_usd", do: budget || old, else: params[field] || old)}
     end)
   end
 
-  # Echoes the actual call and its arguments (FR-011) rather than a generic
-  # "applied" message — an operator confirming a change wants to see the
-  # values that took effect, not a rubber stamp.
-  defp applied_summary(change) do
-    "budget_usd=#{change.budget_usd} pr_base=#{change.pr_base} pr_remote=#{change.pr_remote}"
+  defp build_change(edited) do
+    %{
+      models:
+        Map.new(Pipeline.phases(), fn phase -> {phase, edited["model_#{phase}"]} end),
+      budget_usd: budget_amount(edited["budget_usd"]),
+      pr_base: edited["pr_base"] || "",
+      pr_remote: edited["pr_remote"] || ""
+    }
   end
 
-  defp parse_number(nil), do: 0.0
+  defp budget_amount(value) do
+    case ConfigDiff.parse_cents(value) do
+      {:ok, cents} -> cents / 100
+      :invalid -> :invalid
+    end
+  end
 
-  defp parse_number(s) do
-    case Float.parse(s) do
-      {n, _rest} -> n
-      :error -> :invalid
+  defp refine_errors(errors, edited) do
+    if Map.has_key?(errors, :budget_usd) and ConfigDiff.parse_cents(edited["budget_usd"]) == :invalid,
+      do: Map.put(errors, :budget_usd, "budget must be a non-negative amount with at most two decimals"),
+      else: errors
+  end
+
+  defp slider_value(edited, applied) do
+    case ConfigDiff.parse_cents(edited["budget_usd"]) do
+      {:ok, cents} -> cents / 100
+      :invalid -> applied["budget_usd"]
     end
   end
 
@@ -120,6 +170,14 @@ defmodule Autonomous.Web.ConfigLive do
 
   defp coordinator_status do
     if Process.whereis(Coordinator), do: Coordinator.status(Coordinator)
+  catch
+    :exit, _reason -> nil
+  end
+
+  # Same notion of "a run is in flight" as Trigger Run's confirmation.
+  defp active_run_id do
+    live? = match?(%{finished?: false}, coordinator_status())
+    if live? or Autonomous.workers() != [], do: Autonomous.current_run_id()
   end
 
   # ---- render -----------------------------------------------------------
@@ -128,36 +186,34 @@ defmodule Autonomous.Web.ConfigLive do
   def render(assigns) do
     ~H"""
     <div class="view-config" data-view="config">
-      <form id="config-form" phx-submit="apply" data-form="config">
+      <form
+        id="config-form"
+        phx-submit="apply"
+        phx-change="edit"
+        data-form="config"
+        data-dirty={@dirty && "true"}
+      >
         <fieldset class="config-models form-panel">
-          <legend>Per-phase model routing</legend>
+          <legend class="sr-only">Per-phase model routing</legend>
+          <div class="config-toggle-title config-section-title">Per-phase model routing</div>
           <div :for={{phase, idx} <- Enum.with_index(Pipeline.phases(), 1)} class="model-row">
             <span class="model-row-index">{pad_ordinal(idx)}</span>
             <span class="model-row-phase">{phase}</span>
             <div class="model-row-options">
-              <label class={[
-                "model-option",
-                @models[phase] == "opus" && "model-option-active"
-              ]}>
+              <label
+                :for={model <- ["opus", "sonnet"]}
+                class={[
+                  "model-option",
+                  @edited["model_#{phase}"] == model && "model-option-active"
+                ]}
+              >
                 <input
                   type="radio"
                   name={"model_#{phase}"}
-                  value="opus"
-                  checked={@models[phase] == "opus"}
+                  value={model}
+                  checked={@edited["model_#{phase}"] == model}
                   class="model-option-input"
-                /> opus
-              </label>
-              <label class={[
-                "model-option",
-                @models[phase] == "sonnet" && "model-option-active"
-              ]}>
-                <input
-                  type="radio"
-                  name={"model_#{phase}"}
-                  value="sonnet"
-                  checked={@models[phase] == "sonnet"}
-                  class="model-option-input"
-                /> sonnet
+                /> {model}
               </label>
             </div>
           </div>
@@ -170,20 +226,30 @@ defmodule Autonomous.Web.ConfigLive do
           <fieldset class="config-budget form-panel">
             <legend class="sr-only">Budget</legend>
             <div class="range-row-head">
-              <span class="range-row-title">Cost breaker budget</span>
+              <label for="budget-input" class="config-toggle-title">Cost breaker budget</label>
               <span class="range-row-value" id="budget-range-value">
-                ${format_money(@budget_usd)}
+                ${format_money(slider_value(@edited, @applied))}
               </span>
             </div>
             <input
-              type="range"
+              type="number"
+              id="budget-input"
               name="budget_usd"
+              min="0"
+              step="0.01"
+              value={@edited["budget_usd"]}
+              class="console-input"
+              phx-debounce="300"
+            />
+            <input
+              type="range"
+              name="budget_range"
               min="0"
               max="500"
               step="0.5"
-              value={@budget_usd}
+              value={slider_value(@edited, @applied)}
               class="range-input"
-              oninput="document.getElementById('budget-range-value').textContent = '$' + parseFloat(this.value).toFixed(2)"
+              aria-label="Cost breaker budget slider"
             />
             <.form_refusal :if={@errors[:budget_usd]} label="Budget refused" data-error="budget_usd">
               {@errors[:budget_usd]}
@@ -204,11 +270,26 @@ defmodule Autonomous.Web.ConfigLive do
           <div class="config-pr-fields">
             <label>
               PR_BASE
-              <input type="text" name="pr_base" value={@pr_base} />
+              <input type="text" name="pr_base" value={@edited["pr_base"]} class="console-input" />
+              <.form_refusal :if={@errors[:pr_base]} label="PR_BASE refused" data-error="pr_base">
+                {@errors[:pr_base]}
+              </.form_refusal>
             </label>
             <label>
               PR_REMOTE
-              <input type="text" name="pr_remote" value={@pr_remote} />
+              <input
+                type="text"
+                name="pr_remote"
+                value={@edited["pr_remote"]}
+                class="console-input"
+              />
+              <.form_refusal
+                :if={@errors[:pr_remote]}
+                label="PR_REMOTE refused"
+                data-error="pr_remote"
+              >
+                {@errors[:pr_remote]}
+              </.form_refusal>
             </label>
           </div>
         </fieldset>
@@ -233,21 +314,29 @@ defmodule Autonomous.Web.ConfigLive do
 
         <fieldset class="config-pr form-panel" data-instance>
           <legend class="sr-only">Instance</legend>
-          <div class="config-toggle-row">
-            <div>
-              <div class="config-toggle-title">Served repository</div>
-              <div class="config-toggle-sub config-instance-id" data-instance-repo>{@served_repo}</div>
-            </div>
-          </div>
-          <div class="config-toggle-row">
-            <div>
-              <div class="config-toggle-title">Instance node</div>
-              <div class="config-toggle-sub config-instance-id" data-instance-node>{@instance_node}</div>
-            </div>
-          </div>
+          <.record_block label="instance">
+            <dl class="record-block-fields">
+              <dt>served repository</dt>
+              <dd class="config-instance-id" data-instance-repo>{@served_repo}</dd>
+              <dt>instance node</dt>
+              <dd class="config-instance-id" data-instance-node>{@instance_node}</dd>
+            </dl>
+          </.record_block>
         </fieldset>
 
-        <button type="submit" class="btn-primary" data-action="apply-config">Apply</button>
+        <div class="config-actionbar" data-actionbar>
+          <span :if={@dirty} class="config-unsaved" data-unsaved>{map_size(@changes)} unsaved</span>
+          <button
+            type="button"
+            class="btn-secondary"
+            phx-click="reset"
+            disabled={not @dirty}
+            data-action="reset-config"
+          >
+            Reset
+          </button>
+          <button type="submit" class="btn-primary" data-action="apply-config">Apply</button>
+        </div>
       </form>
     </div>
     """
