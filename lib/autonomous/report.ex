@@ -135,7 +135,20 @@ defmodule Autonomous.Report do
       if(rest == [], do: "", else: " (+#{length(rest)} more)")
   end
 
+  # 034: a harness session that died instead of finishing — carries the CLI's
+  # own message. `where` is a phase atom, a chunk's task-phase ref, or
+  # `{:remediation, attempt}`.
+  def format_reason({:session_died, where, %{kind: kind, excerpt: excerpt}}) do
+    "#{died_where(where)} session #{died_phrase(kind)}: #{excerpt}"
+  end
+
   def format_reason(reason), do: PublishOutcome.describe(reason) || inspect(reason)
+
+  defp died_where({:remediation, n}), do: "remediation attempt #{n}"
+  defp died_where(where), do: background_where(where)
+
+  defp died_phrase(:start_failed), do: "failed to start"
+  defp died_phrase(:ended_early), do: "ended without a result"
 
   defp background_where(%Autonomous.TaskPhaseRef{} = ref),
     do: ~s(task-phase #{ref.number || ref.ordinal} "#{ref.title}")

@@ -64,6 +64,10 @@ defmodule Autonomous.ChunkState do
             # on a backgrounded command; a second backgrounding fails the scope.
             # Reset whenever a fresh scope is dispatched or the cursor advances.
             background_retried?: false,
+            # 034: set when a scope was re-dispatched because its session died
+            # (CLI exited before or without a result); a second death fails the
+            # scope. Same lifecycle as `background_retried?`.
+            session_died_retried?: false,
             history: []
 
   @type t :: %__MODULE__{
@@ -75,6 +79,7 @@ defmodule Autonomous.ChunkState do
           ceiling: non_neg_integer(),
           swept?: boolean(),
           background_retried?: boolean(),
+          session_died_retried?: boolean(),
           history: [ChunkAttempt.t()]
         }
 end
@@ -112,7 +117,9 @@ defmodule Autonomous.Chunking do
           optional(:branch_drift) => Autonomous.BranchGuard.drift(),
           # 032, US1 — commands the session left backgrounded and never read back
           # (`PhaseResult.stranded_background/1`), lifted by `ChunkRunner`.
-          optional(:backgrounded) => [String.t()]
+          optional(:backgrounded) => [String.t()],
+          # 034 — the session died instead of finishing (`PhaseResult.session_died/1`).
+          optional(:session_died) => %{kind: :start_failed | :ended_early, excerpt: String.t()}
         }
 
   @type reason ::
@@ -122,6 +129,7 @@ defmodule Autonomous.Chunking do
           | {:session_error, term()}
           | {:branch_drift, :implement, Autonomous.BranchGuard.drift()}
           | {:backgrounded_command, TaskPhaseRef.t(), [String.t(), ...]}
+          | {:session_died, TaskPhaseRef.t(), %{kind: atom(), excerpt: String.t()}}
 
   @type decision ::
           {:dispatch, Autonomous.ChunkScope.t(), ChunkState.t()}
@@ -185,6 +193,14 @@ defmodule Autonomous.Chunking do
       # wrong branch, so outcome/progress/breaker no longer matter.
       Map.has_key?(signals, :branch_drift) ->
         {:failed, {:branch_drift, :implement, Map.get(signals, :branch_drift)}, state}
+
+      # Row D (034) — the session died (CLI exited before or without a result).
+      # Right after drift, ahead of every outcome row. One re-dispatch of the
+      # same scope; a second death, a tripped breaker, or a requested drain
+      # fails it by name. The re-dispatch consumes a session, so the ceiling
+      # still bounds it.
+      is_map(Map.get(signals, :session_died)) ->
+        died_retry(state, Map.get(signals, :session_died), breaker? or drain?)
 
       # Row B (032, US1) — the session ended on a command the CLI moved to the
       # background. Ahead of every outcome row: the session reported success (or
@@ -268,6 +284,9 @@ defmodule Autonomous.Chunking do
     ~s(task-phase #{ref.number || ref.ordinal} "#{ref.title}" ended waiting on backgrounded command: #{List.first(cmds)})
   end
 
+  def failure_sentence({:session_died, %TaskPhaseRef{}, %{kind: _, excerpt: _}} = reason),
+    do: Autonomous.Report.format_reason(reason)
+
   def failure_sentence({:stuck_task_phase, %TaskPhaseRef{} = ref, limit}) do
     ~s(task-phase #{ref.number || ref.ordinal} "#{ref.title}" made no progress in #{limit} consecutive sessions)
   end
@@ -296,6 +315,22 @@ defmodule Autonomous.Chunking do
   defp background_retry(state, _cmds) do
     {:dispatch, scope, state1} = dispatch_same(state, current_scope(state))
     {:dispatch, scope, %{state1 | background_retried?: true}}
+  end
+
+  # ---- session-death retry (row D) -------------------------------------------
+
+  defp died_retry(%ChunkState{session_died_retried?: true} = state, d, _stop?),
+    do: {:failed, {:session_died, current_ref(state), d}, state}
+
+  defp died_retry(state, d, true), do: {:failed, {:session_died, current_ref(state), d}, state}
+
+  defp died_retry(%ChunkState{sessions_used: used, ceiling: ceiling} = state, _d, _stop?)
+       when used >= ceiling,
+       do: {:failed, {:session_ceiling, ceiling}, state}
+
+  defp died_retry(state, _d, _stop?) do
+    {:dispatch, scope, state1} = dispatch_same(state, current_scope(state))
+    {:dispatch, scope, %{state1 | session_died_retried?: true}}
   end
 
   # ---- continuation folding -------------------------------------------------
@@ -330,7 +365,14 @@ defmodule Autonomous.Chunking do
   defp advance_cursor_on_success(state, :ok) do
     case current_scope(state) do
       {:task_phase, tp} ->
-        %{state | cursor: tp.ordinal + 1, attempt: 1, no_progress: 0, background_retried?: false}
+        %{
+          state
+          | cursor: tp.ordinal + 1,
+            attempt: 1,
+            no_progress: 0,
+            background_retried?: false,
+            session_died_retried?: false
+        }
 
       _ ->
         state
@@ -372,7 +414,8 @@ defmodule Autonomous.Chunking do
            | cursor: state.cursor + 1,
              attempt: 1,
              no_progress: 0,
-             background_retried?: false
+             background_retried?: false,
+             session_died_retried?: false
          }}
 
       # Row 10 — normal task-phase dispatch.
@@ -436,7 +479,13 @@ defmodule Autonomous.Chunking do
 
   defp dispatch_new(state, scope) do
     {:dispatch, scope,
-     %{state | attempt: 1, sessions_used: state.sessions_used + 1, background_retried?: false}}
+     %{
+       state
+       | attempt: 1,
+         sessions_used: state.sessions_used + 1,
+         background_retried?: false,
+         session_died_retried?: false
+     }}
   end
 
   defp dispatch_same(state, scope) do

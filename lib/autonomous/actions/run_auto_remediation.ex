@@ -65,10 +65,13 @@ defmodule Autonomous.Actions.RunAutoRemediation do
          %{
            last_result: result,
            last_outcome: outcome,
-           last_signals: PhaseResult.reset_background(signals, Map.get(state, :last_signals)),
+           last_signals:
+             signals
+             |> PhaseResult.reset_background(Map.get(state, :last_signals))
+             |> PhaseResult.reset_session_died(Map.get(state, :last_signals)),
            session_id: result.session_id || state.session_id,
            cost_total: (state.cost_total || 0.0) + amount,
-           history: [entry(attempt, outcome, amount) | state.history]
+           history: [entry(attempt, outcome, amount, result) | state.history]
          }}
 
       {:error, reason} ->
@@ -90,10 +93,16 @@ defmodule Autonomous.Actions.RunAutoRemediation do
   # itself reported.
   defp classify(worktree, result) do
     case branch_drift(worktree) do
-      nil -> classify_background(result)
+      nil -> classify_died(result)
       drift -> {:error, %{branch_drift: drift}}
     end
   end
+
+  # Session-death gate (034) — after drift, ahead of the background-wait gate.
+  defp classify_died(%PhaseResult{error: {:session_died, _, _}} = result),
+    do: {:error, %{session_died: PhaseResult.session_died(result)}}
+
+  defp classify_died(result), do: classify_background(result)
 
   # Background-wait gate (032, US1): a session that ended while a command the CLI
   # moved to the background was still running is an incomplete session, never a
@@ -133,7 +142,16 @@ defmodule Autonomous.Actions.RunAutoRemediation do
   defp outcome_of(%PhaseResult{status: :ok}), do: :ok
   defp outcome_of(%PhaseResult{}), do: :error
 
-  defp entry(attempt, outcome, amount),
+  defp entry(attempt, outcome, amount, %PhaseResult{error: {:session_died, _, _} = error}),
+    do: %{
+      phase: :auto_remediation,
+      attempt: attempt,
+      outcome: outcome,
+      cost: amount,
+      error: error
+    }
+
+  defp entry(attempt, outcome, amount, _result),
     do: %{phase: :auto_remediation, attempt: attempt, outcome: outcome, cost: amount}
 
   defp worktree_path(%{path: path}), do: path

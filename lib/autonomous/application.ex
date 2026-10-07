@@ -36,6 +36,10 @@ defmodule Autonomous.Application do
         Autonomous.Workers,
         # Supervises the per-feature FeatureRunner tasks.
         {Task.Supervisor, name: Autonomous.RunnerSup},
+        # 034: supervises the per-session fold Task of `PhaseSession.reduce/2`
+        # — monitored, never linked to the action, so an SDK-process death
+        # surfaces as a value instead of silently killing the action.
+        {Task.Supervisor, name: Autonomous.SessionSup},
         # Owns the per-run Coordinator so its lifetime is the run's, not the
         # caller's. `run/1` used to `start_link` it to whoever asked — fine
         # from `iex` (the shell lives as long as the operator), fatal from the

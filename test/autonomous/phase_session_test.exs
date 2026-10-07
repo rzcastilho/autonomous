@@ -1,6 +1,8 @@
 defmodule Autonomous.PhaseSessionTest do
   use ExUnit.Case, async: true
 
+  import ExUnit.CaptureLog
+
   alias Jido.Harness.Event
   alias Autonomous.{PhaseResult, PhaseSession}
 
@@ -104,5 +106,109 @@ defmodule Autonomous.PhaseSessionTest do
     assert_received {:transport_terminated, _transport, :normal}
     assert PhaseResult.deadline_exceeded?(result)
     assert result.session_id == nil
+  end
+
+  # ---- session death (034) ------------------------------------------------
+
+  # Stand-in for the SDK client that died during initialize: linked to the
+  # process pulling the stream, stops abnormally with a ProcessExit-shaped term.
+  defmodule DyingClient do
+    use GenServer
+
+    def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
+
+    @impl true
+    def init(opts) do
+      send(self(), :die)
+      {:ok, opts}
+    end
+
+    @impl true
+    def handle_info(:die, opts) do
+      Process.sleep(Keyword.get(opts, :after_ms, 0))
+
+      {:stop,
+       {:initialize_failed,
+        {:channel_exit, {:process_exit, %{status: 1, stderr: "Invalid JSON in ~/.claude.json\n"}}}},
+       opts}
+    end
+  end
+
+  defp dying_stream(head, opts \\ []) do
+    Stream.resource(
+      fn ->
+        {:ok, client} = DyingClient.start_link(opts)
+        {head, client}
+      end,
+      fn
+        {[event | rest], client} -> {[event], {rest, client}}
+        {[], client} = state -> poll(state, client)
+      end,
+      fn _ -> :ok end
+    )
+  end
+
+  test "a client dying before any event fails fast as :start_failed; the caller survives" do
+    log =
+      capture_log(fn ->
+        t0 = System.monotonic_time(:millisecond)
+        result = PhaseSession.reduce(dying_stream([]), :timer.seconds(60))
+        elapsed = System.monotonic_time(:millisecond) - t0
+
+        send(self(), {:result, result, elapsed})
+      end)
+
+    assert_received {:result, result, elapsed}
+    assert elapsed < 5_000
+
+    assert %PhaseResult{
+             status: :error,
+             error: {:session_died, :start_failed, "Invalid JSON in ~/.claude.json"}
+           } = result
+
+    refute PhaseResult.transient?(result)
+    refute PhaseResult.deadline_exceeded?(result)
+    assert Process.alive?(self())
+    # I4: one warning naming kind and excerpt
+    assert log =~ "start_failed"
+    assert log =~ "Invalid JSON in ~/.claude.json"
+    assert length(Regex.scan(~r/harness session died/, log)) == 1
+  end
+
+  test "a client dying after the first event is :ended_early and keeps the session id" do
+    stream = dying_stream([ev(:session_started, %{}, "sess-early")], after_ms: 50)
+
+    capture_log(fn ->
+      send(self(), {:result, PhaseSession.reduce(stream, :timer.seconds(60))})
+    end)
+
+    assert_received {:result, result}
+
+    assert %PhaseResult{error: {:session_died, :ended_early, _}, session_id: "sess-early"} =
+             result
+  end
+
+  test "caller death mid-fold stops the transport through terminate/2 (no orphan CLI)" do
+    test_pid = self()
+
+    caller =
+      spawn(fn ->
+        PhaseSession.reduce(stuck_stream([ev(:session_started, %{}, "s")], test_pid), 60_000)
+      end)
+
+    assert_receive {:transport_started, transport}, 2_000
+    Process.exit(caller, :kill)
+
+    assert_receive {:transport_terminated, ^transport, :normal}, 2_000
+    refute Process.alive?(transport)
+  end
+
+  test "a normal session leaves the SessionSup supervisor untouched" do
+    sup = Process.whereis(Autonomous.SessionSup)
+    PhaseSession.reduce(completed_events(), 5_000)
+    stream = stuck_stream([], self())
+    PhaseSession.reduce(stream, 100)
+    assert Process.whereis(Autonomous.SessionSup) == sup
+    assert Process.alive?(sup)
   end
 end

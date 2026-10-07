@@ -10,8 +10,17 @@ defmodule Autonomous.Cost do
 
   alias Autonomous.{Config, PhaseResult}
 
-  @doc "Return `{amount_usd, :actual | :estimate}` for `phase`'s result."
+  @doc """
+  Return `{amount_usd, :actual | :estimate}` for `phase`'s result.
+
+  A session that never started (034) spent nothing — charged an actual `0.0`,
+  not the estimate. One that ended early may have spent tokens it never
+  reported, so it keeps the estimate fallback.
+  """
   @spec for_phase(atom(), PhaseResult.t()) :: {number(), :actual | :estimate}
+  def for_phase(_phase, %PhaseResult{error: {:session_died, :start_failed, _}}),
+    do: {0.0, :actual}
+
   def for_phase(_phase, %PhaseResult{cost_usd: cost}) when is_number(cost) and cost > 0 do
     {cost, :actual}
   end

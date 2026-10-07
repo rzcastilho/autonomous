@@ -44,6 +44,25 @@ working directory) is reachable only through `Worktree.create/2` without a layou
 whose `worktree_root` and `transcript_root` are absolute paths under the state root. No live
 write path depends on the container's `cwd` (`/workspace`).
 
+## Agent login (`--with-login`)
+
+`--with-login` mounts the host `~/.claude` directory read-write (the CLI
+refreshes its own login) and the host `~/.claude.json` **read-only at a seed
+path**, `/home/autonomous/.claude.host.json` (feature 034). At start the
+entrypoint validates the seed as a JSON object (up to 5 tries, 200 ms apart, to
+ride out a host CLI mid-write) and copies it atomically into a container-private
+`~/.claude.json` (mode 600). Sessions read only that copy, so a host process
+writing its own config can never tear what a session reads, and container writes
+never reach the host.
+
+- Login or project-trust changes made on the host **after** the container
+  started are not seen; restart the container to re-seed.
+- A seed that is still not valid JSON after the retries stops the start with
+  `host CLI config <seed path> is not valid JSON: <parser message>` (non-zero exit).
+- If `~/.claude.json` is itself a mount (an old compose override), the start
+  fails naming the stale mount; remove it and use `--with-login`.
+- Token-only runs (`ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN`) are unchanged.
+
 ## Release shape
 
 `scripts/autonomous build --release` builds `autonomous-release:local`: a `mix release` on

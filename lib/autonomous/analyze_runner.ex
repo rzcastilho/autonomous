@@ -33,6 +33,7 @@ defmodule Autonomous.AnalyzeRunner do
     PhaseStep,
     Prompts,
     Remediation,
+    SessionRetry,
     Severity,
     Telemetry,
     Workers
@@ -72,7 +73,11 @@ defmodule Autonomous.AnalyzeRunner do
   # label, no extra span meta, no `Remediation.next/2` call, no extra
   # transcript, no cost beyond that one run.
   def run(%{settings: %Settings{enabled?: false}} = ctx) do
-    PhaseStep.run(ctx.pid, ctx.feature, :analyze, step: ctx.step, timeout: ctx.timeout)
+    PhaseStep.run(ctx.pid, ctx.feature, :analyze,
+      step: ctx.step,
+      timeout: ctx.timeout,
+      ledger: ctx.ledger
+    )
   end
 
   def run(%{settings: %Settings{} = settings} = ctx) do
@@ -174,6 +179,7 @@ defmodule Autonomous.AnalyzeRunner do
       PhaseStep.run(ctx.pid, ctx.feature, :analyze,
         step: ctx.step,
         timeout: ctx.timeout,
+        ledger: ctx.ledger,
         span_meta: %{attempt: k, limit: state.settings.attempt_limit}
       )
 
@@ -260,8 +266,7 @@ defmodule Autonomous.AnalyzeRunner do
       # `ctx.timeout` is the session deadline `RunAutoRemediation` enforces
       # through `PhaseSession` (as `Config.phase_timeout/0`); the call waits
       # strictly longer so that deadline, not this call, ends a runaway session.
-      Workers.session_started(ctx.timeout)
-      {:ok, agent} = AgentServer.call(ctx.pid, signal, PhaseSession.call_timeout(ctx.timeout))
+      agent = call_remediation(ctx, signal, attempt, false)
       entry = List.first(agent.state.history) || %{}
       outcome = Map.get(entry, :outcome, agent.state.last_outcome)
       cost = Map.get(entry, :cost, 0.0)
@@ -275,6 +280,36 @@ defmodule Autonomous.AnalyzeRunner do
 
       {{agent, outcome}, Map.merge(meta, %{outcome: outcome, cost: cost})}
     end)
+  end
+
+  # 034: one fresh session when the first one died; the breaker and a
+  # requested drain suppress it (`SessionRetry.once/2`). Every dead attempt
+  # still has its own history entry (the action appends one per call).
+  defp call_remediation(ctx, signal, attempt, retried?) do
+    Workers.session_started(ctx.timeout)
+    {:ok, agent} = AgentServer.call(ctx.pid, signal, PhaseSession.call_timeout(ctx.timeout))
+
+    verdict =
+      SessionRetry.once(agent.state.last_signals, %{
+        retried?: retried?,
+        breaker?: breaker_tripped?(ctx.ledger),
+        drain?: Workers.drain_requested?()
+      })
+
+    case verdict do
+      :retry ->
+        died = agent.state.last_signals[:session_died]
+
+        Logger.warning(
+          "feature #{ctx.feature.id} auto-remediation attempt #{attempt} session died " <>
+            "(#{died.kind}): #{died.excerpt} — retrying once"
+        )
+
+        call_remediation(ctx, signal, attempt, true)
+
+      :accept ->
+        agent
+    end
   end
 
   defp remediation_meta(ctx, state, findings) do
@@ -444,12 +479,19 @@ defmodule Autonomous.AnalyzeRunner do
     patch(agent,
       last_outcome: :error,
       last_signals: %{},
-      terminal_reason: {:failed, :remediation_failed},
+      terminal_reason: {:failed, remediation_failure(agent, state)},
       analyze_remediation: provenance(state),
       analyze_runs: state.analyze_runs,
       analyze_attempt_recorded?: true
     )
   end
+
+  # 034: a remediation session that died on both attempts names the CLI's own
+  # message; any other remediation failure keeps its historical reason.
+  defp remediation_failure(%{state: %{last_signals: %{session_died: %{} = d}}}, state),
+    do: {:session_died, {:remediation, state.attempts_used}, d}
+
+  defp remediation_failure(_agent, _state), do: :remediation_failed
 
   # Provenance, never budget (FR-015): recorded so an operator can see what was
   # already tried. Absent when the loop made no attempt.

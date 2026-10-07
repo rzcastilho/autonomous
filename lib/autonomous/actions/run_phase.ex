@@ -22,7 +22,7 @@ defmodule Autonomous.Actions.RunPhase do
       ledger: [type: :any, default: nil]
     ]
 
-  alias Autonomous.{Config, Cost, Ledger, PhaseSession}
+  alias Autonomous.{Config, Cost, Ledger, PhaseResult, PhaseSession}
 
   @impl true
   def run(%{request: request, phase: phase} = params, _context) do
@@ -32,7 +32,13 @@ defmodule Autonomous.Actions.RunPhase do
         {amount, source} = Cost.for_phase(phase, result)
         record_cost(Map.get(params, :ledger), amount)
 
-        {:ok, %{phase_result: result, cost_usd: amount, cost_source: source}}
+        reply = %{phase_result: result, cost_usd: amount, cost_source: source}
+
+        # 034: a session that died instead of finishing is surfaced as a signal.
+        case PhaseResult.session_died(result) do
+          nil -> {:ok, reply}
+          died -> {:ok, Map.put(reply, :session_died, died)}
+        end
 
       {:error, reason} ->
         {:error, reason}

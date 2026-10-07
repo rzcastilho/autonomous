@@ -161,6 +161,31 @@ us1() {
     fail "strict orchestrated session is denied an out-of-tree write: $denial"
   fi
 
+  # Feature 034 (US2): --with-login seeds a private ~/.claude.json from a
+  # read-only seed mount. No spend; runs the real entrypoint's seed-config step.
+  seed_dir="$(mktemp -d)"
+  printf '{"smoke":true}\n' > "$seed_dir/valid.json"
+  printf '{' > "$seed_dir/invalid.json"
+  seed_run() { # seed_run <seed file> <cmd...>: run in the image with HOME=/home/autonomous
+    sf="$1"
+    shift
+    docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp/seedhome \
+      -v "$root/scripts/container-entrypoint.sh:/ep.sh:ro" \
+      -v "$sf:/home/autonomous/.claude.host.json:ro" \
+      --entrypoint sh "$IMAGE" -c "mkdir -p /tmp/seedhome && $*"
+  }
+  check "valid seed -> ~/.claude.json is a regular file, not a mount, byte-equal to the seed" \
+    seed_run "$seed_dir/valid.json" \
+    'sh /ep.sh seed-config && [ -f "$HOME/.claude.json" ] && [ ! -L "$HOME/.claude.json" ] && ! grep -q " $HOME/.claude.json " /proc/self/mountinfo && cmp "$HOME/.claude.json" /home/autonomous/.claude.host.json'
+  inv="$(seed_run "$seed_dir/invalid.json" 'sh /ep.sh seed-config' 2>&1)"
+  inv_rc=$?
+  if [ "$inv_rc" -ne 0 ] && printf '%s' "$inv" | grep -q '/home/autonomous/.claude.host.json'; then
+    pass "invalid seed -> entrypoint exits non-zero naming the seed path"
+  else
+    fail "invalid seed -> entrypoint exits non-zero naming the seed path (rc=$inv_rc): $inv"
+  fi
+  rm -rf "$seed_dir"
+
   # SC-011 / FR-012: agent auth sources. Spends money, so opt-in.
   if [ "${SMOKE_AGENT:-0}" = 1 ]; then
     prompt='reply with the single word ok'
@@ -174,8 +199,10 @@ us1() {
     if [ -d "$HOME/.claude" ] && [ -f "$HOME/.claude.json" ]; then
       check "claude -p succeeds with the mounted login only" \
         docker run --rm --user "$(id -u):$(id -g)" \
-        -v "$HOME/.claude:/home/autonomous/.claude" -v "$HOME/.claude.json:/home/autonomous/.claude.json" \
-        --entrypoint claude "$IMAGE" -p "$prompt"
+        -v "$HOME/.claude:/home/autonomous/.claude" \
+        -v "$HOME/.claude.json:/home/autonomous/.claude.host.json:ro" \
+        -v "$root/scripts/container-entrypoint.sh:/ep.sh:ro" \
+        --entrypoint sh "$IMAGE" -c 'sh /ep.sh seed-config && exec claude -p "$1"' sh "$prompt"
     else
       skip "login-only auth (no host ~/.claude login)"
     fi

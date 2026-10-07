@@ -379,6 +379,36 @@ defmodule Autonomous.PhaseResultTest do
       refute PhaseResult.outstanding_work?(r)
     end
 
+    test "reset_session_died/2 clears a stale death only when the new run has none" do
+      died = %{kind: :start_failed, excerpt: "x"}
+
+      assert PhaseResult.reset_session_died(%{}, %{session_died: died}) == %{session_died: nil}
+
+      assert PhaseResult.reset_session_died(%{y: 1}, %{session_died: died}) == %{
+               y: 1,
+               session_died: nil
+             }
+
+      other = %{kind: :ended_early, excerpt: "z"}
+
+      assert PhaseResult.reset_session_died(%{session_died: other}, %{session_died: died}) ==
+               %{session_died: other}
+
+      assert PhaseResult.reset_session_died(%{y: 1}, %{}) == %{y: 1}
+      assert PhaseResult.reset_session_died(%{y: 1}, nil) == %{y: 1}
+      assert PhaseResult.reset_session_died(%{y: 1}, %{session_died: nil}) == %{y: 1}
+    end
+
+    test "a reset signal survives the agent's deep merge and replaces the stale death" do
+      died = %{kind: :start_failed, excerpt: "x"}
+      reset = PhaseResult.reset_session_died(%{}, %{session_died: died})
+
+      merged =
+        Jido.Util.DeepMerge.merge(%{last_signals: %{session_died: died}}, %{last_signals: reset})
+
+      assert merged.last_signals.session_died == nil
+    end
+
     test "reset_background/2 clears a stale list only when the new run has none" do
       assert PhaseResult.reset_background(%{}, %{backgrounded: ["a"]}) == %{backgrounded: []}
 

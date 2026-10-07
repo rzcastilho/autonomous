@@ -735,4 +735,84 @@ defmodule Autonomous.ChunkingTest do
                Config.phase_timeout()
     end
   end
+
+  describe "row D — session died (034)" do
+    @died %{kind: :start_failed, excerpt: "corrupt config"}
+
+    defp dispatched_first_d do
+      state = Chunking.start(five_phase_plan())
+      {:dispatch, {:task_phase, tp1}, state1} = Chunking.next(state, %{})
+      {tp1, state1}
+    end
+
+    test "first death re-dispatches the same scope with the flag set, consuming a session" do
+      {tp1, state1} = dispatched_first_d()
+      refute state1.session_died_retried?
+
+      assert {:dispatch, {:task_phase, ^tp1}, state2} =
+               Chunking.next(state1, %{outcome: :error, session_died: @died})
+
+      assert state2.session_died_retried?
+      assert state2.sessions_used == state1.sessions_used + 1
+      assert state2.cursor == state1.cursor
+    end
+
+    test "a second death fails with the dead session's detail and the scope's ref" do
+      {tp1, state1} = dispatched_first_d()
+      {:dispatch, _, state2} = Chunking.next(state1, %{outcome: :error, session_died: @died})
+
+      assert {:failed, {:session_died, %TaskPhaseRef{ordinal: ordinal}, @died}, _} =
+               Chunking.next(state2, %{outcome: :error, session_died: @died})
+
+      assert ordinal == tp1.ordinal
+    end
+
+    test "breaker or drain suppresses the retry" do
+      {_tp1, state1} = dispatched_first_d()
+
+      for flag <- [:breaker?, :drain?] do
+        assert {:failed, {:session_died, %TaskPhaseRef{}, @died}, _} =
+                 Chunking.next(
+                   state1,
+                   %{outcome: :error, session_died: @died} |> Map.put(flag, true)
+                 )
+      end
+    end
+
+    test "ceiling reached fails as :session_ceiling" do
+      state = %ChunkState{Chunking.start(five_phase_plan()) | ceiling: 1}
+      {:dispatch, _scope, state1} = Chunking.next(state, %{})
+
+      assert {:failed, {:session_ceiling, 1}, _} =
+               Chunking.next(state1, %{outcome: :error, session_died: @died})
+    end
+
+    test "branch drift still wins" do
+      {_tp1, state1} = dispatched_first_d()
+      d = %{expected: "a", observed: "b"}
+
+      assert {:failed, {:branch_drift, :implement, ^d}, _} =
+               Chunking.next(state1, %{outcome: :error, session_died: @died, branch_drift: d})
+    end
+
+    test "the flag resets when the cursor advances" do
+      {tp1, state1} = dispatched_first_d()
+      {:dispatch, _, state2} = Chunking.next(state1, %{outcome: :error, session_died: @died})
+      assert state2.session_died_retried?
+
+      plan_after = complete_task_phase(five_phase_plan(), tp1.ordinal)
+
+      assert {:dispatch, {:task_phase, _}, state3} =
+               Chunking.next(state2, %{outcome: :ok, plan: plan_after})
+
+      refute state3.session_died_retried?
+    end
+
+    test "failure_sentence/1 renders the CLI's message" do
+      ref = %TaskPhaseRef{ordinal: 3, number: "3", title: "Polish"}
+
+      assert Chunking.failure_sentence({:session_died, ref, @died}) ==
+               ~s(task-phase 3 "Polish" session failed to start: corrupt config)
+    end
+  end
 end

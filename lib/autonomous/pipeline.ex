@@ -78,7 +78,8 @@ defmodule Autonomous.Pipeline do
           optional(:unfilled_artifact?) => boolean(),
           optional(:outstanding_work?) => boolean(),
           optional(:backgrounded) => [String.t()],
-          optional(:branch_drift) => Autonomous.BranchGuard.drift()
+          optional(:branch_drift) => Autonomous.BranchGuard.drift(),
+          optional(:session_died) => %{kind: :start_failed | :ended_early, excerpt: String.t()}
         }
 
   @typedoc "Result of a transition."
@@ -138,6 +139,14 @@ defmodule Autonomous.Pipeline do
   # landed on the wrong branch, so the phase fails by naming the drift.
   def next(phase, :error, %{branch_drift: d}) when phase in @ordered do
     {:failed, {:branch_drift, phase, d}}
+  end
+
+  # Session-death gate (034) — right after branch drift, ahead of the
+  # background-wait and incomplete-session gates. A session that died (the CLI
+  # exited before or without a result) names the CLI's own message instead of a
+  # generic error; `signals.session_died` is `%{kind:, excerpt:}`.
+  def next(phase, :error, %{session_died: d}) when phase in @ordered and is_map(d) do
+    {:failed, {:session_died, phase, d}}
   end
 
   # Background-wait gate (032, US1) — ahead of the plain incomplete-session

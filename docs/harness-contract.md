@@ -188,3 +188,26 @@ binary and isolated in `Autonomous.BackgroundMarker`.
 - **`Monitor` tool.** A background watcher; excluded from every headless
   session (`@headless_disallowed`) alongside `Agent`, `Task`, `ScheduleWakeup`.
 
+
+## Session-death findings (feature 034, `claude_agent_sdk` pinned)
+
+**Re-check on every SDK bump** — `Autonomous.SessionExit` relies on exactly one
+fact below.
+
+- **The SDK `Client` lives inside the stream.** `ClientStream.stream/3`
+  `start_link`s the `Client` in the stream's *start fun*, so it is linked to
+  whichever process pulls the stream — `PhaseSession.reduce/2`'s fold Task. A
+  client that stops abnormally (e.g. `{:initialize_failed, {:channel_exit, …}}`
+  when the CLI exits during initialize) kills that Task through the link.
+  `PhaseSession` therefore folds in an `async_nolink` Task under
+  `Autonomous.SessionSup`, so the death is a value (`{:exit, reason}`), not an
+  exit signal into the action.
+- **The CLI's message travels in a `stderr` field.** The exit term carries the
+  CLI's own stderr as a binary under a `:stderr` key, a few tuples deep
+  (`%ProcessExit{stderr: …}` in the incident). `SessionExit.classify/2` walks
+  the term generically for the first `stderr` binary and names no SDK struct.
+  If a bump moves it, the excerpt falls back to `inspect(reason)` — still
+  classified, just less readable.
+- **First event = initialized.** The SDK emits the CLI's `system/init` message
+  as the first stream element only after a successful initialize, so "no event
+  yet" distinguishes `:start_failed` from `:ended_early`.
