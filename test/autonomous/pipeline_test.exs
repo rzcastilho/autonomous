@@ -526,6 +526,11 @@ defmodule Autonomous.PipelineTest do
       end
     end
 
+    test "a cleared (nil) session_died is not a death" do
+      assert Pipeline.next(:plan, :error, %{session_died: nil}) ==
+               Pipeline.next(:plan, :error, %{})
+    end
+
     test "branch drift beats session death" do
       d = %{expected: "a", observed: "b"}
 

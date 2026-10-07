@@ -41,12 +41,25 @@ Expected: green, with new coverage for the cases below.
 
 Expected:
 
-- Within about 30 s, Run Detail shows the specify attempt failed with
-  "specify session failed to start: … corrupted …".
-- One retry is logged.
+- The first attempt fails under a second after the trigger:
+  `feature … phase specify failed to start (Claude configuration file … is
+  corrupted …) — retrying (1 left)` is logged.
+- The CLI moves the corrupted file aside and starts from a fresh config, so the
+  retry usually runs about 10-15 s and ends with the plain result error
+  `Not logged in · Please run /login`. That session did start, so it carries the
+  per-phase **estimate** (specify: $0.63), not $0. Spend is $0 only when both
+  attempts die at startup.
+- Run Detail shows the specify attempt failed, with the reason of the **last**
+  attempt (here the plain error, not `session_died`).
 - The feature ends `failed` (or the backlog run parks).
 - `Autonomous.workers/0` is empty.
-- Spend stays $0.
+
+Walked 2026-10-07 against `../ledgerlite` (`--with-login`): first attempt died
+`:start_failed` in < 1 s, retry logged, total 13 s to `failed`, workers empty,
+spend $0.63 (retry estimate). The walk found the terminal reason still showing the
+first attempt's `session_died`: the agent state deep-merges `last_signals`, so a
+stale `session_died` survived a retry that did not die. Fixed with
+`PhaseResult.reset_session_died/2` (same shape as `reset_background/2`).
 
 Restart the container. The copy is re-seeded from the host, and the run
 resumes normally.

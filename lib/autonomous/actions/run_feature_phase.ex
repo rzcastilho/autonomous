@@ -113,6 +113,7 @@ defmodule Autonomous.Actions.RunFeaturePhase do
           signals
           |> put_artifact_absent_at_start(artifact_absent?)
           |> PhaseResult.reset_background(Map.get(state, :last_signals))
+          |> PhaseResult.reset_session_died(Map.get(state, :last_signals))
 
         {amount, _source} = Cost.for_phase(phase, result)
         record_cost(state.ledger, amount)
@@ -133,7 +134,10 @@ defmodule Autonomous.Actions.RunFeaturePhase do
          %{
            phase: phase,
            last_outcome: :error,
-           last_signals: PhaseResult.reset_background(%{}, Map.get(state, :last_signals)),
+           last_signals:
+             %{}
+             |> PhaseResult.reset_background(Map.get(state, :last_signals))
+             |> PhaseResult.reset_session_died(Map.get(state, :last_signals)),
            last_result: nil,
            history: [%{phase: phase, outcome: :error, error: reason} | state.history]
          }}

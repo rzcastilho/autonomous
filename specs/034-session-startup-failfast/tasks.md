@@ -102,7 +102,7 @@ description: "Task list for 034 — fail fast on session startup failure"
 
 - [X] T035 [P] Add the 034 summary to `CLAUDE.md` (session-death detection under "Session deadlines"; container seed isolation under "Containerized runtime") and, if the runbook describes failed-reason handling, a line in `docs/runbook.md`
 - [X] T036 Run `mise exec -- mix test --cover`; confirm > 90% on `SessionExit` and `SessionRetry`
-- [ ] T037 Walk quickstart §2 (corrupt container copy → specify fails to start within ~30 s, one retry logged, feature `failed`, `Autonomous.workers/0` empty, spend $0) and note the result in `specs/034-session-startup-failfast/quickstart.md`
+- [X] T037 Walk quickstart §2 (corrupt container copy → specify fails to start within ~30 s, one retry logged, feature `failed`, `Autonomous.workers/0` empty, spend $0) and note the result in `specs/034-session-startup-failfast/quickstart.md`
 
 ---
 

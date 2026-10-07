@@ -65,7 +65,10 @@ defmodule Autonomous.Actions.RunAutoRemediation do
          %{
            last_result: result,
            last_outcome: outcome,
-           last_signals: PhaseResult.reset_background(signals, Map.get(state, :last_signals)),
+           last_signals:
+             signals
+             |> PhaseResult.reset_background(Map.get(state, :last_signals))
+             |> PhaseResult.reset_session_died(Map.get(state, :last_signals)),
            session_id: result.session_id || state.session_id,
            cost_total: (state.cost_total || 0.0) + amount,
            history: [entry(attempt, outcome, amount, result) | state.history]

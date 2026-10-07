@@ -488,7 +488,7 @@ defmodule Autonomous.AnalyzeRunner do
 
   # 034: a remediation session that died on both attempts names the CLI's own
   # message; any other remediation failure keeps its historical reason.
-  defp remediation_failure(%{state: %{last_signals: %{session_died: d}}}, state),
+  defp remediation_failure(%{state: %{last_signals: %{session_died: %{} = d}}}, state),
     do: {:session_died, {:remediation, state.attempts_used}, d}
 
   defp remediation_failure(_agent, _state), do: :remediation_failed

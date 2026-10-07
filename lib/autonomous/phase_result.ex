@@ -371,6 +371,26 @@ defmodule Autonomous.PhaseResult do
     end
   end
 
+  @doc """
+  Make a gate-signal map authoritative about `:session_died` across runs on the
+  same agent (feature 034).
+
+  Same deep-merge hazard as `reset_background/2`: a retry that did not die would
+  inherit the previous attempt's `session_died: %{kind:, excerpt:}` and be failed
+  with the *first* attempt's death even though its own result was something else
+  (observed live: a retry that ended "Not logged in" was reported as the earlier
+  `:start_failed`). When `signals` has no `:session_died` of its own but
+  `previous` did, emit an explicit `nil` (a non-map replaces under deep merge).
+  Every consumer treats a non-map `:session_died` as absent.
+  """
+  @spec reset_session_died(map(), map() | nil) :: map()
+  def reset_session_died(signals, previous) do
+    case {Map.has_key?(signals, :session_died), Map.get(previous || %{}, :session_died)} do
+      {false, %{} = _stale} -> Map.put(signals, :session_died, nil)
+      _ -> signals
+    end
+  end
+
   defp entry(call_id, input, mode, task_id, path, position) do
     %BackgroundedCommand{
       call_id: call_id,

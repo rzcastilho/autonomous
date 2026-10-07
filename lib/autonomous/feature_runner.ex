@@ -320,7 +320,7 @@ defmodule Autonomous.FeatureRunner do
     do: {:branch_drift, :remediation, d}
 
   # 034: a session that died on both attempts names the CLI's own message.
-  defp remediation_failure_reason(%{state: %{last_signals: %{session_died: d}}}),
+  defp remediation_failure_reason(%{state: %{last_signals: %{session_died: %{} = d}}}),
     do: {:session_died, {:remediation, 1}, d}
 
   defp remediation_failure_reason(_agent), do: :remediation_failed

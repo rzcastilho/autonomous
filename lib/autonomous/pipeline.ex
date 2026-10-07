@@ -145,7 +145,7 @@ defmodule Autonomous.Pipeline do
   # background-wait and incomplete-session gates. A session that died (the CLI
   # exited before or without a result) names the CLI's own message instead of a
   # generic error; `signals.session_died` is `%{kind:, excerpt:}`.
-  def next(phase, :error, %{session_died: d}) when phase in @ordered do
+  def next(phase, :error, %{session_died: d}) when phase in @ordered and is_map(d) do
     {:failed, {:session_died, phase, d}}
   end
 
