@@ -49,13 +49,15 @@ defmodule Autonomous.Web.RunSettingsView do
 
   @doc "Render a setting or amendment value as plain text — no quoting artefacts, no `inspect/1`."
   @spec format_value(term()) :: String.t()
-  def format_value(value) when is_binary(value), do: value
   def format_value(nil), do: "—"
   def format_value(true), do: "true"
   def format_value(false), do: "false"
   def format_value(value) when is_atom(value), do: ":" <> Atom.to_string(value)
   def format_value(value) when is_integer(value), do: Integer.to_string(value)
   def format_value(value) when is_float(value), do: Float.to_string(value)
+  def format_value([]), do: "—"
+  def format_value(""), do: "—"
+  def format_value(value) when is_binary(value), do: value
   def format_value(value) when is_list(value), do: Enum.map_join(value, ", ", &format_value/1)
 
   def format_value(%{} = value) do

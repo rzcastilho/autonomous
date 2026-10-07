@@ -58,7 +58,8 @@ defmodule Autonomous.Web.ConfigLive do
   end
 
   defp applied_fields do
-    models = Map.new(Pipeline.phases(), fn phase -> {"model_#{phase}", Config.model_for(phase)} end)
+    models =
+      Map.new(Pipeline.phases(), fn phase -> {"model_#{phase}", Config.model_for(phase)} end)
 
     Map.merge(models, %{
       "budget_usd" => Ledger.snapshot().budget,
@@ -129,8 +130,7 @@ defmodule Autonomous.Web.ConfigLive do
 
   defp build_change(edited) do
     %{
-      models:
-        Map.new(Pipeline.phases(), fn phase -> {phase, edited["model_#{phase}"]} end),
+      models: Map.new(Pipeline.phases(), fn phase -> {phase, edited["model_#{phase}"]} end),
       budget_usd: budget_amount(edited["budget_usd"]),
       pr_base: edited["pr_base"] || "",
       pr_remote: edited["pr_remote"] || ""
@@ -145,10 +145,22 @@ defmodule Autonomous.Web.ConfigLive do
   end
 
   defp refine_errors(errors, edited) do
-    if Map.has_key?(errors, :budget_usd) and ConfigDiff.parse_cents(edited["budget_usd"]) == :invalid,
-      do: Map.put(errors, :budget_usd, "budget must be a non-negative amount with at most two decimals"),
-      else: errors
+    if Map.has_key?(errors, :budget_usd) and
+         ConfigDiff.parse_cents(edited["budget_usd"]) == :invalid,
+       do:
+         Map.put(
+           errors,
+           :budget_usd,
+           "budget must be a non-negative amount with at most two decimals"
+         ),
+       else: errors
   end
+
+  # `Float.to_string(2000.0)` is "2.0e3"; a number input needs plain decimals.
+  defp budget_input_value(value) when is_float(value),
+    do: :erlang.float_to_binary(value, decimals: 2)
+
+  defp budget_input_value(value), do: value
 
   defp slider_value(edited, applied) do
     case ConfigDiff.parse_cents(edited["budget_usd"]) do
@@ -237,7 +249,7 @@ defmodule Autonomous.Web.ConfigLive do
               name="budget_usd"
               min="0"
               step="0.01"
-              value={@edited["budget_usd"]}
+              value={budget_input_value(@edited["budget_usd"])}
               class="console-input"
               phx-debounce="300"
             />
@@ -247,7 +259,7 @@ defmodule Autonomous.Web.ConfigLive do
               min="0"
               max="500"
               step="0.5"
-              value={slider_value(@edited, @applied)}
+              value={budget_input_value(slider_value(@edited, @applied))}
               class="range-input"
               aria-label="Cost breaker budget slider"
             />

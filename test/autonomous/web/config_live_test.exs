@@ -51,6 +51,13 @@ defmodule Autonomous.Web.ConfigLiveTest do
     Map.merge(base, overrides)
   end
 
+  test "budget input renders plain decimals, never scientific notation", %{conn: conn} do
+    Ledger.set_budget(2000.0)
+    {:ok, _view, html} = live(conn, "/config")
+
+    assert html =~ ~s(value="2000.00")
+  end
+
   test "renders current model routing/budget/PR settings", %{conn: conn} do
     {:ok, _view, html} = live(conn, "/config")
 
@@ -90,7 +97,7 @@ defmodule Autonomous.Web.ConfigLiveTest do
 
     assert html =~ "Configuration applied"
     assert Ledger.snapshot().budget == 42.5
-    assert html =~ ~s(value="42.5")
+    assert html =~ ~s(value="42.50")
   end
 
   test "invalid input surfaces a field error and applies nothing", %{conn: conn} do
@@ -178,7 +185,11 @@ defmodule Autonomous.Web.ConfigLiveTest do
   test "budget is a cent-precise number input authority with no inline script", %{conn: conn} do
     {:ok, view, html} = live(conn, "/config")
 
-    assert has_element?(view, ~s(input[type="number"][name="budget_usd"][step="0.01"].console-input))
+    assert has_element?(
+             view,
+             ~s(input[type="number"][name="budget_usd"][step="0.01"].console-input)
+           )
+
     refute html =~ "oninput"
   end
 

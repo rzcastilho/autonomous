@@ -2690,7 +2690,7 @@ textarea {
   .console-nav .nav-item {
     position: relative;
     justify-content: center;
-    padding: var(--sp-10) var(--sp-4);
+    padding: var(--sp-18) var(--sp-4); /* 033: >=44px tap target */
   }
 
   .console-nav .nav-short {

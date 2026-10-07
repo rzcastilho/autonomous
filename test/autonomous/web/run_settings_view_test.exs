@@ -69,6 +69,8 @@ defmodule Autonomous.Web.RunSettingsViewTest do
       assert RunSettingsView.format_value("main") == "main"
       assert RunSettingsView.format_value(:high) == ":high"
       assert RunSettingsView.format_value(nil) == "—"
+      assert RunSettingsView.format_value([]) == "—"
+      assert RunSettingsView.format_value("") == "—"
       assert RunSettingsView.format_value(3) == "3"
       assert RunSettingsView.format_value(1.5) == "1.5"
       assert RunSettingsView.format_value(true) == "true"
@@ -77,7 +79,7 @@ defmodule Autonomous.Web.RunSettingsViewTest do
 
     test "list is comma-joined" do
       assert RunSettingsView.format_value(["a", :b, 1]) == "a, :b, 1"
-      assert RunSettingsView.format_value([]) == ""
+      assert RunSettingsView.format_value([]) == "—"
     end
 
     test "map is sorted k=v without __ keys" do
