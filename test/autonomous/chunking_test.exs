@@ -815,4 +815,14 @@ defmodule Autonomous.ChunkingTest do
                ~s(task-phase 3 "Polish" session failed to start: corrupt config)
     end
   end
+
+  describe "untrusted workspace (036)" do
+    test "fails the chunk by name and is never re-dispatched" do
+      state = Chunking.start(five_phase_plan())
+      obs = %{workspace: "/x/repo", kinds: ["permissions.allow"]}
+
+      assert {:failed, {:untrusted_workspace, %TaskPhaseRef{}, ^obs}, _} =
+               Chunking.next(state, %{outcome: :error, untrusted_workspace: obs})
+    end
+  end
 end

@@ -16,7 +16,7 @@ defmodule Autonomous.PhaseRequest do
   """
 
   alias Jido.Harness.RunRequest
-  alias Autonomous.{Config, Containment, Feature, Layout, Prompts, ShellTimeouts, Worktree}
+  alias Autonomous.{Config, Containment, Feature, Layout, Prompts, SdkProxy, ShellTimeouts, Worktree}
   alias Autonomous.TaskPlan.TaskPhase
 
   @slash %{
@@ -83,6 +83,9 @@ defmodule Autonomous.PhaseRequest do
     * `:deadline_ms` — (032) the wall-clock deadline `PhaseSession.reduce/2` will
       enforce for this session; the Bash timeouts are derived from it
       (`ShellTimeouts.for_deadline/1`). Defaults to `Config.phase_timeout/0`.
+    * `:stderr_collector` — (036) pid of a `WorkspaceTrust.Collector`; the session's
+      CLI stderr callback (installed by `SdkProxy`) forwards untrusted-workspace
+      lines to it. `nil`/absent = lines are only logged.
   """
   @spec build(Feature.t(), atom(), keyword()) :: RunRequest.t()
   def build(%Feature{} = feature, phase, opts \\ []) when is_atom(phase) do
@@ -121,6 +124,7 @@ defmodule Autonomous.PhaseRequest do
     * `:containment` — (030) `"strict"` (default) or `"permissive"`, same
       effect as `build/3`.
     * `:deadline_ms` — (032) same as `build/3`.
+    * `:stderr_collector` — (036) same as `build/3`.
 
   No `session_id` (fresh session, like every phase).
   """
@@ -149,11 +153,19 @@ defmodule Autonomous.PhaseRequest do
 
     %{
       "claude" => %{
-        env: Map.merge(Containment.session_env(containment), timeouts),
+        env:
+          Containment.session_env(containment)
+          |> Map.merge(timeouts)
+          |> put_collector(Keyword.get(opts, :stderr_collector)),
         settings: Jason.encode!(%{"env" => timeouts})
       }
     }
   end
+
+  # 036 — the adapter drops `:stderr`, so the session's collector rides in the env
+  # to `Autonomous.SdkProxy`, which strips it before the CLI launches.
+  defp put_collector(env, nil), do: env
+  defp put_collector(env, pid), do: Map.put(env, SdkProxy.env_key(), SdkProxy.encode(pid))
 
   defp remediation_prompt(feature, layout, prompt) do
     "Remediation for feature #{feature.id} (#{feature.slug}), " <>

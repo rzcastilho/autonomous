@@ -1,0 +1,1 @@
+Ignoring 2 permissions.allow entries from .claude/settings.json: a session with no working directory is never trusted.

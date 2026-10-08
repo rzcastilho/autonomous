@@ -142,6 +142,24 @@ defmodule Autonomous.Report do
     "#{died_where(where)} session #{died_phrase(kind)}: #{excerpt}"
   end
 
+  # 036: the CLI ignored the committed pack's permissions because the workspace
+  # was untrusted (strict runs only). `where` as for `:session_died`.
+  def format_reason({:untrusted_workspace, where, %{workspace: workspace, kinds: kinds}}) do
+    kinds_text = if kinds == [], do: "(unknown)", else: Enum.join(kinds, ", ")
+
+    tail =
+      case workspace do
+        nil ->
+          "session had no working directory"
+
+        path ->
+          "workspace #{path} is not trusted (projects[\"#{path}\"].hasTrustDialogAccepted)"
+      end
+
+    "untrusted_workspace in #{died_where(where)} — CLI ignored #{kinds_text} " <>
+      "from the committed pack; #{tail}. Trust it, then resume/2."
+  end
+
   def format_reason(reason), do: PublishOutcome.describe(reason) || inspect(reason)
 
   defp died_where({:remediation, n}), do: "remediation attempt #{n}"

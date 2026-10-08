@@ -8,7 +8,7 @@ defmodule Autonomous.PhaseStepTest do
   defmodule FakeSDK do
     alias ClaudeAgentSDK.Message
 
-    def query(prompt, _options) do
+    def query(prompt, options) do
       capture_prompt(prompt)
 
       case Application.get_env(:autonomous, :phase_step_test_scenario, :happy) do
@@ -44,6 +44,14 @@ defmodule Autonomous.PhaseStepTest do
           if String.contains?(prompt, "Retry note"),
             do: success_messages(),
             else: background_messages()
+
+        # 036: a clean-looking session whose CLI said the workspace is untrusted.
+        :untrusted_always ->
+          options.stderr.(
+            ~s(Ignoring 2 permissions.allow entries from .claude/settings.json: this workspace has not been trusted. Set projects["/x/repo"].hasTrustDialogAccepted: true)
+          )
+
+          success_messages()
 
         _ ->
           success_messages()
@@ -664,6 +672,24 @@ defmodule Autonomous.PhaseStepTest do
         end)
 
       assert log =~ "failed to start (corrupt config) — retrying"
+    end
+  end
+
+  describe "untrusted workspace (036)" do
+    test "is never retried, even with a retry budget; fails by name" do
+      Application.put_env(:jido_claude, :sdk_module, Autonomous.SdkProxy)
+      Application.put_env(:autonomous, :sdk_proxy_inner, FakeSDK)
+      on_exit(fn -> Application.delete_env(:autonomous, :sdk_proxy_inner) end)
+      Application.put_env(:autonomous, :phase_step_test_scenario, :untrusted_always)
+
+      agent =
+        PhaseStep.run(start_agent!(), feature(), :converge, step: 1, timeout: 5_000, retries: 2)
+
+      assert agent.state.last_outcome == :error
+      assert length(agent.state.history) == 1
+
+      assert {:failed, {:untrusted_workspace, :converge, %{workspace: "/x/repo", kinds: ["permissions.allow"]}}} =
+               Autonomous.Pipeline.next(:converge, :error, agent.state.last_signals)
     end
   end
 end

@@ -134,6 +134,11 @@ defmodule Autonomous.PhaseStep do
       Map.has_key?(signals, :branch_drift) ->
         nil
 
+      # Untrusted workspace (036): retrying cannot trust the workspace; only the
+      # operator can. Same short-circuit as branch drift.
+      is_map(Map.get(signals, :untrusted_workspace)) ->
+        nil
+
       # Session death (034): the CLI died before or without a result. A fresh
       # session is the likely fix (e.g. a transient torn config read); drain
       # and the breaker suppress it like every other session start.

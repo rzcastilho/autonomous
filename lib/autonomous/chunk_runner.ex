@@ -252,6 +252,7 @@ defmodule Autonomous.ChunkRunner do
         |> maybe_put_drift(drift)
         |> maybe_put_backgrounded(agent1.state.last_signals[:backgrounded])
         |> maybe_put_session_died(agent1.state.last_signals[:session_died])
+        |> maybe_put_untrusted(agent1.state.last_signals[:untrusted_workspace])
 
       stop_meta =
         Map.merge(meta, %{
@@ -315,6 +316,9 @@ defmodule Autonomous.ChunkRunner do
 
   defp maybe_put_backgrounded(signals, cmds) when cmds in [nil, []], do: signals
   defp maybe_put_backgrounded(signals, cmds), do: Map.put(signals, :backgrounded, cmds)
+
+  defp maybe_put_untrusted(signals, obs) when is_map(obs), do: Map.put(signals, :untrusted_workspace, obs)
+  defp maybe_put_untrusted(signals, _), do: signals
 
   defp maybe_put_session_died(signals, nil), do: signals
   defp maybe_put_session_died(signals, died), do: Map.put(signals, :session_died, died)

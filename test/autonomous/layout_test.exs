@@ -29,6 +29,13 @@ defmodule Autonomous.LayoutTest do
     %{root: root, repo: repo}
   end
 
+  describe "worktree_root/2" do
+    test "equals the worktree_root of the built layout", %{root: root, repo: repo} do
+      {:ok, layout} = Layout.build(repo, "ledgerlite-abc123", {:breakdown, "x"})
+      assert Layout.worktree_root(root, "ledgerlite-abc123") == layout.worktree_root
+    end
+  end
+
   describe "build/3 — breakdown scope" do
     test "resolves all four roots as pure path joins", %{root: root, repo: repo} do
       assert {:ok, layout} = Layout.build(repo, "ledgerlite-abc123", {:breakdown, "core"})

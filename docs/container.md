@@ -63,6 +63,41 @@ never reach the host.
   fails naming the stale mount; remove it and use `--with-login`.
 - Token-only runs (`ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN`) are unchanged.
 
+## Workspace trust (036)
+
+The `claude` CLI ignores a repo's committed `permissions.allow` /
+`permissions.additionalDirectories` until the workspace is *trusted*
+(`projects["<path>"].hasTrustDialogAccepted` in `~/.claude.json`). A fresh container has
+no such record, so the committed target pack was silently dropped. The entrypoint now runs
+a `trust_workspaces` step (also `container-entrypoint.sh trust-config`) after config
+seeding that merges **exactly two** records into the container-private `~/.claude.json`:
+
+- `$AUTONOMOUS_REPO` (realpath) — load-bearing: a worktree's project key resolves to the
+  main repo, so this one record covers every `feature/NNN-slug` worktree.
+- `$AUTONOMOUS_WORKTREE_ROOT` (realpath; the sixth identity variable, derived by
+  `Layout.worktree_root/2`) — bounded and forward-compatible.
+
+The step is atomic (`O_EXCL` temp file, `fsync`, `rename`, mode `0600`), idempotent (no
+write when both records exist), preserves every other key, refuses a config that is not a
+JSON object (startup stops, file untouched), and never touches the host's
+`~/.claude.json`. Login-seeded trust records are carried over untouched. No ancestor
+directory, `$HOME` or `/workspace` is ever trusted.
+
+Backstop: a session that still reports an untrusted workspace fails the phase under
+`strict` (`{:untrusted_workspace, phase, obs}`, never retried; see `docs/runbook.md`) and
+only warns under `permissive` — on host and container alike.
+
+**Hook under untrusted workspaces.** Whether `scope_guard.py` runs while the workspace is
+untrusted is checked by `SMOKE_AGENT=1 scripts/container-smoke.sh us-trust-hook`, which
+prints one greppable `us-trust-hook claude=<version> untrusted|trusted: …` line each.
+Finding (2026-10-08, pinned image, `claude` 2.1.286, authenticated run): with no trust
+record the CLI prints the untrusted warning and ignores `permissions.allow`, **but the
+PreToolUse hook still runs** — a strict orchestrated session asked to write `/tmp/outside`
+was denied by `scope_guard` (`write_outside_worktree`) and no file was written; with the
+trust record the outcome is the same minus the warning. So past strict runs ran
+*narrower* (allow-list ignored), not wider; hook containment held. Re-run
+`us-trust-hook` after CLI upgrades.
+
 ## Release shape
 
 `scripts/autonomous build --release` builds `autonomous-release:local`: a `mix release` on

@@ -38,6 +38,7 @@ defmodule Autonomous.Actions.RunAutoRemediation do
     PhaseRequest,
     PhaseResult,
     PhaseSession,
+    WorkspaceTrust,
     Worktree
   }
 
@@ -45,8 +46,11 @@ defmodule Autonomous.Actions.RunAutoRemediation do
   def run(%{prompt: prompt, model: model, attempt: attempt}, context) do
     state = context[:agent].state
 
+    collector = WorkspaceTrust.Collector.start()
+
     request =
       PhaseRequest.build_remediation(state.feature, model,
+        stderr_collector: collector,
         cwd: worktree_path(state.worktree),
         layout: state.layout,
         prompt: prompt,
@@ -57,7 +61,11 @@ defmodule Autonomous.Actions.RunAutoRemediation do
     case Jido.Harness.run_request(:claude, request, []) do
       {:ok, stream} ->
         result = PhaseSession.reduce(stream, Config.phase_timeout())
-        {outcome, signals} = classify(state.worktree, result)
+        {result, untrusted} = WorkspaceTrust.settle(result, collector, state.containment)
+
+        {outcome, signals} =
+          state.worktree |> classify(result) |> WorkspaceTrust.apply_to(untrusted)
+
         {amount, _source} = Cost.for_phase(:auto_remediation, result)
         record_cost(state.ledger, amount)
 
@@ -68,13 +76,16 @@ defmodule Autonomous.Actions.RunAutoRemediation do
            last_signals:
              signals
              |> PhaseResult.reset_background(Map.get(state, :last_signals))
-             |> PhaseResult.reset_session_died(Map.get(state, :last_signals)),
+             |> PhaseResult.reset_session_died(Map.get(state, :last_signals))
+             |> PhaseResult.reset_untrusted_workspace(Map.get(state, :last_signals)),
            session_id: result.session_id || state.session_id,
            cost_total: (state.cost_total || 0.0) + amount,
            history: [entry(attempt, outcome, amount, result) | state.history]
          }}
 
       {:error, reason} ->
+        WorkspaceTrust.Collector.stop(collector)
+
         {:ok,
          %{
            last_outcome: :error,

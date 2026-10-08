@@ -1451,3 +1451,19 @@ for post-mortem exactly as any other `:failed` feature's is. A phase that
 legitimately commits nothing — `clarify`/`analyze`/`implement`/`converge`, or a
 `specify`/`plan`/`tasks` re-run over output that already existed (an ordinary
 resume) — is never failed by this check.
+
+## Untrusted workspace (036)
+
+**Symptom.** A feature fails with
+`untrusted_workspace in <phase> — CLI ignored <kinds> from the committed pack; workspace <path> is not trusted (projects["<path>"].hasTrustDialogAccepted). Trust it, then resume/2.`
+
+**Cause.** The `claude` CLI ignored the committed `.claude/settings.json` pack because the
+repo has no trust record. Containers get one automatically at startup (see
+`docs/container.md`); on the host it is missing until you accept the trust dialog.
+Only `strict` runs fail; `permissive` logs a warning and continues. Not retried.
+
+**Fix.**
+
+1. On the host, run `claude` interactively once in the target repo and accept the trust
+   dialog (one record covers all its worktrees).
+2. `Autonomous.resume/2` from the failed phase.

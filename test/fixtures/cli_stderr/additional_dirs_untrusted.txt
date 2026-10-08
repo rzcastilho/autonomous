@@ -1,0 +1,1 @@
+Ignoring 1 permissions.additionalDirectories entry from .claude/settings.json: this workspace has not been trusted. Trust the workspace in an interactive session, or set projects["/x/repo"].hasTrustDialogAccepted: true in /home/u/.claude.json.

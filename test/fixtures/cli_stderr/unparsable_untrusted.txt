@@ -1,0 +1,1 @@
+Ignoring settings from .claude/settings.json: this workspace has not been trusted.

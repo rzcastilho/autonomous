@@ -579,4 +579,44 @@ defmodule Autonomous.PhaseRequestTest do
       end
     end
   end
+
+  describe "stderr collector (036)" do
+    alias Autonomous.SdkProxy
+    alias Autonomous.WorkspaceTrust.Collector
+    import ExUnit.CaptureLog
+
+    @untrusted ~s(Ignoring 1 permissions.allow entry from x: this workspace has not been trusted. Set projects["/x"].hasTrustDialogAccepted: true)
+
+    test "no collector: env unchanged (byte-identical to pre-036)" do
+      r = PhaseRequest.build(feature(), :plan)
+      refute Map.has_key?(r.metadata["claude"][:env], SdkProxy.env_key())
+    end
+
+    test "collector pid rides in env; proxy strips it and installs the callback" do
+      pid = Collector.start()
+      r = PhaseRequest.build(feature(), :plan, stderr_collector: pid)
+      env = r.metadata["claude"][:env]
+      assert env[SdkProxy.env_key()] == SdkProxy.encode(pid)
+
+      opts = SdkProxy.prepare(%ClaudeAgentSDK.Options{env: env})
+      refute Map.has_key?(opts.env, SdkProxy.env_key())
+
+      log =
+        capture_log(fn ->
+          opts.stderr.("harmless")
+          opts.stderr.(@untrusted)
+        end)
+
+      assert log =~ "CLI stderr: harmless"
+      assert log =~ "CLI stderr: " <> String.slice(@untrusted, 0, 30)
+      assert Collector.collect(pid) == [@untrusted]
+    end
+
+    test "build_remediation carries the collector too" do
+      pid = Collector.start()
+      r = PhaseRequest.build_remediation(feature(), "sonnet", stderr_collector: pid)
+      assert r.metadata["claude"][:env][SdkProxy.env_key()] == SdkProxy.encode(pid)
+      Collector.stop(pid)
+    end
+  end
 end

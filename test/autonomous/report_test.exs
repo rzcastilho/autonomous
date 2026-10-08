@@ -290,4 +290,26 @@ defmodule Autonomous.ReportTest do
       refute Report.format_reason({:session_died, :plan, d}) =~ "%{"
     end
   end
+
+  describe "format_reason/1 (036 untrusted_workspace)" do
+    @obs %{workspace: "/x/repo", kinds: ["permissions.allow", "permissions.additionalDirectories"]}
+
+    test "phase atom with path and kinds" do
+      assert Report.format_reason({:untrusted_workspace, :plan, @obs}) ==
+               "untrusted_workspace in plan — CLI ignored permissions.allow, permissions.additionalDirectories " <>
+                 "from the committed pack; workspace /x/repo is not trusted " <>
+                 ~S|(projects["/x/repo"].hasTrustDialogAccepted). Trust it, then resume/2.|
+    end
+
+    test "empty kinds render (unknown); nil workspace names the missing cwd" do
+      out = Report.format_reason({:untrusted_workspace, :plan, %{workspace: nil, kinds: []}})
+      assert out =~ "CLI ignored (unknown) from the committed pack; session had no working directory."
+    end
+
+    test "chunk ref and remediation attempt" do
+      ref = %Autonomous.TaskPhaseRef{ordinal: 3, number: "3", title: "Title"}
+      assert Report.format_reason({:untrusted_workspace, ref, @obs}) =~ ~s(in task-phase 3 "Title" —)
+      assert Report.format_reason({:untrusted_workspace, {:remediation, 2}, @obs}) =~ "in remediation attempt 2 —"
+    end
+  end
 end

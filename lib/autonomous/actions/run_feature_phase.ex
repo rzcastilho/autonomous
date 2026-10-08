@@ -64,6 +64,7 @@ defmodule Autonomous.Actions.RunFeaturePhase do
     PhaseResult,
     PhaseSession,
     SpecDir,
+    WorkspaceTrust,
     Worktree
   }
 
@@ -91,8 +92,11 @@ defmodule Autonomous.Actions.RunFeaturePhase do
     # resume is a v2 concern.
     deadline_ms = Map.get(params, :deadline_ms) || Config.phase_timeout()
 
+    collector = WorkspaceTrust.Collector.start()
+
     request =
       PhaseRequest.build(state.feature, phase,
+        stderr_collector: collector,
         cwd: worktree_path(state.worktree),
         resume_prompt: resume_prompt_for(state, phase, params),
         layout: state.layout,
@@ -106,14 +110,17 @@ defmodule Autonomous.Actions.RunFeaturePhase do
     case Jido.Harness.run_request(:claude, request, []) do
       {:ok, stream} ->
         result = PhaseSession.reduce(stream, deadline_ms)
+        {result, untrusted} = WorkspaceTrust.settle(result, collector, state.containment)
 
-        {outcome, signals} = classify(phase, result, state, scope)
+        {outcome, signals} =
+          phase |> classify(result, state, scope) |> WorkspaceTrust.apply_to(untrusted)
 
         signals =
           signals
           |> put_artifact_absent_at_start(artifact_absent?)
           |> PhaseResult.reset_background(Map.get(state, :last_signals))
           |> PhaseResult.reset_session_died(Map.get(state, :last_signals))
+          |> PhaseResult.reset_untrusted_workspace(Map.get(state, :last_signals))
 
         {amount, _source} = Cost.for_phase(phase, result)
         record_cost(state.ledger, amount)
@@ -130,6 +137,8 @@ defmodule Autonomous.Actions.RunFeaturePhase do
          }}
 
       {:error, reason} ->
+        WorkspaceTrust.Collector.stop(collector)
+
         {:ok,
          %{
            phase: phase,
@@ -137,7 +146,8 @@ defmodule Autonomous.Actions.RunFeaturePhase do
            last_signals:
              %{}
              |> PhaseResult.reset_background(Map.get(state, :last_signals))
-             |> PhaseResult.reset_session_died(Map.get(state, :last_signals)),
+             |> PhaseResult.reset_session_died(Map.get(state, :last_signals))
+             |> PhaseResult.reset_untrusted_workspace(Map.get(state, :last_signals)),
            last_result: nil,
            history: [%{phase: phase, outcome: :error, error: reason} | state.history]
          }}

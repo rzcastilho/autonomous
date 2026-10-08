@@ -32,7 +32,8 @@ defmodule Autonomous.PhaseResult do
             error: nil,
             subtype: nil,
             num_turns: nil,
-            event_count: 0
+            event_count: 0,
+            untrusted_workspace: nil
 
   @type tool_event :: %{kind: :call | :result, payload: map()}
 
@@ -51,7 +52,8 @@ defmodule Autonomous.PhaseResult do
           error: term() | nil,
           subtype: String.t() | nil,
           num_turns: non_neg_integer() | nil,
-          event_count: non_neg_integer()
+          event_count: non_neg_integer(),
+          untrusted_workspace: Autonomous.WorkspaceTrust.observation() | nil
         }
 
   # Internal accumulator so the public struct stays clean.
@@ -387,6 +389,19 @@ defmodule Autonomous.PhaseResult do
   def reset_session_died(signals, previous) do
     case {Map.has_key?(signals, :session_died), Map.get(previous || %{}, :session_died)} do
       {false, %{} = _stale} -> Map.put(signals, :session_died, nil)
+      _ -> signals
+    end
+  end
+
+  @doc """
+  Same deep-merge reset as `reset_session_died/2`, for `:untrusted_workspace`
+  (feature 036): a retry that was not untrusted must not inherit the previous
+  attempt's observation.
+  """
+  @spec reset_untrusted_workspace(map(), map() | nil) :: map()
+  def reset_untrusted_workspace(signals, previous) do
+    case {Map.has_key?(signals, :untrusted_workspace), Map.get(previous || %{}, :untrusted_workspace)} do
+      {false, %{} = _stale} -> Map.put(signals, :untrusted_workspace, nil)
       _ -> signals
     end
   end

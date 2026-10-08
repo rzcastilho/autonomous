@@ -60,6 +60,10 @@ config :jido_harness,
   default_provider: :claude
 
 # ---------------------------------------------------------------------------
+# 036: the pinned jido_claude adapter drops `:stderr`; this wrapper installs the
+# per-session CLI stderr callback the untrusted-workspace gate reads.
+config :jido_claude, sdk_module: Autonomous.SdkProxy
+
 # jido_action execution guards — BOTH deliberately disabled.
 #
 # The phase deadline lives in `Autonomous.PhaseSession`, inside the

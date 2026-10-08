@@ -4,7 +4,7 @@
 # FAIL. Sections are added per user story — see
 # specs/031-containerized-runtime/quickstart.md.
 #
-#   scripts/container-smoke.sh [us1|us2|us3|us4|us5|us6|secrets]
+#   scripts/container-smoke.sh [us1|us2|us3|us4|us5|us6|secrets|trust|us-trust-hook]
 #
 # Needs: Docker Engine + Compose v2, the image built (scripts/autonomous build).
 # Agent-auth checks (SC-011) spend a few cents and run only with SMOKE_AGENT=1.
@@ -612,6 +612,108 @@ secrets() {
   rm -f "$vals"
 }
 
+# Feature 036: container workspace trust. Runs the real entrypoint's trust-config
+# step in the image against throwaway HOMEs. No spend except the SMOKE_AGENT check.
+trust() {
+  echo "== Trust: the container trusts exactly the repo and worktree root (feature 036)"
+  td="$(mktemp -d)"
+  echo "$td" >>"$smoke_list"
+  printf '{"smoke":true,"projects":{"/third/path":{"hasTrustDialogAccepted":true,"allowedTools":["Bash"]}}}\n' >"$td/seed.json"
+  printf '{' >"$td/invalid.json"
+  host_sha() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d' ' -f1; }
+  trust_run() { # trust_run <seed file> <cmd...>: HOME=/tmp/th, repo /tmp/r, root /tmp/wt
+    sf="$1"
+    shift
+    docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp/th \
+      -e AUTONOMOUS_REPO=/tmp/r -e AUTONOMOUS_WORKTREE_ROOT=/tmp/wt \
+      -v "$root/scripts/container-entrypoint.sh:/ep.sh:ro" \
+      -v "$sf:/home/autonomous/.claude.host.json:ro" \
+      --entrypoint sh "$IMAGE" -c "mkdir -p /tmp/th /tmp/r && $*"
+  }
+  dump='python3 -c "import json,os;c=json.load(open(os.environ[\"HOME\"]+\"/.claude.json\"));print(sorted(c[\"projects\"]))"'
+
+  before="$(host_sha "$td/seed.json")"
+  out="$(trust_run "$td/seed.json" "sh /ep.sh trust-config && $dump" 2>/dev/null | tail -1)"
+  if [ "$out" = "['/third/path', '/tmp/r', '/tmp/wt']" ]; then
+    pass "exact trusted set: the seeded path plus repo and worktree root, no ancestors"
+  else
+    fail "exact trusted set (got: $out)"
+  fi
+  [ "$before" = "$(host_sha "$td/seed.json")" ] \
+    && pass "host seed file sha256 unchanged" || fail "host seed file sha256 unchanged"
+
+  check "seeded keys preserved (smoke, third-path allowedTools)" \
+    trust_run "$td/seed.json" \
+    'sh /ep.sh trust-config && python3 -c "import json,os;c=json.load(open(os.environ[\"HOME\"]+\"/.claude.json\"));assert c[\"smoke\"] is True and c[\"projects\"][\"/third/path\"][\"allowedTools\"]==[\"Bash\"]"'
+
+  for n in 1 2 5; do
+    check "idempotent across $n run(s): bytes identical after the first" \
+      trust_run "$td/seed.json" \
+      "sh /ep.sh trust-config && h=\$(sha256sum \"\$HOME/.claude.json\") && i=1 && while [ \$i -lt $n ]; do rm -f /tmp/nope; sh /ep.sh trust-config; i=\$((i+1)); done && [ \"\$h\" = \"\$(sha256sum \"\$HOME/.claude.json\")\" ]"
+  done
+
+  # An invalid config (not the seed) must be refused and left byte-identical.
+  inv="$(docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp/th \
+    -e AUTONOMOUS_REPO=/tmp/r -e AUTONOMOUS_WORKTREE_ROOT=/tmp/wt \
+    -v "$root/scripts/container-entrypoint.sh:/ep.sh:ro" \
+    --entrypoint sh "$IMAGE" -c 'mkdir -p /tmp/th /tmp/r && printf "{" > "$HOME/.claude.json" && sh /ep.sh trust-config; echo "rc=$? $(cat "$HOME/.claude.json")"' 2>&1)"
+  if printf '%s' "$inv" | grep -q '\.claude\.json' && printf '%s' "$inv" | grep -q 'rc=1 {$'; then
+    pass "invalid config refused, named, and left byte-identical"
+  else
+    fail "invalid config refused: $inv"
+  fi
+
+  if [ "${SMOKE_AGENT:-0}" = 1 ]; then
+    scratch="$(make_target trust-agent)"
+    mkdir -p "$scratch/.claude"
+    printf '{"permissions":{"allow":["Bash(echo:*)"]}}\n' >"$scratch/.claude/settings.json"
+    git -C "$scratch" add -A && git -C "$scratch" -c user.name=smoke -c user.email=smoke@example.com commit -q -m settings
+    err="$(docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp/th -e ANTHROPIC_API_KEY -e CLAUDE_CODE_OAUTH_TOKEN \
+      -e AUTONOMOUS_REPO=/work -e AUTONOMOUS_WORKTREE_ROOT=/tmp/wt \
+      -v "$root/scripts/container-entrypoint.sh:/ep.sh:ro" -v "$scratch:/work" -w /work \
+      --entrypoint sh "$IMAGE" -c 'mkdir -p /tmp/th && sh /ep.sh trust-config 2>/dev/null; claude -p "reply ok" 2>&1 >/dev/null' 2>&1)"
+    if printf '%s' "$err" | grep -q 'has not been trusted'; then
+      fail "trusted workspace still warns: $err"
+    else
+      pass "claude -p in a trusted workspace prints no untrusted warning"
+    fi
+  else
+    skip "agent trust check (set SMOKE_AGENT=1)"
+  fi
+}
+
+# Feature 036 (US4): does scope_guard still deny while the workspace is untrusted?
+us_trust_hook() {
+  echo "== Trust hook: strict containment under an untrusted workspace (feature 036)"
+  if [ "${SMOKE_AGENT:-0}" != 1 ]; then
+    skip "us-trust-hook (set SMOKE_AGENT=1; spends a few cents)"
+    return
+  fi
+  scratch="$(make_target trust-hook)"
+  mkdir -p "$scratch/.claude"
+  cp -R priv/target_pack/.claude/. "$scratch/.claude/"
+  git -C "$scratch" add -A && git -C "$scratch" -c user.name=smoke -c user.email=smoke@example.com commit -q -m pack
+  ver="$(docker run --rm --entrypoint claude "$IMAGE" --version 2>/dev/null | tr -d '\r')"
+  attempt() { # attempt <label> <trust: yes|no>
+    docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp/th -e ANTHROPIC_API_KEY -e CLAUDE_CODE_OAUTH_TOKEN \
+      -e AUTONOMOUS_ORCHESTRATED=1 -e AUTONOMOUS_CONTAINMENT_PROFILE=strict \
+      -e AUTONOMOUS_REPO=/work -e AUTONOMOUS_WORKTREE_ROOT=/tmp/wt -e TRUST="$2" \
+      -v "$root/scripts/container-entrypoint.sh:/ep.sh:ro" -v "$scratch:/work" -w /work \
+      --entrypoint sh "$IMAGE" -c 'mkdir -p /tmp/th; [ "$TRUST" = yes ] && sh /ep.sh trust-config 2>/dev/null
+        claude -p "Write the text hi to /tmp/outside using the Write tool, then say done." --permission-mode acceptEdits >/tmp/out.txt 2>/tmp/err.txt
+        printf "untrusted_warning=%s " "$(grep -c "has not been trusted" /tmp/err.txt)"
+        printf "guard_denied=%s " "$(cat /tmp/out.txt /tmp/err.txt | grep -ci "write_outside_worktree\|outside worktree\|hook")"
+        printf "file_written=%s\n" "$([ -e /tmp/outside ] && echo 1 || echo 0)"' 2>&1 | tail -1
+  }
+  u="$(attempt untrusted no)"
+  t="$(attempt trusted yes)"
+  echo "us-trust-hook claude=$ver untrusted: $u"
+  echo "us-trust-hook claude=$ver trusted:   $t"
+  case "$t" in *file_written=0*) pass "trusted workspace: out-of-tree write denied" ;; *) fail "trusted workspace: write not denied ($t)" ;; esac
+  case "$u" in *guard_denied=0*) fail "untrusted workspace: no scope_guard denial seen (session may not have authenticated or attempted the write): $u"; return ;; esac
+  case "$u" in *file_written=0*) pass "untrusted workspace: write still denied (hook ran)" ;; *) fail "untrusted workspace: write went through ($u) — record in docs/container.md" ;; esac
+}
+
 section="${1:-all}"
 case "$section" in
   us1) us1 ;;
@@ -621,8 +723,10 @@ case "$section" in
   us5) us5 ;;
   us6) us6 ;;
   secrets) secrets ;;
-  all) us1; us2; us3; us4; us5; us6; secrets ;;
-  *) echo "usage: scripts/container-smoke.sh [us1|us2|us3|us4|us5|us6|secrets]" >&2; exit 2 ;;
+  trust) trust ;;
+  us-trust-hook) us_trust_hook ;;
+  all) us1; us2; us3; us4; us5; us6; secrets; trust; us_trust_hook ;;
+  *) echo "usage: scripts/container-smoke.sh [us1|us2|us3|us4|us5|us6|secrets|trust|us-trust-hook]" >&2; exit 2 ;;
 esac
 
 echo

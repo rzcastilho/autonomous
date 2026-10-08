@@ -35,7 +35,7 @@ defmodule Autonomous.Instance do
     end
   end
 
-  @enforce_keys [:repo, :partition, :segment, :node_name, :store_dir, :lock_path, :owner_path, :cookie_path]
+  @enforce_keys [:repo, :partition, :segment, :node_name, :store_dir, :lock_path, :owner_path, :cookie_path, :worktree_root]
   defstruct @enforce_keys
 
   @type t :: %__MODULE__{
@@ -46,7 +46,8 @@ defmodule Autonomous.Instance do
           store_dir: String.t(),
           lock_path: String.t(),
           owner_path: String.t(),
-          cookie_path: String.t()
+          cookie_path: String.t(),
+          worktree_root: String.t()
         }
 
   @typedoc "What the running VM actually has, compared against the derivation."
@@ -80,7 +81,8 @@ defmodule Autonomous.Instance do
       store_dir: Path.join(base, "mnesia"),
       lock_path: Path.join(base, "instance.lock"),
       owner_path: Path.join(base, "instance.json"),
-      cookie_path: Path.join(base, "cookie")
+      cookie_path: Path.join(base, "cookie"),
+      worktree_root: Autonomous.Layout.worktree_root(state_root, segment)
     }
   end
 
@@ -94,7 +96,7 @@ defmodule Autonomous.Instance do
   end
 
   @doc """
-  Print the five `AUTONOMOUS_*` identity variables as `KEY=value` lines — the
+  Print the six `AUTONOMOUS_*` identity variables as `KEY=value` lines — the
   release `eval` entry point (`bin/autonomous eval 'Autonomous.Instance.print_env()'`).
   """
   @spec print_env() :: :ok
@@ -108,7 +110,8 @@ defmodule Autonomous.Instance do
       "AUTONOMOUS_NODE_NAME=#{i.node_name}",
       "AUTONOMOUS_STORE_DIR=#{i.store_dir}",
       "AUTONOMOUS_COOKIE_PATH=#{i.cookie_path}",
-      "AUTONOMOUS_INSTANCE_LOCK=#{i.lock_path}"
+      "AUTONOMOUS_INSTANCE_LOCK=#{i.lock_path}",
+      "AUTONOMOUS_WORKTREE_ROOT=#{i.worktree_root}"
     ]
   end
 
