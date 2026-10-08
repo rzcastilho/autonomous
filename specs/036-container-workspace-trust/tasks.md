@@ -133,7 +133,7 @@
 - [X] T046 [P] Add one paragraph for feature 036 to `/CLAUDE.md` (repo root `CLAUDE.md`): container trust step (two records, atomic, idempotent, host untouched), the strict-only untrusted gate (new reason, never retried, after session-died), and the `AUTONOMOUS_WORKTREE_ROOT` env line.
 - [X] T047 [P] Amend the environment documentation that lists the five identity variables (search `docs/container.md` and `specs/031-*/contracts/environment.md` references via `grep -rn AUTONOMOUS_COOKIE_PATH docs`) to mention the sixth variable — in `docs/` only; do not edit the shipped 031 spec (constitution: no in-place amendment).
 - [X] T048 Run the full hermetic suite `mise exec -- mix test` and `mise exec -- mix compile --warnings-as-errors`; fix regressions (SC-006: existing tests change only where they assert the new behaviour).
-- [ ] T049 Walk quickstart.md §1–§6 end to end (§3–§4 need `SMOKE_AGENT=1` and credentials) and confirm each Expected line; note any deviation in `specs/036-container-workspace-trust/research.md`.
+- [X] T049 Walk quickstart.md §1–§6 end to end (§3–§4 need `SMOKE_AGENT=1` and credentials) and confirm each Expected line; note any deviation in `specs/036-container-workspace-trust/research.md`.
 
 ---
 

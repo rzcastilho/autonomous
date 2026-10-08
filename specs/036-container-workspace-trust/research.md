@@ -198,3 +198,9 @@ request env under `AUTONOMOUS_STDERR_COLLECTOR`; the proxy strips it, installs t
 callback (same `CLI stderr: …` log as the SDK default) and delegates to `ClaudeAgentSDK`
 (`config :autonomous, :sdk_proxy_inner` overrides the delegate in tests). Chosen with the
 operator over bumping the dep.
+
+## Quickstart walk-through notes (2026-10-08)
+
+- §5 was run on a never-trusted scratch target. `Autonomous.run/1` refuses to boot on the host (`ContainerGuard`), so the driver started the app with `require_container: false` (as the test config does) and a throwaway `AUTONOMOUS_STORE_DIR`. Strict: `specify` failed with `untrusted_workspace`, one attempt, matching report text ($0.27). Permissive: `Logger.warning("untrusted workspace …")` on specify/clarify/plan, run proceeded until the $1 breaker. Trusted (temp `HOME` with the record): specify and clarify ran with no untrusted line.
+- §6: the host `~/.claude.json` hash changed during the walk because the operator's own Claude Code session writes it; the check needs an idle host CLI. Covered by the `trust` smoke section (seed file sha256 unchanged).
+- With `--with-login`, each restart re-seeds `~/.claude.json` from the host file before the trust step, so the container file is rewritten per start (never reports "already trusted"); idempotence holds when the host file is stable.
