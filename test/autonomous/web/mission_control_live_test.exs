@@ -1072,6 +1072,59 @@ defmodule Autonomous.Web.MissionControlLiveTest do
     assert html =~ ~s(data-action="end-run")
   end
 
+  # Regression: `continue_run/1` defaults the Coordinator's `:owner` to its
+  # caller, so clicking continue made this LiveView the owner — and when the
+  # continued run drained, its `{:run_complete, report}` hit a view with no
+  # matching `handle_info/2` clause and crashed it (FunctionClauseError).
+  test "continuing a parked run survives the run's completion", %{conn: conn} do
+    refute Process.whereis(Coordinator)
+
+    run_key = open_store_run([feat("040")])
+
+    :ok =
+      Writer.record_phase_attempt(run_key, %{
+        attempt: minimal_attempt("040", :analyze),
+        checkpoint: %{
+          phase: :analyze,
+          last_completed_phase: :analyze,
+          status: :halted,
+          reason: :critical_finding,
+          session_id: "s1"
+        }
+      })
+
+    :ok = Writer.record_feature_terminal(run_key, "040", :halted, :critical_finding, [])
+    :ok = Writer.park_run(run_key, %{stopped_by: "040", status: :halted, reason: :critical_finding})
+
+    Application.put_env(:autonomous, :console_test_runner, fn feature, notify ->
+      notify.(feature.id, :done, :done)
+    end)
+
+    on_exit(fn ->
+      Application.delete_env(:autonomous, :console_test_runner)
+      if pid = Process.whereis(Coordinator), do: GenServer.stop(pid)
+    end)
+
+    {:ok, view, _html} = live(conn, "/")
+
+    render_click(view, "continue_run", %{})
+
+    assert eventually(fn -> match?({:ok, %{run: %{state: :completed}}}, Store.run(run_key)) end)
+
+    # Let any message the drained run sent reach the view before checking it.
+    _ = :sys.get_state(view.pid)
+    assert Process.alive?(view.pid)
+    assert render(view) =~ ~s(data-view="mission-control")
+  end
+
+  defp eventually(fun, tries \\ 50) do
+    cond do
+      fun.() -> true
+      tries == 0 -> false
+      true -> Process.sleep(20) && eventually(fun, tries - 1)
+    end
+  end
+
   test "no banner renders when the run is in flight, not parked", %{conn: conn} do
     refute Process.whereis(Coordinator)
 

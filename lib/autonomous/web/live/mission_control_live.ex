@@ -11,6 +11,10 @@ defmodule Autonomous.Web.MissionControlLive do
   `ConsoleProjection`'s PubSub broadcasts (`{:console, :feature_updated | :feed
   | :reconciled | :run_finished, ...}`) — no message carries authority on its
   own; `:reconciled` supersedes drift (FR-033/SC-005).
+
+  Test seam: `Application.get_env(:autonomous, :console_test_runner)`,
+  mirroring `TriggerLive`/`EscalationsLive`, is injected as the `:runner` opt
+  on the continue action so LiveView tests never touch a real worktree/CLI.
   """
 
   use Autonomous.Web, :live_view
@@ -146,7 +150,7 @@ defmodule Autonomous.Web.MissionControlLive do
 
   @impl true
   def handle_event("continue_run", _params, socket) do
-    case Autonomous.continue_run() do
+    case run_unlinked(fn -> Autonomous.continue_run(test_opts()) end) do
       {:error, reason} ->
         {:noreply, put_flash(socket, :error, "Continue failed: #{inspect(reason)}")}
 
@@ -343,6 +347,25 @@ defmodule Autonomous.Web.MissionControlLive do
   defp status_counts(view) do
     frequencies = view.per_feature |> Map.values() |> Enum.frequencies_by(& &1.status)
     Enum.map(@status_order, &{&1, Map.get(frequencies, &1, 0)})
+  end
+
+  # `continue_run/1` defaults the Coordinator's `:owner` to its caller, and the
+  # final `{:run_complete, report}` goes to that owner. Called from this view's
+  # own process, the report landed here — a message this view has no clause
+  # for — and crashed it when the continued run drained. An unlinked task is
+  # the owner instead: it exits as soon as the call returns, so the report is
+  # simply dropped; this view learns of the finish via `:run_finished`.
+  defp run_unlinked(fun) do
+    Autonomous.RunnerSup
+    |> Task.Supervisor.async_nolink(fun)
+    |> Task.await()
+  end
+
+  defp test_opts do
+    case Application.get_env(:autonomous, :console_test_runner) do
+      nil -> []
+      runner -> [runner: runner]
+    end
   end
 
   defp describe_reason(reason), do: PublishOutcome.describe(reason) || inspect(reason)
