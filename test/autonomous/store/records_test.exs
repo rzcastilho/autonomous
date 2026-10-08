@@ -44,7 +44,8 @@ defmodule Autonomous.Store.RecordsTest do
       scope: :ad_hoc,
       layout: %{},
       superseded_by: nil,
-      schema_version: 1
+      schema_version: 1,
+      continue_restore_failure: nil
     },
     speckit_run_settings: %RunSettings{
       run_key: {"o:repo-abc", "r000001"},

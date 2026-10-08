@@ -74,6 +74,21 @@ defmodule Autonomous.Store.ExportTest do
     input |> Export.encode() |> IO.iodata_to_binary() |> Jason.decode!()
   end
 
+  describe "continue_restore_failure (035)" do
+    test "nil when absent, and the annotation's strings plus ISO8601 time when present" do
+      assert decode(base_input([]))["run"]["continue_restore_failure"] == nil
+
+      failure = %{refusal: "{:pack_outdated, ...}", restore_error: ":disk", at: @now}
+      input = put_in(base_input([]).run[:continue_restore_failure], failure)
+
+      assert decode(input)["run"]["continue_restore_failure"] == %{
+               "refusal" => "{:pack_outdated, ...}",
+               "restore_error" => ":disk",
+               "at" => DateTime.to_iso8601(@now)
+             }
+    end
+  end
+
   describe "envelope" do
     test "format and format_version are present, no store/path/node reference" do
       doc = decode(base_input([]))

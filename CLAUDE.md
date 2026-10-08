@@ -330,6 +330,19 @@ App tree: `Ledger` + `{Task.Supervisor, RunnerSup}`; the Coordinator is
 per-run. A parked run refuses new work for that repository until an operator
 resolves it with an explicit `:continue` or `:end` decision
 (`Autonomous.continue_run/1` / `end_run/1`) — see `docs/runbook.md`.
+**Atomic continue (feature 035).** `continue_run/1` no longer flips the run
+`:in_flight` up front: it passes a `:continue_parked` snapshot to `resume/2`,
+runs every refusal check (including `preflight_stacked/2`'s pack check) against
+the still-parked run, and only then calls `Writer.continue_run/1` — just
+before `start_stack_tracker/2` and the Coordinator start — so a refused
+continue leaves the run `:parked`, byte-identical, with nothing running and the
+same reason term. Reconcile corrections are deferred (`Recovery.plan_run/2`
+then `Recovery.apply_corrections/3` after the flip). A start failure re-parks
+(`Writer.repark_run/2`); if that also fails the call returns
+`{:continue_restore_failed, reason, restore_error}` and annotates the run
+(`speckit_run.continue_restore_failure`, store schema v7, cleared by a
+successful start or `end_run/1`; shown in Run Detail). The concurrent-continue
+loser gets `{:error, :not_parked}` before any process side effect.
 **Supersession drain (Phase 8, feature 026).** Stopping a prior run's
 Coordinator never touched the `RunnerSup` task actually driving a feature — a
 live `claude` session, mid-worktree-write — so a fresh `run/1` could release

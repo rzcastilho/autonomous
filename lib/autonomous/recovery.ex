@@ -108,7 +108,7 @@ defmodule Autonomous.Recovery do
 
   def reconcile_run(%{run: run} = record, opts) do
     with {:ok, plan} <- plan_run(record, opts) do
-      write_corrections(run.key, plan.report.features, opts)
+      apply_corrections(run.key, plan.report.features, opts)
       {:ok, Map.take(plan, [:statuses, :report, :resume_phases])}
     end
   end
@@ -213,24 +213,36 @@ defmodule Autonomous.Recovery do
   # (FR-010a) left the last write short. `{:resume, phase}`/`{:conflict, _}`
   # are resume-time-only classifications with nothing to persist — the store
   # already holds `:pending` correctly for a non-terminal feature.
-  defp write_corrections(run_key, feature_rows, opts) do
+  #
+  # Public since 035: `continue_run/1` computes the plan read-only and applies
+  # the corrections only once its flip has won. Returns the first writer error
+  # rather than discarding it; `reconcile_run/2` ignores the result, as before.
+  @doc false
+  @spec apply_corrections(term(), [map()], keyword()) :: :ok | {:error, term()}
+  def apply_corrections(run_key, feature_rows, opts \\ []) do
     writer = Keyword.get(opts, :writer, Writer)
 
-    Enum.each(feature_rows, fn row ->
-      cond do
-        row.reconciled == :done and row.recorded != :done ->
-          writer.record_feature_terminal(run_key, row.id, :done, :reconciled_done_signal, [])
+    Enum.reduce_while(feature_rows, :ok, fn row, :ok ->
+      result =
+        cond do
+          row.reconciled == :done and row.recorded != :done ->
+            writer.record_feature_terminal(run_key, row.id, :done, :reconciled_done_signal, [])
 
-        # 029, research.md R12: the only feature-level correction besides
-        # `:done` — a dead-worker `:awaiting_answers` row becomes an
-        # escalation, one transaction (round closed `:interrupted`, feature
-        # `:escalated`, escalation recorded with the questions preserved).
-        row.recorded == :awaiting_answers and
-            match?({:escalated, {:needs_human, :restart}}, row.reconciled) ->
-          writer.reconcile_awaiting_answers(run_key, row.id)
+          # 029, research.md R12: the only feature-level correction besides
+          # `:done` — a dead-worker `:awaiting_answers` row becomes an
+          # escalation, one transaction (round closed `:interrupted`, feature
+          # `:escalated`, escalation recorded with the questions preserved).
+          row.recorded == :awaiting_answers and
+              match?({:escalated, {:needs_human, :restart}}, row.reconciled) ->
+            writer.reconcile_awaiting_answers(run_key, row.id)
 
-        true ->
-          :ok
+          true ->
+            :ok
+        end
+
+      case result do
+        {:error, _reason} = error -> {:halt, error}
+        _ok -> {:cont, :ok}
       end
     end)
   end

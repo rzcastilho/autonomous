@@ -90,10 +90,22 @@ defmodule Autonomous.Store.Export do
       "stopped_reason" => safe_term(run.stopped_reason),
       "scope" => scope_document(run.scope),
       "superseded_by" => run.superseded_by,
+      "continue_restore_failure" =>
+        continue_restore_failure_document(Map.get(run, :continue_restore_failure)),
       "settings" => safe_term(input.settings),
       "settings_amendments" => Enum.map(input.amendments, &amendment_document/1),
       "cost_entries" => Enum.map(input.cost_entries, &cost_entry_document/1),
       "features" => Enum.map(input.features, &feature_document/1)
+    }
+  end
+
+  defp continue_restore_failure_document(nil), do: nil
+
+  defp continue_restore_failure_document(%{} = failure) do
+    %{
+      "refusal" => failure.refusal,
+      "restore_error" => failure.restore_error,
+      "at" => iso8601(failure.at)
     }
   end
 

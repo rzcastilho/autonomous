@@ -17,7 +17,8 @@ defmodule Autonomous.Web.MissionControlLiveTest do
     Feature,
     Layout,
     RepoIdentity,
-    RunContext
+    RunContext,
+    TargetPack
   }
 
   @endpoint Autonomous.Web.Endpoint
@@ -973,7 +974,7 @@ defmodule Autonomous.Web.MissionControlLiveTest do
     }
   end
 
-  defp open_store_run(features) do
+  defp open_store_run(features, containment_profile \\ nil) do
     repo_id = RepoIdentity.partition(Config.repo())
     {:ok, segment} = RepoIdentity.resolve(Config.repo())
     {:ok, layout} = Layout.build(Config.repo(), segment, :ad_hoc)
@@ -992,7 +993,11 @@ defmodule Autonomous.Web.MissionControlLiveTest do
               created_at: &1.created_at
             }
           ),
-        settings: RunContext.to_map(%RunContext{budget_usd: 100.0}),
+        settings:
+          RunContext.to_map(%RunContext{
+            budget_usd: 100.0,
+            containment_profile: containment_profile
+          }),
         scope: :ad_hoc,
         layout: layout
       })
@@ -1072,6 +1077,96 @@ defmodule Autonomous.Web.MissionControlLiveTest do
     assert html =~ ~s(data-action="end-run")
   end
 
+  # 035 FR-006: a refused continue leaves the run parked, so the same controls
+  # render and nothing is shown running.
+  test "a refused continue keeps the parked controls and shows nothing running", %{conn: conn} do
+    refute Process.whereis(Coordinator)
+
+    # Terminal but no checkpoint: continue is refused with :no_checkpoint.
+    run_key = open_store_run([feat("050")])
+    :ok = Writer.record_feature_terminal(run_key, "050", :halted, :critical_finding, [])
+
+    :ok =
+      Writer.park_run(run_key, %{stopped_by: "050", status: :halted, reason: :critical_finding})
+
+    {:ok, view, _html} = live(conn, "/")
+    html = render_click(view, "continue_run", %{})
+
+    assert html =~ "Continue failed: :no_checkpoint"
+    assert html =~ ~s(data-state="parked")
+    assert html =~ ~s(data-action="continue-run")
+    assert html =~ ~s(data-action="end-run")
+    assert {:ok, %{state: :parked, stopped_by: "050"}} = Store.parked_run(elem(run_key, 0))
+    refute Process.whereis(Coordinator)
+  end
+
+  # 035 US2: the console entry point shows the same cause it always did.
+  test "a refused continue flashes the pack-outdated cause verbatim", %{conn: conn} do
+    refute Process.whereis(Coordinator)
+
+    repo = Path.join(System.tmp_dir!(), "mc_pack_#{System.unique_integer([:positive])}")
+    root = repo <> "_wt"
+    File.mkdir_p!(repo)
+    {:ok, _} = TargetPack.install(repo)
+    File.write!(Path.join(repo, ".specify/memory/constitution.md"), "# Real\n\n1. cents.\n")
+    git = fn args -> {_, 0} = System.cmd("git", ["-C", repo | args], stderr_to_stdout: true) end
+    remote = repo <> "_remote.git"
+    File.mkdir_p!(remote)
+    {_, 0} = System.cmd("git", ["-C", remote, "init", "-q", "--bare"])
+    git.(["init", "-q", "-b", "main"])
+    git.(["remote", "add", "origin", remote])
+    git.(["config", "user.email", "t@e.com"])
+    git.(["config", "user.name", "T"])
+
+    hook = Path.join(repo, ".claude/hooks/scope_guard.py")
+    File.write!(hook, String.replace(File.read!(hook), "PACK_CONTRACT = 4", "PACK_CONTRACT = 3"))
+    git.(["add", "-A"])
+    git.(["commit", "-q", "-m", "pack lags"])
+
+    prev = for k <- [:repo, :worktree_root], do: {k, Application.get_env(:autonomous, k)}
+    Application.put_env(:autonomous, :repo, repo)
+    Application.put_env(:autonomous, :worktree_root, root)
+
+    on_exit(fn ->
+      for {k, v} <- prev,
+          do:
+            if(v,
+              do: Application.put_env(:autonomous, k, v),
+              else: Application.delete_env(:autonomous, k)
+            )
+
+      File.rm_rf(repo)
+      File.rm_rf(root)
+      File.rm_rf(remote)
+    end)
+
+    run_key = open_store_run([feat("060")], "permissive")
+
+    :ok =
+      Writer.record_phase_attempt(run_key, %{
+        attempt: minimal_attempt("060", :analyze),
+        checkpoint: %{
+          phase: :analyze,
+          last_completed_phase: :analyze,
+          status: :halted,
+          reason: :critical_finding,
+          session_id: "s1"
+        }
+      })
+
+    :ok = Writer.record_feature_terminal(run_key, "060", :halted, :critical_finding, [])
+
+    :ok =
+      Writer.park_run(run_key, %{stopped_by: "060", status: :halted, reason: :critical_finding})
+
+    {:ok, view, _html} = live(conn, "/")
+    html = render_click(view, "continue_run", %{})
+
+    assert html =~ "Continue failed: {:preflight, [{:pack_outdated"
+    assert {:ok, %{state: :parked, stopped_by: "060"}} = Store.parked_run(elem(run_key, 0))
+    refute Process.whereis(Coordinator)
+  end
+
   # Regression: `continue_run/1` defaults the Coordinator's `:owner` to its
   # caller, so clicking continue made this LiveView the owner — and when the
   # continued run drained, its `{:run_complete, report}` hit a view with no
@@ -1094,7 +1189,9 @@ defmodule Autonomous.Web.MissionControlLiveTest do
       })
 
     :ok = Writer.record_feature_terminal(run_key, "040", :halted, :critical_finding, [])
-    :ok = Writer.park_run(run_key, %{stopped_by: "040", status: :halted, reason: :critical_finding})
+
+    :ok =
+      Writer.park_run(run_key, %{stopped_by: "040", status: :halted, reason: :critical_finding})
 
     Application.put_env(:autonomous, :console_test_runner, fn feature, notify ->
       notify.(feature.id, :done, :done)

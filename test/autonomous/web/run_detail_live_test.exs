@@ -394,6 +394,32 @@ defmodule Autonomous.Web.RunDetailLiveTest do
     assert html =~ ~s(data-status="blocked")
   end
 
+  # ---- 035: continue-restore-failure block (contracts/operator-surfaces.md) ----
+
+  test "the continue-restore-failure block shows the annotation and is absent without one",
+       %{conn: conn, repo_id: repo_id} do
+    clean_id = open(repo_id, ["001"])
+    {:ok, _view, clean_html} = live(conn, "/runs/#{clean_id}")
+    refute clean_html =~ ~s(data-marker="continue-restore-failure")
+
+    run_id = open(repo_id, ["001"])
+
+    :ok =
+      Writer.annotate_continue_restore_failure({repo_id, run_id}, %{
+        refusal: "{:preflight, [{:pack_outdated, \"x\", \"y\"}]}",
+        restore_error: ":disk",
+        at: ~U[2026-10-08 12:00:00Z]
+      })
+
+    {:ok, _view, html} = live(conn, "/runs/#{run_id}")
+
+    assert html =~ ~s(data-marker="continue-restore-failure")
+    assert html =~ "pack_outdated"
+    assert html =~ ":disk"
+    assert html =~ "2026-10-08T12:00:00Z"
+    assert html =~ "resume/2"
+  end
+
   # ---- 029 US4: round-history block (contracts/operator-surfaces.md Run Detail) ----
 
   test "the round-history block renders an answered round and a rounds-exhausted evidence row",

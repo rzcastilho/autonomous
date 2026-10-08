@@ -127,7 +127,7 @@ defmodule Autonomous do
          {:ok, _settings} <- preflight_remediation(run_context),
          {:ok, _settings} <- preflight_interactive_clarify(run_context),
          :ok <- preflight_containment(opts, run_context),
-         :ok <- preflight_parked_run(),
+         :ok <- preflight_parked_run(opts),
          {:ok, layout} <- preflight_layout(opts),
          {:ok, run_key} <- open_or_continue_run(opts, run_context, layout) do
       opts = Keyword.put(opts, :features, resolve_features(opts, layout))
@@ -169,13 +169,17 @@ defmodule Autonomous do
   # (not left to `Store.Writer.open_run/2`'s own transactional guard, T010)
   # so the refusal lands as preflight step 3, before layout resolution and
   # any directory/store side effect, per contracts/run-start.md. When
-  # `continue_run/1` itself calls `run/1` (via `resume/2`), it has already
-  # flipped the parked run to `:in_flight` first, so this never self-blocks.
-  defp preflight_parked_run do
+  # `continue_run/1` itself calls `run/1` (via `resume/2`) the run it is
+  # continuing is still `:parked` (035 flips it last), so it is not counted.
+  defp preflight_parked_run(opts) do
     repo_id = RepoIdentity.partition(Config.repo())
+
+    continuing =
+      with {:ok, %{run_key: run_key}} <- Keyword.fetch(opts, :continue_parked), do: run_key
 
     case Store.parked_run(repo_id) do
       :none -> :ok
+      {:ok, %{run_id: run_id}} when continuing == {repo_id, run_id} -> :ok
       {:ok, %{run_id: run_id}} -> {:error, {:parked_run, run_id, [:continue, :end]}}
       {:error, reason} -> {:error, {:preflight, [{:store_read_failed, reason}]}}
     end
@@ -665,9 +669,17 @@ defmodule Autonomous do
     2. Locates the repository's `:parked` run; none ⇒ `{:error,
        :no_parked_run}`.
     3. Store capacity preflight (a continue starts new phases, which record).
-    4. `Store.Writer.continue_run/1` — `:parked -> :in_flight`, same
-       `run_id` (FR-020).
-    5. Re-runs the stopping feature at its checkpointed phase — the exact
+    4. Every `resume/2` and `run/1` check, including the target-pack
+       preflight, against the still-`:parked` run (035) — a refusal here
+       writes nothing and leaves the run `:parked`.
+    5. `Store.Writer.continue_run/1` — `:parked -> :in_flight`, same
+       `run_id` (FR-020) — only once the checks above have passed, just
+       before the stack tracker and Coordinator start. If those fail the run
+       is re-parked (`Store.Writer.repark_run/2`) and the original error
+       returned; if the re-park itself fails the result is
+       `{:error, {:continue_restore_failed, reason, restore_error}}` and the
+       run carries a `continue_restore_failure` annotation.
+    6. Re-runs the stopping feature at its checkpointed phase — the exact
        machinery `resume/2` already uses for any escalated/halted/failed
        feature (`merge_resume_target/2` forces just that one feature back to
        `:pending`; every other restored feature keeps its reconciled
@@ -689,13 +701,17 @@ defmodule Autonomous do
           GenServer.on_start()
           | {:error, :no_parked_run}
           | {:error, {:active_run, pid()}}
+          | {:error, {:continue_restore_failed, term(), term()}}
           | {:error, term()}
   def continue_run(opts \\ []) do
     with :ok <- guard_active_run(opts),
-         {:ok, run_key, stopped_by} <- find_parked_run(opts),
-         :ok <- preflight_store_capacity(),
-         :ok <- Writer.continue_run(run_key) do
-      resume(stopped_by, opts)
+         {:ok, run_key, stopped_by, stopped_reason} <- find_parked_run_snapshot(opts),
+         :ok <- preflight_store_capacity() do
+      # 035: nothing durable happens here any more. The `:parked -> :in_flight`
+      # flip is deferred to `run_stacked/4`, after every refusal that can be
+      # decided without writing, so a refused continue leaves the run `:parked`.
+      snapshot = %{run_key: run_key, stopped_by: stopped_by, stopped_reason: stopped_reason}
+      resume(stopped_by, Keyword.put(opts, :continue_parked, snapshot))
     end
   end
 
@@ -727,13 +743,24 @@ defmodule Autonomous do
   end
 
   defp find_parked_run(opts) do
+    with {:ok, run_key, stopped_by, _stopped_reason} <- find_parked_run_snapshot(opts) do
+      {:ok, run_key, stopped_by}
+    end
+  end
+
+  defp find_parked_run_snapshot(opts) do
     repo = served_repo(opts)
     repo_id = RepoIdentity.partition(repo)
 
     case Store.parked_run(repo_id) do
-      :none -> {:error, :no_parked_run}
-      {:ok, %{run_id: run_id, stopped_by: stopped_by}} -> {:ok, {repo_id, run_id}, stopped_by}
-      {:error, reason} -> {:error, reason}
+      :none ->
+        {:error, :no_parked_run}
+
+      {:ok, %{run_id: run_id, stopped_by: stopped_by} = parked} ->
+        {:ok, {repo_id, run_id}, stopped_by, Map.get(parked, :stopped_reason)}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -839,7 +866,7 @@ defmodule Autonomous do
 
     with :ok <- reject_retired_opts(opts),
          :ok <- guard_active_run(opts),
-         {:ok, run_key, detail} <- read_current_run(),
+         {:ok, run_key, detail} <- read_resume_run(opts),
          :ok <- guard_containment_profile(opts, detail),
          {:ok, feature_record} <- find_feature_record(detail, feature_id),
          {:ok, feature} <- resolve_identity(feature_id, feature_record, opts),
@@ -870,7 +897,13 @@ defmodule Autonomous do
 
   defp publish_failed_record?(_feature_record), do: false
 
-  @publish_only_blocking_opts [:from, :prompt, :from_task_phase, :remediation_prompt, :remediation_model]
+  @publish_only_blocking_opts [
+    :from,
+    :prompt,
+    :from_task_phase,
+    :remediation_prompt,
+    :remediation_model
+  ]
 
   defp resolve_publish_only_route(feature_id, opts) do
     if Enum.any?(@publish_only_blocking_opts, &Keyword.has_key?(opts, &1)) do
@@ -880,7 +913,15 @@ defmodule Autonomous do
     end
   end
 
-  defp dispatch_resume_route({:phase, start_phase}, feature_id, feature, run_key, detail, opts, remediation_model) do
+  defp dispatch_resume_route(
+         {:phase, start_phase},
+         feature_id,
+         feature,
+         run_key,
+         detail,
+         opts,
+         remediation_model
+       ) do
     {merged_opts, fell_back} = RunContext.merge(opts, RunContext.from_map(detail.settings))
     log_context_fallback(feature_id, fell_back)
 
@@ -914,7 +955,15 @@ defmodule Autonomous do
     end
   end
 
-  defp dispatch_resume_route(:publish_only, feature_id, feature, run_key, detail, opts, _remediation_model) do
+  defp dispatch_resume_route(
+         :publish_only,
+         feature_id,
+         feature,
+         run_key,
+         detail,
+         opts,
+         _remediation_model
+       ) do
     {merged_opts, fell_back} = RunContext.merge(opts, RunContext.from_map(detail.settings))
     log_context_fallback(feature_id, fell_back)
 
@@ -944,7 +993,14 @@ defmodule Autonomous do
   # `:done` with reason `:republish`, so `run_stacked/4`'s `pr_notify` wrapper
   # drives the ordinary publish path (§1-§2) against the base the restored
   # chain resolves.
-  defp inject_publish_only_strategy(opts, target_id, run_key, scope_layout, resume_phases, run_context) do
+  defp inject_publish_only_strategy(
+         opts,
+         target_id,
+         run_key,
+         scope_layout,
+         resume_phases,
+         run_context
+       ) do
     if Keyword.has_key?(opts, :runner) or Keyword.has_key?(opts, :executor) do
       opts
     else
@@ -989,8 +1045,8 @@ defmodule Autonomous do
   # (`restore_ledger/1`) below.
   defp restore_run_scope(detail, opts) do
     with :ok <- preflight_store_capacity(),
-         {:ok, %{statuses: statuses, resume_phases: resume_phases}} <-
-           Recovery.reconcile_run(detail) do
+         {:ok, %{statuses: statuses, resume_phases: resume_phases}, opts} <-
+           reconcile_for_scope(detail, opts) do
       features = Enum.map(detail.features, &Recovery.to_feature/1)
       restore_ledger(detail.cost_entries)
 
@@ -1010,6 +1066,23 @@ defmodule Autonomous do
          run_context: run_context,
          merged_opts: merged_opts
        }}
+    end
+  end
+
+  # 035: a continue reconciles read-only (`Recovery.plan_run/2`) and carries
+  # the corrections to apply in its marker; `run_stacked/4` writes them only
+  # once the attempt has won the flip. Every other caller reconciles and
+  # writes in one step, as before.
+  defp reconcile_for_scope(detail, opts) do
+    case Keyword.fetch(opts, :continue_parked) do
+      {:ok, marker} ->
+        with {:ok, plan} <- Recovery.plan_run(detail) do
+          marker = Map.put(marker, :corrections, plan.report.features)
+          {:ok, plan, Keyword.put(opts, :continue_parked, marker)}
+        end
+
+      :error ->
+        with {:ok, plan} <- Recovery.reconcile_run(detail), do: {:ok, plan, opts}
     end
   end
 
@@ -1250,7 +1323,7 @@ defmodule Autonomous do
   def resume_run(opts \\ []) do
     with :ok <- reject_retired_opts(opts),
          :ok <- guard_active_run(opts),
-         {:ok, run_key, detail} <- read_current_run(),
+         {:ok, run_key, detail} <- read_resume_run(opts),
          :ok <- guard_containment_profile(opts, detail),
          {:ok, scope} <- restore_run_scope(detail, opts) do
       scope.merged_opts
@@ -1841,6 +1914,24 @@ defmodule Autonomous do
   # 018: the store's current in-flight run for the configured repo, replacing
   # `RunManifest.read/0` — a `:no_manifest`/`:corrupt_manifest` tag is kept
   # on the error for API compatibility with existing callers/tests.
+  # 035: a continue reads the run it is continuing by key — it is still
+  # `:parked`, so `Store.current_run_key/1` (which finds only `:in_flight`)
+  # would not see it.
+  defp read_resume_run(opts) do
+    case Keyword.fetch(opts, :continue_parked) do
+      {:ok, %{run_key: run_key}} -> read_run_by_key(run_key)
+      :error -> read_current_run()
+    end
+  end
+
+  defp read_run_by_key(run_key) do
+    case Store.run(run_key) do
+      {:ok, detail} -> {:ok, run_key, detail}
+      {:error, {:damaged, _key, _reason}} -> {:error, :corrupt_manifest}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   defp read_current_run(repo \\ Config.repo()) do
     case Store.current_run_key(RepoIdentity.partition(repo)) do
       nil ->
@@ -2167,7 +2258,7 @@ defmodule Autonomous do
         :error -> base
       end
 
-    start_coordinator(base ++ extra)
+    seam(opts, :coordinator_start, &start_coordinator/1).(base ++ extra)
   end
 
   # Started under `CoordinatorSup`, never linked to the caller. A run's lifetime
@@ -2447,9 +2538,33 @@ defmodule Autonomous do
   defp run_stacked(opts, run_context, layout, run_key) do
     test_mode? = Keyword.has_key?(opts, :runner) or Keyword.has_key?(opts, :executor)
 
-    with :ok <- preflight_stacked(test_mode?, run_context.containment_profile) do
-      {:ok, tracker} = start_stack_tracker(Config.pr_base(), stack_seed(opts))
+    with :ok <- preflight_stacked(test_mode?, run_context.containment_profile),
+         {:ok, marker} <- begin_continue(opts) do
+      result = start_stacked_run(opts, marker, run_context, layout, run_key, test_mode?)
+      finish_stacked_run(result, marker, opts, run_key)
+    end
+  end
 
+  # 035: the continue's `:parked -> :in_flight` flip. Runs after every refusal
+  # that can be decided without writing, and before the first process-level
+  # side effect (`start_stack_tracker/2` retires the previous tracker), so an
+  # attempt that loses the flip returns before it can disturb the winner.
+  defp begin_continue(opts) do
+    case Keyword.fetch(opts, :continue_parked) do
+      :error ->
+        {:ok, nil}
+
+      {:ok, %{run_key: run_key} = marker} ->
+        case Writer.continue_run(run_key) do
+          :ok -> {:ok, marker}
+          {:error, reason} -> {:error, reason}
+        end
+    end
+  end
+
+  defp start_stacked_run(opts, marker, run_context, layout, run_key, test_mode?) do
+    with :ok <- apply_continue_corrections(marker, opts),
+         {:ok, tracker} <- start_stack_tracker(Config.pr_base(), stack_seed(opts)) do
       publisher =
         Keyword.get(opts, :publisher, fn feature, base ->
           publish_feature(feature, base, layout)
@@ -2465,13 +2580,71 @@ defmodule Autonomous do
       runner =
         Keyword.get(opts, :runner) || stacked_runner(tracker, publisher, executor, merged?)
 
-      start_run(opts,
-        context: run_context,
-        layout: layout,
-        run_key: run_key,
-        runner: runner
-      )
+      result =
+        start_run(opts,
+          context: run_context,
+          layout: layout,
+          run_key: run_key,
+          runner: runner
+        )
+
+      with {:error, _} <- result do
+        # The tracker this attempt started must not outlive its refusal.
+        if marker, do: stop_named(@stack_tracker)
+        result
+      end
     end
+  end
+
+  defp apply_continue_corrections(%{run_key: run_key, corrections: corrections}, opts),
+    do: Recovery.apply_corrections(run_key, corrections, Keyword.take(opts, [:writer]))
+
+  defp apply_continue_corrections(_marker, _opts), do: :ok
+
+  # Success clears any stale restore-failure annotation (a no-write when
+  # already `nil`); a plain run needs nothing more. A continue that failed
+  # after its flip re-parks the run (035, contracts/continue-run.md steps
+  # 12-13).
+  defp finish_stacked_run({:ok, _pid} = ok, _marker, _opts, run_key) do
+    if run_key, do: Writer.clear_continue_restore_failure(run_key)
+    ok
+  end
+
+  defp finish_stacked_run({:error, _reason} = error, nil, _opts, _run_key), do: error
+
+  defp finish_stacked_run({:error, reason}, marker, opts, _run_key) do
+    repark = seam(opts, :repark, &Writer.repark_run/2)
+
+    case repark.(marker.run_key, Map.take(marker, [:stopped_by, :stopped_reason])) do
+      :ok ->
+        {:error, reason}
+
+      {:error, restore_error} ->
+        Logger.error(
+          "continue_run: run #{inspect(marker.run_key)} refused (#{inspect(reason)}) " <>
+            "and could not be restored to :parked (#{inspect(restore_error)}); " <>
+            "it is :in_flight with nothing running — recover with resume/2"
+        )
+
+        annotate = seam(opts, :annotate, &Writer.annotate_continue_restore_failure/2)
+
+        _ =
+          annotate.(marker.run_key, %{
+            refusal: inspect(reason),
+            restore_error: inspect(restore_error),
+            at: DateTime.utc_now()
+          })
+
+        {:error, {:continue_restore_failed, reason, restore_error}}
+    end
+  end
+
+  # Test seams (`:repark`, `:annotate`, `:coordinator_start`) are honoured only
+  # alongside the `:runner`/`:executor` seams.
+  defp seam(opts, key, default) do
+    if Keyword.has_key?(opts, :runner) or Keyword.has_key?(opts, :executor),
+      do: Keyword.get(opts, key, default),
+      else: default
   end
 
   # Where the stack already stands when this run starts.
@@ -2520,7 +2693,10 @@ defmodule Autonomous do
   defp preflight_stacked(true, _profile), do: :ok
 
   defp preflight_stacked(false, profile) do
-    case TargetPack.verify(Config.repo(), check_remote: Config.pr_remote(), profile: profile || "strict") do
+    case TargetPack.verify(Config.repo(),
+           check_remote: Config.pr_remote(),
+           profile: profile || "strict"
+         ) do
       :ok -> :ok
       {:error, problems} -> {:error, {:preflight, problems}}
     end
@@ -2651,8 +2827,12 @@ defmodule Autonomous do
   # regardless of what produced the failure.
   defp normalize_publisher_result({:ok, _url} = ok, _feature, _base), do: ok
 
-  defp normalize_publisher_result({:error, {:publish_failed, _kind, _detail}} = err, _feature, _base),
-    do: err
+  defp normalize_publisher_result(
+         {:error, {:publish_failed, _kind, _detail}} = err,
+         _feature,
+         _base
+       ),
+       do: err
 
   defp normalize_publisher_result({:error, other}, feature, base) do
     branch = Worktree.locate(feature).branch
@@ -2796,10 +2976,12 @@ defmodule Autonomous do
   defp normalize_pr_result({:ok, url}, _branch, _base), do: {:ok, url}
 
   defp normalize_pr_result({:error, {:gh_failed, code, out}}, branch, base) do
-    {:error, {:publish_failed, :pr_failed, %{branch: branch, base: base, exit: code, output: out}}}
+    {:error,
+     {:publish_failed, :pr_failed, %{branch: branch, base: base, exit: code, output: out}}}
   end
 
   defp render_git_output({:git_failed, _code, out}), do: out
+
   defp render_git_output({:remote_branch_moved, branch, moved}),
     do: "remote #{branch} moved to #{moved} since last known"
 

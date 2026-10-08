@@ -59,7 +59,8 @@ defmodule Autonomous.Store.Schema do
           :scope,
           :layout,
           :superseded_by,
-          :schema_version
+          :schema_version,
+          :continue_restore_failure
         ],
         type: :ordered_set,
         storage: :disc_copies,

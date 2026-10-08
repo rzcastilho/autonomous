@@ -650,4 +650,65 @@ defmodule Autonomous.RecoveryTest do
 
     assert Process.get(:t032_writes) == 1
   end
+
+  # ---- 035: apply_corrections/3 ---------------------------------------------
+
+  defmodule RecordingWriter do
+    def record_feature_terminal(run_key, feature_id, status, reason, _opts) do
+      send(Process.get(:t035_pid), {:terminal, run_key, feature_id, status, reason})
+      Process.get(:t035_result, :ok)
+    end
+
+    def reconcile_awaiting_answers(run_key, feature_id) do
+      send(Process.get(:t035_pid), {:awaiting, run_key, feature_id})
+      :ok
+    end
+  end
+
+  describe "apply_corrections/3 (035)" do
+    @run_key {"o:repo", "r000001"}
+
+    defp row(id, recorded, reconciled), do: %{id: id, recorded: recorded, reconciled: reconciled}
+
+    setup do
+      Process.put(:t035_pid, self())
+      Process.delete(:t035_result)
+      :ok
+    end
+
+    test "writes the :done correction and the awaiting-answers escalation through the injected writer" do
+      rows = [
+        row("001", :pending, :done),
+        row("002", :awaiting_answers, {:escalated, {:needs_human, :restart}}),
+        row("003", :done, :done),
+        row("004", :pending, {:resume, :plan})
+      ]
+
+      assert :ok = Recovery.apply_corrections(@run_key, rows, writer: RecordingWriter)
+
+      assert_received {:terminal, @run_key, "001", :done, :reconciled_done_signal}
+      assert_received {:awaiting, @run_key, "002"}
+      refute_received {:terminal, _, "003", _, _}
+      refute_received {:terminal, _, "004", _, _}
+    end
+
+    test "surfaces the first writer error and stops" do
+      Process.put(:t035_result, {:error, :disk})
+
+      rows = [row("001", :pending, :done), row("002", :pending, :done)]
+
+      assert {:error, :disk} = Recovery.apply_corrections(@run_key, rows, writer: RecordingWriter)
+      assert_received {:terminal, _, "001", :done, _}
+      refute_received {:terminal, _, "002", _, _}
+    end
+
+    test "an empty or no-op set is :ok" do
+      assert :ok = Recovery.apply_corrections(@run_key, [], writer: RecordingWriter)
+
+      assert :ok =
+               Recovery.apply_corrections(@run_key, [row("001", :done, :done)],
+                 writer: RecordingWriter
+               )
+    end
+  end
 end

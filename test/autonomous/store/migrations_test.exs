@@ -3,17 +3,18 @@ defmodule Autonomous.Store.MigrationsTest do
 
   alias Autonomous.Store.Migrations
 
-  test "current_version/0 is 6 (019 clean break + pr_url + advanced_with_findings + spec_number + clarify_round)" do
-    assert Migrations.current_version() == 6
+  test "current_version/0 is 7 (019 clean break + pr_url + advanced_with_findings + spec_number + clarify_round + continue_restore_failure)" do
+    assert Migrations.current_version() == 7
   end
 
-  test "all/0 is the v2 refusal, the v3 pr_url transform, the v4 advanced_with_findings transform, the v5 spec_number transform, and the v6 clarify_round create" do
+  test "all/0 is the v2 refusal, the v3 pr_url transform, the v4 advanced_with_findings transform, the v5 spec_number transform, the v6 clarify_round create, and the v7 continue_restore_failure transform" do
     assert [
              {2, v2_description, v2_fun},
              {3, v3_description, v3_fun},
              {4, v4_description, v4_fun},
              {5, v5_description, v5_fun},
-             {6, v6_description, v6_fun}
+             {6, v6_description, v6_fun},
+             {7, v7_description, v7_fun}
            ] = Migrations.all()
 
     assert v2_description =~ "019 clean break"
@@ -31,6 +32,9 @@ defmodule Autonomous.Store.MigrationsTest do
 
     assert v6_description =~ "speckit_clarify_round"
     assert is_function(v6_fun, 0)
+
+    assert v7_description =~ "continue_restore_failure"
+    assert is_function(v7_fun, 0)
   end
 
   describe "apply_pending/1" do
@@ -65,6 +69,11 @@ defmodule Autonomous.Store.MigrationsTest do
       # Reshape the live table back into the v4 record it would have on disk,
       # then write two rows through that older shape.
       Mnesia.transform_table(:speckit_feature_run, &Tuple.delete_at(&1, tuple_size(&1) - 1), v4)
+
+      # ...and the run table back to its v6 shape, so migration 7 has a real
+      # attribute to append.
+      run_v6 = List.delete(Schema.table(:speckit_run).attributes, :continue_restore_failure)
+      Mnesia.transform_table(:speckit_run, &Tuple.delete_at(&1, tuple_size(&1) - 1), run_v6)
 
       row = fn feature_id, number ->
         List.to_tuple([:speckit_feature_run | Enum.map(v4, fn
@@ -108,11 +117,57 @@ defmodule Autonomous.Store.MigrationsTest do
 
     assert output =~ "BOOT_OK"
     assert output =~ "SECOND_BOOT_OK"
-    assert output =~ "VERSION_AFTER [{:speckit_meta, :schema_version, 6}]"
+    assert output =~ "VERSION_AFTER [{:speckit_meta, :schema_version, 7}]"
     # Nothing dropped or truncated; each row's spec_number equals its own
     # :number (FR-007) — a backfill, not an invented value.
     assert output =~ ~s(MIGRATED {"001", 1, 1, :done})
     assert output =~ ~s(MIGRATED {"002", 2, 2, :done})
+  end
+
+  @tag :integration
+  test "a recorded v6 schema migrates to v7 — every run row gets a nil continue_restore_failure" do
+    dir = tmp_dir("v6_migrated")
+
+    output =
+      boot_script(dir, """
+      alias Autonomous.Store.{Mnesia, Records, Schema}
+
+      v6 = List.delete(Schema.table(:speckit_run).attributes, :continue_restore_failure)
+      Mnesia.transform_table(:speckit_run, &Tuple.delete_at(&1, tuple_size(&1) - 1), v6)
+
+      row =
+        List.to_tuple([:speckit_run | Enum.map(v6, fn
+          :key -> {"o:repo", "r000001"}
+          :repo_id -> "o:repo"
+          :run_id -> "r000001"
+          :state -> :parked
+          :outcome_index -> :none
+          :started_at -> DateTime.utc_now()
+          :spend_usd -> 0.0
+          :record_complete? -> false
+          :scope -> :ad_hoc
+          :layout -> %{}
+          :schema_version -> 6
+          _ -> nil
+        end)])
+
+      Mnesia.transaction(fn ->
+        Mnesia.write(row)
+        Mnesia.write({:speckit_meta, :schema_version, 6})
+      end)
+
+      case Autonomous.Store.Boot.start!(#{inspect(dir)}) do
+        :ok -> IO.puts("SECOND_BOOT_OK")
+        {:error, reason} -> IO.puts("SECOND_BOOT_ERROR " <> inspect(reason))
+      end
+
+      {:ok, [tuple]} = Mnesia.transaction(fn -> Mnesia.read(:speckit_run, {"o:repo", "r000001"}) end)
+      {:ok, run} = Records.decode(:speckit_run, tuple)
+      IO.puts("MIGRATED " <> inspect({run.run_id, run.state, run.continue_restore_failure}))
+      """)
+
+    assert output =~ "SECOND_BOOT_OK"
+    assert output =~ ~s(MIGRATED {"r000001", :parked, nil})
   end
 
   @tag :integration
