@@ -49,7 +49,8 @@ defmodule Autonomous.Store.Records do
       :scope,
       :layout,
       :superseded_by,
-      :schema_version
+      :schema_version,
+      :continue_restore_failure
     ]
 
     @type t :: %__MODULE__{
@@ -77,7 +78,9 @@ defmodule Autonomous.Store.Records do
             scope: {:breakdown, binary()} | :ad_hoc,
             layout: map(),
             superseded_by: binary() | nil,
-            schema_version: pos_integer()
+            schema_version: pos_integer(),
+            continue_restore_failure:
+              %{refusal: String.t(), restore_error: String.t(), at: DateTime.t()} | nil
           }
   end
 

@@ -311,6 +311,45 @@ defmodule Autonomous.Web.EscalationsLiveTest do
     assert {:ok, %{run: %{state: :parked}}} = Store.run(run_key)
   end
 
+  # 035 US3: the resume form for the stopping feature goes through
+  # `continue_run/1`, so a refusal there leaves the run parked and shows why.
+  test "a refused resume from a parked run leaves it parked with the same stopper and shows the cause",
+       %{conn: conn} do
+    run_key =
+      seed_store_run([
+        {feat("025", "slug-025"), :analyze, :halted, reason: "critical finding"}
+      ])
+
+    :ok =
+      Writer.park_run(run_key, %{stopped_by: "025", status: :halted, reason: "critical finding"})
+
+    pid = start_coordinator([feat("025", "slug-025")], %{"025" => {:halted, "critical finding"}})
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    {:ok, view, _html} = live(conn, "/escalations")
+    before = Store.run(run_key)
+
+    for params <- [
+          %{"prompt" => "", "remediation_model" => "nope"},
+          %{"prompt" => "try again", "remediation_model" => "nope"}
+        ] do
+      html =
+        render_submit(
+          view,
+          "resume",
+          Map.merge(%{"feature_id" => "025", "from" => "analyze"}, params)
+        )
+
+      assert html =~ "Resume failed: unknown model"
+      assert html =~ "nope"
+    end
+
+    assert Store.run(run_key) == before
+
+    assert {:ok, %{run: %{state: :parked, stopped_by: "025", stopped_reason: "critical finding"}}} =
+             Store.run(run_key)
+  end
+
   # The restart half: with a parked run `resolve/1` refuses
   # `:decision_required` without an explicit decision, and the fresh `run/1`
   # that follows would be refused too (a parked run is never superseded

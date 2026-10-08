@@ -34,6 +34,11 @@ defmodule Autonomous.Store.Migrations do
   `Store.Boot` already creates every table `Store.Schema` declares on every
   boot, so this migration only matters for a node whose on-disk schema
   predates the table.
+
+  Version 7 (feature 035, contracts/store-schema-v7.md) appends
+  `speckit_run.continue_restore_failure` — the durable note left when a
+  refused `continue_run/1` could not re-park the run. A plain **transform**:
+  every v6 row gets `nil` (the fact did not exist when it was written).
   """
 
   alias Autonomous.Store.{Mnesia, Schema}
@@ -83,12 +88,34 @@ defmodule Autonomous.Store.Migrations do
     :advanced_with_findings
   ]
 
+  @run_v7_attributes [
+    :key,
+    :repo_id,
+    :run_id,
+    :state,
+    :outcome,
+    :outcome_index,
+    :started_at,
+    :ended_at,
+    :duration_ms,
+    :spend_usd,
+    :record_complete?,
+    :halt_reason,
+    :stopped_by,
+    :stopped_reason,
+    :scope,
+    :layout,
+    :superseded_by,
+    :schema_version,
+    :continue_restore_failure
+  ]
+
   # Position of :number in a v4 tuple: +1 for the record tag at element 0.
   @number_index Enum.find_index(@feature_run_v4_attributes, &(&1 == :number)) + 1
 
   @doc "The schema version this build of the orchestrator understands."
   @spec current_version() :: pos_integer()
-  def current_version, do: 6
+  def current_version, do: 7
 
   @doc "Every migration, ascending by version."
   @spec all() :: [migration()]
@@ -99,7 +126,8 @@ defmodule Autonomous.Store.Migrations do
       {3, "append feature_run.pr_url", &add_pr_url/0},
       {4, "append feature_run.advanced_with_findings", &add_advanced_with_findings/0},
       {5, "append feature_run.spec_number (backfilled from :number)", &add_spec_number/0},
-      {6, "create speckit_clarify_round", &create_clarify_round/0}
+      {6, "create speckit_clarify_round", &create_clarify_round/0},
+      {7, "append speckit_run.continue_restore_failure", &add_continue_restore_failure/0}
     ]
   end
 
@@ -131,6 +159,16 @@ defmodule Autonomous.Store.Migrations do
       :speckit_feature_run,
       &Tuple.insert_at(&1, tuple_size(&1), elem(&1, @number_index)),
       Schema.table(:speckit_feature_run).attributes
+    )
+  end
+
+  # `:continue_restore_failure` is the last attribute in the v7 table shape,
+  # so this is a plain append.
+  defp add_continue_restore_failure do
+    transform_table(
+      :speckit_run,
+      &Tuple.insert_at(&1, tuple_size(&1), nil),
+      @run_v7_attributes
     )
   end
 

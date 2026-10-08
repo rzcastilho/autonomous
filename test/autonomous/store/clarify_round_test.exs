@@ -55,8 +55,8 @@ defmodule Autonomous.Store.ClarifyRoundTest do
     )
   end
 
-  test "migration v6 registers speckit_clarify_round and bumps current_version to 6" do
-    assert Migrations.current_version() == 6
+  test "migration v6 registers speckit_clarify_round and current_version is at least 6" do
+    assert Migrations.current_version() >= 6
     assert :speckit_clarify_round in Autonomous.Store.Schema.names()
   end
 

@@ -91,19 +91,19 @@ defmodule Autonomous.Store.MnesiaTest do
         Mnesia.write(
           {:speckit_run, {"o:idx-probe", "r000001"}, "o:idx-probe", "r000001", :in_flight, nil,
            :in_flight, DateTime.utc_now(), nil, nil, 0.0, true, nil, nil, nil, :ad_hoc, %{}, nil,
-           1}
+           1, nil}
         )
 
         Mnesia.write(
           {:speckit_run, {"o:idx-probe", "r000002"}, "o:idx-probe", "r000002", :completed,
            :all_done, :all_done, DateTime.utc_now(), DateTime.utc_now(), 1, 0.0, true, nil, nil,
-           nil, :ad_hoc, %{}, nil, 1}
+           nil, :ad_hoc, %{}, nil, 1, nil}
         )
 
         Mnesia.write(
           {:speckit_run, {"o:idx-other", "r000001"}, "o:idx-other", "r000001", :in_flight, nil,
            :in_flight, DateTime.utc_now(), nil, nil, 0.0, true, nil, nil, nil, :ad_hoc, %{}, nil,
-           1}
+           1, nil}
         )
       end)
 

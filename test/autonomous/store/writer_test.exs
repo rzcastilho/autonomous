@@ -873,6 +873,108 @@ defmodule Autonomous.Store.WriterTest do
     end
   end
 
+  describe "repark_run/2 (035)" do
+    test "flips :in_flight -> :parked and restores stopped_by/stopped_reason" do
+      {repo, run_id} = open("o:writer-repark")
+      run_key = {repo, run_id}
+
+      :ok = Writer.park_run(run_key, %{stopped_by: "001", status: :failed, reason: "r"})
+      :ok = Writer.continue_run(run_key)
+
+      assert :ok = Writer.repark_run(run_key, %{stopped_by: "001", stopped_reason: "r"})
+
+      run = read_run(run_key)
+      assert run.state == :parked
+      assert run.stopped_by == "001"
+      assert run.stopped_reason == "r"
+    end
+
+    test "a run that is not :in_flight is refused (never re-parks a parked or completed run)" do
+      {repo, run_id} = open("o:writer-repark-notinflight")
+      run_key = {repo, run_id}
+
+      :ok = Writer.park_run(run_key, %{stopped_by: "001", status: :failed, reason: "r"})
+
+      assert {:error, :not_in_flight} =
+               Writer.repark_run(run_key, %{stopped_by: "001", stopped_reason: "x"})
+
+      assert read_run(run_key).stopped_reason == "r"
+      Health.clear()
+    end
+
+    test "an absent run is refused" do
+      assert {:error, {:absent, _}} =
+               Writer.repark_run({"o:writer-repark-absent", "r000001"}, %{
+                 stopped_by: "001",
+                 stopped_reason: "r"
+               })
+
+      Health.clear()
+    end
+  end
+
+  describe "continue_restore_failure annotation (035)" do
+    @annotation %{
+      refusal: "{:pack_outdated, ...}",
+      restore_error: ":disk",
+      at: ~U[2026-10-08 12:00:00Z]
+    }
+
+    test "annotate sets only the annotation; clear removes it" do
+      {repo, run_id} = open("o:writer-annotate")
+      run_key = {repo, run_id}
+      before = read_run(run_key)
+
+      assert :ok = Writer.annotate_continue_restore_failure(run_key, @annotation)
+      annotated = read_run(run_key)
+      assert annotated.continue_restore_failure == @annotation
+      assert %{annotated | continue_restore_failure: nil} == before
+
+      assert :ok = Writer.clear_continue_restore_failure(run_key)
+      assert read_run(run_key).continue_restore_failure == nil
+    end
+
+    test "clear on an already-nil field is a no-op success" do
+      {repo, run_id} = open("o:writer-annotate-clear-nil")
+      run_key = {repo, run_id}
+
+      assert :ok = Writer.clear_continue_restore_failure(run_key)
+      assert read_run(run_key).continue_restore_failure == nil
+    end
+
+    test "an absent run is refused" do
+      assert {:error, {:absent, _}} =
+               Writer.annotate_continue_restore_failure(
+                 {"o:writer-annotate-absent", "r000001"},
+                 @annotation
+               )
+
+      Health.clear()
+    end
+
+    test "continue_run/1 clears the annotation" do
+      {repo, run_id} = open("o:writer-annotate-continue")
+      run_key = {repo, run_id}
+
+      :ok = Writer.park_run(run_key, %{stopped_by: "001", status: :failed, reason: "r"})
+      :ok = Writer.annotate_continue_restore_failure(run_key, @annotation)
+      :ok = Writer.continue_run(run_key)
+
+      assert read_run(run_key).continue_restore_failure == nil
+    end
+
+    test "end_run/2 clears the annotation" do
+      {repo, run_id} = open("o:writer-annotate-end")
+      run_key = {repo, run_id}
+
+      :ok = Writer.park_run(run_key, %{stopped_by: "001", status: :failed, reason: "r"})
+      :ok = Writer.annotate_continue_restore_failure(run_key, @annotation)
+      :ok = Writer.end_run(run_key)
+
+      assert read_run(run_key).continue_restore_failure == nil
+    end
+  end
+
   describe "end_run/2" do
     test "flips :parked -> :completed, outcome :ended_by_operator, still-:pending features become :never_started" do
       {repo, run_id} = open("o:writer-end", ["001", "002", "003"])

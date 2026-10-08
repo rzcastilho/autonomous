@@ -281,6 +281,7 @@ defmodule Autonomous.Store.Query do
       stopped_by: run.stopped_by,
       stopped_reason: run.stopped_reason,
       superseded_by: run.superseded_by,
+      continue_restore_failure: run.continue_restore_failure,
       scope: run.scope,
       layout: run.layout,
       feature_statuses: feature_statuses_for(run.key)

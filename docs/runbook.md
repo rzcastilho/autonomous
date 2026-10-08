@@ -960,6 +960,29 @@ iex> Autonomous.run()
    plus every `run/1` option except the two retired ones. If the stopping
    feature breaks again, the run parks a second time with the new reason
    recorded distinctly from the first.
+   **A refused continue changes nothing (035).** The `:parked -> :in_flight`
+   flip happens only after every refusal check has passed (guard, capacity,
+   resume checks, pack preflight), immediately before the stack tracker and
+   Coordinator start. Any `{:error, reason}` before that leaves the run
+   `:parked` with the same `stopped_by`/`stopped_reason`, nothing running, and
+   the reason is the same term as before. Fix the cause and call
+   `continue_run/1` again. Reconciliation corrections (e.g. a feature the
+   evidence shows `:done`) are likewise deferred until after the flip, so a
+   refused attempt writes no feature rows.
+
+   **Restore failure.** If the flip succeeded but the Coordinator then failed
+   to start *and* putting the run back to `:parked` also failed, the call
+   returns `{:error, {:continue_restore_failed, reason, restore_error}}`, logs
+   both at `error`, and annotates the run (`continue_restore_failure`, shown
+   as a block in Run Detail). The run is then `:in_flight` with nothing
+   running: recover it with `Autonomous.resume/2` (a successful start clears
+   the annotation) or close it with `end_run/1`.
+
+   **Limits.** A BEAM crash between the flip and the Coordinator start leaves
+   the run `:in_flight` with nothing running — the pre-035 orphan shape, still
+   recovered via `resume/2` (research R6). `:force` overrides the active-run
+   guard and sits outside the concurrent-continue guarantee (R3).
+
 2. **End** the chain — closes the run out without releasing anything further:
    ```elixir
    iex> Autonomous.end_run()

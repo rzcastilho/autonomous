@@ -451,6 +451,24 @@ defmodule Autonomous.Web.RunDetailLive do
         </span>
       </div>
 
+      <div :if={@run.continue_restore_failure} data-marker="continue-restore-failure">
+        <div class="run-context-label">
+          continue_run/1 refused and could not restore the run to parked
+        </div>
+        <div class="run-context" data-status="failed">
+          <span class="run-context-chip">refusal: {@run.continue_restore_failure.refusal}</span>
+          <span class="run-context-chip">
+            restore error: {@run.continue_restore_failure.restore_error}
+          </span>
+          <span class="run-context-chip">
+            at: {DateTime.to_iso8601(@run.continue_restore_failure.at)}
+          </span>
+        </div>
+        <div class="escalations-sub">
+          The run is in flight with nothing running. Recover with <span class="run-context-chip">resume/2</span>.
+        </div>
+      </div>
+
       <.record_block label="run settings" fields={RunSettingsView.rows(@settings)} />
 
       <div :if={Containment.permissive?(containment_profile(@settings))} data-containment>

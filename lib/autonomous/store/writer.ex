@@ -853,13 +853,99 @@ defmodule Autonomous.Store.Writer do
           case Records.decode(:speckit_run, tuple) do
             {:ok, %Records.Run{state: :parked} = run} ->
               Mnesia.write(
-                Records.encode(%{run | state: :in_flight, stopped_by: nil, stopped_reason: nil})
+                Records.encode(%{
+                  run
+                  | state: :in_flight,
+                    stopped_by: nil,
+                    stopped_reason: nil,
+                    continue_restore_failure: nil
+                })
               )
 
               :ok
 
             {:ok, _not_parked} ->
               Mnesia.abort(:not_parked)
+
+            {:error, damaged} ->
+              Mnesia.abort(damaged)
+          end
+
+        [] ->
+          Mnesia.abort({:absent, run_key})
+      end
+    end)
+  end
+
+  @doc """
+  Undo a continue whose start failed (035), one transaction: `:in_flight ->
+  :parked`, restoring the `stopped_by`/`stopped_reason` the run was parked
+  with. Aborts `:not_in_flight` for any other state, so it can never re-park a
+  completed or superseded run.
+  """
+  @spec repark_run(run_key(), %{stopped_by: binary(), stopped_reason: term()}) ::
+          :ok | {:error, :not_in_flight} | {:error, term()}
+  def repark_run(run_key, %{stopped_by: stopped_by, stopped_reason: stopped_reason}) do
+    run_transaction(fn ->
+      case Mnesia.read(:speckit_run, run_key, :write) do
+        [tuple] ->
+          case Records.decode(:speckit_run, tuple) do
+            {:ok, %Records.Run{state: :in_flight} = run} ->
+              Mnesia.write(
+                Records.encode(%{
+                  run
+                  | state: :parked,
+                    stopped_by: stopped_by,
+                    stopped_reason: stopped_reason
+                })
+              )
+
+              :ok
+
+            {:ok, _not_in_flight} ->
+              Mnesia.abort(:not_in_flight)
+
+            {:error, damaged} ->
+              Mnesia.abort(damaged)
+          end
+
+        [] ->
+          Mnesia.abort({:absent, run_key})
+      end
+    end)
+  end
+
+  @doc """
+  Record that a refused continue could not re-park its run (035, FR-009), one
+  transaction. Changes no field but `continue_restore_failure`.
+  """
+  @spec annotate_continue_restore_failure(run_key(), %{
+          refusal: String.t(),
+          restore_error: String.t(),
+          at: DateTime.t()
+        }) :: :ok | {:error, term()}
+  def annotate_continue_restore_failure(run_key, %{} = annotation),
+    do: set_continue_restore_failure(run_key, annotation, :annotate)
+
+  @doc """
+  Clear the restore-failure annotation (035). Skips the write when the field
+  is already `nil`, so the success path of every run start adds no store write.
+  """
+  @spec clear_continue_restore_failure(run_key()) :: :ok | {:error, term()}
+  def clear_continue_restore_failure(run_key),
+    do: set_continue_restore_failure(run_key, nil, :clear)
+
+  defp set_continue_restore_failure(run_key, value, mode) do
+    run_transaction(fn ->
+      case Mnesia.read(:speckit_run, run_key, :write) do
+        [tuple] ->
+          case Records.decode(:speckit_run, tuple) do
+            {:ok, %Records.Run{continue_restore_failure: nil}} when mode == :clear ->
+              :ok
+
+            {:ok, run} ->
+              Mnesia.write(Records.encode(%{run | continue_restore_failure: value}))
+              :ok
 
             {:error, damaged} ->
               Mnesia.abort(damaged)
@@ -894,7 +980,8 @@ defmodule Autonomous.Store.Writer do
                   ended_at: now,
                   duration_ms: DateTime.diff(now, run.started_at, :millisecond),
                   spend_usd: Keyword.get(opts, :spend_usd, run.spend_usd),
-                  record_complete?: Keyword.get(opts, :record_complete?, true)
+                  record_complete?: Keyword.get(opts, :record_complete?, true),
+                  continue_restore_failure: nil
               }
 
               Mnesia.write(Records.encode(updated))
