@@ -4,7 +4,7 @@
 # FAIL. Sections are added per user story — see
 # specs/031-containerized-runtime/quickstart.md.
 #
-#   scripts/container-smoke.sh [us1|us2|us3|us4|us5|us6|secrets|trust|us-trust-hook]
+#   scripts/container-smoke.sh [us1|us2|us3|us4|us5|us6|secrets|trust|us-trust-hook|sysdeps]
 #
 # Needs: Docker Engine + Compose v2, the image built (scripts/autonomous build).
 # Agent-auth checks (SC-011) spend a few cents and run only with SMOKE_AGENT=1.
@@ -13,7 +13,7 @@ set -u
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
 
-IMAGE="autonomous-dev:local"
+IMAGE="${SMOKE_IMAGE:-autonomous-dev:local}"
 fails=0
 
 pass() { printf 'PASS  %s\n' "$*"; }
@@ -714,6 +714,43 @@ us_trust_hook() {
   case "$u" in *file_written=0*) pass "untrusted workspace: write still denied (hook ran)" ;; *) fail "untrusted workspace: write went through ($u) — record in docs/container.md" ;; esac
 }
 
+# Feature 037: declared system packages (--apt) and agent root (--agent-root).
+# SMOKE_IMAGE=autonomous-release:local checks the release image the same way.
+sysdeps() {
+  echo "== System packages and agent root (feature 037)"
+  ep="$root/scripts/container-entrypoint.sh"
+  sd() { docker run --rm --user "$(id -u):$(id -g)" -v "$ep:/ep.sh:ro" --entrypoint sh "$IMAGE" -c "$1"; }
+
+  if sd 'test -f /etc/autonomous/apt-packages' >/dev/null 2>&1; then
+    for pkg in $(sd 'cat /etc/autonomous/apt-packages'); do
+      check "declared package installed: $pkg" sd "dpkg -s '$pkg'"
+    done
+  else
+    skip "no /etc/autonomous/apt-packages (image built without --apt)"
+  fi
+
+  probe="${SMOKE_SYSDEPS_PROBE:-pkg-config}"
+  if sd 'command -v sudo' >/dev/null 2>&1; then
+    check "sudo -n true" sd 'sudo -n true'
+    case "$(sd 'sh /ep.sh agent-root 2>/dev/null')" in
+      *AUTONOMOUS_AGENT_ROOT=1*) pass "entrypoint advertises agent root" ;;
+      *) fail "entrypoint did not advertise agent root" ;;
+    esac
+    check "sudo apt-get install $probe" sd "sudo -n apt-get update && sudo -n apt-get install -y --no-install-recommends '$probe'"
+    if sd "sudo -n apt-get remove -y '$probe'" >/dev/null 2>&1; then
+      fail "apt-get remove was not refused (APT::Get::Remove)"
+    else
+      pass "apt-get remove refused"
+    fi
+  else
+    check "no sudo in an image built without --agent-root" sh -c "! docker run --rm --entrypoint sh '$IMAGE' -c 'command -v sudo'"
+    case "$(sd 'sh /ep.sh agent-root 2>/dev/null')" in
+      *AUTONOMOUS_AGENT_ROOT=0*) pass "entrypoint does not advertise agent root" ;;
+      *) fail "entrypoint advertised agent root without sudo" ;;
+    esac
+  fi
+}
+
 section="${1:-all}"
 case "$section" in
   us1) us1 ;;
@@ -725,8 +762,9 @@ case "$section" in
   secrets) secrets ;;
   trust) trust ;;
   us-trust-hook) us_trust_hook ;;
-  all) us1; us2; us3; us4; us5; us6; secrets; trust; us_trust_hook ;;
-  *) echo "usage: scripts/container-smoke.sh [us1|us2|us3|us4|us5|us6|secrets|trust|us-trust-hook]" >&2; exit 2 ;;
+  sysdeps) sysdeps ;;
+  all) us1; us2; us3; us4; us5; us6; secrets; trust; us_trust_hook; sysdeps ;;
+  *) echo "usage: scripts/container-smoke.sh [us1|us2|us3|us4|us5|us6|secrets|trust|us-trust-hook|sysdeps]" >&2; exit 2 ;;
 esac
 
 echo

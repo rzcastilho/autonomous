@@ -35,6 +35,35 @@ console topbar/Run Detail/Configuration page, and the PR body all show
 surface stays byte-identical). See `contracts/operator-surfaces.md` under
 `specs/030-permissive-containment/`.
 
+### Strict package-manager exception (feature 037, pack contract 5)
+
+Under `strict`, `sudo` stays denied (`bash_sudo`) **except** when both
+`AUTONOMOUS_CONTAINER=1` (image `ENV`) and `AUTONOMOUS_AGENT_ROOT=1` (exported by the
+entrypoint only after `sudo -n true` succeeds) are present *and* every `sudo` in the
+command matches this closed grammar:
+
+```text
+sudo [-n] [DEBIAN_FRONTEND=noninteractive]
+     apt-get|apt  update
+   | apt-get|apt  install  (-y|--yes|--assume-yes|-q|-qq|--quiet|--no-install-recommends | <package>)+
+   | apt          list|show|policy …
+   | dpkg         -l|--list|-s|--status|-L|--listfiles|-S|--search|--get-selections …
+```
+
+`sudo` must start its segment (`&&`, `||`, `;`, `|`, `&`, newline); redirects are left to
+the unchanged `bash_redirect_outside_worktree` rule. Still denied: `remove`, `purge`,
+`autoremove`, `upgrade`/`dist-upgrade`, `-o`/`-c`/`--option`, local package files
+(`./x.deb`, any `/`), `dpkg -i`, `sh -c`, `-E`, `-u`, command/process substitution,
+backticks, subshells, unbalanced quotes, and every other sudo'd program. Every other
+strict rule (`git push`, `curl`/`wget` at the start, `rm -rf /`, …) still judges the whole
+command, and `permissive` / interactive sessions are unchanged.
+
+**Why `NOPASSWD: ALL` is acceptable.** Narrowing sudoers to apt would not be a boundary
+— `apt-get -o APT::Update::Pre-Invoke=…` and maintainer scripts execute arbitrary code.
+The policy is the hook grammar above (which refuses `-o` and local packages); the outer
+boundary is the container itself, which is why the exception needs the in-container
+marker. Enabling `--agent-root` is an explicit operator decision per image.
+
 Containment is otherwise the same three overlapping layers:
 
 1. **PreToolUse scope-guard hook** — `priv/target_pack/.claude/hooks/scope_guard.py`.
@@ -81,7 +110,7 @@ git add .specify .claude && git commit -m "spec kit + enforcement pack"
 Autonomous.TargetPack.verify("/path/to/target/repo")  # => :ok
 
 # 4a. A run that will use `containment_profile: :permissive` additionally
-#     requires the committed pack to be at contract 4 (this hook + this
+#     requires the committed pack to be at contract 4 or later (this hook + this
 #     settings.json, both committed) — verify explicitly:
 Autonomous.TargetPack.verify("/path/to/target/repo", profile: "permissive")  # => :ok
 ```

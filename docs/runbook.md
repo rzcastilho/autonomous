@@ -1467,3 +1467,23 @@ Only `strict` runs fail; `permissive` logs a warning and continues. Not retried.
 1. On the host, run `claude` interactively once in the target repo and accept the trust
    dialog (one record covers all its worktrees).
 2. `Autonomous.resume/2` from the failed phase.
+
+## Tests not run: missing system package (037)
+
+**Symptom.** An implement/converge summary says tests could not be built or run because an
+OS package is missing (`pkg-config`, `libasound2-dev`, a `-dev` header…).
+
+**Fix.**
+
+1. Rebuild with the packages declared: `scripts/autonomous build --apt "libasound2-dev pkg-config"`
+   (add `--release` for the release image). Or build once with `--agent-root` so sessions
+   can install what they need themselves.
+2. Restart the instance (`scripts/autonomous stop`, then start again).
+3. With `--agent-root`, if `run/1` logged *committed pack is contract N*, run
+   `TargetPack.install/2` in the target and commit it (contract 5), otherwise strict sessions
+   keep denying `sudo`.
+4. `Autonomous.resume/2` the feature from the phase that gave up.
+
+Packages an agent installed are logged as `agent root: feature <n> (<phase>) installed
+system packages: …`; they vanish with the container, so add them to `--apt` to persist.
+See `docs/container.md` (System packages) and `docs/enforcement.md`.

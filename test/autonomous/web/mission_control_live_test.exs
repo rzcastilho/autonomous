@@ -1119,7 +1119,7 @@ defmodule Autonomous.Web.MissionControlLiveTest do
     git.(["config", "user.name", "T"])
 
     hook = Path.join(repo, ".claude/hooks/scope_guard.py")
-    File.write!(hook, String.replace(File.read!(hook), "PACK_CONTRACT = 4", "PACK_CONTRACT = 3"))
+    File.write!(hook, String.replace(File.read!(hook), "PACK_CONTRACT = 5", "PACK_CONTRACT = 3"))
     git.(["add", "-A"])
     git.(["commit", "-q", "-m", "pack lags"])
 

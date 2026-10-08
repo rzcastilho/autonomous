@@ -21,16 +21,18 @@ defmodule Autonomous.Web.ConfigLive do
 
   use Autonomous.Web, :live_view
 
-  alias Autonomous.Web.ConfigDiff
+  alias Autonomous.Web.{AgentRootView, ConfigDiff}
 
   alias Autonomous.{
+    AgentRoot,
     Config,
     Containment,
     ConsoleProjection,
     Coordinator,
     Ledger,
     LiveConfig,
-    Pipeline
+    Pipeline,
+    TargetPack
   }
 
   @impl true
@@ -52,9 +54,17 @@ defmodule Autonomous.Web.ConfigLive do
       served_repo: Path.expand(Config.repo()),
       instance_node: Atom.to_string(node()),
       containment_default: Atom.to_string(Config.containment_profile()),
-      containment_live: live_containment_profile()
+      containment_live: live_containment_profile(),
+      agent_root: agent_root_state()
     )
     |> put_edited(applied)
+  end
+
+  # 037: the committed pack is only probed when agent root is advertised.
+  defp agent_root_state do
+    if AgentRoot.advertised?(),
+      do: AgentRootView.state(true, TargetPack.agent_root_warning(Config.repo())),
+      else: AgentRootView.state(false, :ok)
   end
 
   defp applied_fields do
@@ -332,6 +342,13 @@ defmodule Autonomous.Web.ConfigLive do
               <dd class="config-instance-id" data-instance-repo>{@served_repo}</dd>
               <dt>instance node</dt>
               <dd class="config-instance-id" data-instance-node>{@instance_node}</dd>
+              <dt :if={@agent_root != :hidden}>agent root</dt>
+              <dd :if={@agent_root != :hidden} class="config-instance-id" data-agent-root>
+                {AgentRootView.summary()}
+                <span :if={match?({:pack_outdated, _}, @agent_root)} data-agent-root-warning>
+                  {AgentRootView.warning(@agent_root)}
+                </span>
+              </dd>
             </dl>
           </.record_block>
         </fieldset>

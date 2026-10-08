@@ -320,7 +320,7 @@ defmodule Autonomous.ContinueRunAtomicTest do
 
       File.write!(
         hook,
-        String.replace(File.read!(hook), "PACK_CONTRACT = 4", "PACK_CONTRACT = 3")
+        String.replace(File.read!(hook), "PACK_CONTRACT = 5", "PACK_CONTRACT = 3")
       )
 
       git!(repo, ["add", "-A"])

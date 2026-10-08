@@ -173,7 +173,7 @@ defmodule Autonomous.TargetPackTest do
 
       File.write!(
         hook,
-        String.replace(File.read!(hook), "PACK_CONTRACT = 4", "PACK_CONTRACT = 3")
+        String.replace(File.read!(hook), "PACK_CONTRACT = 5", "PACK_CONTRACT = 3")
       )
 
       git!(repo, ["add", "-A"])
@@ -296,7 +296,7 @@ defmodule Autonomous.TargetPackTest do
 
       File.write!(
         hook,
-        String.replace(File.read!(hook), "PACK_CONTRACT = 4", "PACK_CONTRACT = 3")
+        String.replace(File.read!(hook), "PACK_CONTRACT = 5", "PACK_CONTRACT = 3")
       )
 
       git!(repo, ["add", "-A"])
@@ -307,6 +307,41 @@ defmodule Autonomous.TargetPackTest do
 
       assert hint =~ "TargetPack.install/2"
       assert :ok = TargetPack.verify(repo, profile: "strict")
+    end
+  end
+
+  describe "pack contract 5 (037)" do
+    defp commit_contract(repo, n) do
+      hook = Path.join(repo, ".claude/hooks/scope_guard.py")
+      File.write!(hook, String.replace(File.read!(hook), "PACK_CONTRACT = 5", "PACK_CONTRACT = #{n}"))
+      git!(repo, ["add", "-A"])
+      git!(repo, ["commit", "-q", "-m", "contract #{n}"])
+    end
+
+    test "install/2 writes a hook that reports contract 5" do
+      repo = committed_target()
+      {out, 0} = System.cmd("python3", [Path.join(repo, ".claude/hooks/scope_guard.py"), "--contract"])
+      assert String.trim(out) == "5"
+    end
+
+    test "permissive check passes at contract 4 and 5" do
+      repo = committed_target()
+      assert :ok = TargetPack.check_pack_contract(repo)
+      commit_contract(repo, 4)
+      assert :ok = TargetPack.check_pack_contract(repo)
+      assert :ok = TargetPack.verify(repo, profile: "permissive")
+    end
+
+    test "agent_root_warning/1: ok at 5, warning at 4, unknown on probe failure" do
+      repo = committed_target()
+      assert :ok = TargetPack.agent_root_warning(repo)
+
+      commit_contract(repo, 4)
+      assert {:warning, {:pack_below_agent_root_contract, 4, 5}} = TargetPack.agent_root_warning(repo)
+
+      empty = Path.join(System.tmp_dir!(), "no_repo_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(empty)
+      assert {:warning, {:pack_below_agent_root_contract, :unknown, 5}} = TargetPack.agent_root_warning(empty)
     end
   end
 end

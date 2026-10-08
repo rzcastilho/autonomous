@@ -16,7 +16,8 @@ defmodule Autonomous.TargetPack do
   """
 
   @template_marker "AUTONOMOUS_TEMPLATE"
-  @pack_contract "4"
+  @permissive_min_contract 4
+  @agent_root_min_contract 5
 
   @doc """
   Copy the pack into `repo`. Always (over)writes `.claude/settings.json` and
@@ -106,7 +107,7 @@ defmodule Autonomous.TargetPack do
   the constitution is committed (git-tracked).
 
   `:profile` (030, default `"strict"`) — `"permissive"` adds
-  `check_pack_contract/2`: the **committed** pack must carry hook contract 4
+  `check_pack_contract/2`: the **committed** pack must carry hook contract 4 or later
   and a `settings.json` with no `permissions.deny` entry, or the run refuses
   with `{:pack_outdated, path, hint}`. `"strict"` is unchanged from today —
   an un-upgraded target still enforces its own (older) rules and does not
@@ -132,15 +133,16 @@ defmodule Autonomous.TargetPack do
 
   @doc """
   Read the **committed** pack (`git -C repo show HEAD:…`) and confirm it is
-  contract 4: the hook prints `4` for `--contract`, and `settings.json` carries
+  contract 4 or later: the hook prints an integer `>= 4` for `--contract`, and `settings.json` carries
   no non-empty `permissions.deny`. Any failure (git show failure — including an
-  uncommitted upgrade — a non-`"4"` contract output, or a present `deny`) is
+  uncommitted upgrade — a contract output below 4, or a present `deny`) is
   `{:pack_outdated, ".claude/hooks/scope_guard.py", "re-run TargetPack.install/2 and commit"}`.
   """
   @spec check_pack_contract(Path.t()) :: :ok | {:error, term()}
   def check_pack_contract(repo) do
     with {:ok, hook_src} <- git_show(repo, ".claude/hooks/scope_guard.py"),
-         {:ok, @pack_contract} <- contract_of(hook_src),
+         {:ok, found} when is_integer(found) and found >= @permissive_min_contract <-
+           contract_of(hook_src),
          {:ok, settings_src} <- git_show(repo, ".claude/settings.json"),
          :ok <- no_deny?(settings_src) do
       :ok
@@ -149,6 +151,26 @@ defmodule Autonomous.TargetPack do
         {:error,
          {:pack_outdated, ".claude/hooks/scope_guard.py",
           "re-run TargetPack.install/2 and commit"}}
+    end
+  end
+
+  @doc """
+  (037) Whether the **committed** hook carries the strict package-manager
+  exception (contract `>= 5`). `:ok`, or `{:warning,
+  {:pack_below_agent_root_contract, found, 5}}` with `found` an integer, or
+  `:unknown` when `git show`/the probe fails. Never a preflight problem — an
+  older pack fails closed (keeps denying `sudo`).
+  """
+  @spec agent_root_warning(Path.t()) ::
+          :ok | {:warning, {:pack_below_agent_root_contract, integer() | :unknown, 5}}
+  def agent_root_warning(repo) do
+    with {:ok, hook_src} <- git_show(repo, ".claude/hooks/scope_guard.py"),
+         {:ok, found} <- contract_of(hook_src) do
+      if found >= @agent_root_min_contract,
+        do: :ok,
+        else: {:warning, {:pack_below_agent_root_contract, found, @agent_root_min_contract}}
+    else
+      _ -> {:warning, {:pack_below_agent_root_contract, :unknown, @agent_root_min_contract}}
     end
   end
 
@@ -165,12 +187,19 @@ defmodule Autonomous.TargetPack do
 
     result =
       case System.cmd("python3", [tmp, "--contract"], stderr_to_stdout: true) do
-        {out, 0} -> {:ok, String.trim(out)}
+        {out, 0} -> parse_contract(String.trim(out))
         {_out, _code} -> {:error, :contract_probe_failed}
       end
 
     File.rm(tmp)
     result
+  end
+
+  defp parse_contract(out) do
+    case Integer.parse(out) do
+      {n, ""} -> {:ok, n}
+      _ -> {:error, :contract_probe_failed}
+    end
   end
 
   defp no_deny?(settings_src) do

@@ -117,6 +117,21 @@ PY
   fi
 }
 
+# Advertise agent root (feature 037) only after a positive check. A value from
+# .env or compose is never honoured: always unset first, export only when
+# `sudo -n true` succeeds. An image without sudo (the default) stays silent.
+agent_root() {
+  unset AUTONOMOUS_AGENT_ROOT
+  if command -v sudo >/dev/null 2>&1; then
+    if sudo -n true >/dev/null 2>&1; then
+      export AUTONOMOUS_AGENT_ROOT=1
+      say "agent root: available (strict allows sudo apt-get/apt install)"
+    else
+      warn "agent root built in but 'sudo -n true' failed for uid $(id -u); not advertised"
+    fi
+  fi
+}
+
 # Smoke hook: seed and stop, before any build or identity work.
 if [ "$cmd" = "seed-config" ]; then
   seed_cli_config
@@ -127,6 +142,13 @@ fi
 if [ "$cmd" = "trust-config" ]; then
   seed_cli_config
   trust_workspaces
+  exit 0
+fi
+
+# Smoke hook: run only the agent-root step and report what it decided.
+if [ "$cmd" = "agent-root" ]; then
+  agent_root
+  printf 'AUTONOMOUS_AGENT_ROOT=%s\n' "${AUTONOMOUS_AGENT_ROOT:-0}"
   exit 0
 fi
 
@@ -274,6 +296,9 @@ seed_cli_config
 
 # ---- 4c. Trust the repo + worktree root for agent sessions (feature 036) ---------
 trust_workspaces
+
+# ---- 4d. Agent root: verify sudo and advertise it (feature 037) ------------------
+agent_root
 
 # ---- 5. Warnings (FR-016) --------------------------------------------------------
 if [ -z "${ANTHROPIC_API_KEY:-}" ] && [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] \
