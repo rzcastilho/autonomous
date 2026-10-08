@@ -59,6 +59,18 @@ defmodule Autonomous.InstanceTest do
     end
   end
 
+  describe "env_lines/1" do
+    test "six identity lines, worktree root last" do
+      i = derive("/r/a", "o:a-111111")
+      lines = Instance.env_lines(i)
+
+      assert length(lines) == 6
+      assert List.last(lines) == "AUTONOMOUS_WORKTREE_ROOT=" <> Autonomous.Layout.worktree_root(@root, i.segment)
+      assert hd(lines) == "AUTONOMOUS_INSTANCE_SEGMENT=a-111111"
+      assert Enum.at(lines, 4) == "AUTONOMOUS_INSTANCE_LOCK=" <> i.lock_path
+    end
+  end
+
   describe "derive/3 through RepoIdentity (SSH vs HTTPS)" do
     test "both origin spellings of one repo give one identity" do
       {:ok, ssh} = RepoIdentity.canonicalize("git@github.com:acme/ledgerlite.git")

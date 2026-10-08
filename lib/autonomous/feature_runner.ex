@@ -323,6 +323,10 @@ defmodule Autonomous.FeatureRunner do
   defp remediation_failure_reason(%{state: %{last_signals: %{session_died: %{} = d}}}),
     do: {:session_died, {:remediation, 1}, d}
 
+  # 036: strict run, untrusted workspace — never retried; the operator must trust it.
+  defp remediation_failure_reason(%{state: %{last_signals: %{untrusted_workspace: %{} = obs}}}),
+    do: {:untrusted_workspace, {:remediation, 1}, obs}
+
   defp remediation_failure_reason(_agent), do: :remediation_failed
 
   # ---- loop ---------------------------------------------------------------

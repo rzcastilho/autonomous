@@ -119,7 +119,9 @@ defmodule Autonomous.Chunking do
           # (`PhaseResult.stranded_background/1`), lifted by `ChunkRunner`.
           optional(:backgrounded) => [String.t()],
           # 034 — the session died instead of finishing (`PhaseResult.session_died/1`).
-          optional(:session_died) => %{kind: :start_failed | :ended_early, excerpt: String.t()}
+          optional(:session_died) => %{kind: :start_failed | :ended_early, excerpt: String.t()},
+          # 036 — the CLI ignored the committed pack (untrusted workspace, strict run).
+          optional(:untrusted_workspace) => Autonomous.WorkspaceTrust.observation()
         }
 
   @type reason ::
@@ -130,6 +132,7 @@ defmodule Autonomous.Chunking do
           | {:branch_drift, :implement, Autonomous.BranchGuard.drift()}
           | {:backgrounded_command, TaskPhaseRef.t(), [String.t(), ...]}
           | {:session_died, TaskPhaseRef.t(), %{kind: atom(), excerpt: String.t()}}
+          | {:untrusted_workspace, TaskPhaseRef.t(), Autonomous.WorkspaceTrust.observation()}
 
   @type decision ::
           {:dispatch, Autonomous.ChunkScope.t(), ChunkState.t()}
@@ -201,6 +204,11 @@ defmodule Autonomous.Chunking do
       # still bounds it.
       is_map(Map.get(signals, :session_died)) ->
         died_retry(state, Map.get(signals, :session_died), breaker? or drain?)
+
+      # Row U (036) — the CLI ignored the committed pack: untrusted workspace under
+      # a strict run. Terminal, never re-dispatched (only the operator can trust it).
+      is_map(Map.get(signals, :untrusted_workspace)) ->
+        {:failed, {:untrusted_workspace, current_ref(state), Map.get(signals, :untrusted_workspace)}, state}
 
       # Row B (032, US1) — the session ended on a command the CLI moved to the
       # background. Ahead of every outcome row: the session reported success (or
@@ -285,6 +293,9 @@ defmodule Autonomous.Chunking do
   end
 
   def failure_sentence({:session_died, %TaskPhaseRef{}, %{kind: _, excerpt: _}} = reason),
+    do: Autonomous.Report.format_reason(reason)
+
+  def failure_sentence({:untrusted_workspace, %TaskPhaseRef{}, %{kinds: _}} = reason),
     do: Autonomous.Report.format_reason(reason)
 
   def failure_sentence({:stuck_task_phase, %TaskPhaseRef{} = ref, limit}) do

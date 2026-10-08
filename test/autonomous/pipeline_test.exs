@@ -553,4 +553,38 @@ defmodule Autonomous.PipelineTest do
       assert Pipeline.next(:plan, :error, %{}) == {:failed, {:plan, :error}}
     end
   end
+
+  describe "untrusted-workspace gate order (036)" do
+    @obs %{workspace: "/x/repo", kinds: ["permissions.allow"]}
+
+    test "fails every phase by name, for both session statuses reaching :error" do
+      for phase <- Pipeline.phases() do
+        assert Pipeline.next(phase, :error, %{untrusted_workspace: @obs}) ==
+                 {:failed, {:untrusted_workspace, phase, @obs}}
+      end
+    end
+
+    test "branch drift and session death beat it; it beats backgrounded and incomplete" do
+      d = %{expected: "a", observed: "b"}
+      died = %{kind: :ended_early, excerpt: "x"}
+
+      assert {:failed, {:branch_drift, :plan, ^d}} =
+               Pipeline.next(:plan, :error, %{branch_drift: d, untrusted_workspace: @obs})
+
+      assert {:failed, {:session_died, :plan, ^died}} =
+               Pipeline.next(:plan, :error, %{session_died: died, untrusted_workspace: @obs})
+
+      assert {:failed, {:untrusted_workspace, :plan, @obs}} =
+               Pipeline.next(:plan, :error, %{
+                 untrusted_workspace: @obs,
+                 backgrounded: ["mix test"],
+                 outstanding_work?: true
+               })
+    end
+
+    test "a cleared (nil) or absent signal changes nothing" do
+      assert Pipeline.next(:plan, :error, %{untrusted_workspace: nil}) ==
+               Pipeline.next(:plan, :error, %{})
+    end
+  end
 end

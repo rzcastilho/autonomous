@@ -491,6 +491,9 @@ defmodule Autonomous.AnalyzeRunner do
   defp remediation_failure(%{state: %{last_signals: %{session_died: %{} = d}}}, state),
     do: {:session_died, {:remediation, state.attempts_used}, d}
 
+  defp remediation_failure(%{state: %{last_signals: %{untrusted_workspace: %{} = obs}}}, state),
+    do: {:untrusted_workspace, {:remediation, state.attempts_used}, obs}
+
   defp remediation_failure(_agent, _state), do: :remediation_failed
 
   # Provenance, never budget (FR-015): recorded so an operator can see what was

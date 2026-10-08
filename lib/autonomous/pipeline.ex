@@ -79,7 +79,8 @@ defmodule Autonomous.Pipeline do
           optional(:outstanding_work?) => boolean(),
           optional(:backgrounded) => [String.t()],
           optional(:branch_drift) => Autonomous.BranchGuard.drift(),
-          optional(:session_died) => %{kind: :start_failed | :ended_early, excerpt: String.t()}
+          optional(:session_died) => %{kind: :start_failed | :ended_early, excerpt: String.t()},
+          optional(:untrusted_workspace) => Autonomous.WorkspaceTrust.observation()
         }
 
   @typedoc "Result of a transition."
@@ -147,6 +148,15 @@ defmodule Autonomous.Pipeline do
   # generic error; `signals.session_died` is `%{kind:, excerpt:}`.
   def next(phase, :error, %{session_died: d}) when phase in @ordered and is_map(d) do
     {:failed, {:session_died, phase, d}}
+  end
+
+  # Untrusted-workspace gate (036) — after session death, ahead of the
+  # background-wait and incomplete-session gates. The CLI ignored the committed
+  # pack's permissions because the workspace was untrusted; under `strict` that
+  # session never counts as a success. Set only for a `strict` run (the site
+  # decides); `signals.untrusted_workspace` is `%{workspace:, kinds:}`.
+  def next(phase, :error, %{untrusted_workspace: obs}) when phase in @ordered and is_map(obs) do
+    {:failed, {:untrusted_workspace, phase, obs}}
   end
 
   # Background-wait gate (032, US1) — ahead of the plain incomplete-session

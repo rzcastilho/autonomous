@@ -70,6 +70,20 @@ excerpt}` within seconds (`SessionExit.classify/2` pulls the CLI's `stderr`);
 backgrounded/incomplete-session), `PhaseStep`/`Chunking`/`SessionRetry.once/2`
 retry it once (never under breaker/drain), and `Report.format_reason/1` renders it.
 
+## Container workspace trust (feature 036)
+
+The container entrypoint's `trust_workspaces` step (`trust-config` smoke hook) merges
+`hasTrustDialogAccepted` records for exactly two paths — the target repo and the
+worktree root (`AUTONOMOUS_WORKTREE_ROOT`, the sixth `Instance.env_lines/1` line, from
+`Layout.worktree_root/2`) — into the container-private `~/.claude.json`: atomic,
+idempotent, all other keys preserved, host config never written. Backstop gate: stderr
+lines parsed by `WorkspaceTrust` (the only module that knows the CLI wording) are
+collected per session; under `strict` an untrusted-workspace observation fails the phase
+as `{:untrusted_workspace, phase, obs}` (checked after `session_died`, before
+backgrounded/incomplete-session; never retried), under `permissive` it only warns.
+Absent the stderr line, behaviour is byte-identical to pre-036. See `docs/container.md`,
+`docs/runbook.md`.
+
 ## Containerized runtime (feature 031)
 
 Operate the orchestrator through the container: `scripts/autonomous` (build,

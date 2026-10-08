@@ -62,9 +62,71 @@ PY
   mv -f "$tmp" "$target"
 }
 
+# Trust the repo and the instance worktree root for orchestrated sessions
+# (feature 036). Merges two hasTrustDialogAccepted records into the container-
+# private ~/.claude.json: atomic, idempotent (no write when already trusted),
+# every other key preserved. Reads/writes nothing else.
+trust_workspaces() {
+  : "${HOME:?HOME must be set}"
+  : "${AUTONOMOUS_REPO:?AUTONOMOUS_REPO must be set}"
+  : "${AUTONOMOUS_WORKTREE_ROOT:?AUTONOMOUS_WORKTREE_ROOT must be set}"
+  target="$HOME/.claude.json"
+  out="$(python3 - "$target" "$AUTONOMOUS_REPO" "$AUTONOMOUS_WORKTREE_ROOT" <<'PY' 2>&1
+import json, os, sys
+target, repo, root = sys.argv[1], os.path.realpath(sys.argv[2]), os.path.realpath(sys.argv[3])
+cfg = {}
+if os.path.exists(target):
+    try:
+        with open(target) as f:
+            cfg = json.load(f)
+        if not isinstance(cfg, dict):
+            raise ValueError("top-level value is not a JSON object")
+        if "projects" in cfg and not isinstance(cfg["projects"], dict):
+            raise ValueError("projects is not a JSON object")
+    except Exception as e:
+        print("ERR " + str(e))
+        sys.exit(1)
+projects = cfg.setdefault("projects", {})
+changed = False
+for p in (repo, root):
+    entry = projects.get(p)
+    if not isinstance(entry, dict):
+        entry = {}
+        projects[p] = entry
+        changed = True
+    if entry.get("hasTrustDialogAccepted") is not True:
+        entry["hasTrustDialogAccepted"] = True
+        changed = True
+if not changed:
+    print("SAME")
+    sys.exit(0)
+tmp = "%s.tmp.%d" % (target, os.getpid())
+fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+with os.fdopen(fd, "w") as f:
+    json.dump(cfg, f, indent=2)
+    f.flush()
+    os.fsync(f.fileno())
+os.replace(tmp, target)
+print("DONE")
+PY
+)" || die "container CLI config $target is not a JSON object: ${out#ERR }; not modified"
+  if [ "$out" = "SAME" ]; then
+    say "$AUTONOMOUS_REPO and $AUTONOMOUS_WORKTREE_ROOT already trusted for agent sessions"
+  else
+    say "trusted $AUTONOMOUS_REPO and $AUTONOMOUS_WORKTREE_ROOT for agent sessions"
+  fi
+}
+
 # Smoke hook: seed and stop, before any build or identity work.
 if [ "$cmd" = "seed-config" ]; then
   seed_cli_config
+  exit 0
+fi
+
+# Smoke hook: seed, trust, stop — also before any build or identity work.
+if [ "$cmd" = "trust-config" ]; then
+  seed_cli_config
+  trust_workspaces
   exit 0
 fi
 
@@ -209,6 +271,9 @@ fi
 
 # ---- 4b. Private copy of the host CLI config (feature 034) -----------------------
 seed_cli_config
+
+# ---- 4c. Trust the repo + worktree root for agent sessions (feature 036) ---------
+trust_workspaces
 
 # ---- 5. Warnings (FR-016) --------------------------------------------------------
 if [ -z "${ANTHROPIC_API_KEY:-}" ] && [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] \

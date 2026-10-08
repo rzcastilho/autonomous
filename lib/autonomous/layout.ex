@@ -87,6 +87,15 @@ defmodule Autonomous.Layout do
 
   defp check_reserved(_scope), do: :ok
 
+  @doc """
+  The per-instance worktree root, `<autonomous_root>/worktrees/<segment>` — the
+  one derivation shared by `build/3` and `Autonomous.Instance.env_lines/1`.
+  """
+  @spec worktree_root(String.t(), String.t()) :: String.t()
+  def worktree_root(autonomous_root, segment)
+      when is_binary(autonomous_root) and is_binary(segment),
+      do: Path.join([autonomous_root, "worktrees", segment])
+
   defp resolve_autonomous_root do
     {:ok, Config.autonomous_root()}
   rescue
@@ -97,7 +106,7 @@ defmodule Autonomous.Layout do
     rel = breakdown_rel(slug)
 
     %__MODULE__{
-      worktree_root: Path.join([autonomous_root, "worktrees", segment]),
+      worktree_root: worktree_root(autonomous_root, segment),
       transcript_root: Path.join([autonomous_root, "transcripts", segment, slug]),
       breakdown_root: Path.join(repo, rel),
       ad_hoc_root: nil,
@@ -109,7 +118,7 @@ defmodule Autonomous.Layout do
     rel = ad_hoc_rel()
 
     %__MODULE__{
-      worktree_root: Path.join([autonomous_root, "worktrees", segment]),
+      worktree_root: worktree_root(autonomous_root, segment),
       transcript_root: Path.join([autonomous_root, "transcripts", segment, @reserved_slug]),
       breakdown_root: nil,
       ad_hoc_root: Path.join(repo, rel),
