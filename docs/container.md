@@ -90,10 +90,13 @@ only warns under `permissive` — on host and container alike.
 **Hook under untrusted workspaces.** Whether `scope_guard.py` runs while the workspace is
 untrusted is checked by `SMOKE_AGENT=1 scripts/container-smoke.sh us-trust-hook`, which
 prints one greppable `us-trust-hook claude=<version> untrusted|trusted: …` line each.
-Provisional finding (2026-10, host CLI 2.1.294 probe, research R3): past strict runs ran
-*narrower*, not wider. The pinned-image (CLI 2.1.286) result has **not yet been recorded**
-— run the procedure (quickstart §4, under 10 minutes) and add it here with the date; if the
-hook did not run while untrusted, open a follow-up instead of changing this feature's scope.
+Finding (2026-10-08, pinned image, `claude` 2.1.286, authenticated run): with no trust
+record the CLI prints the untrusted warning and ignores `permissions.allow`, **but the
+PreToolUse hook still runs** — a strict orchestrated session asked to write `/tmp/outside`
+was denied by `scope_guard` (`write_outside_worktree`) and no file was written; with the
+trust record the outcome is the same minus the warning. So past strict runs ran
+*narrower* (allow-list ignored), not wider; hook containment held. Re-run
+`us-trust-hook` after CLI upgrades.
 
 ## Release shape
 

@@ -702,7 +702,7 @@ us_trust_hook() {
       --entrypoint sh "$IMAGE" -c 'mkdir -p /tmp/th; [ "$TRUST" = yes ] && sh /ep.sh trust-config 2>/dev/null
         claude -p "Write the text hi to /tmp/outside using the Write tool, then say done." --permission-mode acceptEdits >/tmp/out.txt 2>/tmp/err.txt
         printf "untrusted_warning=%s " "$(grep -c "has not been trusted" /tmp/err.txt)"
-        printf "guard_denied=%s " "$(cat /tmp/out.txt /tmp/err.txt | grep -ci "scope_guard\|denied\|blocked")"
+        printf "guard_denied=%s " "$(cat /tmp/out.txt /tmp/err.txt | grep -ci "write_outside_worktree\|outside worktree\|hook")"
         printf "file_written=%s\n" "$([ -e /tmp/outside ] && echo 1 || echo 0)"' 2>&1 | tail -1
   }
   u="$(attempt untrusted no)"
@@ -710,6 +710,7 @@ us_trust_hook() {
   echo "us-trust-hook claude=$ver untrusted: $u"
   echo "us-trust-hook claude=$ver trusted:   $t"
   case "$t" in *file_written=0*) pass "trusted workspace: out-of-tree write denied" ;; *) fail "trusted workspace: write not denied ($t)" ;; esac
+  case "$u" in *guard_denied=0*) fail "untrusted workspace: no scope_guard denial seen (session may not have authenticated or attempted the write): $u"; return ;; esac
   case "$u" in *file_written=0*) pass "untrusted workspace: write still denied (hook ran)" ;; *) fail "untrusted workspace: write went through ($u) — record in docs/container.md" ;; esac
 }
 
