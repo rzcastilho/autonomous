@@ -114,8 +114,8 @@
 ## Phase 6: Polish & Cross-Cutting
 
 - [X] T033 Run the full suite `mise exec -- mix test` (SC-004: everything outside this feature unchanged) and `mise exec -- mix compile --warnings-as-errors`; confirm `design_contract_test.exs` green.
-- [ ] T034 Walk `quickstart.md` §1–§6 (docker sections by hand: `scripts/container-smoke.sh sysdeps` for dev and release images, with and without each option); note any deviation back into the relevant contract/doc.
-  - _Partial (2026-10-08):_ Dockerfile blocks verified in a scratch `debian:bookworm-slim` image (declared pkg installed + manifest, unknown pkg fails naming it, `--agent-root` sudoers/no-remove, uid without passwd entry fails closed, no-option image has no `sudo`/`/etc/autonomous`); `sysdeps` smoke passes on the pre-037 dev image. Still to do by hand: rebuild the real dev/release images with `--apt`/`--agent-root` and run `sysdeps` against each.
+- [X] T034 Walk `quickstart.md` §1–§6 (docker sections by hand: `scripts/container-smoke.sh sysdeps` for dev and release images, with and without each option); note any deviation back into the relevant contract/doc.
+  - _Done (2026-10-09):_ Dockerfile blocks verified in a scratch `debian:bookworm-slim` image (declared pkg + manifest, unknown pkg fails naming it, sudoers/no-remove, uid without passwd entry fails closed, no-option image has no `sudo`/`/etc/autonomous`); real dev and release images rebuilt with `--agent-root --apt pkg-config` and `sysdeps` smoke passes on both (5/5 each); `sysdeps` also passes on the pre-037 no-option dev image. A freshly rebuilt no-option real image was not re-checked.
 - [X] T035 Verify the byte-identical invariants: no-flag image content (no `sudo`, no `/etc/autonomous`), container start output, `PhaseRequest` env/prompt, and hook decisions match pre-037 behaviour (SC-004, FR-002, FR-010, FR-011).
 
 ---
