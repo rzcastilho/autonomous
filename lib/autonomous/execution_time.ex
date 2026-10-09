@@ -42,7 +42,13 @@ defmodule Autonomous.ExecutionTime do
          from <- DateTime.to_unix(started_at, :millisecond),
          to <- DateTime.to_unix(ended_at, :millisecond),
          true <- to >= from do
-      [%{key: {:attempt, Map.get(attempt, :phase), Map.get(attempt, :ordinal)}, from: from, to: to}]
+      [
+        %{
+          key: {:attempt, Map.get(attempt, :phase), Map.get(attempt, :ordinal)},
+          from: from,
+          to: to
+        }
+      ]
     else
       _ -> []
     end

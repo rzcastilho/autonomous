@@ -120,7 +120,11 @@ defmodule Autonomous.WaveHistoryTest do
     end
 
     test "a :running row already on the final phase changes status only, phases untouched" do
-      result = WaveHistory.interrupt(row(%{current_phase: :converge, phases: %{converge: %{state: :completed}}}), :superseded)
+      result =
+        WaveHistory.interrupt(
+          row(%{current_phase: :converge, phases: %{converge: %{state: :completed}}}),
+          :superseded
+        )
 
       assert result.status == :interrupted
       assert result.phases == %{converge: %{state: :completed}}

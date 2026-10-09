@@ -295,6 +295,7 @@ defmodule Autonomous.WorktreeTest do
   describe "locate/2 naming" do
     test "composes :path and :branch from spec_id, keeps feature_id: feature.id" do
       repo = base_repo()
+
       feature = %Feature{
         id: "001",
         number: 1,
@@ -331,6 +332,7 @@ defmodule Autonomous.WorktreeTest do
       }
 
       assert Worktree.branch_name(feature) == "feature/015-core-ledger"
+
       assert Worktree.locate(feature, repo: "/tmp", worktree_root: "/tmp").branch ==
                Worktree.branch_name(feature)
     end

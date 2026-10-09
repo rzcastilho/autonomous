@@ -99,7 +99,11 @@ defmodule AutonomousTest do
   end
 
   defp branch_exists?(repo, branch),
-    do: match?({_, 0}, System.cmd("git", ["-C", repo, "rev-parse", "--verify", "--quiet", "refs/heads/#{branch}"]))
+    do:
+      match?(
+        {_, 0},
+        System.cmd("git", ["-C", repo, "rev-parse", "--verify", "--quiet", "refs/heads/#{branch}"])
+      )
 
   test "fresh allocate: a colliding wave number gets its own spec number and branch" do
     repo = scaffolded_repo()
@@ -198,6 +202,7 @@ defmodule AutonomousTest do
 
     File.write!(Path.join(wt.path, "checkpoint.txt"), "prior phase output\n")
     git!(wt.path, ["add", "-A"])
+
     git!(wt.path, ["-c", "user.name=t", "-c", "user.email=t@e.com", "commit", "-q", "-m", "prior"])
 
     {:ok, pid} =
@@ -251,7 +256,13 @@ defmodule AutonomousTest do
 
   test "pending_questions/0 lists the feature, round and each question" do
     questions = [
-      %Question{id: "Q1", text: "Prorate mid-month?", context: nil, options: [], recommended: "yes"},
+      %Question{
+        id: "Q1",
+        text: "Prorate mid-month?",
+        context: nil,
+        options: [],
+        recommended: "yes"
+      },
       %Question{id: "Q2", text: "Which timezone?", context: nil, options: [], recommended: "UTC"}
     ]
 

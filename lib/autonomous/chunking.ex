@@ -208,7 +208,9 @@ defmodule Autonomous.Chunking do
       # Row U (036) — the CLI ignored the committed pack: untrusted workspace under
       # a strict run. Terminal, never re-dispatched (only the operator can trust it).
       is_map(Map.get(signals, :untrusted_workspace)) ->
-        {:failed, {:untrusted_workspace, current_ref(state), Map.get(signals, :untrusted_workspace)}, state}
+        {:failed,
+         {:untrusted_workspace, current_ref(state), Map.get(signals, :untrusted_workspace)},
+         state}
 
       # Row B (032, US1) — the session ended on a command the CLI moved to the
       # background. Ahead of every outcome row: the session reported success (or

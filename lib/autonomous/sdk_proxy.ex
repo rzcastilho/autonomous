@@ -33,7 +33,8 @@ defmodule Autonomous.SdkProxy do
   def query(prompt, options), do: inner().query(prompt, prepare(options))
 
   @doc false
-  def resume(session_id, prompt, options), do: inner().resume(session_id, prompt, prepare(options))
+  def resume(session_id, prompt, options),
+    do: inner().resume(session_id, prompt, prepare(options))
 
   @doc """
   Strip the collector marker from `options.env` and install the stderr callback.

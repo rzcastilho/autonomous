@@ -63,7 +63,8 @@ defmodule Autonomous.ContainmentTest do
 
   describe "report_line/1" do
     test "exact text for permissive" do
-      assert Containment.report_line("permissive") == "containment: permissive (no pack deny list)"
+      assert Containment.report_line("permissive") ==
+               "containment: permissive (no pack deny list)"
     end
 
     test "nil for strict and nil" do

@@ -220,7 +220,9 @@ defmodule Autonomous.ExecutionTimeTest do
       ]
 
       without_chunks = ExecutionTime.elapsed_ms(ExecutionTime.from_attempts([rollup]), 2_000)
-      with_chunks = ExecutionTime.elapsed_ms(ExecutionTime.from_attempts([rollup | chunks]), 2_000)
+
+      with_chunks =
+        ExecutionTime.elapsed_ms(ExecutionTime.from_attempts([rollup | chunks]), 2_000)
 
       assert without_chunks == 1_000
       assert with_chunks == 1_000

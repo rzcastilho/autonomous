@@ -96,8 +96,11 @@ defmodule Autonomous.WaveHistory do
 
   def interrupt(%{status: :running} = row, _run_state) do
     case open_phase(Map.get(row, :current_phase)) do
-      nil -> %{row | status: :interrupted}
-      phase -> %{row | status: :interrupted, phases: Map.put(row.phases, phase, %{state: :interrupted})}
+      nil ->
+        %{row | status: :interrupted}
+
+      phase ->
+        %{row | status: :interrupted, phases: Map.put(row.phases, phase, %{state: :interrupted})}
     end
   end
 

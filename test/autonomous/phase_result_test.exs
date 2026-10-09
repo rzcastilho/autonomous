@@ -457,8 +457,15 @@ defmodule Autonomous.PhaseResultTest do
 
     test "reset_untrusted_workspace/2 clears a stale observation only when the new run has none" do
       obs = %{workspace: "/x", kinds: []}
-      assert PhaseResult.reset_untrusted_workspace(%{}, %{untrusted_workspace: obs}) == %{untrusted_workspace: nil}
-      assert PhaseResult.reset_untrusted_workspace(%{untrusted_workspace: obs}, %{untrusted_workspace: obs}) == %{untrusted_workspace: obs}
+
+      assert PhaseResult.reset_untrusted_workspace(%{}, %{untrusted_workspace: obs}) == %{
+               untrusted_workspace: nil
+             }
+
+      assert PhaseResult.reset_untrusted_workspace(%{untrusted_workspace: obs}, %{
+               untrusted_workspace: obs
+             }) == %{untrusted_workspace: obs}
+
       assert PhaseResult.reset_untrusted_workspace(%{}, %{}) == %{}
       assert PhaseResult.reset_untrusted_workspace(%{}, nil) == %{}
     end

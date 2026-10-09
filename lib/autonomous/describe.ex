@@ -26,7 +26,9 @@ defmodule Autonomous.Describe do
 
   def run(feature, %{path: path}, layout, opts) do
     containment = Keyword.get(opts, :containment, "strict")
-    request = PhaseRequest.build(feature, :describe, cwd: path, layout: layout, containment: containment)
+
+    request =
+      PhaseRequest.build(feature, :describe, cwd: path, layout: layout, containment: containment)
 
     case Jido.Harness.run_request(:claude, request, []) do
       {:ok, stream} -> parse(PhaseResult.reduce(stream).final_text)

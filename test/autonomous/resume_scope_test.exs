@@ -41,7 +41,12 @@ defmodule Autonomous.ResumeScopeTest do
   end
 
   defp feat(id, number \\ nil),
-    do: %Feature{id: id, number: number || String.to_integer(id), slug: "f#{id}", path: "#{id}.md"}
+    do: %Feature{
+      id: id,
+      number: number || String.to_integer(id),
+      slug: "f#{id}",
+      path: "#{id}.md"
+    }
 
   defp capturing_runner(test_pid) do
     fn feature, notify -> send(test_pid, {:started, feature.id, notify}) end

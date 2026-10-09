@@ -24,7 +24,8 @@ defmodule Autonomous.PublishOutcomeTest do
          %{
            branch: "feature/001-core-ledger",
            remote: "origin",
-           output: "! [rejected]        feature/001-core-ledger -> feature/001-core-ledger (stale info)"
+           output:
+             "! [rejected]        feature/001-core-ledger -> feature/001-core-ledger (stale info)"
          }}
 
       assert PublishOutcome.describe(reason) ==

@@ -313,14 +313,22 @@ defmodule Autonomous.TargetPackTest do
   describe "pack contract 5 (037)" do
     defp commit_contract(repo, n) do
       hook = Path.join(repo, ".claude/hooks/scope_guard.py")
-      File.write!(hook, String.replace(File.read!(hook), "PACK_CONTRACT = 5", "PACK_CONTRACT = #{n}"))
+
+      File.write!(
+        hook,
+        String.replace(File.read!(hook), "PACK_CONTRACT = 5", "PACK_CONTRACT = #{n}")
+      )
+
       git!(repo, ["add", "-A"])
       git!(repo, ["commit", "-q", "-m", "contract #{n}"])
     end
 
     test "install/2 writes a hook that reports contract 5" do
       repo = committed_target()
-      {out, 0} = System.cmd("python3", [Path.join(repo, ".claude/hooks/scope_guard.py"), "--contract"])
+
+      {out, 0} =
+        System.cmd("python3", [Path.join(repo, ".claude/hooks/scope_guard.py"), "--contract"])
+
       assert String.trim(out) == "5"
     end
 
@@ -337,11 +345,15 @@ defmodule Autonomous.TargetPackTest do
       assert :ok = TargetPack.agent_root_warning(repo)
 
       commit_contract(repo, 4)
-      assert {:warning, {:pack_below_agent_root_contract, 4, 5}} = TargetPack.agent_root_warning(repo)
+
+      assert {:warning, {:pack_below_agent_root_contract, 4, 5}} =
+               TargetPack.agent_root_warning(repo)
 
       empty = Path.join(System.tmp_dir!(), "no_repo_#{System.unique_integer([:positive])}")
       File.mkdir_p!(empty)
-      assert {:warning, {:pack_below_agent_root_contract, :unknown, 5}} = TargetPack.agent_root_warning(empty)
+
+      assert {:warning, {:pack_below_agent_root_contract, :unknown, 5}} =
+               TargetPack.agent_root_warning(empty)
     end
   end
 end

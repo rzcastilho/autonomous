@@ -35,7 +35,17 @@ defmodule Autonomous.Instance do
     end
   end
 
-  @enforce_keys [:repo, :partition, :segment, :node_name, :store_dir, :lock_path, :owner_path, :cookie_path, :worktree_root]
+  @enforce_keys [
+    :repo,
+    :partition,
+    :segment,
+    :node_name,
+    :store_dir,
+    :lock_path,
+    :owner_path,
+    :cookie_path,
+    :worktree_root
+  ]
   defstruct @enforce_keys
 
   @type t :: %__MODULE__{
@@ -179,7 +189,9 @@ defmodule Autonomous.Instance do
   def served?(%__MODULE__{} = identity, given, partition_fun \\ &RepoIdentity.partition/1)
       when is_binary(given) do
     partition =
-      if String.starts_with?(given, ["o:", "l:"]), do: given, else: partition_fun.(Path.expand(given))
+      if String.starts_with?(given, ["o:", "l:"]),
+        do: given,
+        else: partition_fun.(Path.expand(given))
 
     partition == identity.partition
   end
@@ -224,7 +236,9 @@ defmodule Autonomous.Instance do
     try do
       fun.()
     after
-      if previous, do: Process.put(@served_override, previous), else: Process.delete(@served_override)
+      if previous,
+        do: Process.put(@served_override, previous),
+        else: Process.delete(@served_override)
     end
   end
 end

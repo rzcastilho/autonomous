@@ -5,7 +5,9 @@ defmodule Autonomous.Web.AgentRootViewTest do
 
   test "not advertised is hidden whatever the pack says" do
     assert AgentRootView.state(false, :ok) == :hidden
-    assert AgentRootView.state(false, {:warning, {:pack_below_agent_root_contract, 4, 5}}) == :hidden
+
+    assert AgentRootView.state(false, {:warning, {:pack_below_agent_root_contract, 4, 5}}) ==
+             :hidden
   end
 
   test "advertised with a current pack is available" do

@@ -24,6 +24,7 @@ defmodule Autonomous.InteractiveClarifyTest do
 
     test "accepts the boundary answer_timeout_s values" do
       assert {:ok, %Settings{answer_timeout_s: 60}} = Settings.validate(%{answer_timeout_s: 60})
+
       assert {:ok, %Settings{answer_timeout_s: 86_400}} =
                Settings.validate(%{answer_timeout_s: 86_400})
     end

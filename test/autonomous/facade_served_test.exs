@@ -31,7 +31,8 @@ defmodule Autonomous.FacadeServedTest do
   end
 
   describe ":repo option" do
-    test "pending_questions/1", do: foreign!(fn -> Autonomous.pending_questions(repo: @foreign) end)
+    test "pending_questions/1",
+      do: foreign!(fn -> Autonomous.pending_questions(repo: @foreign) end)
 
     test "answer/4",
       do: foreign!(fn -> Autonomous.answer("001", 1, %{}, repo: @foreign) end)
@@ -50,9 +51,13 @@ defmodule Autonomous.FacadeServedTest do
     test "prune/1", do: foreign!(fn -> Autonomous.prune(repo: @foreign) end)
 
     test "record_pr/3",
-      do: foreign!(fn -> Autonomous.record_pr("001", "https://example.test/pr/1", repo: @foreign) end)
+      do:
+        foreign!(fn ->
+          Autonomous.record_pr("001", "https://example.test/pr/1", repo: @foreign)
+        end)
 
-    test "resolve/2 (parked-run lookup)", do: foreign!(fn -> Autonomous.resolve("001", repo: @foreign) end)
+    test "resolve/2 (parked-run lookup)",
+      do: foreign!(fn -> Autonomous.resolve("001", repo: @foreign) end)
 
     test "run_spec/2 (taken-id gathering)",
       do: foreign!(fn -> Autonomous.run_spec("add a thing", repo: @foreign) end)
@@ -73,6 +78,7 @@ defmodule Autonomous.FacadeServedTest do
     assert length(reads) == 1,
            "every :repo read must go through served_repo/1; found #{length(reads)} direct reads"
 
-    assert source =~ ~r/defp served_repo\(opts\) do\s+repo = Keyword\.get\(opts, :repo, Config\.repo\(\)\)/
+    assert source =~
+             ~r/defp served_repo\(opts\) do\s+repo = Keyword\.get\(opts, :repo, Config\.repo\(\)\)/
   end
 end

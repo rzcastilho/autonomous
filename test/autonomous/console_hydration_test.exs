@@ -78,7 +78,12 @@ defmodule Autonomous.ConsoleHydrationTest do
     end
 
     test "the feature's own started_at/ended_at are not read at all" do
-      attempts = [attempt("f1b", :specify, started_at: ~U[2026-01-01 00:00:00Z], ended_at: ~U[2026-01-01 00:05:00Z])]
+      attempts = [
+        attempt("f1b", :specify,
+          started_at: ~U[2026-01-01 00:00:00Z],
+          ended_at: ~U[2026-01-01 00:05:00Z]
+        )
+      ]
 
       f =
         feature("f1b",
@@ -160,10 +165,17 @@ defmodule Autonomous.ConsoleHydrationTest do
 
     test "a diverted feature's recorded attempt list includes the diverting phase's window — mark_diverted never touches windows (US3-1)" do
       attempts = [
-        attempt("f4c", :specify, cost_usd: 1.0,
-          started_at: ~U[2026-01-01 00:00:00Z], ended_at: ~U[2026-01-01 00:05:00Z]),
-        attempt("f4c", :analyze, cost_usd: 2.5, model: "opus",
-          started_at: ~U[2026-01-01 01:00:00Z], ended_at: ~U[2026-01-01 01:10:00Z])
+        attempt("f4c", :specify,
+          cost_usd: 1.0,
+          started_at: ~U[2026-01-01 00:00:00Z],
+          ended_at: ~U[2026-01-01 00:05:00Z]
+        ),
+        attempt("f4c", :analyze,
+          cost_usd: 2.5,
+          model: "opus",
+          started_at: ~U[2026-01-01 01:00:00Z],
+          ended_at: ~U[2026-01-01 01:10:00Z]
+        )
       ]
 
       cost_entries = Enum.map(attempts, &cost_entry(&1.attempt_id, &1.cost_usd))

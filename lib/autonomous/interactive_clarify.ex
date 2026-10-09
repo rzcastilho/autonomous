@@ -112,7 +112,10 @@ defmodule Autonomous.InteractiveClarify do
     def from_context(%{} = map) do
       validate(%{
         enabled?:
-          default(field(map, "interactive_clarify", :interactive_clarify), Config.interactive_clarify?()),
+          default(
+            field(map, "interactive_clarify", :interactive_clarify),
+            Config.interactive_clarify?()
+          ),
         answer_timeout_s:
           default(
             field(map, "clarify_answer_timeout_s", :clarify_answer_timeout_s),

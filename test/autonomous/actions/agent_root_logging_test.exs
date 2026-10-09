@@ -20,7 +20,12 @@ defmodule Autonomous.Actions.AgentRootLoggingTest do
           data: %{
             message: %{
               "content" => [
-                %{"type" => "tool_use", "id" => "i1", "name" => "Bash", "input" => %{"command" => command}}
+                %{
+                  "type" => "tool_use",
+                  "id" => "i1",
+                  "name" => "Bash",
+                  "input" => %{"command" => command}
+                }
               ]
             }
           },
@@ -31,7 +36,12 @@ defmodule Autonomous.Actions.AgentRootLoggingTest do
           data: %{
             message: %{
               "content" => [
-                %{"type" => "tool_result", "tool_use_id" => "i1", "is_error" => false, "content" => output}
+                %{
+                  "type" => "tool_result",
+                  "tool_use_id" => "i1",
+                  "is_error" => false,
+                  "content" => output
+                }
               ]
             }
           },
@@ -74,7 +84,8 @@ defmodule Autonomous.Actions.AgentRootLoggingTest do
     :ok
   end
 
-  defp script(command, output), do: Application.put_env(:autonomous, :__install_call, {command, output})
+  defp script(command, output),
+    do: Application.put_env(:autonomous, :__install_call, {command, output})
 
   defp ctx(extra) do
     base = %{
@@ -115,7 +126,11 @@ defmodule Autonomous.Actions.AgentRootLoggingTest do
     end
 
     test "#{name}: a denied install is not logged" do
-      script("sudo apt-get install -y libfoo-dev", "scope_guard[strict|orchestrated]: bash_sudo: sudo")
+      script(
+        "sudo apt-get install -y libfoo-dev",
+        "scope_guard[strict|orchestrated]: bash_sudo: sudo"
+      )
+
       {_, fun, _} = Enum.find(@sites, &(elem(&1, 0) == unquote(name)))
       log = capture_log(fn -> fun.(ctx(%{})) end)
       refute log =~ "agent root:"

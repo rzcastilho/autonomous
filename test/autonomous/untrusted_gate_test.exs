@@ -49,6 +49,7 @@ defmodule Autonomous.UntrustedGateTest do
   # The proxy is the configured `:sdk_module`; fake SDKs slot in behind it.
   setup do
     original = Application.get_env(:autonomous, :sdk_proxy_inner)
+
     on_exit(fn ->
       if original,
         do: Application.put_env(:autonomous, :sdk_proxy_inner, original),
@@ -85,8 +86,7 @@ defmodule Autonomous.UntrustedGateTest do
 
   @sites [
     {:feature_phase, &RunFeaturePhase.run/2, %{phase: :converge}},
-    {:auto_remediation, &RunAutoRemediation.run/2,
-     %{prompt: "p", model: "sonnet", attempt: 1}},
+    {:auto_remediation, &RunAutoRemediation.run/2, %{prompt: "p", model: "sonnet", attempt: 1}},
     {:remediation, &RunRemediation.run/2, %{}}
   ]
 
@@ -98,7 +98,12 @@ defmodule Autonomous.UntrustedGateTest do
         {:ok, u} = quiet(fn -> run.(params, ctx("strict")) end)
 
         assert u.last_outcome == :error
-        assert u.last_signals.untrusted_workspace == %{workspace: "/x/repo", kinds: ["permissions.allow"]}
+
+        assert u.last_signals.untrusted_workspace == %{
+                 workspace: "/x/repo",
+                 kinds: ["permissions.allow"]
+               }
+
         assert u.last_result.untrusted_workspace == u.last_signals.untrusted_workspace
       end
 

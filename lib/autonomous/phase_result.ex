@@ -400,7 +400,8 @@ defmodule Autonomous.PhaseResult do
   """
   @spec reset_untrusted_workspace(map(), map() | nil) :: map()
   def reset_untrusted_workspace(signals, previous) do
-    case {Map.has_key?(signals, :untrusted_workspace), Map.get(previous || %{}, :untrusted_workspace)} do
+    case {Map.has_key?(signals, :untrusted_workspace),
+          Map.get(previous || %{}, :untrusted_workspace)} do
       {false, %{} = _stale} -> Map.put(signals, :untrusted_workspace, nil)
       _ -> signals
     end

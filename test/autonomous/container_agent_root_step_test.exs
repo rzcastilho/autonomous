@@ -37,7 +37,9 @@ defmodule Autonomous.ContainerAgentRootStepTest do
     envs = Map.to_list(Map.merge(%{"PATH" => path}, env))
 
     {out, code} =
-      System.cmd("/bin/sh", ["-c", ~s(exec /bin/sh "$0" agent-root 2>"$1"), @entrypoint, err], env: envs)
+      System.cmd("/bin/sh", ["-c", ~s(exec /bin/sh "$0" agent-root 2>"$1"), @entrypoint, err],
+        env: envs
+      )
 
     {out, File.read!(err), code}
   end

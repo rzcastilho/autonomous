@@ -56,7 +56,11 @@ defmodule Autonomous.BacklogTest do
 
     File.mkdir_p!(pkg_a)
     File.mkdir_p!(pkg_b)
-    on_exit(fn -> File.rm_rf!(pkg_a); File.rm_rf!(pkg_b) end)
+
+    on_exit(fn ->
+      File.rm_rf!(pkg_a)
+      File.rm_rf!(pkg_b)
+    end)
 
     File.write!(Path.join(pkg_a, "002-billing.md"), "# 002 — Billing\n")
     File.write!(Path.join(pkg_b, "002-inventory.md"), "# 002 — Inventory\n")

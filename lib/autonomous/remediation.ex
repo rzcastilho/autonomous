@@ -247,7 +247,9 @@ defmodule Autonomous.Remediation do
   # What the gate would have done had the policy been `:escalate`: a Critical
   # halts, everything else escalates. Named honestly, because "instead of
   # escalating to a human" would understate a Critical advance.
-  defp diverted_verb(%{max_severity: "critical"}), do: "halting on a constitution Critical finding"
+  defp diverted_verb(%{max_severity: "critical"}),
+    do: "halting on a constitution Critical finding"
+
   defp diverted_verb(_record), do: "escalating to a human"
 
   # A Critical is a constitution violation, not a quality nit — the PR

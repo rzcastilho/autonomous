@@ -32,7 +32,9 @@ defmodule Autonomous.ContainerTrustStepTest do
   defp real(path), do: path |> Path.expand() |> real_path()
 
   defp real_path(path) do
-    {out, 0} = System.cmd("python3", ["-c", "import os,sys;print(os.path.realpath(sys.argv[1]))", path])
+    {out, 0} =
+      System.cmd("python3", ["-c", "import os,sys;print(os.path.realpath(sys.argv[1]))", path])
+
     String.trim(out)
   end
 
@@ -67,7 +69,15 @@ defmodule Autonomous.ContainerTrustStepTest do
   describe "scope (US2)" do
     test "trusts exactly the repo and worktree root, nothing broader", ctx do
       assert {_, 0} = run_step(ctx)
-      keys = ctx.config |> File.read!() |> Jason.decode!() |> Map.fetch!("projects") |> Map.keys() |> Enum.sort()
+
+      keys =
+        ctx.config
+        |> File.read!()
+        |> Jason.decode!()
+        |> Map.fetch!("projects")
+        |> Map.keys()
+        |> Enum.sort()
+
       assert keys == Enum.sort([real(ctx.repo), real(ctx.root)])
 
       for broad <- [real(ctx.home), "/", Path.dirname(ctx.repo), "/workspace"] do
@@ -102,9 +112,22 @@ defmodule Autonomous.ContainerTrustStepTest do
       root2 = Path.join(base, "worktrees2")
 
       assert {_, 0} = run_step(ctx)
-      assert {_, 0} = run_step(ctx, %{"HOME" => home2, "AUTONOMOUS_REPO" => repo2, "AUTONOMOUS_WORKTREE_ROOT" => root2})
 
-      keys2 = Path.join(home2, ".claude.json") |> File.read!() |> Jason.decode!() |> Map.fetch!("projects") |> Map.keys() |> Enum.sort()
+      assert {_, 0} =
+               run_step(ctx, %{
+                 "HOME" => home2,
+                 "AUTONOMOUS_REPO" => repo2,
+                 "AUTONOMOUS_WORKTREE_ROOT" => root2
+               })
+
+      keys2 =
+        Path.join(home2, ".claude.json")
+        |> File.read!()
+        |> Jason.decode!()
+        |> Map.fetch!("projects")
+        |> Map.keys()
+        |> Enum.sort()
+
       assert keys2 == Enum.sort([real(repo2), real(root2)])
     end
 
@@ -140,11 +163,21 @@ defmodule Autonomous.ContainerTrustStepTest do
       assert entry["allowedTools"] == ["Bash"]
       assert entry["history"] == [1, 2]
 
-      top_keys = ctx.config |> File.read!() |> then(&Regex.scan(~r/^  "([^"]+)":/m, &1)) |> Enum.map(&List.last/1)
+      top_keys =
+        ctx.config
+        |> File.read!()
+        |> then(&Regex.scan(~r/^  "([^"]+)":/m, &1))
+        |> Enum.map(&List.last/1)
+
       assert top_keys == ["oauthAccount", "zeta", "projects", "alpha"]
     end
 
-    for {label, bad} <- [{"truncated", "{"}, {"array", "[]"}, {"string", ~s("x")}, {"projects array", ~s({"projects": []})}] do
+    for {label, bad} <- [
+          {"truncated", "{"},
+          {"array", "[]"},
+          {"string", ~s("x")},
+          {"projects array", ~s({"projects": []})}
+        ] do
       test "invalid config (#{label}) refuses, names the file, leaves it untouched", ctx do
         File.write!(ctx.config, unquote(bad))
         assert {out, code} = run_step(ctx)

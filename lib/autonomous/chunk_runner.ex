@@ -317,7 +317,9 @@ defmodule Autonomous.ChunkRunner do
   defp maybe_put_backgrounded(signals, cmds) when cmds in [nil, []], do: signals
   defp maybe_put_backgrounded(signals, cmds), do: Map.put(signals, :backgrounded, cmds)
 
-  defp maybe_put_untrusted(signals, obs) when is_map(obs), do: Map.put(signals, :untrusted_workspace, obs)
+  defp maybe_put_untrusted(signals, obs) when is_map(obs),
+    do: Map.put(signals, :untrusted_workspace, obs)
+
   defp maybe_put_untrusted(signals, _), do: signals
 
   defp maybe_put_session_died(signals, nil), do: signals

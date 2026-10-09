@@ -1339,7 +1339,9 @@ defmodule Autonomous.ResumeTest do
   defp wait_for_branch(_repo, _branch, 0), do: false
 
   defp wait_for_branch(repo, branch, attempts) do
-    case System.cmd("git", ["-C", repo, "rev-parse", "--verify", "--quiet", "refs/heads/#{branch}"],
+    case System.cmd(
+           "git",
+           ["-C", repo, "rev-parse", "--verify", "--quiet", "refs/heads/#{branch}"],
            stderr_to_stdout: true
          ) do
       {_, 0} ->
