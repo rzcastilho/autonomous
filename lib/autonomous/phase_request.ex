@@ -16,7 +16,19 @@ defmodule Autonomous.PhaseRequest do
   """
 
   alias Jido.Harness.RunRequest
-  alias Autonomous.{AgentRoot, Config, Containment, Feature, Layout, Prompts, SdkProxy, ShellTimeouts, Worktree}
+
+  alias Autonomous.{
+    AgentRoot,
+    Config,
+    Containment,
+    Feature,
+    Layout,
+    Prompts,
+    SdkProxy,
+    ShellTimeouts,
+    Worktree
+  }
+
   alias Autonomous.TaskPlan.TaskPhase
 
   @slash %{

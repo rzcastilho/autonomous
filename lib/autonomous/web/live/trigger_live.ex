@@ -19,6 +19,10 @@ defmodule Autonomous.Web.TriggerLive do
 
   use Autonomous.Web, :live_view
 
+  # Bounded wait on the run controller (feature 038); past it the action reports
+  # "unreachable" instead of crashing the view.
+  @run_wait_ms 5_000
+
   alias Autonomous.{
     Backlog,
     Config,
@@ -82,12 +86,10 @@ defmodule Autonomous.Web.TriggerLive do
   end
 
   defp live_coordinator? do
-    case Process.whereis(Coordinator) do
-      nil -> false
-      pid -> not Coordinator.status(pid).finished?
+    case Autonomous.CoordinatorProbe.status(Coordinator, 250) do
+      {:ok, status} -> not status.finished?
+      _none_or_error -> false
     end
-  catch
-    :exit, _reason -> false
   end
 
   defp sync_active_run(socket) do
@@ -315,9 +317,20 @@ defmodule Autonomous.Web.TriggerLive do
   # app's Task.Supervisor) decouples the Coordinator's lifetime from this
   # transient view.
   defp run_unlinked(fun) do
-    Autonomous.RunnerSup
-    |> Task.Supervisor.async_nolink(fun)
-    |> Task.await()
+    task = Task.Supervisor.async_nolink(Autonomous.RunnerSup, fun)
+
+    case Task.yield(task, Application.get_env(:autonomous, :console_run_wait_ms, @run_wait_ms)) do
+      {:ok, result} ->
+        result
+
+      {:exit, reason} ->
+        {:error, {:controller_unreachable, reason}}
+
+      nil ->
+        # Left running; `ignore/1` drops its late reply so it can't reach this view.
+        Task.ignore(task)
+        {:error, :controller_unreachable}
+    end
   end
 
   # 019: the run shape is no longer an opt — every run is stacked sequential,

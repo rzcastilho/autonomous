@@ -15,6 +15,9 @@ defmodule Autonomous.ConsoleReadModel do
 
   @feed_limit 200
 
+  @doc false
+  def feed_limit, do: @feed_limit
+
   @type event_entry :: %{
           feature_id: String.t() | nil,
           phase: atom() | nil,
@@ -63,12 +66,13 @@ defmodule Autonomous.ConsoleReadModel do
   @type t :: %{
           features: %{String.t() => feature_slice()},
           feed: [event_entry()],
-          run_key: term()
+          run_key: term(),
+          rebuilt_keys: MapSet.t()
         }
 
   @doc "An empty console read-model."
   @spec new() :: t()
-  def new, do: %{features: %{}, feed: [], run_key: nil}
+  def new, do: %{features: %{}, feed: [], run_key: nil, rebuilt_keys: MapSet.new()}
 
   @doc """
   Fold one telemetry event into the model. Pure — no side effects, no
@@ -83,14 +87,37 @@ defmodule Autonomous.ConsoleReadModel do
   unchanged.
   """
   @spec apply_event(t(), [atom()], map(), map()) :: t()
-  def apply_event(model, event_name, measurements, metadata)
+  def apply_event(model, event_name, measurements, metadata) do
+    result = fold(model, event_name, measurements, metadata)
+    drop_rebuilt(model, result)
+  end
 
-  def apply_event(
-        model,
-        [:speckit, :phase, :start],
-        measurements,
-        %{feature_id: id, phase: phase} = meta
-      ) do
+  # A feed entry the history rebuild already produced (feature 038): the
+  # queued live event describes the same fact, so neither the feed nor the
+  # slice is applied twice — hand back the input, minus that key.
+  defp drop_rebuilt(model, result) do
+    keys = Map.get(model, :rebuilt_keys, MapSet.new())
+
+    with false <- MapSet.size(keys) == 0,
+         true <- result.feed != model.feed,
+         [%{feature_id: id, phase: phase, text: text} | _] <- result.feed,
+         true <- MapSet.member?(keys, {id, phase, text}) do
+      Map.put(model, :rebuilt_keys, MapSet.delete(keys, {id, phase, text}))
+    else
+      _ -> result
+    end
+  end
+
+  @doc "Forget the rebuilt-entry dedupe keys (the projection is live again)."
+  @spec clear_rebuilt(t()) :: t()
+  def clear_rebuilt(model), do: Map.put(model, :rebuilt_keys, MapSet.new())
+
+  defp fold(
+         model,
+         [:speckit, :phase, :start],
+         measurements,
+         %{feature_id: id, phase: phase} = meta
+       ) do
     feature = feature_slice(model, id)
 
     cell = %{state: :active, outcome: nil, cost: nil, model: meta[:model]}
@@ -104,12 +131,12 @@ defmodule Autonomous.ConsoleReadModel do
     |> push_feed(entry(id, phase, :info, "phase #{phase} started"))
   end
 
-  def apply_event(
-        model,
-        [:speckit, :phase, :stop],
-        measurements,
-        %{feature_id: id, phase: phase} = meta
-      ) do
+  defp fold(
+         model,
+         [:speckit, :phase, :stop],
+         measurements,
+         %{feature_id: id, phase: phase} = meta
+       ) do
     feature = feature_slice(model, id)
     outcome = meta[:outcome]
     raw_cost = meta[:cost] || 0.0
@@ -128,12 +155,12 @@ defmodule Autonomous.ConsoleReadModel do
     )
   end
 
-  def apply_event(
-        model,
-        [:speckit, :phase, :exception],
-        measurements,
-        %{feature_id: id, phase: phase} = meta
-      ) do
+  defp fold(
+         model,
+         [:speckit, :phase, :exception],
+         measurements,
+         %{feature_id: id, phase: phase} = meta
+       ) do
     feature = feature_slice(model, id)
 
     default_cell = %{state: :active, outcome: :error, cost: nil, model: meta[:model]}
@@ -147,12 +174,12 @@ defmodule Autonomous.ConsoleReadModel do
     |> push_feed(entry(id, phase, :error, "phase #{phase} raised #{inspect(meta[:reason])}"))
   end
 
-  def apply_event(
-        model,
-        [:speckit, :feature, :terminal],
-        measurements,
-        %{feature_id: id, status: status} = meta
-      ) do
+  defp fold(
+         model,
+         [:speckit, :feature, :terminal],
+         measurements,
+         %{feature_id: id, status: status} = meta
+       ) do
     feature = feature_slice(model, id)
     cost_total = measurements[:cost_total] || 0.0
     windows = close_all_windows(feature.windows, measurements[:system_time])
@@ -182,12 +209,12 @@ defmodule Autonomous.ConsoleReadModel do
   # (contracts/telemetry-chunk.md §2-3): folds the current task-phase/sweep
   # position into the feature slice and emits one feed entry per boundary.
 
-  def apply_event(
-        model,
-        [:speckit, :chunk, :start],
-        measurements,
-        %{feature_id: id} = meta
-      ) do
+  defp fold(
+         model,
+         [:speckit, :chunk, :start],
+         measurements,
+         %{feature_id: id} = meta
+       ) do
     feature = feature_slice(model, id)
     previous = feature.chunk
     windows = open_window(feature.windows, {:chunk, meta[:phase]}, measurements[:system_time])
@@ -198,12 +225,12 @@ defmodule Autonomous.ConsoleReadModel do
     |> push_feed(start_feed_entry(id, previous, meta))
   end
 
-  def apply_event(
-        model,
-        [:speckit, :chunk, :stop],
-        measurements,
-        %{feature_id: id, outcome: outcome} = meta
-      ) do
+  defp fold(
+         model,
+         [:speckit, :chunk, :stop],
+         measurements,
+         %{feature_id: id, outcome: outcome} = meta
+       ) do
     feature = feature_slice(model, id)
     cost = meta[:cost] || 0.0
     windows = close_window(feature.windows, {:chunk, meta[:phase]}, measurements[:duration])
@@ -220,12 +247,12 @@ defmodule Autonomous.ConsoleReadModel do
     |> push_feed(stop_feed_entry(id, feature.chunk, meta, outcome))
   end
 
-  def apply_event(
-        model,
-        [:speckit, :chunk, :exception],
-        measurements,
-        %{feature_id: id} = meta
-      ) do
+  defp fold(
+         model,
+         [:speckit, :chunk, :exception],
+         measurements,
+         %{feature_id: id} = meta
+       ) do
     feature = feature_slice(model, id)
     chunk = feature.chunk && Map.put(feature.chunk, :outcome, :error)
     windows = close_window(feature.windows, {:chunk, meta[:phase]}, measurements[:duration])
@@ -236,15 +263,15 @@ defmodule Autonomous.ConsoleReadModel do
     |> push_feed(entry(id, :implement, :error, "chunk exception: #{inspect(meta[:reason])}"))
   end
 
-  def apply_event(model, [:speckit, :chunk, :resolved], _measurements, %{match_kind: :number}),
+  defp fold(model, [:speckit, :chunk, :resolved], _measurements, %{match_kind: :number}),
     do: model
 
-  def apply_event(
-        model,
-        [:speckit, :chunk, :resolved],
-        _measurements,
-        %{feature_id: id, match_kind: match_kind}
-      ) do
+  defp fold(
+         model,
+         [:speckit, :chunk, :resolved],
+         _measurements,
+         %{feature_id: id, match_kind: match_kind}
+       ) do
     push_feed(model, entry(id, :implement, :warn, resolved_feed_text(match_kind)))
   end
 
@@ -259,14 +286,17 @@ defmodule Autonomous.ConsoleReadModel do
   # describe the same harness run, so cost is added plainly here and plainly in
   # `[:speckit, :phase, :stop]` — no `chunk_cost_seen`-style guard is needed.
 
-  def apply_event(
-        model,
-        [:speckit, :remediation, :start],
-        measurements,
-        %{feature_id: id} = meta
-      ) do
+  defp fold(
+         model,
+         [:speckit, :remediation, :start],
+         measurements,
+         %{feature_id: id} = meta
+       ) do
     feature = feature_slice(model, id)
-    windows = open_window(feature.windows, {:remediation, meta[:phase]}, measurements[:system_time])
+
+    windows =
+      open_window(feature.windows, {:remediation, meta[:phase]}, measurements[:system_time])
+
     feature = %{feature | remediation: remediation_from_start_meta(meta), windows: windows}
 
     text =
@@ -278,12 +308,12 @@ defmodule Autonomous.ConsoleReadModel do
     |> push_feed(entry(id, :analyze, :info, text))
   end
 
-  def apply_event(
-        model,
-        [:speckit, :remediation, :stop],
-        measurements,
-        %{feature_id: id} = meta
-      ) do
+  defp fold(
+         model,
+         [:speckit, :remediation, :stop],
+         measurements,
+         %{feature_id: id} = meta
+       ) do
     feature = feature_slice(model, id)
     outcome = meta[:outcome]
     cost = meta[:cost] || 0.0
@@ -299,12 +329,12 @@ defmodule Autonomous.ConsoleReadModel do
     |> push_feed(entry(id, :analyze, severity_for_outcome(outcome), text))
   end
 
-  def apply_event(
-        model,
-        [:speckit, :remediation, :exception],
-        measurements,
-        %{feature_id: id} = meta
-      ) do
+  defp fold(
+         model,
+         [:speckit, :remediation, :exception],
+         measurements,
+         %{feature_id: id} = meta
+       ) do
     feature = feature_slice(model, id)
     remediation = feature.remediation && Map.put(feature.remediation, :outcome, :error)
     windows = close_window(feature.windows, {:remediation, meta[:phase]}, measurements[:duration])
@@ -325,7 +355,7 @@ defmodule Autonomous.ConsoleReadModel do
   # crash-recovery restart of the same run) keeps them. The feed survives:
   # it is a chronological log, not per-run state.
 
-  def apply_event(model, [:speckit, :run, :start], _measurements, %{run_key: run_key}) do
+  defp fold(model, [:speckit, :run, :start], _measurements, %{run_key: run_key}) do
     if Map.get(model, :run_key) == run_key do
       model
     else
@@ -337,12 +367,12 @@ defmodule Autonomous.ConsoleReadModel do
 
   # ---- run-level guard refusal (specs/016-resume-backlog-scope) -------------
 
-  def apply_event(
-        model,
-        [:speckit, :run, :scope_narrowing_refused],
-        _measurements,
-        %{dropped: dropped}
-      ) do
+  defp fold(
+         model,
+         [:speckit, :run, :scope_narrowing_refused],
+         _measurements,
+         %{dropped: dropped}
+       ) do
     push_feed(
       model,
       entry(nil, nil, :warn, "scope narrowing refused — would drop #{Enum.join(dropped, ", ")}")
@@ -356,27 +386,27 @@ defmodule Autonomous.ConsoleReadModel do
   # success carries the URL so the drawer can link straight to the PR while
   # the run is still live, without a store read.
 
-  def apply_event(
-        model,
-        [:speckit, :publish, :opened],
-        _measurements,
-        %{feature_id: id, url: url}
-      ) do
+  defp fold(
+         model,
+         [:speckit, :publish, :opened],
+         _measurements,
+         %{feature_id: id, url: url}
+       ) do
     model
     |> put_feature(id, %{feature_slice(model, id) | pr_url: url})
     |> push_feed(entry(id, nil, :info, "PR opened: #{url}"))
   end
 
-  def apply_event(
-        model,
-        [:speckit, :publish, :failed],
-        _measurements,
-        %{feature_id: id, reason: reason}
-      ) do
+  defp fold(
+         model,
+         [:speckit, :publish, :failed],
+         _measurements,
+         %{feature_id: id, reason: reason}
+       ) do
     push_feed(model, entry(id, nil, :warn, "PR publish failed: #{inspect(reason)}"))
   end
 
-  def apply_event(model, _event_name, _measurements, _metadata), do: model
+  defp fold(model, _event_name, _measurements, _metadata), do: model
 
   @doc """
   Pure merge of `Coordinator.status/0` (or `nil` when no run is active) +
@@ -597,8 +627,11 @@ defmodule Autonomous.ConsoleReadModel do
 
   defp close_window(windows, key, duration) when is_integer(duration) do
     case Enum.find(windows, &(&1.key == key and is_nil(&1.to))) do
-      nil -> windows
-      %{from: from} -> ExecutionTime.close(windows, key, from + ExecutionTime.native_to_ms(duration))
+      nil ->
+        windows
+
+      %{from: from} ->
+        ExecutionTime.close(windows, key, from + ExecutionTime.native_to_ms(duration))
     end
   end
 
@@ -634,12 +667,16 @@ defmodule Autonomous.ConsoleReadModel do
 
   defp phase_stop_cost(_phase, raw_cost, _feature), do: raw_cost
 
-  defp severity_for_outcome(:error), do: :error
-  defp severity_for_outcome(_), do: :info
+  @doc false
+  @spec severity_for_outcome(term()) :: :info | :error
+  def severity_for_outcome(:error), do: :error
+  def severity_for_outcome(_), do: :info
 
-  defp severity_for_status(status) when status in [:escalated, :halted], do: :warn
-  defp severity_for_status(:failed), do: :error
-  defp severity_for_status(_), do: :info
+  @doc false
+  @spec severity_for_status(term()) :: :info | :warn | :error
+  def severity_for_status(status) when status in [:escalated, :halted], do: :warn
+  def severity_for_status(:failed), do: :error
+  def severity_for_status(_), do: :info
 
   # ---- chunk fold helpers (contracts/telemetry-chunk.md §2-3) ---------------
 

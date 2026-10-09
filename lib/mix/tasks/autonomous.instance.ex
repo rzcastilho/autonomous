@@ -29,7 +29,9 @@ defmodule Mix.Tasks.Autonomous.Instance do
 
     if invalid != [], do: Mix.raise("invalid options: #{inspect(invalid)}")
 
-    repo = opts |> Keyword.get_lazy(:repo, fn -> Mix.raise("--repo is required") end) |> Path.expand()
+    repo =
+      opts |> Keyword.get_lazy(:repo, fn -> Mix.raise("--repo is required") end) |> Path.expand()
+
     root = opts |> Keyword.get_lazy(:root, &Config.autonomous_root/0) |> Path.expand()
 
     unless git_repo?(repo) do
@@ -40,15 +42,25 @@ defmodule Mix.Tasks.Autonomous.Instance do
     identity = Instance.derive(repo, RepoIdentity.partition(repo), root)
 
     case Keyword.get(opts, :format, "env") do
-      "env" -> identity |> Instance.env_lines() |> Enum.each(fn line -> Mix.shell().info(line) end)
-      "segment" -> Mix.shell().info(identity.segment)
-      "json" -> Mix.shell().info(json(identity))
-      other -> Mix.raise("unknown --format #{inspect(other)} (env|segment|json)")
+      "env" ->
+        identity |> Instance.env_lines() |> Enum.each(fn line -> Mix.shell().info(line) end)
+
+      "segment" ->
+        Mix.shell().info(identity.segment)
+
+      "json" ->
+        Mix.shell().info(json(identity))
+
+      other ->
+        Mix.raise("unknown --format #{inspect(other)} (env|segment|json)")
     end
   end
 
   defp git_repo?(path) do
-    match?({_, 0}, System.cmd("git", ["-C", path, "rev-parse", "--git-dir"], stderr_to_stdout: true))
+    match?(
+      {_, 0},
+      System.cmd("git", ["-C", path, "rev-parse", "--git-dir"], stderr_to_stdout: true)
+    )
   rescue
     _ -> false
   end

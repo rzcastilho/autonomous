@@ -933,7 +933,9 @@ defmodule Autonomous.Web.PipelineDagLiveTest do
     # `breakdown_packages`), so a test can exercise a feature id beyond `001`
     # (e.g. `003` for the interrupted-feature scenario).
     defp repo_with_full_colliding_packages do
-      repo = Path.join(System.tmp_dir!(), "dag_full_collide_#{System.unique_integer([:positive])}")
+      repo =
+        Path.join(System.tmp_dir!(), "dag_full_collide_#{System.unique_integer([:positive])}")
+
       dest = Path.join(repo, "specs/autonomous/breakdown")
 
       for wave <- ["alpha", "beta"] do
@@ -1098,7 +1100,9 @@ defmodule Autonomous.Web.PipelineDagLiveTest do
       assert html =~ ~s(data-wave-source="recorded")
     end
 
-    test "each wave shows its own most recent run's status/phases/spend (US2-1, SC-002)", %{conn: conn} do
+    test "each wave shows its own most recent run's status/phases/spend (US2-1, SC-002)", %{
+      conn: conn
+    } do
       repo = repo_with_full_colliding_packages()
 
       alpha_key = open_store_run(repo, [feat("001")], {:breakdown, "alpha"})
@@ -1123,7 +1127,9 @@ defmodule Autonomous.Web.PipelineDagLiveTest do
       assert extract_node(html2, "001") =~ ~s(data-status="done")
     end
 
-    test "the newest run wins — no merge with an older run of the same wave (US2-2, FR-006)", %{conn: conn} do
+    test "the newest run wins — no merge with an older run of the same wave (US2-2, FR-006)", %{
+      conn: conn
+    } do
       repo = repo_with_full_colliding_packages()
 
       older_key = open_store_run(repo, [feat("001")], {:breakdown, "alpha"})
@@ -1141,7 +1147,9 @@ defmodule Autonomous.Web.PipelineDagLiveTest do
       refute node =~ "phase-cell-completed"
     end
 
-    test "a wave with no recorded run ever draws cold with data-wave-source=\"none\" (US2-3)", %{conn: conn} do
+    test "a wave with no recorded run ever draws cold with data-wave-source=\"none\" (US2-3)", %{
+      conn: conn
+    } do
       repo_with_full_colliding_packages()
 
       {:ok, _view, html} = live(conn, "/dag")

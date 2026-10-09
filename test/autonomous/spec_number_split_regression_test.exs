@@ -62,7 +62,11 @@ defmodule Autonomous.SpecNumberSplitRegressionTest do
     defp write_plan(cwd) do
       dir = Application.fetch_env!(:autonomous, :regression_spec_dir)
       path = Path.join(cwd, dir)
-      File.write!(Path.join(path, "plan.md"), "# Plan\n\nReal implementation plan, not a template.\n")
+
+      File.write!(
+        Path.join(path, "plan.md"),
+        "# Plan\n\nReal implementation plan, not a template.\n"
+      )
     end
 
     defp success_messages do
@@ -98,7 +102,10 @@ defmodule Autonomous.SpecNumberSplitRegressionTest do
 
   defp scaffolded_repo do
     repo =
-      Path.join(System.tmp_dir!(), "speckit_regression_repo_#{System.unique_integer([:positive])}")
+      Path.join(
+        System.tmp_dir!(),
+        "speckit_regression_repo_#{System.unique_integer([:positive])}"
+      )
 
     File.mkdir_p!(Path.join(repo, ".specify/memory"))
     File.write!(Path.join(repo, ".specify/memory/constitution.md"), "# Constitution\n")
@@ -149,7 +156,10 @@ defmodule Autonomous.SpecNumberSplitRegressionTest do
 
   test "a colliding, empty-tasks feature fails at tasks, alone, without ever resolving the collision's files" do
     repo = scaffolded_repo()
-    root = Path.join(System.tmp_dir!(), "speckit_regression_wt_#{System.unique_integer([:positive])}")
+
+    root =
+      Path.join(System.tmp_dir!(), "speckit_regression_wt_#{System.unique_integer([:positive])}")
+
     on_exit(fn -> File.rm_rf(root) end)
     point_config_at(repo, root)
 
@@ -208,6 +218,7 @@ defmodule Autonomous.SpecNumberSplitRegressionTest do
 
     # The collision target itself is untouched — its complete task list was
     # never adopted, edited, or otherwise treated as this feature's own.
-    assert File.read!(Path.join(repo, "specs/001-existing/tasks.md")) == "- [X] T001 already done\n"
+    assert File.read!(Path.join(repo, "specs/001-existing/tasks.md")) ==
+             "- [X] T001 already done\n"
   end
 end

@@ -17,7 +17,14 @@ defmodule Autonomous.CoordinatorClarifyRoundsTest do
     features =
       Enum.with_index(feature_ids, 1)
       |> Enum.map(fn {id, n} ->
-        %{feature_id: id, slug: "f#{id}", path: "#{id}.md", number: n, group: :backlog, created_at: nil}
+        %{
+          feature_id: id,
+          slug: "f#{id}",
+          path: "#{id}.md",
+          number: n,
+          group: :backlog,
+          created_at: nil
+        }
       end)
 
     {:ok, run_id} =

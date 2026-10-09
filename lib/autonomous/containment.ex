@@ -22,7 +22,8 @@ defmodule Autonomous.Containment do
   (strings). Atom input converts via `Atom.to_string/1`; anything else is
   refused rather than guessed.
   """
-  @spec normalize(atom() | String.t()) :: {:ok, profile()} | {:error, {:invalid_containment_profile, term()}}
+  @spec normalize(atom() | String.t()) ::
+          {:ok, profile()} | {:error, {:invalid_containment_profile, term()}}
   def normalize(value) when value in [:strict, :permissive], do: {:ok, Atom.to_string(value)}
   def normalize(value) when value in @profiles, do: {:ok, value}
   def normalize(value), do: {:error, {:invalid_containment_profile, value}}

@@ -91,7 +91,9 @@ defmodule Autonomous.WorkspaceTrust do
   """
   @spec apply_to({:ok | :error, map()}, observation() | nil) :: {:ok | :error, map()}
   def apply_to(classified, nil), do: classified
-  def apply_to({_outcome, signals}, obs), do: {:error, Map.put(signals, :untrusted_workspace, obs)}
+
+  def apply_to({_outcome, signals}, obs),
+    do: {:error, Map.put(signals, :untrusted_workspace, obs)}
 
   @doc """
   Close out a session's collector: read and stop it, record the observation on

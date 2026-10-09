@@ -77,7 +77,8 @@ defmodule Autonomous.Worktree do
   `GIT_BRANCH_NAME` pin (027), so both name the same branch by construction.
   """
   @spec branch_name(Feature.t()) :: String.t()
-  def branch_name(%Feature{slug: slug} = feature), do: "feature/#{Feature.spec_id(feature)}-#{slug}"
+  def branch_name(%Feature{slug: slug} = feature),
+    do: "feature/#{Feature.spec_id(feature)}-#{slug}"
 
   @doc "Remove the worktree directory (keeps the branch for later PR review)."
   @spec remove(t()) :: :ok | {:error, term()}

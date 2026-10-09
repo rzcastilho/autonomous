@@ -26,8 +26,6 @@ defmodule Autonomous.Web.PipelineDagLive do
     ConsoleHydration,
     ConsoleProjection,
     ConsoleReadModel,
-    Coordinator,
-    Ledger,
     Release,
     WaveHistory
   }
@@ -98,7 +96,7 @@ defmodule Autonomous.Web.PipelineDagLive do
 
   defp seed(socket, run_detail) do
     status = coordinator_status()
-    view = ConsoleReadModel.merge(status, ledger_snapshot(), ConsoleProjection.read())
+    view = ConsoleReadModel.merge(status, ledger_snapshot(), ConsoleProjection.read_safe())
 
     assign(socket, view: overlay_manifest(view, run_detail))
   end
@@ -166,13 +164,9 @@ defmodule Autonomous.Web.PipelineDagLive do
     end
   end
 
-  defp coordinator_status do
-    if Process.whereis(Coordinator), do: Coordinator.status(Coordinator)
-  end
+  defp coordinator_status, do: ConsoleProjection.coordinator_or_last_known()
 
-  defp ledger_snapshot do
-    if Process.whereis(Ledger), do: Ledger.snapshot(Ledger)
-  end
+  defp ledger_snapshot, do: ConsoleProjection.ledger_or_last_known()
 
   # ---- live updates (mirrors MissionControlLive; reconcile is authoritative
   # on drift, FR-033/SC-005) -------------------------------------------------
@@ -194,7 +188,10 @@ defmodule Autonomous.Web.PipelineDagLive do
         socket
       ) do
     run_detail = current_run_detail()
-    view = ConsoleReadModel.merge(coordinator_status, ledger_snapshot, ConsoleProjection.read())
+
+    view =
+      ConsoleReadModel.merge(coordinator_status, ledger_snapshot, ConsoleProjection.read_safe())
+
     current_run_id = Autonomous.current_run_id()
 
     socket =

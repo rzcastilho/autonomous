@@ -66,7 +66,14 @@ defmodule Autonomous.ExportTest do
     {:ok, run_id} =
       Writer.open_run(repo_id, %{
         features: [
-          %{feature_id: "001", slug: "f", path: "specs/001", number: 1, group: :backlog, created_at: nil}
+          %{
+            feature_id: "001",
+            slug: "f",
+            path: "specs/001",
+            number: 1,
+            group: :backlog,
+            created_at: nil
+          }
         ],
         settings: %{max_concurrency: 2},
         scope: :ad_hoc,
@@ -178,7 +185,14 @@ defmodule Autonomous.ExportTest do
     {:ok, run_id} =
       Writer.open_run(repo_id, %{
         features: [
-          %{feature_id: "001", slug: "f", path: "specs/001", number: 1, group: :backlog, created_at: nil}
+          %{
+            feature_id: "001",
+            slug: "f",
+            path: "specs/001",
+            number: 1,
+            group: :backlog,
+            created_at: nil
+          }
         ],
         settings: RunContext.to_map(%RunContext{}),
         scope: :ad_hoc,

@@ -7,10 +7,19 @@ defmodule Autonomous.AgentRootTest do
 
   describe "advertised?/1" do
     test "true only when both markers are \"1\"" do
-      assert AgentRoot.advertised?(%{"AUTONOMOUS_CONTAINER" => "1", "AUTONOMOUS_AGENT_ROOT" => "1"})
+      assert AgentRoot.advertised?(%{
+               "AUTONOMOUS_CONTAINER" => "1",
+               "AUTONOMOUS_AGENT_ROOT" => "1"
+             })
+
       refute AgentRoot.advertised?(%{"AUTONOMOUS_CONTAINER" => "1"})
       refute AgentRoot.advertised?(%{"AUTONOMOUS_AGENT_ROOT" => "1"})
-      refute AgentRoot.advertised?(%{"AUTONOMOUS_CONTAINER" => "1", "AUTONOMOUS_AGENT_ROOT" => "0"})
+
+      refute AgentRoot.advertised?(%{
+               "AUTONOMOUS_CONTAINER" => "1",
+               "AUTONOMOUS_AGENT_ROOT" => "0"
+             })
+
       refute AgentRoot.advertised?(%{})
     end
   end
@@ -32,7 +41,10 @@ defmodule Autonomous.AgentRootTest do
   end
 
   defp bash(id, cmd),
-    do: %{kind: :call, payload: %{"name" => "Bash", "call_id" => id, "input" => %{"command" => cmd}}}
+    do: %{
+      kind: :call,
+      payload: %{"name" => "Bash", "call_id" => id, "input" => %{"command" => cmd}}
+    }
 
   defp result(id, out), do: %{kind: :result, payload: %{"call_id" => id, "output" => out}}
 
@@ -41,13 +53,18 @@ defmodule Autonomous.AgentRootTest do
   describe "installs/1" do
     test "single install" do
       r = result_with([bash("1", "sudo apt-get install -y libfoo-dev"), result("1", "ok")])
-      assert [%{packages: ["libfoo-dev"], command: "sudo apt-get install -y libfoo-dev"}] = AgentRoot.installs(r)
+
+      assert [%{packages: ["libfoo-dev"], command: "sudo apt-get install -y libfoo-dev"}] =
+               AgentRoot.installs(r)
     end
 
     test "chained update && install, options are not packages" do
       r =
         result_with([
-          bash("1", "sudo apt-get update && sudo -n apt-get install -y --no-install-recommends libasound2-dev pkg-config")
+          bash(
+            "1",
+            "sudo apt-get update && sudo -n apt-get install -y --no-install-recommends libasound2-dev pkg-config"
+          )
         ])
 
       assert [%{packages: ["libasound2-dev", "pkg-config"]}] = AgentRoot.installs(r)

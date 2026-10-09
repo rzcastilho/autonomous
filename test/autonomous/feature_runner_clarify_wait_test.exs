@@ -37,11 +37,20 @@ defmodule Autonomous.FeatureRunnerClarifyWaitTest do
 
     defp response_text(prompt) do
       cond do
-        String.contains?(prompt, "clarify reviewer") -> clarify_text()
-        String.contains?(prompt, "pull-request description") -> pr_json()
-        String.contains?(prompt, "/speckit.analyze") -> ~s({"summary":"clean","findings":[]})
-        String.contains?(prompt, "ready for human PR review") -> "Tests green.\n\n## CONVERGE: READY"
-        true -> "Phase completed."
+        String.contains?(prompt, "clarify reviewer") ->
+          clarify_text()
+
+        String.contains?(prompt, "pull-request description") ->
+          pr_json()
+
+        String.contains?(prompt, "/speckit.analyze") ->
+          ~s({"summary":"clean","findings":[]})
+
+        String.contains?(prompt, "ready for human PR review") ->
+          "Tests green.\n\n## CONVERGE: READY"
+
+        true ->
+          "Phase completed."
       end
     end
 

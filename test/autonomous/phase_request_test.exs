@@ -647,14 +647,21 @@ defmodule Autonomous.PhaseRequestTest do
     test "true: the note lands on implement (any scope) and converge only" do
       note = AgentRoot.prompt_note(true)
 
-      for scope <- [nil, :whole_list, {:sweep, [%Autonomous.TaskPlan.Task{id: "T001", text: "x", complete?: false, line: 1}]}] do
+      for scope <- [
+            nil,
+            :whole_list,
+            {:sweep,
+             [%Autonomous.TaskPlan.Task{id: "T001", text: "x", complete?: false, line: 1}]}
+          ] do
         off = PhaseRequest.build(feature(), :implement, agent_root: false, scope: scope)
         on = PhaseRequest.build(feature(), :implement, agent_root: true, scope: scope)
         assert on.prompt == off.prompt <> note
       end
 
       off = PhaseRequest.build(feature(), :converge, agent_root: false)
-      assert PhaseRequest.build(feature(), :converge, agent_root: true).prompt == off.prompt <> note
+
+      assert PhaseRequest.build(feature(), :converge, agent_root: true).prompt ==
+               off.prompt <> note
 
       for phase <- @all_phases -- [:implement, :converge] do
         assert PhaseRequest.build(feature(), phase, agent_root: true).prompt ==
@@ -682,6 +689,5 @@ defmodule Autonomous.PhaseRequestTest do
       assert on.metadata["claude"][:env] == Map.merge(off.metadata["claude"][:env], @markers)
       assert on.prompt == off.prompt
     end
-
   end
 end

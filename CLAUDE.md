@@ -301,6 +301,14 @@ markup), and moves view logic into pure modules: `ConfigDiff`,
 `Transcripts` writes `<worktree>/.speckit_logs/NN-<phase>.md` per phase.
 `Coordinator` tracks per-feature start times; `Report.format_status/1` renders
 the snapshot as an iex table (`Autonomous.print_status/0`).
+**Console resilience (feature 038).** `ConsoleProjection` never blocks on the
+Coordinator: the reconcile probe runs in a `Task` through the exit-safe
+`CoordinatorProbe`, so a slow run controller is a missed refresh, not a crash.
+A miss keeps the feed and last-known status (`last_known/1`); from the second
+consecutive miss (`ConsoleDelay`) Mission Control shows a delayed-status line.
+On every start the projection rebuilds feed and slices from the durable run
+record (`ConsoleHistory`, deduped against queued live events via `rebuilt_keys`).
+See `docs/runbook.md`.
 `Autonomous.resolve/1` frees a kept worktree so a human-resolved feature
 re-runs on its existing branch (`Worktree.create` reuses an existing branch).
 `Autonomous.resume/2` is the shipped checkpoint-driven restart path —

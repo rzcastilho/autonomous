@@ -43,7 +43,7 @@ defmodule Autonomous.InstanceTest do
     end
 
     property "node_name is a valid short node name for any segment" do
-      check all name <- string(:printable, min_length: 1, max_length: 40) do
+      check all(name <- string(:printable, min_length: 1, max_length: 40)) do
         i = derive("/r/x", "o:" <> name <> "-3fa9c1")
         [prefix, host] = i.node_name |> Atom.to_string() |> String.split("@")
 
@@ -65,7 +65,10 @@ defmodule Autonomous.InstanceTest do
       lines = Instance.env_lines(i)
 
       assert length(lines) == 6
-      assert List.last(lines) == "AUTONOMOUS_WORKTREE_ROOT=" <> Autonomous.Layout.worktree_root(@root, i.segment)
+
+      assert List.last(lines) ==
+               "AUTONOMOUS_WORKTREE_ROOT=" <> Autonomous.Layout.worktree_root(@root, i.segment)
+
       assert hd(lines) == "AUTONOMOUS_INSTANCE_SEGMENT=a-111111"
       assert Enum.at(lines, 4) == "AUTONOMOUS_INSTANCE_LOCK=" <> i.lock_path
     end
@@ -91,7 +94,11 @@ defmodule Autonomous.InstanceTest do
     end
 
     test "ok when lock, node and store dir all match", %{i: i} do
-      assert :ok = Instance.verify(%{locked: i.lock_path, node: i.node_name, store_dir: i.store_dir}, i)
+      assert :ok =
+               Instance.verify(
+                 %{locked: i.lock_path, node: i.node_name, store_dir: i.store_dir},
+                 i
+               )
     end
 
     test "unlocked is refused first", %{i: i} do
@@ -103,7 +110,10 @@ defmodule Autonomous.InstanceTest do
 
     test "wrong lock value counts as unlocked", %{i: i} do
       assert {:error, {:instance_unlocked, _}} =
-               Instance.verify(%{locked: "/other.lock", node: i.node_name, store_dir: i.store_dir}, i)
+               Instance.verify(
+                 %{locked: "/other.lock", node: i.node_name, store_dir: i.store_dir},
+                 i
+               )
     end
 
     test "ad hoc node name is a node mismatch", %{i: i} do

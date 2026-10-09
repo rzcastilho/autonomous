@@ -10,7 +10,12 @@ defmodule Autonomous.PersistenceFailureTest do
   @coordinator Autonomous.Coordinator
 
   defp feat(id, number \\ nil),
-    do: %Feature{id: id, number: number || String.to_integer(id), slug: "f#{id}", path: "#{id}.md"}
+    do: %Feature{
+      id: id,
+      number: number || String.to_integer(id),
+      slug: "f#{id}",
+      path: "#{id}.md"
+    }
 
   defp controllable_runner(test_pid) do
     fn feature, notify -> send(test_pid, {:started, feature.id, notify}) end

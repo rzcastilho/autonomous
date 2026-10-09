@@ -191,7 +191,10 @@ defmodule Autonomous.ConsoleHydration do
       active_phase_in(live_phases) || Map.get(live, :current_phase) ||
         Map.get(recorded, :current_phase)
 
-    windows = ExecutionTime.normalize((Map.get(recorded, :windows) || []) ++ (Map.get(live, :windows) || []))
+    windows =
+      ExecutionTime.normalize(
+        (Map.get(recorded, :windows) || []) ++ (Map.get(live, :windows) || [])
+      )
 
     %{
       status: Map.get(live, :status) || Map.get(recorded, :status),

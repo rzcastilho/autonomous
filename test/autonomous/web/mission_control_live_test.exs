@@ -64,6 +64,49 @@ defmodule Autonomous.Web.MissionControlLiveTest do
     pid
   end
 
+  defmodule StallingCoordinator do
+    @moduledoc false
+    use GenServer
+
+    def start_link(name), do: GenServer.start_link(__MODULE__, nil, name: name)
+    @impl true
+    def init(_), do: {:ok, nil}
+    @impl true
+    def handle_call(:status, _from, s), do: {:noreply, s}
+  end
+
+  # 038 FR-003 / SC-004: a Coordinator that never answers must not crash or
+  # stall the page.
+  test "mount under a stalled Coordinator renders without crashing", %{conn: conn} do
+    {:ok, pid} = StallingCoordinator.start_link(Coordinator)
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    {micros, {:ok, view, html}} = :timer.tc(fn -> live(conn, "/") end)
+
+    assert html =~ ~s(data-view="mission-control")
+    assert micros < 3_000_000
+    assert Process.alive?(view.pid)
+  end
+
+  # 038 FR-004: an action against an unreachable controller reports it and
+  # leaves the LiveView alive.
+  test "continue_run against a stalled controller keeps the view alive", %{conn: conn} do
+    {:ok, pid} = StallingCoordinator.start_link(Coordinator)
+    Application.put_env(:autonomous, :console_run_wait_ms, 100)
+
+    on_exit(fn ->
+      Application.delete_env(:autonomous, :console_run_wait_ms)
+      if Process.alive?(pid), do: GenServer.stop(pid)
+    end)
+
+    {:ok, view, _html} = live(conn, "/")
+    html = render_click(view, "continue_run", %{})
+
+    assert html =~ "Could not reach the run controller" or html =~ "Continue failed"
+    assert Process.alive?(view.pid)
+    assert render(view) =~ ~s(data-view="mission-control")
+  end
+
   test "mount seeds the status-count strip and backlog table from Coordinator.status/0 + ConsoleProjection.read/0",
        %{conn: conn} do
     pid = start_coordinator([feat("mc1"), feat("mc2")])
@@ -1565,5 +1608,37 @@ defmodule Autonomous.Web.MissionControlLiveTest do
     {:ok, _view, html} = live(conn, "/")
 
     refute html =~ "data-containment"
+  end
+
+  test "delayed notice shows on delayed? true and clears on false", %{conn: conn} do
+    pid = start_coordinator([feat("d1", 1)])
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    {:ok, view, html} = live(conn, "/")
+    refute html =~ "data-console-delayed"
+
+    broadcast = fn delayed ->
+      Phoenix.PubSub.broadcast(
+        Autonomous.PubSub,
+        ConsoleProjection.topic(),
+        {:console, :reconciled,
+         %{coordinator: Coordinator.status(pid), ledger: nil, delayed?: delayed}}
+      )
+    end
+
+    broadcast.(true)
+    assert render(view) =~ "data-console-delayed"
+    assert render(view) =~ "showing last known state"
+
+    broadcast.(false)
+    refute render(view) =~ "data-console-delayed"
+
+    Phoenix.PubSub.broadcast(
+      Autonomous.PubSub,
+      ConsoleProjection.topic(),
+      {:console, :reconciled, %{coordinator: Coordinator.status(pid), ledger: nil}}
+    )
+
+    refute render(view) =~ "data-console-delayed"
   end
 end

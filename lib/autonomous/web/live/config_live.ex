@@ -28,7 +28,6 @@ defmodule Autonomous.Web.ConfigLive do
     Config,
     Containment,
     ConsoleProjection,
-    Coordinator,
     Ledger,
     LiveConfig,
     Pipeline,
@@ -186,15 +185,16 @@ defmodule Autonomous.Web.ConfigLive do
     Phoenix.PubSub.broadcast(
       Autonomous.PubSub,
       ConsoleProjection.topic(),
-      {:console, :reconciled, %{coordinator: coordinator_status(), ledger: Ledger.snapshot()}}
+      {:console, :reconciled,
+       %{
+         coordinator: coordinator_status(),
+         ledger: ConsoleProjection.ledger_or_last_known(),
+         delayed?: false
+       }}
     )
   end
 
-  defp coordinator_status do
-    if Process.whereis(Coordinator), do: Coordinator.status(Coordinator)
-  catch
-    :exit, _reason -> nil
-  end
+  defp coordinator_status, do: ConsoleProjection.coordinator_or_last_known()
 
   # Same notion of "a run is in flight" as Trigger Run's confirmation.
   defp active_run_id do

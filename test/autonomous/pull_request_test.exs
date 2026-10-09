@@ -91,7 +91,9 @@ defmodule Autonomous.PullRequestTest do
     assert both_notes =~ "Advanced with unresolved analyze findings"
     assert both_notes =~ "Containment: permissive"
 
-    findings_idx = :binary.match(both_notes, "Advanced with unresolved analyze findings") |> elem(0)
+    findings_idx =
+      :binary.match(both_notes, "Advanced with unresolved analyze findings") |> elem(0)
+
     containment_idx = :binary.match(both_notes, "Containment: permissive") |> elem(0)
     assert containment_idx > findings_idx
   end

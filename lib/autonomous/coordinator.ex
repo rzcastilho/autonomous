@@ -351,11 +351,23 @@ defmodule Autonomous.Coordinator do
   end
 
   defp round_summary(%{outcome: :answered} = r) do
-    %{round: r.round, seq: r.seq, outcome: r.outcome, asked_at: r.started_at, answered_at: r.answered_at}
+    %{
+      round: r.round,
+      seq: r.seq,
+      outcome: r.outcome,
+      asked_at: r.started_at,
+      answered_at: r.answered_at
+    }
   end
 
   defp round_summary(r) do
-    %{round: r.round, seq: r.seq, outcome: r.outcome, asked_at: r.started_at, closed_at: r.closed_at}
+    %{
+      round: r.round,
+      seq: r.seq,
+      outcome: r.outcome,
+      asked_at: r.started_at,
+      closed_at: r.closed_at
+    }
   end
 
   # Feature 021: derived from the reasons the Coordinator already retains, so

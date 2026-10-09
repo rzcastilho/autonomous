@@ -6,17 +6,34 @@ defmodule Autonomous.ConsoleProjection do
   events via the pure `ConsoleReadModel`, and broadcasts diffs over
   `Phoenix.PubSub` on topic `"console:run"`.
 
-  Never persists (FR-036) — a restart rebuilds from `Coordinator.status/0` +
-  subsequent telemetry. Never mutates orchestrator state — read/subscribe
+  Never persists (FR-036) — a restart rebuilds the feed and feature slices from
+  the durable run record (`ConsoleHistory`, feature 038), then folds subsequent
+  telemetry. The reconcile probe runs in a `Task` off the callback
+  (feature 038): a slow or dead Coordinator is a missed refresh, never a crash,
+  and the last good status stays available via `last_known/1`. Never mutates orchestrator state — read/subscribe
   only.
   """
 
   use GenServer
 
-  alias Autonomous.{ConsoleReadModel, Coordinator, Ledger}
+  require Logger
+
+  alias Autonomous.{
+    ConsoleDelay,
+    ConsoleHistory,
+    ConsoleReadModel,
+    Coordinator,
+    CoordinatorProbe,
+    Ledger,
+    Store
+  }
 
   @topic "console:run"
   @reconcile_ms 2_000
+  @probe_timeout 5_000
+  # A page render probes several times (topbar, seed, counts) and mounts twice;
+  # a short budget keeps a stalled Coordinator under the 3 s page-load limit.
+  @page_probe_ms 250
 
   # ---- Client API -----------------------------------------------------
 
@@ -26,6 +43,10 @@ defmodule Autonomous.ConsoleProjection do
     * `:pubsub` — `Phoenix.PubSub` server name (default `Autonomous.PubSub`).
     * `:coordinator` — `Coordinator` server name consulted on reconcile (default `Coordinator`).
     * `:ledger` — `Ledger` server name consulted on reconcile (default `Ledger`).
+    * `:probe_timeout` — Coordinator wait limit for the reconcile probe (default `5000`).
+    * `:history` — zero-arity loader of the run record to rebuild from
+      (`{:ok, run_detail} | :none | {:error, term}`; default: the in-flight,
+      else parked, run of the served repository).
     * `:reconcile_ms` — reconcile tick interval; `0` disables it (default `2000`).
     * `:name` — process name (default `#{inspect(__MODULE__)}`).
   """
@@ -39,6 +60,52 @@ defmodule Autonomous.ConsoleProjection do
   @spec read(GenServer.server()) :: ConsoleReadModel.t()
   def read(server \\ __MODULE__), do: GenServer.call(server, :read)
 
+  @doc """
+  Last status the reconcile probe saw: `%{coordinator:, ledger:, delayed?:}`.
+  Never blocks on the Coordinator; an absent projection yields empty values.
+  """
+  @spec last_known(GenServer.server()) :: %{
+          coordinator: map() | nil,
+          ledger: map() | nil,
+          delayed?: boolean()
+        }
+  def last_known(server \\ __MODULE__) do
+    GenServer.call(server, :last_known)
+  catch
+    :exit, _ -> %{coordinator: nil, ledger: nil, delayed?: false}
+  end
+
+  @doc "Exit-safe `read/1`: an empty model when the projection is absent or unresponsive."
+  @spec read_safe(GenServer.server()) :: ConsoleReadModel.t()
+  def read_safe(server \\ __MODULE__) do
+    read(server)
+  catch
+    :exit, _ -> ConsoleReadModel.new()
+  end
+
+  @doc """
+  Coordinator status for console pages: a live probe (bounded by `timeout`),
+  falling back to the projection's last-known status when the Coordinator is
+  slow. `nil` when no Coordinator is running.
+  """
+  @spec coordinator_or_last_known(timeout()) :: map() | nil
+  def coordinator_or_last_known(timeout \\ @page_probe_ms) do
+    case CoordinatorProbe.status(Coordinator, timeout) do
+      {:ok, status} -> status
+      :none -> nil
+      {:error, _} -> last_known().coordinator
+    end
+  end
+
+  @doc "Ledger snapshot for console pages, falling back to the last-known one."
+  @spec ledger_or_last_known(timeout()) :: map() | nil
+  def ledger_or_last_known(timeout \\ @page_probe_ms) do
+    case Process.whereis(Ledger) do
+      nil -> nil
+      _pid -> CoordinatorProbe.ledger(Ledger, timeout) || last_known().ledger
+    end
+  end
+
   @doc "The PubSub topic every LiveView subscribes to on mount."
   @spec topic() :: String.t()
   def topic, do: @topic
@@ -51,6 +118,7 @@ defmodule Autonomous.ConsoleProjection do
     coordinator = Keyword.get(opts, :coordinator, Coordinator)
     ledger = Keyword.get(opts, :ledger, Ledger)
     reconcile_ms = Keyword.get(opts, :reconcile_ms, @reconcile_ms)
+    probe_timeout = Keyword.get(opts, :probe_timeout, @probe_timeout)
     handler_id = {__MODULE__, self()}
 
     :telemetry.attach_many(
@@ -67,10 +135,21 @@ defmodule Autonomous.ConsoleProjection do
       pubsub: pubsub,
       coordinator: coordinator,
       ledger: ledger,
+      probe_timeout: probe_timeout,
+      last_known: %{coordinator: nil, ledger: nil},
+      probe: nil,
+      misses: 0,
+      warned_at: nil,
+      history: Keyword.get(opts, :history, &__MODULE__.load_history/0),
       handler_id: handler_id
     }
 
-    {:ok, state}
+    {:ok, state, {:continue, :rebuild}}
+  end
+
+  @impl true
+  def handle_continue(:rebuild, state) do
+    {:noreply, %{state | model: rebuild_model(state.history)}}
   end
 
   @impl true
@@ -82,6 +161,9 @@ defmodule Autonomous.ConsoleProjection do
   @impl true
   def handle_call(:read, _from, state), do: {:reply, state.model, state}
 
+  def handle_call(:last_known, _from, state),
+    do: {:reply, Map.put(state.last_known, :delayed?, ConsoleDelay.delayed?(state.misses)), state}
+
   @impl true
   def handle_info({:telemetry_event, event, measurements, metadata}, state) do
     model = ConsoleReadModel.apply_event(state.model, event, measurements, metadata)
@@ -89,17 +171,30 @@ defmodule Autonomous.ConsoleProjection do
     {:noreply, %{state | model: model}}
   end
 
-  def handle_info(:reconcile, state) do
-    coordinator_status = coordinator_status(state.coordinator)
-    ledger_snapshot = Ledger.snapshot(state.ledger)
+  # One probe in flight at a time; the Coordinator wait happens in the task,
+  # so this process keeps answering `read/1` and folding telemetry.
+  def handle_info(:reconcile, %{probe: nil} = state) do
+    %{coordinator: coordinator, ledger: ledger, probe_timeout: timeout} = state
 
-    broadcast(
-      state,
-      {:console, :reconciled, %{coordinator: coordinator_status, ledger: ledger_snapshot}}
-    )
+    task =
+      Task.async(fn ->
+        {CoordinatorProbe.status(coordinator, timeout), CoordinatorProbe.ledger(ledger, timeout)}
+      end)
 
-    {:noreply, state}
+    {:noreply, %{state | probe: task.ref}}
   end
+
+  def handle_info(:reconcile, state), do: {:noreply, state}
+
+  def handle_info({ref, result}, %{probe: ref} = state) when is_reference(ref) do
+    Process.demonitor(ref, [:flush])
+    {:noreply, apply_probe(%{state | probe: nil}, result)}
+  end
+
+  def handle_info({:DOWN, ref, :process, _pid, _reason}, %{probe: ref} = state),
+    do: {:noreply, %{state | probe: nil}}
+
+  def handle_info(_stale, state), do: {:noreply, state}
 
   @doc false
   def handle_telemetry(event, measurements, metadata, pid) do
@@ -159,9 +254,99 @@ defmodule Autonomous.ConsoleProjection do
 
   defp broadcast(state, message), do: Phoenix.PubSub.broadcast(state.pubsub, @topic, message)
 
-  defp coordinator_status(coordinator) when is_atom(coordinator) do
-    if Process.whereis(coordinator), do: Coordinator.status(coordinator)
+  @doc false
+  # Default history loader: the served repository's in-flight run, else its
+  # parked run.
+  @spec load_history() :: {:ok, map()} | :none | {:error, term()}
+  def load_history do
+    repo_id = Autonomous.RepoIdentity.partition(Autonomous.Config.repo())
+
+    run_id =
+      Autonomous.current_run_id() ||
+        case Store.parked_run(repo_id) do
+          {:ok, %{run_id: run_id}} -> run_id
+          _ -> nil
+        end
+
+    case run_id do
+      nil -> :none
+      run_id -> Autonomous.run_detail(run_id)
+    end
   end
 
-  defp coordinator_status(coordinator), do: Coordinator.status(coordinator)
+  defp rebuild_model(history) do
+    case history.() do
+      {:ok, detail} ->
+        ConsoleHistory.rebuild(detail)
+
+      :none ->
+        ConsoleReadModel.new()
+
+      {:error, reason} ->
+        Logger.warning("console history rebuild failed: #{inspect(reason)}")
+        ConsoleReadModel.new()
+    end
+  rescue
+    error ->
+      Logger.warning("console history rebuild raised: #{Exception.message(error)}")
+      ConsoleReadModel.new()
+  catch
+    :exit, reason ->
+      Logger.warning("console history rebuild exited: #{inspect(reason)}")
+      ConsoleReadModel.new()
+  end
+
+  defp apply_probe(state, {coordinator_result, ledger_snapshot}) do
+    misses = ConsoleDelay.step(state.misses, coordinator_result)
+    now_ms = System.monotonic_time(:millisecond)
+    state = log_probe(state, misses, now_ms)
+
+    case ConsoleDelay.broadcast?(misses, coordinator_result) do
+      :silent ->
+        %{state | misses: misses}
+
+      :delayed ->
+        # Keep showing the last good status, flagged as delayed.
+        last = state.last_known
+        broadcast(state, reconciled(last.coordinator, last.ledger, true))
+        %{state | misses: misses}
+
+      :reconciled ->
+        coordinator_status =
+          case coordinator_result do
+            {:ok, status} -> status
+            :none -> nil
+          end
+
+        broadcast(state, reconciled(coordinator_status, ledger_snapshot, false))
+
+        %{
+          state
+          | misses: misses,
+            model: ConsoleReadModel.clear_rebuilt(state.model),
+            last_known: %{coordinator: coordinator_status, ledger: ledger_snapshot}
+        }
+    end
+  end
+
+  defp reconciled(coordinator, ledger, delayed?),
+    do: {:console, :reconciled, %{coordinator: coordinator, ledger: ledger, delayed?: delayed?}}
+
+  defp log_probe(state, misses, now_ms) do
+    case ConsoleDelay.log?(state.misses, misses, state.warned_at, now_ms) do
+      :warn ->
+        Logger.warning(
+          "console: Coordinator.status/1 not answering (#{misses} consecutive missed refreshes); showing last known state"
+        )
+
+        %{state | warned_at: now_ms}
+
+      :recovered ->
+        Logger.info("console: Coordinator.status/1 answering again")
+        %{state | warned_at: nil}
+
+      :quiet ->
+        state
+    end
+  end
 end

@@ -19,14 +19,16 @@ defmodule Autonomous.Web.MissionControlLive do
 
   use Autonomous.Web, :live_view
 
+  # Bounded wait on the run controller (feature 038); past it the action reports
+  # "unreachable" instead of crashing the view.
+  @run_wait_ms 5_000
+
   alias Phoenix.LiveView.JS
 
   alias Autonomous.{
     ConsoleHydration,
     ConsoleProjection,
     ConsoleReadModel,
-    Coordinator,
-    Ledger,
     PublishOutcome
   }
 
@@ -56,9 +58,14 @@ defmodule Autonomous.Web.MissionControlLive do
 
   defp seed(socket) do
     view =
-      ConsoleReadModel.merge(coordinator_status(), ledger_snapshot(), ConsoleProjection.read())
+      ConsoleReadModel.merge(
+        coordinator_status(),
+        ledger_snapshot(),
+        ConsoleProjection.read_safe()
+      )
 
-    assign(socket, view: overlay_manifest(view))
+    delayed? = ConsoleProjection.last_known().delayed?
+    assign(socket, view: view |> overlay_manifest() |> Map.put(:delayed?, delayed?))
   end
 
   # 019 (contracts/parked-run.md § 6): the parked banner is sourced from the
@@ -102,13 +109,9 @@ defmodule Autonomous.Web.MissionControlLive do
     end
   end
 
-  defp coordinator_status do
-    if Process.whereis(Coordinator), do: Coordinator.status(Coordinator)
-  end
+  defp coordinator_status, do: ConsoleProjection.coordinator_or_last_known()
 
-  defp ledger_snapshot do
-    if Process.whereis(Ledger), do: Ledger.snapshot(Ledger)
-  end
+  defp ledger_snapshot, do: ConsoleProjection.ledger_or_last_known()
 
   # ---- live updates (FR-010, FR-033/SC-005) --------------------------------
 
@@ -128,11 +131,15 @@ defmodule Autonomous.Web.MissionControlLive do
   end
 
   def handle_info(
-        {:console, :reconciled, %{coordinator: coordinator_status, ledger: ledger_snapshot}},
+        {:console, :reconciled,
+         %{coordinator: coordinator_status, ledger: ledger_snapshot} = payload},
         socket
       ) do
-    view = ConsoleReadModel.merge(coordinator_status, ledger_snapshot, ConsoleProjection.read())
-    {:noreply, socket |> assign(view: overlay_manifest(view)) |> refresh_run_state()}
+    view =
+      ConsoleReadModel.merge(coordinator_status, ledger_snapshot, ConsoleProjection.read_safe())
+
+    view = view |> overlay_manifest() |> Map.put(:delayed?, Map.get(payload, :delayed?, false))
+    {:noreply, socket |> assign(view: view) |> refresh_run_state()}
   end
 
   def handle_info({:console, :run_finished, report}, socket) do
@@ -151,6 +158,12 @@ defmodule Autonomous.Web.MissionControlLive do
   @impl true
   def handle_event("continue_run", _params, socket) do
     case run_unlinked(fn -> Autonomous.continue_run(test_opts()) end) do
+      {:error, :controller_unreachable} ->
+        {:noreply, put_flash(socket, :error, "Could not reach the run controller; try again")}
+
+      {:error, {:controller_unreachable, _reason}} ->
+        {:noreply, put_flash(socket, :error, "Could not reach the run controller; try again")}
+
       {:error, reason} ->
         {:noreply, put_flash(socket, :error, "Continue failed: #{inspect(reason)}")}
 
@@ -307,6 +320,10 @@ defmodule Autonomous.Web.MissionControlLive do
 
           <div class="mission-feed">
             <div class="mission-feed-header">Telemetry</div>
+            <p :if={Map.get(@view, :delayed?, false)} class="recovered-banner" data-console-delayed>
+              live status delayed — <span class="parked-banner-mono">Coordinator.status/1</span>
+              not answering; showing last known state
+            </p>
             <ul class="telemetry-feed">
               <li
                 :for={entry <- @view.feed}
@@ -356,9 +373,20 @@ defmodule Autonomous.Web.MissionControlLive do
   # the owner instead: it exits as soon as the call returns, so the report is
   # simply dropped; this view learns of the finish via `:run_finished`.
   defp run_unlinked(fun) do
-    Autonomous.RunnerSup
-    |> Task.Supervisor.async_nolink(fun)
-    |> Task.await()
+    task = Task.Supervisor.async_nolink(Autonomous.RunnerSup, fun)
+
+    case Task.yield(task, Application.get_env(:autonomous, :console_run_wait_ms, @run_wait_ms)) do
+      {:ok, result} ->
+        result
+
+      {:exit, reason} ->
+        {:error, {:controller_unreachable, reason}}
+
+      nil ->
+        # Left running; `ignore/1` drops its late reply so it can't reach this view.
+        Task.ignore(task)
+        {:error, :controller_unreachable}
+    end
   end
 
   defp test_opts do

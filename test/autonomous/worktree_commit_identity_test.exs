@@ -32,7 +32,17 @@ defmodule Autonomous.WorktreeCommitIdentityTest do
     # depends on the env.
     Enum.each(@vars, &System.delete_env/1)
     git!(dir, ["-c", "user.name=Base", "-c", "user.email=base@example.com", "add", "-A"])
-    git!(dir, ["-c", "user.name=Base", "-c", "user.email=base@example.com", "commit", "-q", "-m", "base"])
+
+    git!(dir, [
+      "-c",
+      "user.name=Base",
+      "-c",
+      "user.email=base@example.com",
+      "commit",
+      "-q",
+      "-m",
+      "base"
+    ])
 
     File.write!(Path.join(dir, "change.txt"), "change\n")
 

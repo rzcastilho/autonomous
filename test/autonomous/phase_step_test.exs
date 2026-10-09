@@ -688,7 +688,9 @@ defmodule Autonomous.PhaseStepTest do
       assert agent.state.last_outcome == :error
       assert length(agent.state.history) == 1
 
-      assert {:failed, {:untrusted_workspace, :converge, %{workspace: "/x/repo", kinds: ["permissions.allow"]}}} =
+      assert {:failed,
+              {:untrusted_workspace, :converge,
+               %{workspace: "/x/repo", kinds: ["permissions.allow"]}}} =
                Autonomous.Pipeline.next(:converge, :error, agent.state.last_signals)
     end
   end

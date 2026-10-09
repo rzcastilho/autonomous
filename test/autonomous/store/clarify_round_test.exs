@@ -168,7 +168,9 @@ defmodule Autonomous.Store.ClarifyRoundTest do
     test "an answer past the deadline is rejected" do
       {repo, run_id} = open()
       run_key = {repo, run_id}
-      {:ok, seq} = Writer.record_feature_awaiting(run_key, "001", round_info(%{answer_timeout_s: 60}))
+
+      {:ok, seq} =
+        Writer.record_feature_awaiting(run_key, "001", round_info(%{answer_timeout_s: 60}))
 
       round_key = Ids.ordinal_id(repo, run_id, "001", seq)
       expired = read_round(round_key)
@@ -250,7 +252,9 @@ defmodule Autonomous.Store.ClarifyRoundTest do
 
     test "errors on an absent round" do
       {repo, run_id} = open()
-      assert {:error, {:absent, _}} = Writer.mark_round_applied(Ids.ordinal_id(repo, run_id, "001", 99))
+
+      assert {:error, {:absent, _}} =
+               Writer.mark_round_applied(Ids.ordinal_id(repo, run_id, "001", 99))
     end
   end
 

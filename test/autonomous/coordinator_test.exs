@@ -4,7 +4,12 @@ defmodule Autonomous.CoordinatorTest do
   alias Autonomous.{Coordinator, Feature, Ledger}
 
   defp feat(id, number \\ nil),
-    do: %Feature{id: id, number: number || String.to_integer(id), slug: "f#{id}", path: "#{id}.md"}
+    do: %Feature{
+      id: id,
+      number: number || String.to_integer(id),
+      slug: "f#{id}",
+      path: "#{id}.md"
+    }
 
   # A runner that reports each started feature (with its notify fn) to the test,
   # so the test controls when and how each feature finishes.
@@ -96,7 +101,13 @@ defmodule Autonomous.CoordinatorTest do
       assert report.done == ["001"]
       assert Map.get(report, unquote(status)) == ["002"]
       assert report.not_started == ~w(003 004 005 006 007)
-      assert report.stopped_by == %{feature_id: "002", status: unquote(status), reason: unquote(Macro.escape(reason))}
+
+      assert report.stopped_by == %{
+               feature_id: "002",
+               status: unquote(status),
+               reason: unquote(Macro.escape(reason))
+             }
+
       refute Map.has_key?(report, :blocked)
     end
   end

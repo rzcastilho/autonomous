@@ -72,13 +72,15 @@ defmodule Autonomous.Web.ReconcileTest do
     }
 
   # Forces an immediate reconcile instead of waiting up to the 2s tick — the
-  # projection's :reconcile handler is the same code the timer fires.
-  defp force_reconcile do
+  # projection's :reconcile handler is the same code the timer fires. Since
+  # 038 the Coordinator probe runs in a task off the projection, so wait for
+  # the `:reconciled` broadcast itself, then for the view to have folded it.
+  defp force_reconcile(view) do
+    Phoenix.PubSub.subscribe(Autonomous.PubSub, ConsoleProjection.topic())
     send(Process.whereis(ConsoleProjection), :reconcile)
-    # `handle_info(:reconcile, ...)` broadcasts synchronously off the
-    # ConsoleProjection mailbox; a :sys.get_state round-trip guarantees it
-    # has processed our message before we render.
+    assert_receive {:console, :reconciled, _}, 2_000
     :sys.get_state(ConsoleProjection)
+    :sys.get_state(view.pid)
   end
 
   # ---- T071: outside state change converges within the reconcile tick -----
@@ -116,7 +118,7 @@ defmodule Autonomous.Web.ReconcileTest do
     assert %{status: :escalated} = Coordinator.status(pid).per_feature["rc1"]
     refute Coordinator.status(pid).finished?
 
-    force_reconcile()
+    force_reconcile(view)
 
     html = render(view)
     row = Regex.run(~r/<tr[^>]*data-feature-row="rc1".*?<\/tr>/s, html) |> hd()
@@ -167,7 +169,7 @@ defmodule Autonomous.Web.ReconcileTest do
     # only in-flight feature, so the run itself drains/finishes right here —
     # never redisplayed as if it were still silently running.
     Coordinator.notify(pid, "rc2", :halted, :breaker_tripped)
-    force_reconcile()
+    force_reconcile(view)
 
     html = render(view)
     assert html =~ ~s(data-state="finished")

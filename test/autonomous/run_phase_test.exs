@@ -127,7 +127,8 @@ defmodule Autonomous.RunPhaseTest do
   @tag :integration
   test "LIVE: runs /speckit.specify against a real Spec Kit repo (paid, opt-in)" do
     repo =
-      System.get_env("AUTONOMOUS_FIXTURE_REPO") || flunk("set AUTONOMOUS_FIXTURE_REPO to a repo path")
+      System.get_env("AUTONOMOUS_FIXTURE_REPO") ||
+        flunk("set AUTONOMOUS_FIXTURE_REPO to a repo path")
 
     feature = %Feature{
       id: "001",
@@ -152,7 +153,8 @@ defmodule Autonomous.RunPhaseTest do
   @tag :integration
   test "LIVE: a real session that uses tools returns every call it makes (paid, opt-in)" do
     repo =
-      System.get_env("AUTONOMOUS_FIXTURE_REPO") || flunk("set AUTONOMOUS_FIXTURE_REPO to a repo path")
+      System.get_env("AUTONOMOUS_FIXTURE_REPO") ||
+        flunk("set AUTONOMOUS_FIXTURE_REPO to a repo path")
 
     request =
       Jido.Harness.RunRequest.new!(%{
