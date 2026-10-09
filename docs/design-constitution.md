@@ -182,8 +182,8 @@ Four keyframes; nothing else.
 ## VII. Interaction Law
 
 1. **Nav is persistent and flat.** One left rail, one level, active item accent-filled with an inset accent ring. Counts of items needing attention MUST appear as a badge on the nav item.
-2. **Global run state is always visible** — state chip, subject, budget/limit gauge, and breaker status persist in the topbar on every view.
-3. **Limit gauges MUST show committed and reserved separately** — solid fill for committed, hatched for reserved-but-unspent — and MUST change color at threshold (safe → warning >80% → tripped).
+2. **Global run state is always visible** — state chip, subject, and run spend persist in the topbar on every view.
+3. **Spend is a plain figure.** Run spend renders as one mono USD value. No gauge, limit, threshold color, or breaker status is shown — cost is informational and gates nothing (constitution 7.0.0, Principle IV).
 4. **Recovery paths MUST be visually ranked.** The cheapest correct action is the gradient primary; the expensive/destructive alternative is a bordered secondary sharing the same row. Both MUST state their consequence in a mono hint (e.g. "keeps completed phases · reuses branch").
 5. **Every override the API supports MUST be exposed** at the point of decision, labeled with its real option name (`:from`, `:prompt`), and MUST default to the value the system would choose unaided.
 6. **Long-running state is simulated honestly.** Progress, spend, and queue release MUST advance from real rules, never a fake timer. The operator MUST be able to pause.
