@@ -9,6 +9,7 @@ defmodule Autonomous do
   """
 
   alias Autonomous.{
+    AgentRoot,
     Backlog,
     Config,
     Coordinator,
@@ -2417,6 +2418,8 @@ defmodule Autonomous do
              profile: run_context.containment_profile || "strict"
            ) do
         :ok ->
+          warn_agent_root_pack(run_context.containment_profile || "strict")
+
           case preflight_layout(opts) do
             {:ok, layout} ->
               opts =
@@ -2697,10 +2700,31 @@ defmodule Autonomous do
            check_remote: Config.pr_remote(),
            profile: profile || "strict"
          ) do
-      :ok -> :ok
-      {:error, problems} -> {:error, {:preflight, problems}}
+      :ok ->
+        warn_agent_root_pack(profile || "strict")
+        :ok
+
+      {:error, problems} ->
+        {:error, {:preflight, problems}}
     end
   end
+
+  # 037: with agent root advertised under `strict`, an older committed pack keeps
+  # denying `sudo` (fail closed). Not a preflight problem — warn and start.
+  defp warn_agent_root_pack("strict") do
+    with true <- AgentRoot.advertised?(),
+         {:warning, {:pack_below_agent_root_contract, found, _min}} <-
+           TargetPack.agent_root_warning(Config.repo()) do
+      Logger.warning(
+        "agent root is available but the committed pack is contract #{found}; " <>
+          "strict sessions will keep denying sudo until TargetPack.install/2 is re-run and committed"
+      )
+    end
+
+    :ok
+  end
+
+  defp warn_agent_root_pack(_profile), do: :ok
 
   # A backlog feature branches from, and targets, the newest completed branch
   # still open; on `:done` its own branch joins the chain for the next feature.

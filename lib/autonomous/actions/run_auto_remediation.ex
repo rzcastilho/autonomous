@@ -31,6 +31,7 @@ defmodule Autonomous.Actions.RunAutoRemediation do
   @step "auto-remediation"
 
   alias Autonomous.{
+    AgentRoot,
     BranchGuard,
     Config,
     Cost,
@@ -61,6 +62,7 @@ defmodule Autonomous.Actions.RunAutoRemediation do
     case Jido.Harness.run_request(:claude, request, []) do
       {:ok, stream} ->
         result = PhaseSession.reduce(stream, Config.phase_timeout())
+        AgentRoot.log_installs(state.feature, :auto_remediation, result)
         {result, untrusted} = WorkspaceTrust.settle(result, collector, state.containment)
 
         {outcome, signals} =

@@ -306,8 +306,8 @@ defmodule Autonomous.PhaseRequestTest do
   describe ":containment option (030)" do
     test "default (absent) is strict — byte-identical RunRequest except env markers" do
       for phase <- [:specify, :plan, :tasks, :analyze, :implement, :clarify, :converge, :describe] do
-        default = PhaseRequest.build(feature(), phase)
-        explicit = PhaseRequest.build(feature(), phase, containment: "strict")
+        default = PhaseRequest.build(feature(), phase, agent_root: false)
+        explicit = PhaseRequest.build(feature(), phase, containment: "strict", agent_root: false)
 
         assert default.prompt == explicit.prompt
         assert default.cwd == explicit.cwd
@@ -618,5 +618,70 @@ defmodule Autonomous.PhaseRequestTest do
       assert r.metadata["claude"][:env][SdkProxy.env_key()] == SdkProxy.encode(pid)
       Collector.stop(pid)
     end
+  end
+
+  describe ":agent_root option (037)" do
+    alias Autonomous.AgentRoot
+
+    @markers %{"AUTONOMOUS_CONTAINER" => "1", "AUTONOMOUS_AGENT_ROOT" => "1"}
+
+    test "false: env and every prompt are byte-identical to the option-less request" do
+      for phase <- @all_phases, scope <- [nil, :whole_list] do
+        r = PhaseRequest.build(feature(), phase, agent_root: false, scope: scope)
+        refute Map.has_key?(r.metadata["claude"][:env], "AUTONOMOUS_AGENT_ROOT")
+        refute r.prompt =~ "Agent root is available"
+      end
+    end
+
+    test "true: env gains both markers; permissions and tools are unchanged" do
+      for phase <- @all_phases do
+        off = PhaseRequest.build(feature(), phase, agent_root: false)
+        on = PhaseRequest.build(feature(), phase, agent_root: true)
+        assert on.metadata["claude"][:env] == Map.merge(off.metadata["claude"][:env], @markers)
+        assert on.permission_mode == off.permission_mode
+        assert on.allowed_tools == off.allowed_tools
+        assert on.disallowed_tools == off.disallowed_tools
+      end
+    end
+
+    test "true: the note lands on implement (any scope) and converge only" do
+      note = AgentRoot.prompt_note(true)
+
+      for scope <- [nil, :whole_list, {:sweep, [%Autonomous.TaskPlan.Task{id: "T001", text: "x", complete?: false, line: 1}]}] do
+        off = PhaseRequest.build(feature(), :implement, agent_root: false, scope: scope)
+        on = PhaseRequest.build(feature(), :implement, agent_root: true, scope: scope)
+        assert on.prompt == off.prompt <> note
+      end
+
+      off = PhaseRequest.build(feature(), :converge, agent_root: false)
+      assert PhaseRequest.build(feature(), :converge, agent_root: true).prompt == off.prompt <> note
+
+      for phase <- @all_phases -- [:implement, :converge] do
+        assert PhaseRequest.build(feature(), phase, agent_root: true).prompt ==
+                 PhaseRequest.build(feature(), phase, agent_root: false).prompt
+      end
+    end
+
+    test "true: the note sits before the resume and background-retry blocks" do
+      r =
+        PhaseRequest.build(feature(), :implement,
+          agent_root: true,
+          resume_prompt: "operator hint",
+          background_retry: ["sleep 1 &"]
+        )
+
+      {note_at, _} = :binary.match(r.prompt, "Agent root is available")
+      {hint_at, _} = :binary.match(r.prompt, "operator hint")
+      {retry_at, _} = :binary.match(r.prompt, "sleep 1 &")
+      assert note_at < hint_at and hint_at < retry_at
+    end
+
+    test "build_remediation carries the markers but no prompt note" do
+      off = PhaseRequest.build_remediation(feature(), "sonnet", agent_root: false)
+      on = PhaseRequest.build_remediation(feature(), "sonnet", agent_root: true)
+      assert on.metadata["claude"][:env] == Map.merge(off.metadata["claude"][:env], @markers)
+      assert on.prompt == off.prompt
+    end
+
   end
 end

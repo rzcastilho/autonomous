@@ -1,5 +1,22 @@
 <!--
 Sync Impact Report
+Version change: 6.0.2 → 6.1.0
+Bump rationale: MINOR. Feature 037 (container system packages, research R11).
+  Principle III's `strict` profile gains one bounded exception: the scope-guard
+  hook MAY allow a privileged package-manager command when both the
+  in-container marker and the verified agent-root marker are present, and only
+  when every privileged part refreshes the package index, installs packages, or
+  queries the package database. Removal, upgrade, local package files, options
+  that execute commands, and every other privileged command stay denied. Without
+  both markers `strict` is unchanged, so this narrows an existing MUST under an
+  explicit, verified condition rather than redefining it. The exception relies
+  on the container as the outer boundary.
+Modified principles:
+  - III. Least-Privilege Containment (Fail-Closed): one `strict` bullet added.
+Templates requiring updates: none (checked .specify/templates/*; no stale references).
+Follow-up TODOs: none.
+
+Prior report (6.0.2):
 Version change: 6.0.1 → 6.0.2
 Bump rationale: PATCH. Feature 033 (operator console UX polish, research R8).
   Four `docs/design-constitution.md` §II token values move to meet the WCAG AA
@@ -444,7 +461,13 @@ Under `strict`:
   (`PhaseRequest`) MUST further narrow tools per phase (read-only phases stay
   read-only);
 - enforcement MUST be layered (hook + per-phase permissions + container
-  recipe), never a single point of trust.
+  recipe), never a single point of trust;
+- the hook MAY allow a privileged command only when both the in-container
+  marker and the verified agent-root marker are present, and only when every
+  privileged part refreshes the system package index, installs packages, or
+  queries the package database. Removal, upgrade, local package files, options
+  that execute commands, and every other privileged command stay denied. This
+  exception relies on the container as the outer boundary.
 
 A run MAY opt into **`permissive`**, per run or through the configured global
 default, subject to all of:
@@ -931,4 +954,4 @@ deviation already is. Reviews and PRs MUST verify compliance with these
 principles; the constitution and the implementation plan together are the
 runtime guidance for autonomous and human contributors alike.
 
-**Version**: 6.0.2 | **Ratified**: 2026-07-11 | **Last Amended**: 2026-10-07
+**Version**: 6.1.0 | **Ratified**: 2026-07-11 | **Last Amended**: 2026-10-08

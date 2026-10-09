@@ -2,7 +2,7 @@
 # The documented entry point for operating the orchestrator (feature 031, FR-003).
 # Contract: specs/031-containerized-runtime/contracts/wrapper-cli.md
 #
-#   scripts/autonomous build [--release] [--web] [--desktop] [--android]
+#   scripts/autonomous build [--release] [--web] [--desktop] [--android] [--apt "<pkg> ..."] [--agent-root]
 #   scripts/autonomous shell   --target <repo> [--port <n>] [--with-login]
 #   scripts/autonomous console --target <repo> [--port <n>] [--with-login]
 #   scripts/autonomous release --target <repo> [--port <n>] [--with-login]
@@ -31,7 +31,7 @@ usage() {
   cat >&2 <<'EOF'
 usage: scripts/autonomous <command> [options]
 
-  build [--release] [--web] [--desktop] [--android]
+  build [--release] [--web] [--desktop] [--android] [--apt "<pkg> ..."] [--agent-root]
                                          build the dev image (autonomous-dev:local); --release also
                                          builds autonomous-release:local; --web/--desktop/--android
                                          add the opt-in testing capabilities (default: none)
@@ -45,6 +45,10 @@ usage: scripts/autonomous <command> [options]
   test  [mix test args]                  run the test suite inside the dev image
 
 options:
+  --agent-root                           build passwordless sudo into the image so strict sessions may
+                                         `sudo apt-get install` missing packages (build only)
+  --apt <list>                           system packages to install into the image at build time
+                                         (repeatable; space/comma separated; build only)
   --with-login                           mount the host agent login (opt-in)
   --viewer                               serve the virtual display through noVNC on loopback
                                          (needs an image built with --desktop)
@@ -67,7 +71,21 @@ with_web=0
 with_desktop=0
 with_android=0
 viewer=0
+apt_packages=""
+with_agent_root=0
 test_args=""
+
+# Validate and accumulate one --apt value (feature 037). Runs at parse time so a
+# bad name is refused before any docker call.
+add_apt() {
+  set -f
+  for tok in $(printf '%s' "$1" | tr ',' ' '); do
+    printf '%s' "$tok" | grep -Eq '^[a-z0-9][a-z0-9+.-]+(:[a-z0-9-]+)?(=[A-Za-z0-9.+~:-]+)?$' \
+      || { set +f; die 2 "invalid package name '$tok'"; }
+    apt_packages="${apt_packages:+$apt_packages }$tok"
+  done
+  set +f
+}
 
 case "$cmd" in
   build | shell | console | release | remote | port | viewer | stop | test) ;;
@@ -92,6 +110,16 @@ else
       --desktop) with_desktop=1; shift ;;
       --android) with_android=1; shift ;;
       --viewer) viewer=1; shift ;;
+      --agent-root)
+        [ "$cmd" = build ] || { err "unknown option '$1'"; usage; }
+        with_agent_root=1; shift ;;
+      --apt)
+        [ "$cmd" = build ] || { err "unknown option '$1'"; usage; }
+        [ "$#" -ge 2 ] || usage
+        add_apt "$2"; shift 2 ;;
+      --apt=*)
+        [ "$cmd" = build ] || { err "unknown option '$1'"; usage; }
+        add_apt "${1#--apt=}"; shift ;;
       *) err "unknown option '$1'"; usage ;;
     esac
   done
@@ -261,6 +289,9 @@ case "$cmd" in
     # Capabilities are build args; each is a no-op in the Dockerfile unless 1.
     WITH_WEB="$with_web"; WITH_DESKTOP="$with_desktop"; WITH_ANDROID="$with_android"
     export WITH_WEB WITH_DESKTOP WITH_ANDROID
+    EXTRA_APT_PACKAGES="$apt_packages"
+    WITH_AGENT_ROOT="$with_agent_root"
+    export EXTRA_APT_PACKAGES WITH_AGENT_ROOT
     # shellcheck disable=SC2086
     exec docker compose -p autonomous-bootstrap $compose_files build $services
     ;;

@@ -12,7 +12,11 @@ defmodule Autonomous.ScopeGuardTest do
   @env_clear [
     {"AUTONOMOUS_ORCHESTRATED", nil},
     {"AUTONOMOUS_CONTAINMENT_PROFILE", nil},
-    {"CLAUDE_CODE_ENTRYPOINT", nil}
+    {"CLAUDE_CODE_ENTRYPOINT", nil},
+    # The suite runs inside the dev image where AUTONOMOUS_CONTAINER=1; the
+    # agent-root exception (feature 037) must only fire when a test sets both.
+    {"AUTONOMOUS_CONTAINER", nil},
+    {"AUTONOMOUS_AGENT_ROOT", nil}
   ]
 
   # Run the hook with `input` (a map or raw string) on stdin under `env` (a map
@@ -58,9 +62,9 @@ defmodule Autonomous.ScopeGuardTest do
   defp interactive, do: %{"CLAUDE_CODE_ENTRYPOINT" => "cli"}
 
   describe "contract probe" do
-    test "--contract prints 4 and reads no stdin" do
+    test "--contract prints 5 and reads no stdin" do
       {out, 0} = System.cmd("python3", [@hook, "--contract"])
-      assert String.trim(out) == "4"
+      assert String.trim(out) == "5"
     end
   end
 
@@ -273,6 +277,102 @@ defmodule Autonomous.ScopeGuardTest do
       assert {:allow, 0} = guard(bash("curl http://x -o out"), env)
       assert {:allow, 0} = guard(write("/etc/passwd"), env)
       assert {:allow, 0} = guard(bash("rm -rf /"), env)
+    end
+  end
+
+  describe "pack contract 5: strict package-manager exception (feature 037)" do
+    @both %{"AUTONOMOUS_CONTAINER" => "1", "AUTONOMOUS_AGENT_ROOT" => "1"}
+
+    defp strict(extra \\ %{}), do: Map.merge(orchestrated("strict"), extra)
+    defp with_root, do: strict(@both)
+
+    @allowed [
+      "sudo apt-get install -y pkg-config",
+      "sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config",
+      "sudo -n DEBIAN_FRONTEND=noninteractive apt install -y libfoo-dev",
+      "sudo dpkg -s libasound2-dev",
+      "sudo apt list --installed",
+      "sudo apt-get install -y xx 2>&1",
+      "sudo apt-get update\nsudo apt-get install -y xx"
+    ]
+
+    @denied [
+      "sudo apt-get remove x",
+      "sudo apt-get purge x",
+      "sudo apt-get autoremove",
+      "sudo apt-get upgrade",
+      "sudo apt-get dist-upgrade",
+      "sudo apt-get install -o APT::Update::Pre-Invoke::=sh x",
+      "sudo apt-get install -c f x",
+      "sudo apt-get install --option A=b x",
+      "sudo apt-get install ./x.deb",
+      "sudo apt-get install /tmp/x.deb",
+      "sudo dpkg -i x.deb",
+      "sudo sh -c 'apt-get install x'",
+      "sudo -E apt-get install x",
+      "sudo -u root apt-get install x",
+      "sudo apt-get install -y xx; sudo rm -rf /tmp/y",
+      "sudo apt-get install -y xx | sudo tee /etc/x",
+      "sudo apt-get install $(cat f)",
+      "sudo apt-get install `cat f`",
+      "echo sudo",
+      "ls \"sudo apt-get install x\"",
+      "sudo apt-get install \"x"
+    ]
+
+    test "rows 1-3: without both markers sudo stays denied with today's detail" do
+      cmd = "sudo apt-get install -y pkg-config"
+      for env <- [strict(), strict(%{"AUTONOMOUS_CONTAINER" => "1"}), strict(%{"AUTONOMOUS_AGENT_ROOT" => "1"})] do
+        assert {:deny, reason} = guard(bash(cmd), env)
+        assert reason =~ "bash_sudo: sudo"
+        refute reason =~ "agent root allows"
+      end
+
+      assert {:deny, _} = guard(bash(cmd), %{@both | "AUTONOMOUS_AGENT_ROOT" => "0"} |> Map.merge(orchestrated("strict")))
+    end
+
+    test "rows 4-7: package installs and queries are allowed with both markers" do
+      for cmd <- @allowed, do: assert({:allow, 0} = guard(bash(cmd), with_root()), cmd)
+    end
+
+    test "undecided origin is strict too" do
+      assert {:allow, 0} = guard(bash("sudo apt-get install -y pkg-config"), @both)
+    end
+
+    test "rows 8-14, 19: everything outside the grammar is denied with the extended detail" do
+      for cmd <- @denied do
+        assert {:deny, reason} = guard(bash(cmd), with_root())
+        assert reason =~ "bash_sudo: sudo (agent root allows only apt-get/apt update|install and dpkg queries)", cmd
+      end
+    end
+
+    test "row 15: non-sudo rules stay whole-command" do
+      assert {:allow, 0} = guard(bash("sudo apt-get install -y xx && curl http://y"), with_root())
+      assert {:deny, reason} = guard(bash("curl http://y && sudo apt-get install -y xx"), with_root())
+      assert reason =~ "bash_curl"
+    end
+
+    test "row 16: redirect outside the worktree is still denied" do
+      assert {:deny, reason} = guard(bash("sudo apt-get install -y xx > /etc/out"), with_root())
+      assert reason =~ "bash_redirect_outside_worktree"
+    end
+
+    test "rows 17-18: permissive and interactive are unchanged" do
+      for cmd <- @denied do
+        assert {:allow, 0} = guard(bash(cmd), Map.merge(orchestrated("permissive"), @both))
+        assert {:allow, 0} = guard(bash(cmd), Map.merge(interactive(), @both))
+      end
+    end
+
+    test "row 20: other denials are unchanged" do
+      env = with_root()
+      assert {:deny, r1} = guard(bash("git push origin main"), env)
+      assert r1 =~ "bash_git_push"
+      assert {:deny, r2} = guard(bash("wget http://x"), env)
+      assert r2 =~ "bash_wget"
+      assert {:deny, r3} = guard(bash("curl http://x"), env)
+      assert r3 =~ "bash_curl"
+      assert {:deny, _} = guard(web_fetch(), env)
     end
   end
 end

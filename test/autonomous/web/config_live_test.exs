@@ -155,6 +155,72 @@ defmodule Autonomous.Web.ConfigLiveTest do
     assert html =~ "containment_profile (live run): permissive"
   end
 
+  # ---- 037: agent root row ------------------------------------------------
+
+  defp committed_pack_repo(contract) do
+    repo = Path.join(System.tmp_dir!(), "cfg_pack_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(repo)
+    on_exit(fn -> File.rm_rf!(repo) end)
+    {:ok, _} = Autonomous.TargetPack.install(repo)
+    hook = Path.join(repo, ".claude/hooks/scope_guard.py")
+
+    File.write!(
+      hook,
+      String.replace(File.read!(hook), "PACK_CONTRACT = 5", "PACK_CONTRACT = #{contract}")
+    )
+
+    for args <- [
+          ["init", "-q", "-b", "main"],
+          ["config", "user.email", "t@e.com"],
+          ["config", "user.name", "T"],
+          ["add", "-A"],
+          ["commit", "-q", "-m", "pack"]
+        ],
+        do: {_, 0} = System.cmd("git", ["-C", repo | args], stderr_to_stdout: true)
+
+    repo
+  end
+
+  defp advertise_agent_root(repo) do
+    prior =
+      {Application.get_env(:autonomous, :repo), System.get_env("AUTONOMOUS_CONTAINER"),
+       System.get_env("AUTONOMOUS_AGENT_ROOT")}
+
+    Application.put_env(:autonomous, :repo, repo)
+    System.put_env("AUTONOMOUS_CONTAINER", "1")
+    System.put_env("AUTONOMOUS_AGENT_ROOT", "1")
+
+    on_exit(fn ->
+      {r, c, a} = prior
+      restore(:repo, r)
+
+      for {k, v} <- [{"AUTONOMOUS_CONTAINER", c}, {"AUTONOMOUS_AGENT_ROOT", a}] do
+        if v, do: System.put_env(k, v), else: System.delete_env(k)
+      end
+    end)
+  end
+
+  test "agent root: not advertised leaves the page without the row", %{conn: conn} do
+    System.delete_env("AUTONOMOUS_AGENT_ROOT")
+    {:ok, _view, html} = live(conn, "/config")
+    refute html =~ "agent root"
+    refute html =~ "data-agent-root"
+  end
+
+  test "agent root: advertised with a current pack shows the available row", %{conn: conn} do
+    advertise_agent_root(committed_pack_repo(5))
+    {:ok, _view, html} = live(conn, "/config")
+    assert html =~ "available — strict allows sudo apt-get/apt install"
+    refute html =~ "data-agent-root-warning"
+  end
+
+  test "agent root: advertised with an old pack adds the warning", %{conn: conn} do
+    advertise_agent_root(committed_pack_repo(4))
+    {:ok, _view, html} = live(conn, "/config")
+    assert html =~ "available — strict allows sudo apt-get/apt install"
+    assert html =~ "committed pack is contract 4; re-run TargetPack.install/2 and commit"
+  end
+
   # ---- 033 US5: dirty tracking, cent-precise budget, sticky bar -----------
 
   test "form is clean on mount: data-dirty absent and no unsaved count", %{conn: conn} do

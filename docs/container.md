@@ -98,6 +98,59 @@ trust record the outcome is the same minus the warning. So past strict runs ran
 *narrower* (allow-list ignored), not wider; hook containment held. Re-run
 `us-trust-hook` after CLI upgrades.
 
+## System packages (037)
+
+A target whose build or tests need operating-system packages (headers,
+`pkg-config`, native libraries — the mod-player incident was `libasound2-dev`) gets
+them in one of two ways. Both are opt-in; a build with neither option is
+byte-identical to before.
+
+**Declare them at build time (`--apt`).**
+
+```bash
+scripts/autonomous build --apt "libasound2-dev pkg-config"
+scripts/autonomous build --release --apt libasound2-dev --apt pkg-config
+```
+
+- The option is repeatable; names are separated by whitespace or commas. Each name must
+  look like a Debian package (`name`, optional `:arch`, optional `=version`) or the
+  wrapper exits 2 (`autonomous: invalid package name '<token>'`) before any `docker` call.
+- The packages land in the shared `base` stage, so the dev and the release image both
+  carry them. The list is written one name per line to `/etc/autonomous/apt-packages`
+  (only when non-empty).
+- An unknown package fails the build and apt names it (`E: Unable to locate package …`).
+- The list is fixed per image: **rebuilding without `--apt` drops it.** Restart the
+  instance afterwards.
+
+**Let the agent install (`--agent-root`).**
+
+```bash
+scripts/autonomous build --agent-root
+```
+
+- Builds `sudo` with a passwordless grant for any uid (the container runs as your host
+  uid) plus `APT::Get::Remove "false"`, so apt refuses any install that would remove a
+  package. Without the option there is no `sudo` in the image.
+- At start the entrypoint runs `sudo -n true`; only on success does it export
+  `AUTONOMOUS_AGENT_ROOT=1` (a value from `.env` is never trusted) and print
+  `agent root: available`. If the probe fails — e.g. the runtime sets
+  `no-new-privileges` or the uid has no passwd entry — it warns with the uid and the
+  capability is **not** advertised.
+- When advertised, implement/converge sessions are told they may run
+  `sudo apt-get update && sudo apt-get install -y --no-install-recommends <pkgs>`.
+  Under `strict` the committed hook allows exactly that (see `docs/enforcement.md`);
+  everything else under `sudo` stays denied.
+- The committed target pack must be **contract 5**. Re-run `TargetPack.install/2` in the
+  target and commit; otherwise `run/1` logs a warning and strict sessions keep denying
+  `sudo`. The Configuration page shows an "agent root" row (and the same warning) only
+  when it is advertised.
+- Installs last only for this container. Every allowed install is logged as
+  `agent root: feature <n> (<phase>) installed system packages: <pkgs> — add them to
+  scripts/autonomous build --apt to persist`; promote those packages to `--apt`.
+
+Check an image with `scripts/container-smoke.sh sysdeps` (`SMOKE_IMAGE=autonomous-release:local`
+for the release image; `SMOKE_SYSDEPS_PROBE` overrides the probe package, default `pkg-config`).
+
 ## Release shape
 
 `scripts/autonomous build --release` builds `autonomous-release:local`: a `mix release` on

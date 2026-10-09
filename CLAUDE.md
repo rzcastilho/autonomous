@@ -95,6 +95,23 @@ valid for `mise exec -- mix compile|test` and development. Smoke checks:
 seeds a container-private `~/.claude.json`, so a host CLI mid-write never tears
 what a session reads. Host login changes need a container restart.
 
+## Container system packages (feature 037)
+
+`scripts/autonomous build --apt "<pkgs>"` (validated, repeatable, dev + release) installs
+OS packages into the shared `base` stage and records them in `/etc/autonomous/apt-packages`;
+`--agent-root` builds passwordless `sudo` (any uid) plus `APT::Get::Remove "false"`. The
+entrypoint `agent_root` step (`agent-root` smoke subcommand) unsets then exports
+`AUTONOMOUS_AGENT_ROOT=1` only after `sudo -n true` succeeds. `AgentRoot` (pure except
+`advertised?/1`) feeds `PhaseRequest` (`:agent_root` option → launch-env markers + a prompt
+note on `:implement`/`:converge`) and `log_installs/3` (after every session site). Pack
+contract 5: `scope_guard.py` lets `strict` run `sudo apt-get|apt update|install` and
+`dpkg`/`apt` queries only when both in-container markers are present (`sudo_allowed/1`
+closed grammar; everything else still `bash_sudo`). `TargetPack` uses thresholds (permissive
+≥ 4) and `agent_root_warning/1`, which `run/1` preflight logs (never fails). Console
+Configuration shows an "agent root" row via `AgentRootView`. Constitution 6.1.0. Smoke:
+`scripts/container-smoke.sh sysdeps`. See `docs/container.md`, `docs/enforcement.md`,
+`docs/runbook.md`.
+
 ## Toolchain — read first
 
 Run every Elixir command through mise; the plain shell PATH is a stale global

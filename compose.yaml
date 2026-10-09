@@ -55,6 +55,8 @@ services:
         WITH_WEB: "${WITH_WEB:-0}"
         WITH_DESKTOP: "${WITH_DESKTOP:-0}"
         WITH_ANDROID: "${WITH_ANDROID:-0}"
+        EXTRA_APT_PACKAGES: "${EXTRA_APT_PACKAGES:-}"
+        WITH_AGENT_ROOT: "${WITH_AGENT_ROOT:-0}"
         PLAYWRIGHT_VERSION: "${PLAYWRIGHT_VERSION:-1.49.1}" # keep equal to the Dockerfile default
     environment:
       <<: *instance-env
@@ -91,6 +93,8 @@ services:
         WITH_WEB: "${WITH_WEB:-0}"
         WITH_DESKTOP: "${WITH_DESKTOP:-0}"
         WITH_ANDROID: "${WITH_ANDROID:-0}"
+        EXTRA_APT_PACKAGES: "${EXTRA_APT_PACKAGES:-}"
+        WITH_AGENT_ROOT: "${WITH_AGENT_ROOT:-0}"
         PLAYWRIGHT_VERSION: "${PLAYWRIGHT_VERSION:-1.49.1}" # keep equal to the Dockerfile default
     environment:
       <<: *instance-env

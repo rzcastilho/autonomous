@@ -28,6 +28,10 @@ ARG CLAUDE_CODE_VERSION=2.1.286
 ARG WITH_WEB=0
 ARG WITH_DESKTOP=0
 ARG WITH_ANDROID=0
+# Operator-declared system packages (feature 037); empty = no-op, no file added.
+ARG EXTRA_APT_PACKAGES=""
+# Opt-in agent root (feature 037): passwordless sudo for any uid. 0 = no sudo at all.
+ARG WITH_AGENT_ROOT=0
 # Must match the @playwright/test version the target's tests use (docs/container.md).
 ARG PLAYWRIGHT_VERSION=1.49.1
 ARG ANDROID_CMDLINE_TOOLS=11076708
@@ -118,6 +122,31 @@ RUN if [ "$WITH_ANDROID" = 1 ]; then \
     fi
 ENV PATH=${PATH}:/opt/android/cmdline-tools/latest/bin:/opt/android/platform-tools:/opt/android/emulator
 COPY --chmod=0755 scripts/android-emulator /usr/local/bin/android-emulator
+
+# ---- Operator-declared system packages (feature 037, FR-001..FR-003) -------------
+# An install failure fails the build (no `|| true`); apt names the package.
+RUN if [ -n "$EXTRA_APT_PACKAGES" ]; then \
+      apt-get update \
+   && apt-get install -y --no-install-recommends $EXTRA_APT_PACKAGES \
+   && mkdir -p /etc/autonomous \
+   && for p in $EXTRA_APT_PACKAGES; do echo "$p"; done > /etc/autonomous/apt-packages \
+   && rm -rf /var/lib/apt/lists/*; \
+    fi
+
+# ---- Agent root (feature 037, FR-005/FR-006) --------------------------------------
+# The grant names no user so it fits whatever uid the container runs as. The
+# boundaries are the scope_guard.py grammar (per command) and the container; the
+# apt.conf drop-in makes apt refuse any install that would remove a package.
+RUN if [ "$WITH_AGENT_ROOT" = 1 ]; then \
+      apt-get update \
+   && apt-get install -y --no-install-recommends sudo \
+   && printf '%s\n' 'Defaults env_keep += "DEBIAN_FRONTEND"' 'ALL ALL=(root) NOPASSWD: ALL' \
+        > /etc/sudoers.d/autonomous-agent-root \
+   && chmod 0440 /etc/sudoers.d/autonomous-agent-root \
+   && visudo -cf /etc/sudoers.d/autonomous-agent-root \
+   && printf '%s\n' 'APT::Get::Remove "false";' > /etc/apt/apt.conf.d/99autonomous-no-remove \
+   && rm -rf /var/lib/apt/lists/*; \
+    fi
 
 # ---------------------------------------------------------------------------
 FROM base AS toolchain

@@ -53,6 +53,7 @@ defmodule Autonomous.Actions.RunFeaturePhase do
   require Logger
 
   alias Autonomous.{
+    AgentRoot,
     AnalyzeResult,
     ArtifactSubstance,
     BranchGuard,
@@ -110,6 +111,7 @@ defmodule Autonomous.Actions.RunFeaturePhase do
     case Jido.Harness.run_request(:claude, request, []) do
       {:ok, stream} ->
         result = PhaseSession.reduce(stream, deadline_ms)
+        AgentRoot.log_installs(state.feature, phase, result)
         {result, untrusted} = WorkspaceTrust.settle(result, collector, state.containment)
 
         {outcome, signals} =

@@ -16,7 +16,7 @@ defmodule Autonomous.PhaseRequest do
   """
 
   alias Jido.Harness.RunRequest
-  alias Autonomous.{Config, Containment, Feature, Layout, Prompts, SdkProxy, ShellTimeouts, Worktree}
+  alias Autonomous.{AgentRoot, Config, Containment, Feature, Layout, Prompts, SdkProxy, ShellTimeouts, Worktree}
   alias Autonomous.TaskPlan.TaskPhase
 
   @slash %{
@@ -83,6 +83,11 @@ defmodule Autonomous.PhaseRequest do
     * `:deadline_ms` — (032) the wall-clock deadline `PhaseSession.reduce/2` will
       enforce for this session; the Bash timeouts are derived from it
       (`ShellTimeouts.for_deadline/1`). Defaults to `Config.phase_timeout/0`.
+    * `:agent_root` — (037) boolean, default `AgentRoot.advertised?/0`. `true` adds
+      the `AUTONOMOUS_CONTAINER`/`AUTONOMOUS_AGENT_ROOT` markers to the launch env
+      and appends the agent-root note to the `:implement` and `:converge` prompts
+      (after the scope/headless rule, before resume/clarify/background-retry).
+      `false` leaves the request byte-identical to pre-037.
     * `:stderr_collector` — (036) pid of a `WorkspaceTrust.Collector`; the session's
       CLI stderr callback (installed by `SdkProxy`) forwards untrusted-workspace
       lines to it. `nil`/absent = lines are only logged.
@@ -91,12 +96,15 @@ defmodule Autonomous.PhaseRequest do
   def build(%Feature{} = feature, phase, opts \\ []) when is_atom(phase) do
     layout = Keyword.get(opts, :layout)
     containment = Keyword.get(opts, :containment, "strict")
+    agent_root = Keyword.get_lazy(opts, :agent_root, &AgentRoot.advertised?/0)
+    opts = Keyword.put(opts, :agent_root, agent_root)
 
     %{
       prompt:
         feature
         |> prompt(phase, layout)
         |> apply_scope(phase, Keyword.get(opts, :scope))
+        |> append_agent_root(phase, agent_root)
         |> append_resume_prompt(Keyword.get(opts, :resume_prompt))
         |> append_clarify_answers(Keyword.get(opts, :clarify_answers))
         |> append_background_retry(Keyword.get(opts, :background_retry)),
@@ -132,6 +140,7 @@ defmodule Autonomous.PhaseRequest do
   def build_remediation(%Feature{} = feature, model, opts \\ []) when is_binary(model) do
     layout = Keyword.get(opts, :layout)
     containment = Keyword.get(opts, :containment, "strict")
+    opts = Keyword.put_new_lazy(opts, :agent_root, &AgentRoot.advertised?/0)
 
     %{
       prompt: remediation_prompt(feature, layout, Keyword.get(opts, :prompt)),
@@ -156,6 +165,7 @@ defmodule Autonomous.PhaseRequest do
         env:
           Containment.session_env(containment)
           |> Map.merge(timeouts)
+          |> Map.merge(AgentRoot.session_env(Keyword.get(opts, :agent_root, false)))
           |> put_collector(Keyword.get(opts, :stderr_collector)),
         settings: Jason.encode!(%{"env" => timeouts})
       }
@@ -279,6 +289,13 @@ defmodule Autonomous.PhaseRequest do
   # 032: versioned headless rule (contracts/prompt-and-tools.md §1), appended only
   # to the implement scopes and converge — every other prompt stays byte-identical.
   defp headless_rule, do: "\n\n---\n" <> String.trim_trailing(Prompts.load("headless_rule"))
+
+  # 037 — only the phases that build and run the target's tests learn about agent
+  # root; every other prompt stays byte-identical.
+  defp append_agent_root(prompt, phase, true) when phase in [:implement, :converge],
+    do: prompt <> AgentRoot.prompt_note(true)
+
+  defp append_agent_root(prompt, _phase, _agent_root), do: prompt
 
   # Blank (nil/""/whitespace-only) guidance leaves the prompt byte-identical to
   # the no-opt build — only a non-blank string gets the trailing section.
