@@ -6,9 +6,8 @@ defmodule Autonomous.ConsoleReadModel do
   (Constitution I: Pure Core, Isolated Contracts).
 
   `ConsoleProjection` (the GenServer) is a thin owner: fold via `apply_event/4`
-  → store → broadcast diff. `merge/3` combines this projection's state with
-  `Coordinator.status/0` and `Ledger.snapshot/1` for both seed-on-mount and
-  reconcile.
+  → store → broadcast diff. `merge/2` combines this projection's state with
+  `Coordinator.status/0` for both seed-on-mount and reconcile.
   """
 
   alias Autonomous.{ConsoleHydration, ExecutionTime}
@@ -410,11 +409,11 @@ defmodule Autonomous.ConsoleReadModel do
 
   @doc """
   Pure merge of `Coordinator.status/0` (or `nil` when no run is active) +
-  `Ledger.snapshot/1` + this projection's own state into the full console
-  view state. Shared by seed-on-mount and the reconcile tick.
+  this projection's own state into the full console view state. Shared by
+  seed-on-mount and the reconcile tick.
   """
-  @spec merge(map() | nil, map() | nil, t()) :: map()
-  def merge(coordinator_status, ledger_snapshot, %{features: features, feed: feed}) do
+  @spec merge(map() | nil, t()) :: map()
+  def merge(coordinator_status, %{features: features, feed: feed}) do
     per_feature =
       case coordinator_status do
         nil -> %{}
@@ -429,7 +428,6 @@ defmodule Autonomous.ConsoleReadModel do
       inflight: (coordinator_status && coordinator_status[:inflight]) || [],
       finished?: (coordinator_status && coordinator_status[:finished?]) || false,
       report: coordinator_status && coordinator_status[:report],
-      ledger: ledger_snapshot,
       feed: feed
     }
   end

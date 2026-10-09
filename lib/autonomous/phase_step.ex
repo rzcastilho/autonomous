@@ -30,9 +30,6 @@ defmodule Autonomous.PhaseStep do
     * `:operator_answers` — (029) the rendered "Operator answers" block for
       an interactive-clarify re-run; threaded into every retry of this same
       call, `nil` (default) is a no-op everywhere else.
-    * `:ledger` — (034) the run's `Ledger`; a tripped breaker suppresses the
-      session-death retry (as does a requested drain). `nil` (default) never
-      suppresses on the breaker.
   """
   @spec run(pid(), Feature.t(), Pipeline.phase(), keyword()) :: struct()
   def run(pid, feature, phase, opts) do
@@ -41,7 +38,6 @@ defmodule Autonomous.PhaseStep do
     retries = Keyword.get(opts, :retries, Config.phase_max_retries())
     span_meta = Keyword.get(opts, :span_meta, %{})
     operator_answers = Keyword.get(opts, :operator_answers)
-    ledger = Keyword.get(opts, :ledger)
 
     run_with_retry(
       pid,
@@ -51,7 +47,7 @@ defmodule Autonomous.PhaseStep do
       timeout,
       span_meta,
       retries,
-      {operator_answers, ledger},
+      operator_answers,
       nil
     )
   end
@@ -72,7 +68,7 @@ defmodule Autonomous.PhaseStep do
          timeout,
          span_meta,
          retries,
-         {operator_answers, ledger} = extras,
+         operator_answers,
          background_retry
        ) do
     agent =
@@ -80,7 +76,7 @@ defmodule Autonomous.PhaseStep do
 
     st = agent.state
 
-    case retries > 0 and retry_reason(st, ledger) do
+    case retries > 0 and retry_reason(st) do
       false ->
         agent
 
@@ -100,7 +96,7 @@ defmodule Autonomous.PhaseStep do
           timeout,
           span_meta,
           retries - 1,
-          extras,
+          operator_answers,
           background_cmds(st)
         )
     end
@@ -124,7 +120,7 @@ defmodule Autonomous.PhaseStep do
   # nothing at all usually refused for a deterministic reason (a contradictory
   # `plan_stack` being the common one), so a second session burns the same
   # model for the same refusal.
-  defp retry_reason(st, ledger) do
+  defp retry_reason(st) do
     signals = st.last_signals || %{}
 
     cond do
@@ -134,16 +130,11 @@ defmodule Autonomous.PhaseStep do
       Map.has_key?(signals, :branch_drift) ->
         nil
 
-      # Untrusted workspace (036): retrying cannot trust the workspace; only the
-      # operator can. Same short-circuit as branch drift.
-      is_map(Map.get(signals, :untrusted_workspace)) ->
-        nil
-
       # Session death (034): the CLI died before or without a result. A fresh
-      # session is the likely fix (e.g. a transient torn config read); drain
-      # and the breaker suppress it like every other session start.
+      # session is the likely fix (e.g. a transient torn config read); a drain
+      # suppresses it like every other session start.
       died = session_died(signals) ->
-        if retry_allowed?(ledger), do: died_reason(died), else: nil
+        if retry_allowed?(), do: died_reason(died), else: nil
 
       st.last_outcome == :error and background_cmds(st) != nil ->
         "ended waiting on a backgrounded command"
@@ -183,13 +174,8 @@ defmodule Autonomous.PhaseStep do
   defp died_reason(%{kind: :start_failed}), do: "failed to start"
   defp died_reason(%{kind: :ended_early}), do: "ended without a result"
 
-  # FR-010: never start another session into a tripped breaker or a drain.
-  defp retry_allowed?(ledger) do
-    not breaker_tripped?(ledger) and not Workers.drain_requested?()
-  end
-
-  defp breaker_tripped?(nil), do: false
-  defp breaker_tripped?(ledger), do: Autonomous.Ledger.breaker_tripped?(ledger)
+  # FR-010: never start another session into a drain.
+  defp retry_allowed?, do: not Workers.drain_requested?()
 
   # The stranded-command list, or `nil` when the attempt did not strand any.
   defp background_cmds(st) do

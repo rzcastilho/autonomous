@@ -102,10 +102,7 @@ defmodule Autonomous.RecoveryQuickpollTest do
               created_at: &1.created_at
             }
           ),
-        settings:
-          RunContext.to_map(%RunContext{
-            budget_usd: 100.0
-          }),
+        settings: RunContext.to_map(%RunContext{}),
         scope: :ad_hoc,
         layout: layout
       })

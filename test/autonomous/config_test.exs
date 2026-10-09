@@ -7,7 +7,6 @@ defmodule Autonomous.ConfigTest do
     assert Config.repo() == "."
     assert Config.breakdown_dir() == "docs/breakdown"
     assert Config.worktree_root() == "../.speckit-worktrees"
-    assert Config.budget_usd() == 74.0
     assert Config.implement_max_turns() == 200
     assert Config.implement_no_progress_limit() == 3
 
@@ -32,10 +31,16 @@ defmodule Autonomous.ConfigTest do
   end
 
   test "put_env override is honored" do
-    original = Application.get_env(:autonomous, :budget_usd)
-    Application.put_env(:autonomous, :budget_usd, 7)
-    on_exit(fn -> Application.put_env(:autonomous, :budget_usd, original) end)
-    assert Config.budget_usd() == 7
+    original = Application.get_env(:autonomous, :pr_remote)
+    Application.put_env(:autonomous, :pr_remote, "upstream-override")
+
+    on_exit(fn ->
+      if original,
+        do: Application.put_env(:autonomous, :pr_remote, original),
+        else: Application.delete_env(:autonomous, :pr_remote)
+    end)
+
+    assert Config.pr_remote() == "upstream-override"
   end
 
   test "defaults apply when a key is unset" do

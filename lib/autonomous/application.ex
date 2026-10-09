@@ -20,10 +20,10 @@ defmodule Autonomous.Application do
         # PubSub bus for the control-plane console (008); ConsoleProjection
         # broadcasts, LiveViews subscribe.
         {Phoenix.PubSub, name: Autonomous.PubSub},
-        # Cost circuit-breaker, run-scoped budget from config.
+        # Cost accumulator (039: informational — never gates work).
         Autonomous.Ledger,
-        # Persistence breaker (018) — mirrors Ledger; a write failure drains
-        # and halts rather than killing a run mid-phase.
+        # Persistence breaker (018) — a write failure drains and halts rather
+        # than killing a run mid-phase.
         Autonomous.Store.Health,
         # Console read-model: folds orchestrator telemetry, never persists
         # (FR-036), never mutates orchestrator state.
@@ -68,18 +68,26 @@ defmodule Autonomous.Application do
   # (e.g. a stale config file, or an env-var mapping predating the
   # runtime.exs raise) must never boot a supervision tree that could start a
   # run against a setting the system will not honour (contracts/run-start.md
-  # § 3).
-  @retired_app_env [:pr_workflow, :max_concurrency]
+  # § 3). 039: :budget_usd and :containment_profile join them — cost is
+  # informational and there is one containment behaviour.
+  @retired_app_env [:pr_workflow, :max_concurrency, :budget_usd, :containment_profile]
 
   defp check_no_retired_settings! do
     Enum.each(@retired_app_env, fn key ->
       if Application.get_env(:autonomous, key) != nil do
         raise """
         autonomous config still names retired setting #{inspect(key)}. \
-        019 collapsed every run into one stacked-sequential shape; this key is \
-        refused, not read. Remove it from config.
+        #{retired_why(key)} This key is refused, not read. Remove it from config.
         """
       end
     end)
   end
+
+  defp retired_why(key) when key in [:pr_workflow, :max_concurrency],
+    do: "019 collapsed every run into one stacked-sequential shape."
+
+  defp retired_why(:budget_usd), do: "039: cost is informational; runs never stop on spend."
+
+  defp retired_why(:containment_profile),
+    do: "039: there is one containment behaviour; run in the container."
 end

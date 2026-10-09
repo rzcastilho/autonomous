@@ -110,7 +110,6 @@ defmodule Autonomous.InteractiveClarifyTest do
   describe "on_exit/1" do
     test "maps every wait exit to its escalation reason" do
       assert InteractiveClarify.on_exit(:answer_timeout) == {:needs_human, :answer_timeout}
-      assert InteractiveClarify.on_exit(:breaker) == {:needs_human, :breaker}
       assert InteractiveClarify.on_exit(:drained) == {:needs_human, :drained}
       assert InteractiveClarify.on_exit(:restart) == {:needs_human, :restart}
     end

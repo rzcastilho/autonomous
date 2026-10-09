@@ -58,11 +58,7 @@ defmodule Autonomous.Web.MissionControlLive do
 
   defp seed(socket) do
     view =
-      ConsoleReadModel.merge(
-        coordinator_status(),
-        ledger_snapshot(),
-        ConsoleProjection.read_safe()
-      )
+      ConsoleReadModel.merge(coordinator_status(), ConsoleProjection.read_safe())
 
     delayed? = ConsoleProjection.last_known().delayed?
     assign(socket, view: view |> overlay_manifest() |> Map.put(:delayed?, delayed?))
@@ -111,8 +107,6 @@ defmodule Autonomous.Web.MissionControlLive do
 
   defp coordinator_status, do: ConsoleProjection.coordinator_or_last_known()
 
-  defp ledger_snapshot, do: ConsoleProjection.ledger_or_last_known()
-
   # ---- live updates (FR-010, FR-033/SC-005) --------------------------------
 
   @impl true
@@ -131,12 +125,10 @@ defmodule Autonomous.Web.MissionControlLive do
   end
 
   def handle_info(
-        {:console, :reconciled,
-         %{coordinator: coordinator_status, ledger: ledger_snapshot} = payload},
+        {:console, :reconciled, %{coordinator: coordinator_status} = payload},
         socket
       ) do
-    view =
-      ConsoleReadModel.merge(coordinator_status, ledger_snapshot, ConsoleProjection.read_safe())
+    view = ConsoleReadModel.merge(coordinator_status, ConsoleProjection.read_safe())
 
     view = view |> overlay_manifest() |> Map.put(:delayed?, Map.get(payload, :delayed?, false))
     {:noreply, socket |> assign(view: view) |> refresh_run_state()}

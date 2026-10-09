@@ -103,7 +103,7 @@ defmodule Autonomous.Web.EscalationsLiveTest do
       |> elem(3)
       |> Keyword.get(
         :run_context,
-        %RunContext{budget_usd: 100.0}
+        %RunContext{}
       )
       |> RunContext.to_map()
 
@@ -460,7 +460,6 @@ defmodule Autonomous.Web.EscalationsLiveTest do
     """)
 
     ctx = %RunContext{
-      budget_usd: 10.0,
       plan_stack: [],
       pr_base: "main",
       pr_remote: "origin"

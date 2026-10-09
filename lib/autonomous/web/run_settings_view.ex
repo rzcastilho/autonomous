@@ -5,14 +5,14 @@ defmodule Autonomous.Web.RunSettingsView do
 
   Only keys in `RunContext.keys/0` are emitted, so a bookkeeping key
   (`__given__`, anything `__`-prefixed) can never reach the page.
-  `containment_profile` is dropped: the CONTAINMENT block owns it. Never calls
-  `inspect/1` (research R3).
+  039: the retired `budget_usd`/`containment_profile` keys a pre-039 record
+  may still carry are dropped, never shown. Never calls `inspect/1`
+  (research R3).
   """
 
   alias Autonomous.RunContext
 
-  @money_keys ~w(budget_usd)
-  @dropped ~w(containment_profile)
+  @dropped ~w(budget_usd containment_profile)
 
   @allowed (for key <- RunContext.keys(), Atom.to_string(key) not in @dropped do
               Atom.to_string(key)
@@ -22,7 +22,7 @@ defmodule Autonomous.Web.RunSettingsView do
   @spec rows(map() | nil) :: [{String.t(), String.t()}]
   def rows(settings) when is_map(settings) do
     for key <- @allowed, {:ok, value} <- [fetch(settings, key)] do
-      {key, row_value(key, value)}
+      {key, format_value(value)}
     end
   end
 
@@ -41,11 +41,6 @@ defmodule Autonomous.Web.RunSettingsView do
       _ -> nil
     end)
   end
-
-  defp row_value(key, value) when key in @money_keys and is_number(value),
-    do: "$" <> Autonomous.Web.CoreComponents.format_money(value)
-
-  defp row_value(_key, value), do: format_value(value)
 
   @doc "Render a setting or amendment value as plain text — no quoting artefacts, no `inspect/1`."
   @spec format_value(term()) :: String.t()

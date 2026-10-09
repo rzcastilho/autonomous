@@ -1,6 +1,5 @@
 defmodule Autonomous.TargetPackTest do
   use ExUnit.Case, async: true
-  import Bitwise
 
   alias Autonomous.TargetPack
 
@@ -14,16 +13,21 @@ defmodule Autonomous.TargetPackTest do
   defp git!(repo, args),
     do: {_, 0} = System.cmd("git", ["-C", repo | args], stderr_to_stdout: true)
 
-  test "install/2 lays down settings, executable hook, and template constitution" do
+  test "install/2 lays down settings, the contract-6 marker, and template constitution" do
     repo = tmp_repo()
     assert {:ok, summary} = TargetPack.install(repo)
     refute summary.constitution_skipped
+    refute summary.stale_hook_removed
 
     assert File.regular?(Path.join(repo, ".claude/settings.json"))
-    hook = Path.join(repo, ".claude/hooks/scope_guard.py")
-    assert File.regular?(hook)
-    stat = File.stat!(hook)
-    assert (stat.mode &&& 0o100) != 0, "hook should be executable"
+
+    assert Jason.decode!(File.read!(Path.join(repo, ".claude/autonomous-pack.json"))) ==
+             %{"contract" => 6}
+
+    refute File.exists?(Path.join(repo, ".claude/hooks"))
+    settings = Jason.decode!(File.read!(Path.join(repo, ".claude/settings.json")))
+    refute Map.has_key?(settings, "hooks")
+    refute Map.has_key?(settings["permissions"], "deny")
 
     assert File.read!(Path.join(repo, ".specify/memory/constitution.md")) =~
              "AUTONOMOUS_TEMPLATE"
@@ -113,110 +117,165 @@ defmodule Autonomous.TargetPackTest do
     assert Enum.any?(problems, &match?({:no_remote, "upstream"}, &1))
   end
 
-  defp old_settings_json do
-    Jason.encode!(%{
-      "permissions" => %{
-        "defaultMode" => "acceptEdits",
-        "allow" => ["Read"],
-        "deny" => ["Bash(sudo:*)"]
-      }
-    })
+  # A target still carrying the pre-039 (contract 5) pack: the scope_guard hook
+  # file, its PreToolUse registration, and no autonomous-pack.json marker.
+  defp downgrade_to_contract_5(repo) do
+    File.rm!(Path.join(repo, ".claude/autonomous-pack.json"))
+    File.mkdir_p!(Path.join(repo, ".claude/hooks"))
+    File.write!(Path.join(repo, ".claude/hooks/scope_guard.py"), "PACK_CONTRACT = 5\n")
+
+    settings = Path.join(repo, ".claude/settings.json")
+
+    old =
+      settings
+      |> File.read!()
+      |> Jason.decode!()
+      |> Map.put("hooks", %{
+        "PreToolUse" => [
+          %{
+            "matcher" => "Write|Edit|Bash",
+            "hooks" => [
+              %{
+                "type" => "command",
+                "command" => ~s(python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/scope_guard.py")
+              }
+            ]
+          }
+        ]
+      })
+
+    File.write!(settings, Jason.encode!(old))
   end
 
-  defp old_hook_source, do: "#!/usr/bin/env python3\nimport sys\nsys.exit(0)\n"
+  defp commit_all(repo, msg) do
+    git!(repo, ["add", "-A"])
+    git!(repo, ["commit", "-q", "-m", msg])
+  end
 
-  describe "containment profile (030)" do
-    test "profile strict (default) is unchanged, passes on an un-upgraded pack" do
+  defp assert_outdated(result, path) do
+    assert {:error, problems} = result
+
+    assert [{:pack_outdated, ^path, hint}] =
+             Enum.filter(problems, &match?({:pack_outdated, _, _}, &1))
+
+    assert hint =~ "contract 6"
+    assert hint =~ "TargetPack.install/2"
+    assert hint =~ "commit the result"
+  end
+
+  describe "pack contract 6 (039) — checked on every run" do
+    test "a freshly installed, committed pack passes" do
       repo = committed_target()
-      settings = Path.join(repo, ".claude/settings.json")
-
-      File.write!(settings, old_settings_json())
-      git!(repo, ["add", "-A"])
-      git!(repo, ["commit", "-q", "-m", "downgrade to pre-030 pack"])
-
       assert :ok = TargetPack.verify(repo)
-      assert :ok = TargetPack.verify(repo, profile: "strict")
+      assert :ok = TargetPack.check_pack_contract(repo)
     end
 
-    test "profile permissive passes for a freshly installed, committed pack" do
+    test "verify/2 has no :profile option any more — passing one raises" do
       repo = committed_target()
-      assert :ok = TargetPack.verify(repo, profile: "permissive")
+      assert_raise ArgumentError, fn -> TargetPack.verify(repo, profile: "strict") end
     end
 
-    test "profile permissive fails when the committed settings.json still has a deny list" do
+    test "an old (contract 5) committed pack is refused, naming the missing marker" do
+      repo = committed_target()
+      downgrade_to_contract_5(repo)
+      commit_all(repo, "contract 5 pack")
+
+      assert_outdated(TargetPack.verify(repo), ".claude/autonomous-pack.json")
+    end
+
+    test "a marker below contract 6 is refused" do
+      repo = committed_target()
+      File.write!(Path.join(repo, ".claude/autonomous-pack.json"), ~s({"contract": 5}))
+      commit_all(repo, "marker 5")
+
+      assert_outdated(TargetPack.verify(repo), ".claude/autonomous-pack.json")
+    end
+
+    test "a registered scope_guard hook in settings.json is refused" do
+      repo = committed_target()
+      downgrade_to_contract_5(repo)
+      File.rm_rf!(Path.join(repo, ".claude/hooks"))
+      File.write!(Path.join(repo, ".claude/autonomous-pack.json"), ~s({"contract": 6}))
+      commit_all(repo, "stale registration only")
+
+      assert_outdated(TargetPack.verify(repo), ".claude/settings.json")
+    end
+
+    test "a permissions.deny list in settings.json is refused" do
       repo = committed_target()
       settings = Path.join(repo, ".claude/settings.json")
-
-      File.write!(settings, old_settings_json())
-      git!(repo, ["add", "-A"])
-      git!(repo, ["commit", "-q", "-m", "reintroduce deny list"])
-
-      assert {:error, problems} = TargetPack.verify(repo, profile: "permissive")
-      assert Enum.any?(problems, &match?({:pack_outdated, ".claude/hooks/scope_guard.py", _}, &1))
-    end
-
-    test "profile permissive fails when the committed hook predates contract 2 (030)" do
-      repo = committed_target()
-      hook = Path.join(repo, ".claude/hooks/scope_guard.py")
-
-      File.write!(hook, old_hook_source())
-      git!(repo, ["add", "-A"])
-      git!(repo, ["commit", "-q", "-m", "downgrade hook"])
-
-      assert {:error, problems} = TargetPack.verify(repo, profile: "permissive")
-      assert Enum.any?(problems, &match?({:pack_outdated, ".claude/hooks/scope_guard.py", _}, &1))
-    end
-
-    test "profile permissive fails when the committed hook is contract 3" do
-      repo = committed_target()
-      hook = Path.join(repo, ".claude/hooks/scope_guard.py")
 
       File.write!(
-        hook,
-        String.replace(File.read!(hook), "PACK_CONTRACT = 5", "PACK_CONTRACT = 3")
+        settings,
+        settings
+        |> File.read!()
+        |> Jason.decode!()
+        |> put_in(["permissions", "deny"], ["Bash"])
+        |> Jason.encode!()
       )
 
-      git!(repo, ["add", "-A"])
-      git!(repo, ["commit", "-q", "-m", "contract 3 hook"])
+      commit_all(repo, "deny list")
 
-      assert {:error, problems} = TargetPack.verify(repo, profile: "permissive")
-      assert Enum.any?(problems, &match?({:pack_outdated, ".claude/hooks/scope_guard.py", _}, &1))
+      assert_outdated(TargetPack.verify(repo), ".claude/settings.json")
     end
 
-    test "profile permissive fails when the upgrade is installed but uncommitted" do
+    test "a committed scope_guard.py file is refused" do
       repo = committed_target()
-      hook = Path.join(repo, ".claude/hooks/scope_guard.py")
+      File.mkdir_p!(Path.join(repo, ".claude/hooks"))
+      File.write!(Path.join(repo, ".claude/hooks/scope_guard.py"), "x\n")
+      commit_all(repo, "stale hook file")
 
-      File.write!(hook, old_hook_source())
-      git!(repo, ["add", "-A"])
-      git!(repo, ["commit", "-q", "-m", "downgrade hook"])
+      assert_outdated(TargetPack.verify(repo), ".claude/hooks/scope_guard.py")
+    end
 
-      # Re-install (contract 4 again) but leave it uncommitted — HEAD: still
-      # sees the downgraded hook, so this must fail exactly like a missing
-      # upgrade.
+    test "reads the committed tree: an uncommitted re-install still fails, committing fixes it" do
+      repo = committed_target()
+      downgrade_to_contract_5(repo)
+      commit_all(repo, "contract 5 pack")
+
+      assert {:ok, %{stale_hook_removed: true}} = TargetPack.install(repo)
+      assert_outdated(TargetPack.verify(repo), ".claude/autonomous-pack.json")
+
+      commit_all(repo, "reinstall pack")
+      assert :ok = TargetPack.verify(repo)
+    end
+
+    test "install/2 removes the stale hook file, its registration, and the empty hooks dir" do
+      repo = committed_target()
+      downgrade_to_contract_5(repo)
+
+      assert {:ok, %{stale_hook_removed: true}} = TargetPack.install(repo)
+      refute File.exists?(Path.join(repo, ".claude/hooks"))
+      settings = Jason.decode!(File.read!(Path.join(repo, ".claude/settings.json")))
+      refute Map.has_key?(settings, "hooks")
+      assert :ok = TargetPack.check_pack_contract(repo, false)
+    end
+
+    test "install/2 keeps a hooks dir that holds other files" do
+      repo = tmp_repo()
+      File.mkdir_p!(Path.join(repo, ".claude/hooks"))
+      File.write!(Path.join(repo, ".claude/hooks/scope_guard.py"), "x\n")
+      File.write!(Path.join(repo, ".claude/hooks/mine.sh"), "echo\n")
+
+      assert {:ok, %{stale_hook_removed: true}} = TargetPack.install(repo)
+      refute File.exists?(Path.join(repo, ".claude/hooks/scope_guard.py"))
+      assert File.exists?(Path.join(repo, ".claude/hooks/mine.sh"))
+    end
+
+    test "a second install is a no-op (same bytes)" do
+      repo = tmp_repo()
       {:ok, _} = TargetPack.install(repo)
-
-      assert {:error, problems} = TargetPack.verify(repo, profile: "permissive")
-      assert Enum.any?(problems, &match?({:pack_outdated, ".claude/hooks/scope_guard.py", _}, &1))
+      files = ~w(.claude/settings.json .claude/autonomous-pack.json)
+      before = Map.new(files, &{&1, File.read!(Path.join(repo, &1))})
+      {:ok, summary} = TargetPack.install(repo)
+      refute summary.stale_hook_removed
+      assert Map.new(files, &{&1, File.read!(Path.join(repo, &1))}) == before
     end
 
-    test "check_pack_contract/1 reads the committed hook, not the working tree" do
-      repo = committed_target()
-      hook = Path.join(repo, ".claude/hooks/scope_guard.py")
-
-      File.write!(hook, old_hook_source())
-      git!(repo, ["add", "-A"])
-      git!(repo, ["commit", "-q", "-m", "downgrade hook"])
-
-      {:ok, _} = TargetPack.install(repo)
-
-      assert {:error, {:pack_outdated, ".claude/hooks/scope_guard.py", _hint}} =
-               TargetPack.check_pack_contract(repo)
-    end
-
-    test "check_pack_contract/1 passes once the upgrade is committed" do
-      repo = committed_target()
-      assert :ok = TargetPack.check_pack_contract(repo)
+    test "the agent-root pack warning is gone" do
+      Code.ensure_loaded!(TargetPack)
+      refute function_exported?(TargetPack, :agent_root_warning, 1)
+      assert TargetPack.contract() == 6
     end
   end
 
@@ -273,7 +332,7 @@ defmodule Autonomous.TargetPackTest do
 
         assert {:error, {:invalid_settings, ".claude/settings.json"}} = TargetPack.install(repo)
         assert read_settings(repo) == bad
-        refute File.exists?(Path.join(repo, ".claude/hooks/scope_guard.py"))
+        refute File.exists?(Path.join(repo, ".claude/autonomous-pack.json"))
         refute File.exists?(Path.join(repo, ".specify/memory/constitution.md"))
       end
     end
@@ -286,74 +345,6 @@ defmodule Autonomous.TargetPackTest do
                "env" => %{"A" => "1", "B" => "9"},
                "x" => 1
              }
-    end
-
-    test "permissive preflight refuses a contract 3 pack, accepts 4; strict unchanged" do
-      repo = committed_target()
-      assert :ok = TargetPack.verify(repo, profile: "permissive")
-
-      hook = Path.join(repo, ".claude/hooks/scope_guard.py")
-
-      File.write!(
-        hook,
-        String.replace(File.read!(hook), "PACK_CONTRACT = 5", "PACK_CONTRACT = 3")
-      )
-
-      git!(repo, ["add", "-A"])
-      git!(repo, ["commit", "-q", "-m", "contract 3"])
-
-      assert {:error, [{:pack_outdated, ".claude/hooks/scope_guard.py", hint}]} =
-               TargetPack.verify(repo, profile: "permissive")
-
-      assert hint =~ "TargetPack.install/2"
-      assert :ok = TargetPack.verify(repo, profile: "strict")
-    end
-  end
-
-  describe "pack contract 5 (037)" do
-    defp commit_contract(repo, n) do
-      hook = Path.join(repo, ".claude/hooks/scope_guard.py")
-
-      File.write!(
-        hook,
-        String.replace(File.read!(hook), "PACK_CONTRACT = 5", "PACK_CONTRACT = #{n}")
-      )
-
-      git!(repo, ["add", "-A"])
-      git!(repo, ["commit", "-q", "-m", "contract #{n}"])
-    end
-
-    test "install/2 writes a hook that reports contract 5" do
-      repo = committed_target()
-
-      {out, 0} =
-        System.cmd("python3", [Path.join(repo, ".claude/hooks/scope_guard.py"), "--contract"])
-
-      assert String.trim(out) == "5"
-    end
-
-    test "permissive check passes at contract 4 and 5" do
-      repo = committed_target()
-      assert :ok = TargetPack.check_pack_contract(repo)
-      commit_contract(repo, 4)
-      assert :ok = TargetPack.check_pack_contract(repo)
-      assert :ok = TargetPack.verify(repo, profile: "permissive")
-    end
-
-    test "agent_root_warning/1: ok at 5, warning at 4, unknown on probe failure" do
-      repo = committed_target()
-      assert :ok = TargetPack.agent_root_warning(repo)
-
-      commit_contract(repo, 4)
-
-      assert {:warning, {:pack_below_agent_root_contract, 4, 5}} =
-               TargetPack.agent_root_warning(repo)
-
-      empty = Path.join(System.tmp_dir!(), "no_repo_#{System.unique_integer([:positive])}")
-      File.mkdir_p!(empty)
-
-      assert {:warning, {:pack_below_agent_root_contract, :unknown, 5}} =
-               TargetPack.agent_root_warning(empty)
     end
   end
 end

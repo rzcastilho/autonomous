@@ -9,10 +9,10 @@ defmodule Autonomous.LiveConfig do
   Constitution II) — a single invalid field rejects the whole change with no
   setter call. On success, dispatches each field via the mechanism table:
   per-phase models and PR settings go to app env (`Config.model_for/1` and
-  friends are read at call time); budget goes through the additive
-  `Ledger.set_budget/2` setter, which touches no in-flight work (Constitution
-  IV: drain, don't kill). 019: `:pr_workflow`/`:max_concurrency` are retired —
-  every run is a stacked sequential run, so there is nothing left to toggle.
+  friends are read at call time).
+  019: `:pr_workflow`/`:max_concurrency` are retired — every run is a stacked
+  sequential run, so there is nothing left to toggle. 039: `:budget_usd` is retired too — cost is informational, so an edit
+  naming it is refused (nothing applied), not silently ignored.
 
   018/FR-027: a successful apply against a live run also records a settings
   amendment through the store — changed keys only, old -> new — so the
@@ -20,7 +20,7 @@ defmodule Autonomous.LiveConfig do
   no-op with no live `Coordinator` (most unit tests) or no store-backed run.
   """
 
-  alias Autonomous.{Config, Coordinator, Ledger, RepoIdentity, Store}
+  alias Autonomous.{Config, Coordinator, RepoIdentity, Store}
   alias Autonomous.Store.Writer
 
   @app :autonomous
@@ -28,7 +28,6 @@ defmodule Autonomous.LiveConfig do
 
   @type change :: %{
           optional(:models) => %{(atom() | String.t()) => String.t()},
-          optional(:budget_usd) => number(),
           optional(:pr_base) => String.t(),
           optional(:pr_remote) => String.t()
         }
@@ -67,7 +66,6 @@ defmodule Autonomous.LiveConfig do
   end
 
   defp old_value(:models), do: Config.models()
-  defp old_value(:budget_usd), do: Config.budget_usd()
   defp old_value(:pr_base), do: Config.pr_base()
   defp old_value(:pr_remote), do: Config.pr_remote()
 
@@ -85,8 +83,8 @@ defmodule Autonomous.LiveConfig do
     if errors == %{}, do: :ok, else: {:error, errors}
   end
 
-  defp validate_field(:budget_usd, v) when is_number(v) and v >= 0, do: :ok
-  defp validate_field(:budget_usd, _v), do: {:error, "budget must be a non-negative number"}
+  defp validate_field(:budget_usd, _v),
+    do: {:error, "budget_usd is retired (039: cost is informational; runs never stop on spend)"}
 
   defp validate_field(:models, models) when is_map(models) do
     invalid = for {phase, model} <- models, model not in @valid_models, do: {phase, model}
@@ -110,10 +108,6 @@ defmodule Autonomous.LiveConfig do
       end)
 
     Application.put_env(@app, :models, updated)
-  end
-
-  defp dispatch({:budget_usd, amount}) do
-    if server = Process.whereis(Ledger), do: Ledger.set_budget(server, amount * 1.0)
   end
 
   defp dispatch({:pr_base, v}), do: Application.put_env(@app, :pr_base, v)

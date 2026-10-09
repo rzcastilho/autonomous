@@ -185,25 +185,30 @@ defmodule Autonomous.ContinueRunAtomicTest do
       assert_nothing_running(run_key, stopping_feature())
     end
 
-    test ":containment_profile differing from the recorded one" do
+    # 039: both former knobs are retired options, refused before the parked
+    # run is touched — any value, including the one a pre-039 run recorded.
+    test "retired :containment_profile (any value)" do
       run_key = park()
 
-      refuse(
-        run_key,
-        continue_opts(containment_profile: "permissive"),
-        {:error, {:preflight, [{:containment_profile_locked, "strict"}]}}
-      )
+      for value <- ["permissive", "strict", "bogus"] do
+        refuse(
+          run_key,
+          continue_opts(containment_profile: value),
+          {:error, {:preflight, [{:retired_option, :containment_profile}]}}
+        )
+      end
     end
 
-    test "an invalid :containment_profile value" do
+    test "retired :budget_usd (any value, including nil)" do
       run_key = park()
-      {:error, reason} = Autonomous.Containment.normalize("bogus")
 
-      refuse(
-        run_key,
-        continue_opts(containment_profile: "bogus"),
-        {:error, {:preflight, [reason]}}
-      )
+      for value <- [5.0, nil] do
+        refuse(
+          run_key,
+          continue_opts(budget_usd: value),
+          {:error, {:preflight, [{:retired_option, :budget_usd}]}}
+        )
+      end
     end
 
     test "stopping feature has no checkpoint" do
@@ -275,7 +280,9 @@ defmodule Autonomous.ContinueRunAtomicTest do
     end
   end
 
-  describe "the incident: permissive run, committed pack lags contract 4" do
+  # 039: the pack contract check runs on every run, so the r000003 incident
+  # (a parked run whose committed pack lags) is refused without any profile.
+  describe "the incident: committed pack lags contract 6 (always-on check)" do
     setup do
       repo = Path.join(System.tmp_dir!(), "continue_atomic_#{System.unique_integer([:positive])}")
       root = repo <> "_wt"
@@ -316,26 +323,20 @@ defmodule Autonomous.ContinueRunAtomicTest do
       do: {_, 0} = System.cmd("git", ["-C", repo | args], stderr_to_stdout: true)
 
     defp downgrade_pack(repo) do
-      hook = Path.join(repo, ".claude/hooks/scope_guard.py")
-
-      File.write!(
-        hook,
-        String.replace(File.read!(hook), "PACK_CONTRACT = 5", "PACK_CONTRACT = 3")
-      )
-
+      File.rm!(Path.join(repo, ".claude/autonomous-pack.json"))
       git!(repo, ["add", "-A"])
       git!(repo, ["commit", "-q", "-m", "pack lags"])
     end
 
     test "is refused with the pack problem, leaves the run parked, then continues after the fix",
          %{repo: repo} do
-      run_key = park({:halted, :critical_finding}, containment_profile: "permissive")
+      run_key = park({:halted, :critical_finding})
       downgrade_pack(repo)
       before = snapshot(run_key)
 
-      # No :runner/:executor seam and no :containment_profile opt — the
-      # refusal must come from preflight_stacked/2, as in r000003.
-      assert {:error, {:preflight, [{:pack_outdated, ".claude/hooks/scope_guard.py", _} | _]}} =
+      # No :runner/:executor seam — the refusal must come from
+      # preflight_stacked/1, as in r000003.
+      assert {:error, {:preflight, [{:pack_outdated, ".claude/autonomous-pack.json", _} | _]}} =
                Autonomous.continue_run(features: features(), owner: self())
 
       assert_intact(run_key, before)

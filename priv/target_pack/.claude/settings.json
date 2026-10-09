@@ -13,18 +13,5 @@
       "Write",
       "Bash"
     ]
-  },
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash|WebFetch|WebSearch",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/scope_guard.py\""
-          }
-        ]
-      }
-    ]
   }
 }

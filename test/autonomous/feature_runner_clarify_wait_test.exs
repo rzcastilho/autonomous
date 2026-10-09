@@ -128,6 +128,7 @@ defmodule Autonomous.FeatureRunnerClarifyWaitTest do
     File.mkdir_p!(Path.join(repo, ".claude/skills"))
     File.write!(Path.join(repo, ".claude/skills/.gitkeep"), "")
     File.write!(Path.join(repo, ".claude/settings.json"), "{}")
+    File.write!(Path.join(repo, ".claude/autonomous-pack.json"), ~s({"contract": 6}))
     git!(repo, ["add", "-A"])
     git!(repo, ["commit", "-q", "-m", "base"])
 
@@ -223,7 +224,7 @@ defmodule Autonomous.FeatureRunnerClarifyWaitTest do
     test "clarify NEEDS HUMAN enters :awaiting_answers, worktree retained, no spend while waiting" do
       wt = scaffolded_worktree()
       run_key = open_store_run()
-      {:ok, ledger} = Ledger.start_link(budget: 100, name: nil)
+      {:ok, ledger} = Ledger.start_link(name: nil)
       Application.put_env(:autonomous, :test_clarify_clears_at, :never)
 
       task =
@@ -327,33 +328,6 @@ defmodule Autonomous.FeatureRunnerClarifyWaitTest do
       assert result.status == :escalated
       assert result.reason == {:needs_human, :answer_timeout}
       assert store_status(run_key, "001") == :escalated
-    end
-
-    test "a tripped breaker while waiting escalates with no further spend" do
-      wt = scaffolded_worktree()
-      run_key = open_store_run()
-      {:ok, ledger} = Ledger.start_link(budget: 100, name: nil)
-      Application.put_env(:autonomous, :test_clarify_clears_at, :never)
-
-      task =
-        Task.async(fn ->
-          FeatureRunner.run(feature(),
-            worktree: wt,
-            ledger: ledger,
-            run_context: interactive_context(),
-            run_key: run_key
-          )
-        end)
-
-      open_round(run_key, "001")
-      spend_before = Ledger.spent(ledger)
-      Ledger.record(ledger, nil, 1_000)
-
-      result = Task.await(task, 5_000)
-      assert result.status == :escalated
-      assert result.reason == {:needs_human, :breaker}
-      # The only additional "spend" is the breaker trip itself, not a session.
-      assert Ledger.spent(ledger) == spend_before + 1_000
     end
 
     test "Workers.drain/1 returns quickly regardless of the (long) answer timeout" do

@@ -103,7 +103,6 @@ defmodule Autonomous.Actions.RunFeaturePhase do
         layout: state.layout,
         scope: scope,
         clarify_answers: if(phase == :clarify, do: Map.get(params, :operator_answers)),
-        containment: state.containment,
         background_retry: Map.get(params, :background_retry),
         deadline_ms: deadline_ms
       )
@@ -112,17 +111,15 @@ defmodule Autonomous.Actions.RunFeaturePhase do
       {:ok, stream} ->
         result = PhaseSession.reduce(stream, deadline_ms)
         AgentRoot.log_installs(state.feature, phase, result)
-        {result, untrusted} = WorkspaceTrust.settle(result, collector, state.containment)
+        result = WorkspaceTrust.settle(result, collector)
 
-        {outcome, signals} =
-          phase |> classify(result, state, scope) |> WorkspaceTrust.apply_to(untrusted)
+        {outcome, signals} = classify(phase, result, state, scope)
 
         signals =
           signals
           |> put_artifact_absent_at_start(artifact_absent?)
           |> PhaseResult.reset_background(Map.get(state, :last_signals))
           |> PhaseResult.reset_session_died(Map.get(state, :last_signals))
-          |> PhaseResult.reset_untrusted_workspace(Map.get(state, :last_signals))
 
         {amount, _source} = Cost.for_phase(phase, result)
         record_cost(state.ledger, amount)
@@ -148,8 +145,7 @@ defmodule Autonomous.Actions.RunFeaturePhase do
            last_signals:
              %{}
              |> PhaseResult.reset_background(Map.get(state, :last_signals))
-             |> PhaseResult.reset_session_died(Map.get(state, :last_signals))
-             |> PhaseResult.reset_untrusted_workspace(Map.get(state, :last_signals)),
+             |> PhaseResult.reset_session_died(Map.get(state, :last_signals)),
            last_result: nil,
            history: [%{phase: phase, outcome: :error, error: reason} | state.history]
          }}

@@ -9,10 +9,12 @@ defmodule Autonomous.PhaseRequest do
   Spec Kit command (`clarify` reviewer, `converge`) use the versioned prompt
   packs in `priv/prompts/`.
 
-  Per-phase permissions are set as **first-class RunRequest fields**
-  (`permission_mode`, `allowed_tools`, `disallowed_tools`) — Phase 0 confirmed
-  the adapter forwards them. This is belt-and-suspenders with the committed
-  `.claude/settings.json` scope guard (Phase 5).
+  Permissions are set as **first-class RunRequest fields** (`permission_mode`,
+  `allowed_tools`, `disallowed_tools`) — Phase 0 confirmed the adapter
+  forwards them. 039: there is one containment behaviour — every phase,
+  remediation and describe session gets `:bypass_permissions`, the full tool
+  set, and only the headless exclusions; the container (`scripts/autonomous`)
+  is the outer boundary.
   """
 
   alias Jido.Harness.RunRequest
@@ -20,7 +22,6 @@ defmodule Autonomous.PhaseRequest do
   alias Autonomous.{
     AgentRoot,
     Config,
-    Containment,
     Feature,
     Layout,
     Prompts,
@@ -39,13 +40,6 @@ defmodule Autonomous.PhaseRequest do
     implement: "/speckit.implement"
   }
 
-  # Tools that must be pre-approved (via `--allowedTools`) so the headless CLI
-  # runs them non-interactively — Bash is required because the Spec Kit phase
-  # scripts (`.specify/scripts/*.sh`, e.g. setup-plan.sh) run under Bash; without
-  # this they hit "This command requires approval" and the phase produces no
-  # files (plan.md/tasks.md), silently no-opping everything downstream.
-  @write_bash_tools ~w(Read Write Edit Bash Grep Glob)
-
   # Tools every headless phase must never reach, regardless of `allowed_tools`
   # (which only pre-approves; it does not hide). `Agent`/`Task` background work
   # into a subagent and let the model end its turn "waiting on results" —
@@ -56,10 +50,13 @@ defmodule Autonomous.PhaseRequest do
   # to the background — the exact stall shape the headless session cannot survive.
   @headless_disallowed ~w(Agent Task ScheduleWakeup Monitor)
 
-  # Full tool set under `permissive` (030, FR-005–FR-007) — `WebFetch`/`WebSearch`
-  # join the write/Bash set; the FR-008 exclusions (`Agent`/`Task`/`ScheduleWakeup`)
-  # (and `Monitor`, 032) are the only thing still disallowed.
-  @permissive_allowed_tools ~w(Read Write Edit MultiEdit NotebookEdit Bash Grep Glob WebFetch WebSearch)
+  # The full tool set every session gets (039; the former `permissive` set,
+  # 030 FR-005–FR-007). Pre-approved via `--allowedTools` so the headless CLI
+  # runs them non-interactively — Bash is required because the Spec Kit phase
+  # scripts (`.specify/scripts/*.sh`) run under Bash. The FR-008 exclusions
+  # (`Agent`/`Task`/`ScheduleWakeup`, and `Monitor`, 032) are the only thing
+  # disallowed.
+  @allowed_tools ~w(Read Write Edit MultiEdit NotebookEdit Bash Grep Glob WebFetch WebSearch)
 
   @doc """
   Build the RunRequest for `feature` at `phase`.
@@ -83,11 +80,6 @@ defmodule Autonomous.PhaseRequest do
       clarify re-run, appended after `:resume_prompt`'s section so both may
       appear (contracts/needs-human-format.md Answer-folding instruction).
       `nil`/absent leaves the prompt byte-identical to today (FR-002).
-    * `:containment` — (030) `"strict"` (default) or `"permissive"`. Under
-      `"strict"` the built request is byte-identical to today except for the
-      env markers now carried in `metadata["claude"][:env]`. Under
-      `"permissive"` every phase gets `:bypass_permissions` and the full tool
-      set (contracts/run-options.md).
     * `:background_retry` — (032) list of command strings a previous session left
       backgrounded. A non-empty list appends a corrective "Retry note" as the
       **last** prompt block; `nil`/`[]` leaves the prompt byte-identical
@@ -107,7 +99,6 @@ defmodule Autonomous.PhaseRequest do
   @spec build(Feature.t(), atom(), keyword()) :: RunRequest.t()
   def build(%Feature{} = feature, phase, opts \\ []) when is_atom(phase) do
     layout = Keyword.get(opts, :layout)
-    containment = Keyword.get(opts, :containment, "strict")
     agent_root = Keyword.get_lazy(opts, :agent_root, &AgentRoot.advertised?/0)
     opts = Keyword.put(opts, :agent_root, agent_root)
 
@@ -122,11 +113,11 @@ defmodule Autonomous.PhaseRequest do
         |> append_background_retry(Keyword.get(opts, :background_retry)),
       cwd: Keyword.get(opts, :cwd, Config.repo()),
       model: Config.model_for(phase),
-      metadata: session_metadata(containment, opts)
+      metadata: session_metadata(opts)
     }
     |> maybe_put(:max_turns, max_turns(phase))
     |> maybe_put(:session_id, Keyword.get(opts, :session_id))
-    |> Map.merge(permissions(phase, containment))
+    |> Map.merge(permissions())
     |> RunRequest.new!()
   end
 
@@ -141,8 +132,6 @@ defmodule Autonomous.PhaseRequest do
       breakdown ref (same as `build/3`).
     * `:prompt` — the operator's verbatim remediation instruction, appended
       after a short framing header.
-    * `:containment` — (030) `"strict"` (default) or `"permissive"`, same
-      effect as `build/3`.
     * `:deadline_ms` — (032) same as `build/3`.
     * `:stderr_collector` — (036) same as `build/3`.
 
@@ -151,23 +140,23 @@ defmodule Autonomous.PhaseRequest do
   @spec build_remediation(Feature.t(), String.t(), keyword()) :: RunRequest.t()
   def build_remediation(%Feature{} = feature, model, opts \\ []) when is_binary(model) do
     layout = Keyword.get(opts, :layout)
-    containment = Keyword.get(opts, :containment, "strict")
     opts = Keyword.put_new_lazy(opts, :agent_root, &AgentRoot.advertised?/0)
 
     %{
       prompt: remediation_prompt(feature, layout, Keyword.get(opts, :prompt)),
       cwd: Keyword.get(opts, :cwd, Config.repo()),
       model: model,
-      metadata: session_metadata(containment, opts)
+      metadata: session_metadata(opts)
     }
-    |> Map.merge(remediation_permissions(containment))
+    |> Map.merge(permissions())
     |> RunRequest.new!()
   end
 
   # 032: the Bash timeouts travel on two channels — the launch env and an inline
   # `--settings` JSON — so a target's own settings cannot silently drop them
-  # (contracts/session-timeouts.md §2–§3). `AUTONOMOUS_*` markers are unchanged.
-  defp session_metadata(containment, opts) do
+  # (contracts/session-timeouts.md §2–§3). 039: no orchestration/profile markers
+  # — the hook that read them is gone; only agent-root markers remain (037).
+  defp session_metadata(opts) do
     timeouts =
       (Keyword.get(opts, :deadline_ms) || Config.phase_timeout())
       |> ShellTimeouts.for_deadline()
@@ -175,8 +164,7 @@ defmodule Autonomous.PhaseRequest do
     %{
       "claude" => %{
         env:
-          Containment.session_env(containment)
-          |> Map.merge(timeouts)
+          timeouts
           |> Map.merge(AgentRoot.session_env(Keyword.get(opts, :agent_root, false)))
           |> put_collector(Keyword.get(opts, :stderr_collector)),
         settings: Jason.encode!(%{"env" => timeouts})
@@ -367,66 +355,11 @@ defmodule Autonomous.PhaseRequest do
   defp max_turns(:implement), do: Config.implement_max_turns()
   defp max_turns(_), do: nil
 
-  # `permissive` (030): every phase — including analyze/clarify/describe,
-  # which are read-only under `strict` — gets the full tool set (FR-007, the
-  # operator declined a read-only-phases floor at clarify). `strict` keeps
-  # today's per-phase table byte-identical (SC-003).
-  defp permissions(_phase, "permissive"), do: permissive_permissions()
-
-  defp permissions(phase, _strict), do: strict_permissions(phase)
-
-  defp permissive_permissions do
+  # 039: one permission set for every phase, remediation and describe session.
+  defp permissions do
     %{
       permission_mode: :bypass_permissions,
-      allowed_tools: @permissive_allowed_tools,
-      disallowed_tools: @headless_disallowed
-    }
-  end
-
-  # analyze is read-only. The phases that run Spec Kit scripts and/or write repo
-  # files (specify, plan, tasks, implement, converge) get non-interactive
-  # write+Bash. clarify only edits the spec, so it needs no Bash.
-  defp strict_permissions(:analyze) do
-    %{
-      permission_mode: :plan,
-      allowed_tools: ~w(Read Grep Glob),
-      disallowed_tools: ~w(Write Edit) ++ @headless_disallowed
-    }
-  end
-
-  defp strict_permissions(:clarify) do
-    %{
-      permission_mode: :accept_edits,
-      allowed_tools: ~w(Read Write Edit Grep Glob),
-      disallowed_tools: @headless_disallowed
-    }
-  end
-
-  # describe is read-only but needs Bash to inspect the diff (git diff/log/status).
-  defp strict_permissions(:describe) do
-    %{
-      permission_mode: :plan,
-      allowed_tools: ~w(Read Grep Glob Bash),
-      disallowed_tools: ~w(Write Edit) ++ @headless_disallowed
-    }
-  end
-
-  defp strict_permissions(phase) when phase in [:specify, :plan, :tasks, :implement, :converge] do
-    %{
-      permission_mode: :accept_edits,
-      allowed_tools: @write_bash_tools,
-      disallowed_tools: @headless_disallowed
-    }
-  end
-
-  defp strict_permissions(_phase), do: %{}
-
-  defp remediation_permissions("permissive"), do: permissive_permissions()
-
-  defp remediation_permissions(_strict) do
-    %{
-      permission_mode: :accept_edits,
-      allowed_tools: @write_bash_tools,
+      allowed_tools: @allowed_tools,
       disallowed_tools: @headless_disallowed
     }
   end

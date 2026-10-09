@@ -283,7 +283,7 @@ defmodule Autonomous.Store.Writer do
   @doc """
   Write one feature's checkpoint on its own, for the single boundary where the
   phase attempt it belongs to was already committed by an earlier transaction:
-  the analyze loop's failure/breaker paths, where `AnalyzeRunner` recorded the
+  the analyze loop's failure/drain paths, where `AnalyzeRunner` recorded the
   analyze run before the corrective step ran. Every other boundary MUST go
   through `record_phase_attempt/2`, which writes the attempt and its checkpoint
   together (FR-006) — this function does not weaken that, because the attempt
@@ -593,7 +593,8 @@ defmodule Autonomous.Store.Writer do
   @doc """
   Close an interactive-clarify round on any non-answer exit (029, research.md
   R3/R5), one guarded transaction: flips the row out of `outcome: :open` to
-  `payload.outcome` (`:timed_out | :breaker | :drained | :interrupted`).
+  `payload.outcome` (`:timed_out | :drained | :interrupted`; `:breaker` is
+  still accepted for pre-039 rows, but nothing new writes it).
   Fails, and writes nothing, when the row is already out of `:open` (an
   answer won the race).
   """

@@ -254,6 +254,7 @@ defmodule Autonomous.ResumeTest do
     File.mkdir_p!(Path.join(repo, ".claude/skills"))
     File.write!(Path.join(repo, ".claude/skills/.gitkeep"), "")
     File.write!(Path.join(repo, ".claude/settings.json"), "{}")
+    File.write!(Path.join(repo, ".claude/autonomous-pack.json"), ~s({"contract": 6}))
     git!(repo, ["init", "-q", "-b", "main"])
     git!(repo, ["config", "user.email", "t@e.com"])
     git!(repo, ["config", "user.name", "T"])
@@ -324,11 +325,20 @@ defmodule Autonomous.ResumeTest do
     {repo, layout_for(repo)}
   end
 
+  # 039: a continue through the real executor verifies the target pack, so a
+  # test that continues without a :runner/:executor seam needs a scaffolded,
+  # committed target (pack contract 6) — `hermetic_repo/0` has none.
+  defp scaffolded_hermetic_repo do
+    repo = base_repo()
+    point_config_at(repo, Path.join(repo, "_wt"))
+    {repo, layout_for(repo)}
+  end
+
   defp open_run(
          repo,
          layout,
          features,
-         context \\ %RunContext{budget_usd: 100.0}
+         context \\ %RunContext{}
        ) do
     repo_id = RepoIdentity.partition(repo)
 
@@ -1205,7 +1215,7 @@ defmodule Autonomous.ResumeTest do
 
     test "continue_run/1 after a publish park retries only the publish: zero phase sessions, and the row flips back to :done with pr_url" do
       id = unique_id()
-      {repo, layout} = hermetic_repo()
+      {repo, layout} = scaffolded_hermetic_repo()
       f = feature(id)
       branch = Worktree.locate(f).branch
 
@@ -1238,7 +1248,7 @@ defmodule Autonomous.ResumeTest do
 
     test "continue_run/1 with a pr_url already recorded via record_pr/3 never touches the publisher's push/gh path" do
       id = unique_id()
-      {repo, layout} = hermetic_repo()
+      {repo, layout} = scaffolded_hermetic_repo()
       f = feature(id)
       branch = Worktree.locate(f).branch
 
@@ -1433,7 +1443,7 @@ defmodule Autonomous.ResumeTest do
     # (`retired_settings_test.exs`'s "refuses :pr_workflow"), so neither has a
     # new-model equivalent to rewrite into.
 
-    test "reapplies recorded budget_usd/plan_stack/pr_base/pr_remote over live Config defaults" do
+    test "reapplies recorded plan_stack/pr_base/pr_remote over live Config defaults" do
       id = unique_id()
       repo = base_repo()
       root = tmp_root()
@@ -1447,7 +1457,6 @@ defmodule Autonomous.ResumeTest do
           real_layout(repo, root),
           [feature(id)],
           %RunContext{
-            budget_usd: 42.0,
             plan_stack: ["research", "plan"],
             pr_base: "develop",
             pr_remote: "upstream"
@@ -1479,7 +1488,7 @@ defmodule Autonomous.ResumeTest do
       # `run_key` at this point; `Store.run/1` on the specific `run_key` we
       # opened is the right check.)
       assert {:ok, detail} = Store.run(run_key)
-      assert detail.settings["budget_usd"] == 42.0
+      refute Map.has_key?(detail.settings, "budget_usd")
       assert detail.settings["plan_stack"] == ["research", "plan"]
       assert detail.settings["pr_base"] == "develop"
       assert detail.settings["pr_remote"] == "upstream"
@@ -1516,7 +1525,8 @@ defmodule Autonomous.ResumeTest do
           assert_receive {:runner_called, _feat}
         end)
 
-      assert log =~ "budget_usd"
+      # 039: budget_usd is retired — never reapplied, never a logged fallback.
+      refute log =~ "budget_usd"
       assert log =~ "plan_stack"
       assert log =~ "pr_base"
       assert log =~ "pr_remote"
@@ -1555,7 +1565,7 @@ defmodule Autonomous.ResumeTest do
         end)
 
       refute log =~ "pr_base"
-      assert log =~ "budget_usd"
+      refute log =~ "budget_usd"
       assert log =~ "plan_stack"
       assert log =~ "pr_remote"
     end

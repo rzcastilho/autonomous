@@ -32,21 +32,6 @@ defmodule Autonomous.CoordinatorProbe do
     end
   end
 
-  @doc """
-  Exit-safe `Ledger.snapshot/1`: the snapshot, or `nil` when the ledger is
-  absent, slow, or dies mid-call.
-  """
-  @spec ledger(GenServer.server(), timeout()) :: map() | nil
-  def ledger(server, timeout) do
-    if alive?(server) do
-      try do
-        GenServer.call(server, :snapshot, timeout)
-      catch
-        :exit, _ -> nil
-      end
-    end
-  end
-
   defp alive?(server) when is_atom(server), do: Process.whereis(server) != nil
   defp alive?(server) when is_pid(server), do: node(server) != node() or Process.alive?(server)
   defp alive?(_server), do: true

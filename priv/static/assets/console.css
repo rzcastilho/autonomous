@@ -366,54 +366,6 @@ fieldset {
   background: var(--awaiting);
 }
 
-.cost-gauge {
-  position: relative;
-  min-height: 28px;
-  padding-bottom: var(--sp-8);
-  background: var(--raised);
-  border: 1px solid var(--border);
-  border-radius: var(--r-control);
-  overflow: hidden;
-}
-
-.cost-gauge-label {
-  position: relative;
-  z-index: 1;
-  display: block;
-  padding: var(--sp-4) var(--sp-8);
-  font-family: var(--font-mono);
-  font-size: var(--fs-meta);
-  color: var(--text-secondary);
-}
-
-.cost-gauge-reserved,
-.cost-gauge-fill {
-  position: absolute;
-  left: 0;
-  bottom: 0;
-  height: 7px;
-}
-
-.cost-gauge-reserved {
-  background: var(--hatch-reserved);
-}
-
-.cost-gauge-fill {
-  border-radius: var(--r-chip);
-}
-
-.cost-gauge[data-band="safe"] .cost-gauge-fill {
-  background: var(--done);
-}
-
-.cost-gauge[data-band="warning"] .cost-gauge-fill {
-  background: var(--escalated);
-}
-
-.cost-gauge[data-band="tripped"] .cost-gauge-fill {
-  background: var(--failed);
-}
-
 .badge {
   display: inline-flex;
   align-items: center;
@@ -691,41 +643,18 @@ fieldset {
   flex: 0 0 auto;
 }
 
-.topbar-gauge {
-  flex: 0 0 280px;
-}
-
-.breaker-chip {
+.topbar-spend {
   flex: 0 0 auto;
   white-space: nowrap;
   font-family: var(--font-mono);
-  font-size: var(--fs-meta);
-  padding: 4px var(--sp-10);
-  border-radius: var(--r-chip);
-}
-
-.breaker-armed {
-  background: color-mix(in srgb, var(--done) 10%, transparent);
-  color: var(--done);
-  border: 1px solid var(--done);
-}
-
-.breaker-tripped {
-  background: color-mix(in srgb, var(--halted) 10%, transparent);
-  color: var(--halted);
-  border: 1px solid var(--halted);
-}
-
-.containment-chip {
-  flex: 0 0 auto;
-  white-space: nowrap;
-  font-family: var(--font-mono);
-  font-size: var(--fs-meta);
-  padding: 4px var(--sp-10);
-  border-radius: var(--r-chip);
-  background: var(--raised);
+  font-size: var(--fs-body);
   color: var(--text);
-  border: 1px solid var(--border-strong);
+}
+
+.topbar-spend-label {
+  margin-right: var(--sp-8);
+  font-size: var(--fs-meta);
+  color: var(--text-secondary);
 }
 
 .topbar-clock {
@@ -2716,8 +2645,7 @@ textarea {
     display: none;
   }
 
-  .topbar-gauge {
-    flex: 1 1 100%;
+  .topbar-spend {
     order: 3;
   }
 

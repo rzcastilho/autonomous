@@ -120,10 +120,6 @@ defmodule Autonomous.Config do
   @spec pr_remote() :: String.t()
   def pr_remote, do: get(:pr_remote, "origin")
 
-  @doc "Cost circuit-breaker budget for a run, in USD."
-  @spec budget_usd() :: number()
-  def budget_usd, do: get(:budget_usd, 25.0)
-
   @doc """
   Wall-clock deadline (ms) for one harness session — a whole phase, or one
   implement chunk — enforced inside the action by `PhaseSession`. The outer
@@ -258,24 +254,6 @@ defmodule Autonomous.Config do
   @doc "Wait-loop poll interval in ms while a feature is `:awaiting_answers` (029). Not a run setting."
   @spec clarify_poll_ms() :: pos_integer()
   def clarify_poll_ms, do: get(:clarify_poll_ms, 1_000)
-
-  @doc """
-  Default containment profile (030, FR-002) — shipped default `:strict`.
-  Raises `ArgumentError` naming the key and value for anything but
-  `:strict`/`:permissive`; a config typo must fail loud, not silently widen
-  or narrow every session's permissions.
-  """
-  @spec containment_profile() :: :strict | :permissive
-  def containment_profile do
-    case get(:containment_profile, :strict) do
-      value when value in [:strict, :permissive] ->
-        value
-
-      value ->
-        raise ArgumentError,
-              "invalid :containment_profile #{inspect(value)}; expected :strict or :permissive"
-    end
-  end
 
   @spec get(atom(), term()) :: term()
   defp get(key, default), do: Application.get_env(@app, key, default)

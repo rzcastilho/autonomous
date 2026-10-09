@@ -58,53 +58,23 @@ defmodule Autonomous.WorkspaceTrust do
   defp kind(line), do: Enum.find(@kinds, &String.contains?(line, &1))
 
   @doc """
-  Decide what an observation means for a session under `profile`
-  (contracts/untrusted-workspace-gate.md §3). Returns the observation to signal
-  (`strict`, the default for any non-`"permissive"` value) or `nil`; under
-  `"permissive"` it only logs a warning and returns `nil`.
+  Close out a session's collector: read and stop it, record the observation on
+  the result, and log a warning when the CLI reported an untrusted workspace.
+  039: warn-only for every run — there is no strict profile to fail under, so
+  nothing is signalled to the gates. Every session-driving site calls this
+  immediately after `PhaseSession.reduce/2`.
   """
-  @spec signal_or_warn([String.t()], String.t() | nil) :: observation() | nil
-  def signal_or_warn(lines, profile) do
-    case observe(lines) do
-      nil ->
-        nil
-
-      obs ->
-        if Autonomous.Containment.permissive?(profile) do
-          Logger.warning(
-            "untrusted workspace #{obs.workspace || "(no working directory)"}: " <>
-              "CLI ignored #{Enum.join(obs.kinds, ", ")} from the committed pack; " <>
-              "continuing under permissive"
-          )
-
-          nil
-        else
-          obs
-        end
-    end
+  @spec settle(Autonomous.PhaseResult.t(), pid() | nil) :: Autonomous.PhaseResult.t()
+  def settle(result, collector) do
+    obs = collector |> Autonomous.WorkspaceTrust.Collector.collect() |> observe()
+    if obs, do: warn(obs)
+    %{result | untrusted_workspace: obs}
   end
 
-  @doc """
-  Apply an `signal_or_warn/2` result to a classified `{outcome, signals}` pair:
-  no observation leaves it untouched (byte-identical to pre-036); an observation
-  forces `:error` and carries `signals.untrusted_workspace` for `Pipeline.next/3`.
-  """
-  @spec apply_to({:ok | :error, map()}, observation() | nil) :: {:ok | :error, map()}
-  def apply_to(classified, nil), do: classified
-
-  def apply_to({_outcome, signals}, obs),
-    do: {:error, Map.put(signals, :untrusted_workspace, obs)}
-
-  @doc """
-  Close out a session's collector: read and stop it, record the observation on
-  the result, and return the signal to carry (`nil` unless the run is `strict`
-  and the CLI reported an untrusted workspace; permissive logs instead).
-  Every session-driving site calls this immediately after `PhaseSession.reduce/2`.
-  """
-  @spec settle(Autonomous.PhaseResult.t(), pid() | nil, String.t() | nil) ::
-          {Autonomous.PhaseResult.t(), observation() | nil}
-  def settle(result, collector, profile) do
-    lines = Autonomous.WorkspaceTrust.Collector.collect(collector)
-    {%{result | untrusted_workspace: observe(lines)}, signal_or_warn(lines, profile)}
+  defp warn(obs) do
+    Logger.warning(
+      "untrusted workspace #{obs.workspace || "(no working directory)"}: " <>
+        "CLI ignored #{Enum.join(obs.kinds, ", ")} from the committed pack; continuing"
+    )
   end
 end

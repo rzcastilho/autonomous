@@ -5,7 +5,6 @@ defmodule Autonomous.RunContextTest do
   alias Autonomous.RunContext
 
   @config_keys [
-    :budget_usd,
     :plan_stack,
     :pr_base,
     :pr_remote,
@@ -16,8 +15,7 @@ defmodule Autonomous.RunContextTest do
     :auto_remediation_exhaustion_policy,
     :interactive_clarify,
     :clarify_answer_timeout_s,
-    :clarify_max_rounds,
-    :containment_profile
+    :clarify_max_rounds
   ]
 
   setup do
@@ -37,7 +35,6 @@ defmodule Autonomous.RunContextTest do
   describe "capture/1" do
     test "resolves each field from opts when present" do
       opts = [
-        budget_usd: 7.5,
         plan_stack: ["a", "b"],
         pr_base: "develop",
         pr_remote: "upstream",
@@ -48,12 +45,10 @@ defmodule Autonomous.RunContextTest do
         auto_remediation_exhaustion_policy: :proceed,
         interactive_clarify: true,
         clarify_answer_timeout_s: 120,
-        clarify_max_rounds: 2,
-        containment_profile: :permissive
+        clarify_max_rounds: 2
       ]
 
       assert RunContext.capture(opts) == %RunContext{
-               budget_usd: 7.5,
                plan_stack: ["a", "b"],
                pr_base: "develop",
                pr_remote: "upstream",
@@ -64,13 +59,11 @@ defmodule Autonomous.RunContextTest do
                auto_remediation_exhaustion_policy: "proceed",
                interactive_clarify: true,
                clarify_answer_timeout_s: 120,
-               clarify_max_rounds: 2,
-               containment_profile: "permissive"
+               clarify_max_rounds: 2
              }
     end
 
     test "falls back to live Config when opts is absent/empty" do
-      Application.put_env(:autonomous, :budget_usd, 12.0)
       Application.put_env(:autonomous, :plan_stack, ["x"])
       Application.put_env(:autonomous, :pr_base, "trunk")
       Application.put_env(:autonomous, :pr_remote, "origin2")
@@ -82,10 +75,8 @@ defmodule Autonomous.RunContextTest do
       Application.put_env(:autonomous, :interactive_clarify, true)
       Application.put_env(:autonomous, :clarify_answer_timeout_s, 600)
       Application.put_env(:autonomous, :clarify_max_rounds, 1)
-      Application.put_env(:autonomous, :containment_profile, :permissive)
 
       assert RunContext.capture([]) == %RunContext{
-               budget_usd: 12.0,
                plan_stack: ["x"],
                pr_base: "trunk",
                pr_remote: "origin2",
@@ -96,8 +87,7 @@ defmodule Autonomous.RunContextTest do
                auto_remediation_exhaustion_policy: "proceed",
                interactive_clarify: true,
                clarify_answer_timeout_s: 600,
-               clarify_max_rounds: 1,
-               containment_profile: "permissive"
+               clarify_max_rounds: 1
              }
     end
 
@@ -146,16 +136,8 @@ defmodule Autonomous.RunContextTest do
       assert ctx.clarify_max_rounds == 3
     end
 
-    test "defaults (no opts, no Config override) resolve containment_profile to \"strict\" (030, FR-002)" do
-      assert RunContext.capture([]).containment_profile == "strict"
-    end
-
-    test "containment_profile is always stored as a string, never an atom (030)" do
-      assert RunContext.capture(containment_profile: :permissive).containment_profile ==
-               "permissive"
-
-      assert RunContext.capture(containment_profile: "permissive").containment_profile ==
-               "permissive"
+    test "039: the retired containment_profile is not captured" do
+      refute Map.has_key?(RunContext.capture([]), :containment_profile)
     end
 
     test "resolves the interactive-clarify fields from opts when present" do
@@ -173,9 +155,8 @@ defmodule Autonomous.RunContextTest do
   end
 
   describe "to_map/1" do
-    test "produces a JSON-ready string-keyed map of exactly the thirteen settings" do
+    test "produces a JSON-ready string-keyed map of exactly the recorded settings" do
       ctx = %RunContext{
-        budget_usd: 25.0,
         plan_stack: ["research", "plan"],
         pr_base: "main",
         pr_remote: "origin",
@@ -186,12 +167,10 @@ defmodule Autonomous.RunContextTest do
         auto_remediation_exhaustion_policy: "escalate",
         interactive_clarify: false,
         clarify_answer_timeout_s: 1_800,
-        clarify_max_rounds: 3,
-        containment_profile: "strict"
+        clarify_max_rounds: 3
       }
 
       assert RunContext.to_map(ctx) == %{
-               "budget_usd" => 25.0,
                "plan_stack" => ["research", "plan"],
                "pr_base" => "main",
                "pr_remote" => "origin",
@@ -202,17 +181,15 @@ defmodule Autonomous.RunContextTest do
                "auto_remediation_exhaustion_policy" => "escalate",
                "interactive_clarify" => false,
                "clarify_answer_timeout_s" => 1_800,
-               "clarify_max_rounds" => 3,
-               "containment_profile" => "strict"
+               "clarify_max_rounds" => 3
              }
     end
 
-    test "map keys are exactly the thirteen settings, nothing else" do
+    test "map keys are exactly the recorded settings, nothing else (039: no budget_usd)" do
       map = RunContext.to_map(%RunContext{})
 
       assert Map.keys(map) |> Enum.sort() ==
                Enum.sort([
-                 "budget_usd",
                  "plan_stack",
                  "pr_base",
                  "pr_remote",
@@ -223,39 +200,38 @@ defmodule Autonomous.RunContextTest do
                  "auto_remediation_exhaustion_policy",
                  "interactive_clarify",
                  "clarify_answer_timeout_s",
-                 "clarify_max_rounds",
-                 "containment_profile"
+                 "clarify_max_rounds"
                ])
     end
   end
 
   describe "from_map/1" do
-    test "nil returns an all-nil struct except containment_profile, which defaults to \"strict\" (030)" do
-      assert RunContext.from_map(nil) == %RunContext{containment_profile: "strict"}
+    test "nil returns an all-nil struct" do
+      assert RunContext.from_map(nil) == %RunContext{}
     end
 
-    test "empty map returns an all-nil struct except containment_profile, which defaults to \"strict\" (030)" do
-      assert RunContext.from_map(%{}) == %RunContext{containment_profile: "strict"}
+    test "empty map returns an all-nil struct" do
+      assert RunContext.from_map(%{}) == %RunContext{}
     end
 
-    test "a missing containment_profile key decodes to \"strict\" — pre-030 recorded runs were strict" do
-      assert RunContext.from_map(%{"pr_base" => "trunk"}) ==
-               %RunContext{pr_base: "trunk", containment_profile: "strict"}
-    end
-
-    test "a present containment_profile key decodes as stored" do
-      assert RunContext.from_map(%{"containment_profile" => "permissive"}).containment_profile ==
-               "permissive"
+    test "039: a pre-039 record's containment_profile key is ignored on read" do
+      assert RunContext.from_map(%{"pr_base" => "trunk", "containment_profile" => "permissive"}) ==
+               %RunContext{pr_base: "trunk"}
     end
 
     test "partial map populates only present keys, leaving the rest nil" do
+      assert RunContext.from_map(%{"pr_base" => "trunk"}) ==
+               %RunContext{pr_base: "trunk"}
+    end
+
+    test "039: a pre-039 record's budget_usd key is ignored on read" do
       assert RunContext.from_map(%{"pr_base" => "trunk", "budget_usd" => 10.0}) ==
-               %RunContext{pr_base: "trunk", budget_usd: 10.0, containment_profile: "strict"}
+               %RunContext{pr_base: "trunk"}
     end
 
     test "never raises on an unexpected/extra key" do
       assert RunContext.from_map(%{"pr_base" => "trunk", "unexpected" => "ignored"}) ==
-               %RunContext{pr_base: "trunk", containment_profile: "strict"}
+               %RunContext{pr_base: "trunk"}
     end
 
     test "round-trips the five auto-remediation fields through to_map/from_map" do
@@ -264,8 +240,7 @@ defmodule Autonomous.RunContextTest do
         auto_remediation_threshold: "critical",
         auto_remediation_attempt_limit: 5,
         auto_remediation_model: "opus",
-        auto_remediation_exhaustion_policy: "proceed",
-        containment_profile: "strict"
+        auto_remediation_exhaustion_policy: "proceed"
       }
 
       assert ctx |> RunContext.to_map() |> RunContext.from_map() == ctx
@@ -292,11 +267,20 @@ defmodule Autonomous.RunContextTest do
     end
 
     test "a recorded non-nil value is injected into merged_opts when opts lacks the key" do
-      recorded = %RunContext{budget_usd: 4.0}
+      recorded = %RunContext{plan_stack: "Python 3"}
       {merged, fell_back} = RunContext.merge([], recorded)
 
-      assert Keyword.get(merged, :budget_usd) == 4.0
+      assert Keyword.get(merged, :plan_stack) == "Python 3"
+      refute :plan_stack in fell_back
+    end
+
+    test "039: recorded budget_usd/containment_profile are never carried into merged opts" do
+      {merged, fell_back} = RunContext.merge([], %RunContext{})
+
+      refute Keyword.has_key?(merged, :budget_usd)
+      refute Keyword.has_key?(merged, :containment_profile)
       refute :budget_usd in fell_back
+      refute :containment_profile in fell_back
     end
 
     test "a key present in neither is left absent and reported in fell_back_keys" do
@@ -304,7 +288,7 @@ defmodule Autonomous.RunContextTest do
 
       assert Keyword.fetch(merged, :pr_base) == :error
       assert :pr_base in fell_back
-      assert length(fell_back) == 13
+      assert length(fell_back) == 11
     end
 
     test "explicit opt > recorded > absent precedence holds for the auto-remediation fields too" do
@@ -336,17 +320,6 @@ defmodule Autonomous.RunContextTest do
       assert :clarify_max_rounds in fell_back
     end
 
-    test "explicit opt > recorded > absent precedence holds for containment_profile too (030)" do
-      recorded = %RunContext{containment_profile: "permissive"}
-
-      {merged, fell_back} = RunContext.merge([], recorded)
-      assert Keyword.get(merged, :containment_profile) == "permissive"
-      refute :containment_profile in fell_back
-
-      {merged2, _} = RunContext.merge([containment_profile: "strict"], recorded)
-      assert Keyword.get(merged2, :containment_profile) == "strict"
-    end
-
     test "a pre-029 recorded run without the interactive-clarify keys falls back to Config defaults" do
       recorded = %RunContext{pr_base: "trunk"}
 
@@ -359,12 +332,12 @@ defmodule Autonomous.RunContextTest do
     end
 
     test "result is independent of opts vs recorded argument precedence order" do
-      opts = [budget_usd: 3.0]
-      recorded = %RunContext{budget_usd: 99.0, pr_base: "develop"}
+      opts = [plan_stack: "Elixir"]
+      recorded = %RunContext{plan_stack: "Python 3", pr_base: "develop"}
 
       {merged, _fell_back} = RunContext.merge(opts, recorded)
 
-      assert Keyword.get(merged, :budget_usd) == 3.0
+      assert Keyword.get(merged, :plan_stack) == "Elixir"
       assert Keyword.get(merged, :pr_base) == "develop"
     end
 

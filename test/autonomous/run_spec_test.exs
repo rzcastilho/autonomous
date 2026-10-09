@@ -78,8 +78,7 @@ defmodule Autonomous.RunSpecTest do
     File.mkdir_p!(Path.join(repo, ".claude/skills"))
     File.write!(Path.join(repo, ".claude/skills/.gitkeep"), "")
     File.write!(Path.join(repo, ".claude/settings.json"), "{}")
-    File.mkdir_p!(Path.join(repo, ".claude/hooks"))
-    File.write!(Path.join(repo, ".claude/hooks/scope_guard.py"), "")
+    File.write!(Path.join(repo, ".claude/autonomous-pack.json"), ~s({"contract": 6}))
     git!(repo, ["add", "-A"])
     git!(repo, ["commit", "-q", "-m", "base"])
     on_exit(fn -> File.rm_rf(repo) end)
@@ -310,14 +309,17 @@ defmodule Autonomous.RunSpecTest do
       assert File.dir?(Path.join([root, "worktrees", segment, "001-#{slug}"]))
     end
 
-    test "breaker drain-not-kill: a single-spec feature releases no new work once tripped" do
-      {:ok, ledger} = Ledger.start_link(budget: 1.0, name: nil)
-      Ledger.record(ledger, nil, 1.0)
-      assert Ledger.breaker_tripped?(ledger)
+    test "039: prior spend never blocks a single-spec feature's release" do
+      {:ok, ledger} = Ledger.start_link(name: nil)
+      Ledger.record(ledger, nil, 10_000.0)
 
       {:ok, feature} = SingleSpec.build("Anything at all", [])
       me = self()
-      runner = fn f, _notify -> send(me, {:started, f.id}) end
+
+      runner = fn f, notify ->
+        send(me, {:started, f.id})
+        notify.(f.id, :done, nil)
+      end
 
       {:ok, pid} =
         Coordinator.start_link(
@@ -331,10 +333,10 @@ defmodule Autonomous.RunSpecTest do
       on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
 
       assert_receive {:run_complete, report}, 2_000
-      refute_received {:started, _}
-      assert report.not_started == [feature.id]
-      assert report.spend == 1.0
-      assert report.breaker_tripped
+      assert_received {:started, _}
+      assert report.done == [feature.id]
+      assert report.spend == 10_000.0
+      refute Map.has_key?(report, :breaker_tripped)
     end
   end
 

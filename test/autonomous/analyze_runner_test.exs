@@ -445,24 +445,19 @@ defmodule Autonomous.AnalyzeRunnerTest do
     assert remediation.outcome == :error
   end
 
-  test "a breaker trip between steps halts after the in-flight step finishes", %{agent: agent} do
+  test "039: large spend never halts the loop — every attempt runs", %{agent: agent} do
     script("persistent-high")
 
-    # 0.10 per fake call: analyze run 1 leaves committed 0.10 (< 0.15, so the
-    # loop still dispatches an attempt); the attempt commits 0.10 more and trips
-    # the breaker, which is only consulted *between* steps.
-    {:ok, ledger} = Ledger.start_link(budget: 0.15, name: nil)
+    {:ok, ledger} = Ledger.start_link(name: nil)
+    Ledger.record(ledger, nil, 10_000.0)
     pid = start_agent!(ledger)
 
-    result = run(pid: pid, ledger: ledger, settings: settings(attempt_limit: 4))
+    result = run(pid: pid, ledger: ledger, settings: settings(attempt_limit: 2))
 
-    assert result.state.terminal_reason == {:halted, :breaker}
-    assert result.state.last_outcome == :error
-    assert result.state.last_signals == %{}
-
-    assert length(calls(agent, :remediation)) == 1
-    assert length(calls(agent, :analyze)) == 1
-    assert Ledger.breaker_tripped?(ledger)
+    refute match?({:halted, _}, result.state.terminal_reason)
+    assert result.state.last_signals[:exhausted?] == true
+    assert length(calls(agent, :remediation)) == 2
+    assert length(calls(agent, :analyze)) == 3
   end
 
   # ---- feature 021: exhaustion signal + residual findings -------------------
@@ -519,7 +514,7 @@ defmodule Autonomous.AnalyzeRunnerTest do
 
   test "every attempt is Ledger-accounted, with no exemption (FR-009)" do
     script("persistent-high")
-    {:ok, ledger} = Ledger.start_link(budget: 100.0, name: nil)
+    {:ok, ledger} = Ledger.start_link(name: nil)
     pid = start_agent!(ledger)
 
     run(pid: pid, ledger: ledger, settings: settings(attempt_limit: 2))

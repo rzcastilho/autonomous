@@ -5,14 +5,12 @@ defmodule Autonomous.SessionRetry do
   remediation step (`FeatureRunner`) (feature 034).
 
   A session that died (`signals.session_died`, set by the action classifiers)
-  earns exactly one fresh session — unless the run's breaker is tripped or a
-  drain was requested, in which case no new session may start (drain, don't
-  kill; FR-010). Every other outcome is accepted as it stands.
+  earns exactly one fresh session — unless a drain was requested, in which
+  case no new session may start (drain, don't kill; FR-010). Every other outcome is accepted as it stands.
   """
 
   @type opts :: %{
           required(:retried?) => boolean(),
-          required(:breaker?) => boolean(),
           required(:drain?) => boolean()
         }
 
@@ -21,9 +19,9 @@ defmodule Autonomous.SessionRetry do
   one at the site; `:accept` otherwise.
   """
   @spec once(map() | nil, opts()) :: :retry | :accept
-  def once(last_signals, %{retried?: retried?, breaker?: breaker?, drain?: drain?}) do
+  def once(last_signals, %{retried?: retried?, drain?: drain?}) do
     died? = is_map(last_signals) and is_map(Map.get(last_signals, :session_died))
 
-    if died? and not retried? and not breaker? and not drain?, do: :retry, else: :accept
+    if died? and not retried? and not drain?, do: :retry, else: :accept
   end
 end

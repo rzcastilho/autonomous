@@ -434,7 +434,7 @@ defmodule Autonomous.ConsoleReadModelTest do
         report: nil
       }
 
-      merged = ConsoleReadModel.merge(coordinator_status, nil, projection)
+      merged = ConsoleReadModel.merge(coordinator_status, projection)
 
       assert merged.per_feature["002"].phases == %{}
       assert merged.per_feature["002"].spend == 0.0
@@ -521,14 +521,9 @@ defmodule Autonomous.ConsoleReadModelTest do
     end
   end
 
-  describe "merge/3" do
+  describe "merge/2" do
     test "active? is false and per_feature is empty with no coordinator status" do
-      merged =
-        ConsoleReadModel.merge(
-          nil,
-          %{budget: 10, committed: 0, reserved: 0, tripped?: false},
-          ConsoleReadModel.new()
-        )
+      merged = ConsoleReadModel.merge(nil, ConsoleReadModel.new())
 
       refute merged.active?
       assert merged.per_feature == %{}
@@ -552,20 +547,18 @@ defmodule Autonomous.ConsoleReadModelTest do
         report: nil
       }
 
-      ledger_snapshot = %{budget: 10.0, committed: 0.0, reserved: 0.0, tripped?: false}
-
-      merged = ConsoleReadModel.merge(coordinator_status, ledger_snapshot, projection)
+      merged = ConsoleReadModel.merge(coordinator_status, projection)
 
       assert merged.active?
       assert merged.per_feature["001"].status == :running
       refute Map.has_key?(merged.per_feature["001"], :elapsed_ms)
       assert merged.per_feature["001"].current_phase == :specify
-      assert merged.ledger == ledger_snapshot
+      refute Map.has_key?(merged, :ledger)
     end
   end
 
   describe "hydrate/3 (023, contracts/console-hydration.md §5)" do
-    defp inactive_view, do: ConsoleReadModel.merge(nil, nil, ConsoleReadModel.new())
+    defp inactive_view, do: ConsoleReadModel.merge(nil, ConsoleReadModel.new())
     defp now, do: ~U[2026-09-15 12:00:00Z]
 
     defp run_detail(features, cost_entries \\ []),
@@ -608,7 +601,6 @@ defmodule Autonomous.ConsoleReadModelTest do
       do:
         ConsoleReadModel.merge(
           %{per_feature: per_feature, finished?: false},
-          nil,
           ConsoleReadModel.new()
         )
 

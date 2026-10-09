@@ -71,6 +71,7 @@ defmodule Autonomous.ResumeCrashTest do
     File.mkdir_p!(Path.join(repo, ".claude/skills"))
     File.write!(Path.join(repo, ".claude/skills/.gitkeep"), "")
     File.write!(Path.join(repo, ".claude/settings.json"), "{}")
+    File.write!(Path.join(repo, ".claude/autonomous-pack.json"), ~s({"contract": 6}))
     git!(repo, ["init", "-q", "-b", "main"])
     git!(repo, ["config", "user.email", "t@e.com"])
     git!(repo, ["config", "user.name", "T"])
@@ -133,10 +134,7 @@ defmodule Autonomous.ResumeCrashTest do
             created_at: nil
           }
         ],
-        settings:
-          RunContext.to_map(%RunContext{
-            budget_usd: 100.0
-          }),
+        settings: RunContext.to_map(%RunContext{}),
         scope: :ad_hoc,
         layout: layout
       })
@@ -353,7 +351,7 @@ defmodule Autonomous.ResumeCrashTest do
               created_at: nil
             }
           ],
-          settings: RunContext.to_map(%RunContext{budget_usd: 100.0}),
+          settings: RunContext.to_map(%RunContext{}),
           scope: :ad_hoc,
           layout: layout
         })

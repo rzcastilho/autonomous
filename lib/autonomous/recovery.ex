@@ -250,8 +250,8 @@ defmodule Autonomous.Recovery do
   # ---- next_runnable ----------------------------------------------------------
 
   # A read-only preview of what would release next under the corrected
-  # statuses — the actual breaker is enforced live by the Coordinator on
-  # continuation; this uses an untripped breaker so the preview reflects
+  # statuses — the actual persistence block is enforced live by the
+  # Coordinator on continuation; this passes `blocked? = false` so the preview reflects
   # ordering/status correctness, not in-flight scheduling. `Release.next/3`
   # is the one-feature-at-a-time decision (FR-006, no cap parameter). Public
   # — `Recovery.Rebuild.propose/3` previews the same way over its (possibly

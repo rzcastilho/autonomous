@@ -56,7 +56,6 @@ defmodule Autonomous.Actions.RunRemediation do
         cwd: worktree_path(state.worktree),
         layout: state.layout,
         prompt: state.remediation_prompt,
-        containment: state.containment,
         deadline_ms: Config.phase_timeout()
       )
 
@@ -64,10 +63,9 @@ defmodule Autonomous.Actions.RunRemediation do
       {:ok, stream} ->
         result = PhaseSession.reduce(stream, Config.phase_timeout())
         AgentRoot.log_installs(state.feature, :remediation, result)
-        {result, untrusted} = WorkspaceTrust.settle(result, collector, state.containment)
+        result = WorkspaceTrust.settle(result, collector)
 
-        {outcome, signals} =
-          state.worktree |> classify(result) |> WorkspaceTrust.apply_to(untrusted)
+        {outcome, signals} = classify(state.worktree, result)
 
         {amount, _source} = Cost.for_phase(:remediation, result)
         record_cost(state.ledger, amount)
@@ -79,8 +77,7 @@ defmodule Autonomous.Actions.RunRemediation do
            last_signals:
              signals
              |> PhaseResult.reset_background(Map.get(state, :last_signals))
-             |> PhaseResult.reset_session_died(Map.get(state, :last_signals))
-             |> PhaseResult.reset_untrusted_workspace(Map.get(state, :last_signals)),
+             |> PhaseResult.reset_session_died(Map.get(state, :last_signals)),
            session_id: result.session_id || state.session_id,
            cost_total: (state.cost_total || 0.0) + amount,
            history: [entry(outcome, amount, result) | state.history]

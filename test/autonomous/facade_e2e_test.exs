@@ -68,8 +68,7 @@ defmodule Autonomous.FacadeE2ETest do
     File.mkdir_p!(Path.join(repo, ".claude/skills"))
     File.write!(Path.join(repo, ".claude/skills/.gitkeep"), "")
     File.write!(Path.join(repo, ".claude/settings.json"), "{}")
-    File.mkdir_p!(Path.join(repo, ".claude/hooks"))
-    File.write!(Path.join(repo, ".claude/hooks/scope_guard.py"), "")
+    File.write!(Path.join(repo, ".claude/autonomous-pack.json"), ~s({"contract": 6}))
     git!(repo, ["init", "-q", "-b", "main"])
     git!(repo, ["config", "user.email", "t@e.com"])
     git!(repo, ["config", "user.name", "T"])
@@ -123,8 +122,8 @@ defmodule Autonomous.FacadeE2ETest do
   test "a repo missing the committed .specify/.claude scaffold refuses the whole run at preflight" do
     # 019: TargetPack.verify's pack/remote preflight is unconditional (FR-003),
     # and its scaffold check is a strict superset of Worktree.create's own
-    # (.specify, .claude/skills, .claude/settings.json, plus .claude/hooks/
-    # scope_guard.py + a customized, committed constitution). So a repo this
+    # (.specify, .claude/skills, .claude/settings.json, plus the contract-6
+    # pack marker + a customized, committed constitution). So a repo this
     # bare can no longer reach Worktree.create at all — the whole run is
     # refused up front instead of failing one feature mid-run.
     bare = Path.join(System.tmp_dir!(), "e2e_bare_#{System.unique_integer([:positive])}")

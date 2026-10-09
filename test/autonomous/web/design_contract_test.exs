@@ -402,14 +402,14 @@ defmodule Autonomous.Web.DesignContractTest do
       refute_fires(DesignContract.scan(base), :inline_style_color)
     end
 
-    test "the two allowlisted cost-gauge fill styles alone do not fire" do
+    test "039: the former cost-gauge fill styles are no longer allowlisted" do
       violations =
         DesignContract.scan(%{
           "lib/autonomous/web/components/core_components.ex" =>
             ~S(<div style={"width: #{@fill}%;"}></div>) <> "\n"
         })
 
-      refute_fires(violations, :inline_style_color)
+      assert_fires_rule(violations, :inline_style_color)
     end
   end
 

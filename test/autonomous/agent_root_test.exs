@@ -75,14 +75,14 @@ defmodule Autonomous.AgentRootTest do
       assert [%{packages: ["zz-dev"]}] = AgentRoot.installs(r)
     end
 
-    test "a denied call is skipped" do
+    test "039: no denial filter — every install command is reported" do
       r =
         result_with([
           bash("1", "sudo apt-get install -y libfoo-dev"),
-          result("1", "scope_guard[strict|orchestrated]: bash_sudo: sudo")
+          result("1", "E: some apt failure")
         ])
 
-      assert AgentRoot.installs(r) == []
+      assert [%{packages: ["libfoo-dev"]}] = AgentRoot.installs(r)
     end
 
     test "non-install sudo, no sudo, nil" do

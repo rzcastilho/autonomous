@@ -240,7 +240,7 @@ defmodule Autonomous.Web.MissionControlLiveTest do
     assert row_after == row_before
   end
 
-  test "status bar reflects run title/mode, cost gauge, and armed/tripped indicator", %{
+  test "status bar reflects run title and a plain spend figure — no gauge, no breaker (039)", %{
     conn: conn
   } do
     pid = start_coordinator([feat("mc4")])
@@ -249,8 +249,9 @@ defmodule Autonomous.Web.MissionControlLiveTest do
     {:ok, _view, html} = live(conn, "/")
 
     assert html =~ "Active run"
-    assert html =~ "cost-gauge"
-    assert html =~ "armed"
+    assert html =~ "data-spend"
+    refute html =~ "cost-gauge"
+    refute html =~ ~r/breaker/i
   end
 
   test "renders the explicit no-active-run empty state when Coordinator is absent", %{conn: conn} do
@@ -468,7 +469,7 @@ defmodule Autonomous.Web.MissionControlLiveTest do
     Phoenix.PubSub.broadcast(
       Autonomous.PubSub,
       ConsoleProjection.topic(),
-      {:console, :reconciled, %{coordinator: Coordinator.status(pid), ledger: nil}}
+      {:console, :reconciled, %{coordinator: Coordinator.status(pid)}}
     )
 
     html_later = render(view)
@@ -1017,7 +1018,7 @@ defmodule Autonomous.Web.MissionControlLiveTest do
     }
   end
 
-  defp open_store_run(features, containment_profile \\ nil) do
+  defp open_store_run(features) do
     repo_id = RepoIdentity.partition(Config.repo())
     {:ok, segment} = RepoIdentity.resolve(Config.repo())
     {:ok, layout} = Layout.build(Config.repo(), segment, :ad_hoc)
@@ -1036,11 +1037,7 @@ defmodule Autonomous.Web.MissionControlLiveTest do
               created_at: &1.created_at
             }
           ),
-        settings:
-          RunContext.to_map(%RunContext{
-            budget_usd: 100.0,
-            containment_profile: containment_profile
-          }),
+        settings: RunContext.to_map(%RunContext{}),
         scope: :ad_hoc,
         layout: layout
       })
@@ -1161,8 +1158,8 @@ defmodule Autonomous.Web.MissionControlLiveTest do
     git.(["config", "user.email", "t@e.com"])
     git.(["config", "user.name", "T"])
 
-    hook = Path.join(repo, ".claude/hooks/scope_guard.py")
-    File.write!(hook, String.replace(File.read!(hook), "PACK_CONTRACT = 5", "PACK_CONTRACT = 3"))
+    # 039: a committed pack without the contract-6 marker lags.
+    File.rm!(Path.join(repo, ".claude/autonomous-pack.json"))
     git.(["add", "-A"])
     git.(["commit", "-q", "-m", "pack lags"])
 
@@ -1183,7 +1180,7 @@ defmodule Autonomous.Web.MissionControlLiveTest do
       File.rm_rf(remote)
     end)
 
-    run_key = open_store_run([feat("060")], "permissive")
+    run_key = open_store_run([feat("060")])
 
     :ok =
       Writer.record_phase_attempt(run_key, %{
@@ -1317,7 +1314,7 @@ defmodule Autonomous.Web.MissionControlLiveTest do
     Phoenix.PubSub.broadcast(
       Autonomous.PubSub,
       ConsoleProjection.topic(),
-      {:console, :reconciled, %{coordinator: Coordinator.status(pid), ledger: nil}}
+      {:console, :reconciled, %{coordinator: Coordinator.status(pid)}}
     )
 
     html_later = render(view)
@@ -1356,7 +1353,7 @@ defmodule Autonomous.Web.MissionControlLiveTest do
     Phoenix.PubSub.broadcast(
       Autonomous.PubSub,
       ConsoleProjection.topic(),
-      {:console, :reconciled, %{coordinator: Coordinator.status(pid), ledger: nil}}
+      {:console, :reconciled, %{coordinator: Coordinator.status(pid)}}
     )
 
     html_later = render(view)
@@ -1574,9 +1571,9 @@ defmodule Autonomous.Web.MissionControlLiveTest do
     assert html =~ "/escalations#awaiting-701"
   end
 
-  # ---- 030: containment chip on the shared topbar (US3) ---------------------
+  # ---- 039: no containment chip on the shared topbar ------------------------
 
-  test "topbar shows the containment chip when the live run is permissive", %{conn: conn} do
+  test "topbar never shows a containment chip, even for a legacy run context", %{conn: conn} do
     pid =
       Coordinator.start_link(
         name: Coordinator,
@@ -1591,17 +1588,8 @@ defmodule Autonomous.Web.MissionControlLiveTest do
 
     {:ok, _view, html} = live(conn, "/")
 
-    assert html =~ ~s(data-containment="permissive")
-    assert html =~ "containment: permissive"
-  end
-
-  test "topbar omits the containment chip when the live run is strict", %{conn: conn} do
-    pid = start_coordinator([feat("mc-strict")])
-    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
-
-    {:ok, _view, html} = live(conn, "/")
-
     refute html =~ "data-containment"
+    refute html =~ ~r/containment|permissive/i
   end
 
   test "topbar omits the containment chip when there is no active run", %{conn: conn} do
@@ -1621,8 +1609,7 @@ defmodule Autonomous.Web.MissionControlLiveTest do
       Phoenix.PubSub.broadcast(
         Autonomous.PubSub,
         ConsoleProjection.topic(),
-        {:console, :reconciled,
-         %{coordinator: Coordinator.status(pid), ledger: nil, delayed?: delayed}}
+        {:console, :reconciled, %{coordinator: Coordinator.status(pid), delayed?: delayed}}
       )
     end
 
@@ -1636,7 +1623,7 @@ defmodule Autonomous.Web.MissionControlLiveTest do
     Phoenix.PubSub.broadcast(
       Autonomous.PubSub,
       ConsoleProjection.topic(),
-      {:console, :reconciled, %{coordinator: Coordinator.status(pid), ledger: nil}}
+      {:console, :reconciled, %{coordinator: Coordinator.status(pid)}}
     )
 
     refute render(view) =~ "data-console-delayed"

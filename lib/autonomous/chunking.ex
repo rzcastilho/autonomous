@@ -105,7 +105,6 @@ defmodule Autonomous.Chunking do
           optional(:outcome) => outcome(),
           optional(:progress?) => boolean(),
           optional(:plan) => TaskPlan.t(),
-          optional(:breaker?) => boolean(),
           optional(:drain?) => boolean(),
           optional(:transient?) => boolean(),
           # Not part of the documented contract signal set — plumbed through so
@@ -119,9 +118,7 @@ defmodule Autonomous.Chunking do
           # (`PhaseResult.stranded_background/1`), lifted by `ChunkRunner`.
           optional(:backgrounded) => [String.t()],
           # 034 — the session died instead of finishing (`PhaseResult.session_died/1`).
-          optional(:session_died) => %{kind: :start_failed | :ended_early, excerpt: String.t()},
-          # 036 — the CLI ignored the committed pack (untrusted workspace, strict run).
-          optional(:untrusted_workspace) => Autonomous.WorkspaceTrust.observation()
+          optional(:session_died) => %{kind: :start_failed | :ended_early, excerpt: String.t()}
         }
 
   @type reason ::
@@ -132,13 +129,11 @@ defmodule Autonomous.Chunking do
           | {:branch_drift, :implement, Autonomous.BranchGuard.drift()}
           | {:backgrounded_command, TaskPhaseRef.t(), [String.t(), ...]}
           | {:session_died, TaskPhaseRef.t(), %{kind: atom(), excerpt: String.t()}}
-          | {:untrusted_workspace, TaskPhaseRef.t(), Autonomous.WorkspaceTrust.observation()}
 
   @type decision ::
           {:dispatch, Autonomous.ChunkScope.t(), ChunkState.t()}
           | {:skip, TaskPhase.t(), ChunkState.t()}
           | {:done, ChunkState.t()}
-          | {:halted, :breaker, ChunkState.t()}
           | {:halted, :superseded, ChunkState.t()}
           | {:failed, reason(), ChunkState.t()}
 
@@ -185,7 +180,6 @@ defmodule Autonomous.Chunking do
     state = %{state | plan: Map.get(signals, :plan, state.plan)}
     outcome = Map.get(signals, :outcome)
     progress? = Map.get(signals, :progress?, false)
-    breaker? = Map.get(signals, :breaker?, false)
     drain? = Map.get(signals, :drain?, false)
     transient? = Map.get(signals, :transient?, false)
     limit = Config.implement_no_progress_limit()
@@ -193,24 +187,16 @@ defmodule Autonomous.Chunking do
     cond do
       # Row 0 (027, US2) — branch drift is unconditionally terminal, ahead of
       # every other row: the session already wrote (or half-wrote) to the
-      # wrong branch, so outcome/progress/breaker no longer matter.
+      # wrong branch, so outcome/progress no longer matter.
       Map.has_key?(signals, :branch_drift) ->
         {:failed, {:branch_drift, :implement, Map.get(signals, :branch_drift)}, state}
 
       # Row D (034) — the session died (CLI exited before or without a result).
       # Right after drift, ahead of every outcome row. One re-dispatch of the
-      # same scope; a second death, a tripped breaker, or a requested drain
-      # fails it by name. The re-dispatch consumes a session, so the ceiling
+      # same scope; a second death or a requested drain fails it by name. The re-dispatch consumes a session, so the ceiling
       # still bounds it.
       is_map(Map.get(signals, :session_died)) ->
-        died_retry(state, Map.get(signals, :session_died), breaker? or drain?)
-
-      # Row U (036) — the CLI ignored the committed pack: untrusted workspace under
-      # a strict run. Terminal, never re-dispatched (only the operator can trust it).
-      is_map(Map.get(signals, :untrusted_workspace)) ->
-        {:failed,
-         {:untrusted_workspace, current_ref(state), Map.get(signals, :untrusted_workspace)},
-         state}
+        died_retry(state, Map.get(signals, :session_died), drain?)
 
       # Row B (032, US1) — the session ended on a command the CLI moved to the
       # background. Ahead of every outcome row: the session reported success (or
@@ -247,7 +233,7 @@ defmodule Autonomous.Chunking do
       # it — leftovers past this point are reconciled by the sweep (rows
       # 12/13), not by re-dispatching the same task-phase.
       true ->
-        state |> advance_cursor_on_success(outcome) |> decide_next(outcome, breaker?, drain?)
+        state |> advance_cursor_on_success(outcome) |> decide_next(outcome, drain?)
     end
   end
 
@@ -295,9 +281,6 @@ defmodule Autonomous.Chunking do
   end
 
   def failure_sentence({:session_died, %TaskPhaseRef{}, %{kind: _, excerpt: _}} = reason),
-    do: Autonomous.Report.format_reason(reason)
-
-  def failure_sentence({:untrusted_workspace, %TaskPhaseRef{}, %{kinds: _}} = reason),
     do: Autonomous.Report.format_reason(reason)
 
   def failure_sentence({:stuck_task_phase, %TaskPhaseRef{} = ref, limit}) do
@@ -394,20 +377,16 @@ defmodule Autonomous.Chunking do
 
   defp advance_cursor_on_success(state, _outcome), do: state
 
-  defp decide_next(state, outcome, breaker?, drain?) do
+  defp decide_next(state, outcome, drain?) do
     cond do
       # Row 6 — ceiling reached with no continuation in play (a fresh
       # task-phase/sweep/fallback dispatch would exceed it).
       state.sessions_used >= state.ceiling ->
         {:failed, {:session_ceiling, state.ceiling}, state}
 
-      # Row 7 — breaker checked only at a boundary (the just-folded session
-      # succeeded), never mid-scope (mid-scope continuations return above).
-      breaker? and outcome == :ok ->
-        {:halted, :breaker, state}
-
-      # Row 7b (026) — drain requested at the same boundary, evaluated after
-      # the breaker so a tripped breaker still wins (FR-011).
+      # Row 7 (026) — drain requested, checked only at a boundary (the
+      # just-folded session succeeded), never mid-scope (mid-scope
+      # continuations return above).
       drain? and outcome == :ok ->
         {:halted, :superseded, state}
 

@@ -10,6 +10,8 @@ defmodule Autonomous.PhaseRequestTest do
     "BASH_MAX_TIMEOUT_MS" => "2700000"
   }
   @all_phases [:specify, :plan, :tasks, :analyze, :implement, :clarify, :converge, :describe]
+  @full_tools ~w(Read Write Edit MultiEdit NotebookEdit Bash Grep Glob WebFetch WebSearch)
+  @headless_excluded ~w(Agent Task ScheduleWakeup Monitor)
 
   defp feature do
     %Feature{
@@ -20,7 +22,7 @@ defmodule Autonomous.PhaseRequestTest do
     }
   end
 
-  test "specify: slash command + breakdown ref, sonnet model, non-interactive Bash" do
+  test "specify: slash command + breakdown ref, sonnet model" do
     r = PhaseRequest.build(feature(), :specify)
     assert String.starts_with?(r.prompt, "/speckit.specify")
     assert r.prompt =~ "docs/breakdown/001-core-ledger.md"
@@ -35,9 +37,6 @@ defmodule Autonomous.PhaseRequestTest do
 
     assert r.cwd == "."
     assert r.max_turns == nil
-    # specify runs a Spec Kit script (create-new-feature.sh) → Bash pre-approved.
-    assert r.permission_mode == :accept_edits
-    assert "Bash" in r.allowed_tools
   end
 
   test "GIT_BRANCH_NAME pin is specify-only — no other phase's prompt carries it" do
@@ -47,19 +46,26 @@ defmodule Autonomous.PhaseRequestTest do
     end
   end
 
-  test "plan/tasks/converge get non-interactive Bash for their Spec Kit scripts" do
-    for phase <- [:plan, :tasks, :converge] do
+  # 039: one containment behaviour — every phase gets the former permissive set.
+  test "every phase: bypass_permissions, the full tool set, headless exclusions only" do
+    for phase <- @all_phases do
       r = PhaseRequest.build(feature(), phase)
-      assert r.permission_mode == :accept_edits, "#{phase} permission_mode"
-      assert "Bash" in r.allowed_tools, "#{phase} allows Bash"
+      assert r.permission_mode == :bypass_permissions, "#{phase} permission_mode"
+      assert r.allowed_tools == @full_tools, "#{phase} allowed_tools"
+      assert r.disallowed_tools == @headless_excluded, "#{phase} disallowed_tools"
     end
   end
 
-  test "clarify edits the spec but gets no Bash" do
-    r = PhaseRequest.build(feature(), :clarify)
-    assert r.permission_mode == :accept_edits
-    assert "Edit" in r.allowed_tools
-    refute "Bash" in r.allowed_tools
+  test "no orchestration/profile markers reach any session's launch env (039)" do
+    for phase <- @all_phases, agent_root <- [false, true] do
+      env = PhaseRequest.build(feature(), phase, agent_root: agent_root).metadata["claude"][:env]
+      refute Map.has_key?(env, "AUTONOMOUS_ORCHESTRATED"), "#{phase}"
+      refute Map.has_key?(env, "AUTONOMOUS_CONTAINMENT_PROFILE"), "#{phase}"
+    end
+
+    env = PhaseRequest.build_remediation(feature(), "sonnet").metadata["claude"][:env]
+    refute Map.has_key?(env, "AUTONOMOUS_ORCHESTRATED")
+    refute Map.has_key?(env, "AUTONOMOUS_CONTAINMENT_PROFILE")
   end
 
   test "clarify: reviewer prompt pack with the NEEDS HUMAN contract, opus model" do
@@ -70,23 +76,17 @@ defmodule Autonomous.PhaseRequestTest do
     assert r.model == "opus"
   end
 
-  test "analyze: slash command + JSON schema pack, read-only permissions" do
+  test "analyze: slash command + JSON schema pack" do
     r = PhaseRequest.build(feature(), :analyze)
     assert String.starts_with?(r.prompt, "/speckit.analyze")
     assert r.prompt =~ "findings"
-    assert r.permission_mode == :plan
-    assert r.allowed_tools == ~w(Read Grep Glob)
-    assert r.disallowed_tools == ~w(Write Edit Agent Task ScheduleWakeup Monitor)
     assert r.model == "opus"
   end
 
-  test "implement: max_turns + scoped write permissions" do
+  test "implement: max_turns" do
     r = PhaseRequest.build(feature(), :implement)
     assert r.prompt == "/speckit.implement"
     assert r.max_turns == 200
-    assert r.permission_mode == :accept_edits
-    assert "Write" in r.allowed_tools
-    assert "Bash" in r.allowed_tools
   end
 
   test "tasks and plan use their slash commands" do
@@ -303,113 +303,6 @@ defmodule Autonomous.PhaseRequestTest do
     end
   end
 
-  describe ":containment option (030)" do
-    test "default (absent) is strict — byte-identical RunRequest except env markers" do
-      for phase <- [:specify, :plan, :tasks, :analyze, :implement, :clarify, :converge, :describe] do
-        default = PhaseRequest.build(feature(), phase, agent_root: false)
-        explicit = PhaseRequest.build(feature(), phase, containment: "strict", agent_root: false)
-
-        assert default.prompt == explicit.prompt
-        assert default.cwd == explicit.cwd
-        assert default.model == explicit.model
-        assert default.permission_mode == explicit.permission_mode
-        assert default.allowed_tools == explicit.allowed_tools
-        assert default.disallowed_tools == explicit.disallowed_tools
-        assert default.max_turns == explicit.max_turns
-
-        assert default.metadata["claude"][:env] ==
-                 Map.merge(
-                   %{
-                     "AUTONOMOUS_ORCHESTRATED" => "1",
-                     "AUTONOMOUS_CONTAINMENT_PROFILE" => "strict"
-                   },
-                   @default_timeouts
-                 )
-      end
-    end
-
-    test "permissive: bypass_permissions, full tool set, FR-008 exclusions only" do
-      for phase <- [:specify, :plan, :tasks, :analyze, :implement, :clarify, :converge, :describe] do
-        r = PhaseRequest.build(feature(), phase, containment: "permissive")
-
-        assert r.permission_mode == :bypass_permissions, "#{phase} permission_mode"
-
-        assert r.allowed_tools ==
-                 ~w(Read Write Edit MultiEdit NotebookEdit Bash Grep Glob WebFetch WebSearch),
-               "#{phase} allowed_tools"
-
-        assert r.disallowed_tools == ~w(Agent Task ScheduleWakeup Monitor),
-               "#{phase} disallowed_tools"
-
-        assert r.metadata["claude"][:env] ==
-                 Map.merge(
-                   %{
-                     "AUTONOMOUS_ORCHESTRATED" => "1",
-                     "AUTONOMOUS_CONTAINMENT_PROFILE" => "permissive"
-                   },
-                   @default_timeouts
-                 )
-      end
-    end
-
-    test "permissive does not change the prompt, cwd, model, max_turns, or session_id" do
-      strict = PhaseRequest.build(feature(), :implement, cwd: "/wt", session_id: "s1")
-
-      permissive =
-        PhaseRequest.build(feature(), :implement,
-          cwd: "/wt",
-          session_id: "s1",
-          containment: "permissive"
-        )
-
-      assert strict.prompt == permissive.prompt
-      assert strict.cwd == permissive.cwd
-      assert strict.model == permissive.model
-      assert strict.max_turns == permissive.max_turns
-      assert strict.session_id == permissive.session_id
-    end
-
-    test "env markers are present under both profiles for build_remediation/3" do
-      strict = PhaseRequest.build_remediation(feature(), "sonnet", prompt: "fix it")
-
-      permissive =
-        PhaseRequest.build_remediation(feature(), "sonnet",
-          prompt: "fix it",
-          containment: "permissive"
-        )
-
-      assert strict.metadata["claude"][:env] ==
-               Map.merge(
-                 %{
-                   "AUTONOMOUS_ORCHESTRATED" => "1",
-                   "AUTONOMOUS_CONTAINMENT_PROFILE" => "strict"
-                 },
-                 @default_timeouts
-               )
-
-      assert permissive.metadata["claude"][:env] ==
-               Map.merge(
-                 %{
-                   "AUTONOMOUS_ORCHESTRATED" => "1",
-                   "AUTONOMOUS_CONTAINMENT_PROFILE" => "permissive"
-                 },
-                 @default_timeouts
-               )
-
-      assert permissive.permission_mode == :bypass_permissions
-
-      assert permissive.allowed_tools ==
-               ~w(Read Write Edit MultiEdit NotebookEdit Bash Grep Glob WebFetch WebSearch)
-    end
-
-    test "build_remediation/3 strict permissions are unchanged from before 030" do
-      r = PhaseRequest.build_remediation(feature(), "sonnet", prompt: "fix it")
-      assert r.permission_mode == :accept_edits
-      assert r.allowed_tools == ~w(Read Write Edit Bash Grep Glob)
-      assert r.disallowed_tools == ~w(Agent Task ScheduleWakeup Monitor)
-    end
-  end
-
   describe "build_remediation/3" do
     test "model passed through verbatim (caller-resolved, no re-routing)" do
       r = PhaseRequest.build_remediation(feature(), "opus", prompt: "fix the money type")
@@ -419,10 +312,11 @@ defmodule Autonomous.PhaseRequestTest do
       assert r2.model == "sonnet"
     end
 
-    test "write-capable, contained permissions — same set as a write phase" do
+    test "same single permission set as every phase (039)" do
       r = PhaseRequest.build_remediation(feature(), "sonnet", prompt: "fix it")
-      assert r.permission_mode == :accept_edits
-      assert r.allowed_tools == ~w(Read Write Edit Bash Grep Glob)
+      assert r.permission_mode == :bypass_permissions
+      assert r.allowed_tools == @full_tools
+      assert r.disallowed_tools == @headless_excluded
     end
 
     test "prompt: framing header (feature id/slug + breakdown ref) + operator text verbatim" do
@@ -491,23 +385,21 @@ defmodule Autonomous.PhaseRequestTest do
     defp timeouts_in_settings(r),
       do: r.metadata["claude"][:settings] |> Jason.decode!() |> Map.fetch!("env")
 
-    test "every phase x both profiles carries equal values on env and --settings" do
-      for phase <- @all_phases, containment <- ["strict", "permissive"] do
-        r = PhaseRequest.build(feature(), phase, containment: containment)
-        assert timeouts_in_env(r) == @default_timeouts, "#{phase}/#{containment} env"
-        assert timeouts_in_settings(r) == @default_timeouts, "#{phase}/#{containment} settings"
+    test "every phase carries equal values on env and --settings" do
+      for phase <- @all_phases do
+        r = PhaseRequest.build(feature(), phase)
+        assert timeouts_in_env(r) == @default_timeouts, "#{phase} env"
+        assert timeouts_in_settings(r) == @default_timeouts, "#{phase} settings"
       end
     end
 
-    test "build_remediation/3 carries both channels under both profiles" do
-      for containment <- ["strict", "permissive"] do
-        r = PhaseRequest.build_remediation(feature(), "sonnet", containment: containment)
-        assert timeouts_in_env(r) == @default_timeouts
-        assert timeouts_in_settings(r) == @default_timeouts
-      end
+    test "build_remediation/3 carries both channels" do
+      r = PhaseRequest.build_remediation(feature(), "sonnet")
+      assert timeouts_in_env(r) == @default_timeouts
+      assert timeouts_in_settings(r) == @default_timeouts
     end
 
-    test "a chunk-sized deadline_ms changes the values; AUTONOMOUS_* markers unchanged" do
+    test "a chunk-sized deadline_ms changes the values" do
       r = PhaseRequest.build(feature(), :implement, deadline_ms: 1_200_000)
 
       assert timeouts_in_env(r) == %{
@@ -516,8 +408,6 @@ defmodule Autonomous.PhaseRequestTest do
              }
 
       assert timeouts_in_settings(r) == timeouts_in_env(r)
-      assert r.metadata["claude"][:env]["AUTONOMOUS_ORCHESTRATED"] == "1"
-      assert r.metadata["claude"][:env]["AUTONOMOUS_CONTAINMENT_PROFILE"] == "strict"
 
       rem = PhaseRequest.build_remediation(feature(), "sonnet", deadline_ms: 1_200_000)
       assert timeouts_in_env(rem) == timeouts_in_env(r)
@@ -567,16 +457,14 @@ defmodule Autonomous.PhaseRequestTest do
   end
 
   describe "Monitor exclusion (032, US4)" do
-    test "disallowed for every phase and both remediation clauses, both profiles" do
-      for containment <- ["strict", "permissive"] do
-        for phase <- @all_phases do
-          r = PhaseRequest.build(feature(), phase, containment: containment)
-          assert "Monitor" in r.disallowed_tools, "#{phase}/#{containment}"
-        end
-
-        rem = PhaseRequest.build_remediation(feature(), "sonnet", containment: containment)
-        assert "Monitor" in rem.disallowed_tools
+    test "disallowed for every phase and remediation" do
+      for phase <- @all_phases do
+        r = PhaseRequest.build(feature(), phase)
+        assert "Monitor" in r.disallowed_tools, "#{phase}"
       end
+
+      rem = PhaseRequest.build_remediation(feature(), "sonnet")
+      assert "Monitor" in rem.disallowed_tools
     end
   end
 

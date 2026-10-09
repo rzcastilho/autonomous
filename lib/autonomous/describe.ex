@@ -17,18 +17,14 @@ defmodule Autonomous.Describe do
   Run the describe step in `worktree` (which must still hold the feature's files
   and git history). `layout` (optional) threads the run's `%Layout{}` into the
   breakdown-ref prompt (T014); `nil` falls back to `Config.breakdown_dir/0`.
-  `:containment` (030) — `"strict"` (default) or `"permissive"`, same effect as
-  `PhaseRequest.build/3`. Returns `{:ok, description}` or `{:error, reason}`.
+  Returns `{:ok, description}` or `{:error, reason}`.
   """
-  @spec run(Autonomous.Feature.t(), map(), Layout.t() | nil, keyword()) ::
+  @spec run(Autonomous.Feature.t(), map(), Layout.t() | nil) ::
           {:ok, description()} | {:error, term()}
-  def run(feature, worktree, layout \\ nil, opts \\ [])
+  def run(feature, worktree, layout \\ nil)
 
-  def run(feature, %{path: path}, layout, opts) do
-    containment = Keyword.get(opts, :containment, "strict")
-
-    request =
-      PhaseRequest.build(feature, :describe, cwd: path, layout: layout, containment: containment)
+  def run(feature, %{path: path}, layout) do
+    request = PhaseRequest.build(feature, :describe, cwd: path, layout: layout)
 
     case Jido.Harness.run_request(:claude, request, []) do
       {:ok, stream} -> parse(PhaseResult.reduce(stream).final_text)
@@ -36,7 +32,7 @@ defmodule Autonomous.Describe do
     end
   end
 
-  def run(_feature, _no_worktree, _layout, _opts), do: {:error, :no_worktree}
+  def run(_feature, _no_worktree, _layout), do: {:error, :no_worktree}
 
   @doc """
   Recover the description JSON from a transcript. Prefers the last fenced ```json

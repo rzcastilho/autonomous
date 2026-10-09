@@ -65,10 +65,7 @@ defmodule Autonomous.PersistenceFailureTest do
     {:ok, run_id} =
       Writer.open_run(repo_id, %{
         features: features,
-        settings:
-          RunContext.to_map(%RunContext{
-            budget_usd: 100.0
-          }),
+        settings: RunContext.to_map(%RunContext{}),
         scope: :ad_hoc,
         layout: %{}
       })
@@ -175,6 +172,7 @@ defmodule Autonomous.PersistenceFailureTest do
     File.mkdir_p!(Path.join(repo, ".claude/skills"))
     File.write!(Path.join(repo, ".claude/skills/.gitkeep"), "")
     File.write!(Path.join(repo, ".claude/settings.json"), "{}")
+    File.write!(Path.join(repo, ".claude/autonomous-pack.json"), ~s({"contract": 6}))
     git!(repo, ["add", "-A"])
     git!(repo, ["commit", "-q", "-m", "base"])
 

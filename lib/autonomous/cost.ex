@@ -1,6 +1,7 @@
 defmodule Autonomous.Cost do
   @moduledoc """
-  Resolve the cost to charge the `Ledger` for a completed phase.
+  Resolve the cost to record in the `Ledger` for a completed phase
+  (informational — 039: cost never gates work).
 
   Prefers the **actual** `cost_usd` folded from the adapter's `:usage` event
   (the CLI's `total_cost_usd`); falls back to the conservative per-phase

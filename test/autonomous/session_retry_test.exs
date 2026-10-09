@@ -4,7 +4,7 @@ defmodule Autonomous.SessionRetryTest do
   alias Autonomous.SessionRetry
 
   @died %{session_died: %{kind: :start_failed, excerpt: "boom"}}
-  @open %{retried?: false, breaker?: false, drain?: false}
+  @open %{retried?: false, drain?: false}
 
   test "retries the first death" do
     assert SessionRetry.once(@died, @open) == :retry
@@ -12,10 +12,6 @@ defmodule Autonomous.SessionRetryTest do
 
   test "does not retry a second death" do
     assert SessionRetry.once(@died, %{@open | retried?: true}) == :accept
-  end
-
-  test "does not retry when the breaker is tripped" do
-    assert SessionRetry.once(@died, %{@open | breaker?: true}) == :accept
   end
 
   test "does not retry when a drain was requested" do

@@ -17,7 +17,7 @@ defmodule Autonomous.Telemetry do
       :terminal]` when a supersession drain (026) stops the worker at a
       boundary — the feature row stays `:running` for supersession to mark
       `:ended_by_supersession`, so this is deliberately distinct from a
-      terminal status (breaker halt included, FR-011).
+      terminal status (FR-011).
 
   Events (emitted by `Autonomous.Workers` — 026,
   `contracts/workers.md`):
@@ -73,7 +73,7 @@ defmodule Autonomous.Telemetry do
 
   Events (emitted by `Store.Writer` — 018, persistence-failure.md): a write
   failure is recorded in `Store.Health` and, so it is observable outside the
-  breaker flag too, emitted here:
+  persistence flag too, emitted here:
 
     * `[:speckit, :store, :write_failed]` — measurements `%{}`, metadata
       `%{reason}`. Fires on any aborted `Store.Writer` transaction, driving

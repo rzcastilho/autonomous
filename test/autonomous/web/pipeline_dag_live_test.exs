@@ -741,7 +741,7 @@ defmodule Autonomous.Web.PipelineDagLiveTest do
     Phoenix.PubSub.broadcast(
       Autonomous.PubSub,
       Autonomous.ConsoleProjection.topic(),
-      {:console, :reconciled, %{coordinator: Coordinator.status(pid), ledger: nil}}
+      {:console, :reconciled, %{coordinator: Coordinator.status(pid)}}
     )
 
     html_later = render(view)
@@ -790,7 +790,7 @@ defmodule Autonomous.Web.PipelineDagLiveTest do
     Phoenix.PubSub.broadcast(
       Autonomous.PubSub,
       Autonomous.ConsoleProjection.topic(),
-      {:console, :reconciled, %{coordinator: Coordinator.status(pid), ledger: nil}}
+      {:console, :reconciled, %{coordinator: Coordinator.status(pid)}}
     )
 
     html_later = render(view)
