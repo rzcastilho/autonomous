@@ -4,7 +4,7 @@ defmodule Autonomous.Report do
   surface. Pure — takes the snapshot map, returns a string.
   """
 
-  alias Autonomous.{Containment, PublishOutcome}
+  alias Autonomous.PublishOutcome
 
   @doc "Format a `Coordinator.status/0` snapshot as a table."
   @spec format_status(map()) :: String.t()
@@ -26,9 +26,7 @@ defmodule Autonomous.Report do
       table([["FEATURE", "SPEC", "STATUS", "ELAPSED"] | rows]),
       "",
       "totals: #{format_totals(Map.get(snapshot, :totals, %{}))}",
-      "spend:  $#{fmt_spend(Map.get(snapshot, :spend, 0.0))}" <>
-        breaker(Map.get(snapshot, :breaker_tripped, false)),
-      containment_line(snapshot),
+      "spend:  $#{fmt_spend(Map.get(snapshot, :spend, 0.0))}",
       advanced_line(snapshot),
       awaiting_line(snapshot),
       clarify_line(snapshot),
@@ -63,16 +61,6 @@ defmodule Autonomous.Report do
 
   defp fmt_spend(n) when is_float(n), do: :erlang.float_to_binary(n, decimals: 2)
   defp fmt_spend(n), do: to_string(n)
-
-  defp breaker(true), do: "  [BREAKER TRIPPED]"
-  defp breaker(false), do: ""
-
-  # 030, contracts/operator-surfaces.md: absent (byte-identical) unless the
-  # run's profile is permissive — `Coordinator`'s snapshot only ever carries
-  # `:containment_profile` in that case.
-  defp containment_line(snapshot) do
-    snapshot |> Map.get(:containment_profile) |> Containment.report_line()
-  end
 
   # Feature 021: absent entirely when no feature advanced under *proceed*, so
   # the :escalate-path report is byte-identical to today's (SC-002).
@@ -143,7 +131,9 @@ defmodule Autonomous.Report do
   end
 
   # 036: the CLI ignored the committed pack's permissions because the workspace
-  # was untrusted (strict runs only). `where` as for `:session_died`.
+  # was untrusted. Historical renderer — 039 never produces this reason (the
+  # gate was strict-only); pre-039 records still carry it. `where` as for
+  # `:session_died`.
   def format_reason({:untrusted_workspace, where, %{workspace: workspace, kinds: kinds}}) do
     kinds_text = if kinds == [], do: "(unknown)", else: Enum.join(kinds, ", ")
 
@@ -159,6 +149,18 @@ defmodule Autonomous.Report do
     "untrusted_workspace in #{died_where(where)} — CLI ignored #{kinds_text} " <>
       "from the committed pack; #{tail}. Trust it, then resume/2."
   end
+
+  # 039: a refused start/continue names the retired key and why it is gone
+  # (contracts/run-start.md § 1).
+  def format_reason({:retired_option, :budget_usd}),
+    do: "budget_usd is retired — cost is informational; runs never stop on spend"
+
+  def format_reason({:retired_option, :containment_profile}),
+    do:
+      "containment_profile is retired — there is one containment behaviour; run in the container"
+
+  def format_reason({:preflight, problems}) when is_list(problems),
+    do: "preflight failed: " <> Enum.map_join(problems, "; ", &format_reason/1)
 
   def format_reason(reason), do: PublishOutcome.describe(reason) || inspect(reason)
 

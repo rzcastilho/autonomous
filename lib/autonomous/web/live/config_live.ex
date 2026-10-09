@@ -1,22 +1,23 @@
 defmodule Autonomous.Web.ConfigLive do
   @moduledoc """
-  US6 — Configuration (`/config`): per-phase model routing, budget, and PR
+  US6 — Configuration (`/config`): per-phase model routing and PR
   base/remote, applying forward-only to the live run
   (`specs/008-control-plane/tasks.md` T068-T070). 019: every run is a
   stacked sequential run — there is no concurrency or PR-workflow toggle
   left to configure. 031: also shows, read-only, the repository this instance
   serves and its node name (real identifiers, not editable settings).
 
-  Renders `Config.*` + `Ledger.snapshot/1`; submits through
+  Renders `Config.*`; submits through
   `LiveConfig.apply/1`. On success it broadcasts a `:reconciled` message on
   `ConsoleProjection.topic()` (the same shape the projection's own reconcile
-  tick sends) so the status bar/gauge and every other mounted LiveView pick up
+  tick sends) so the status bar and every other mounted LiveView pick up
   the change immediately rather than waiting up to 2s (FR-030), and toasts the
   change (FR-005).
 
   033 US5: the form tracks `edited` against `applied` (`ConfigDiff`), shows an
-  unsaved count with sticky Apply/Reset, takes the budget as a cent-precise
-  number input, and echoes the actual `LiveConfig.apply/1` call on success.
+  unsaved count with sticky Apply/Reset, and echoes the actual
+  `LiveConfig.apply/1` call on success. 039: no budget — cost is
+  informational, so there is nothing to configure.
   """
 
   use Autonomous.Web, :live_view
@@ -26,12 +27,9 @@ defmodule Autonomous.Web.ConfigLive do
   alias Autonomous.{
     AgentRoot,
     Config,
-    Containment,
     ConsoleProjection,
-    Ledger,
     LiveConfig,
-    Pipeline,
-    TargetPack
+    Pipeline
   }
 
   @impl true
@@ -52,18 +50,9 @@ defmodule Autonomous.Web.ConfigLive do
       applied: applied,
       served_repo: Path.expand(Config.repo()),
       instance_node: Atom.to_string(node()),
-      containment_default: Atom.to_string(Config.containment_profile()),
-      containment_live: live_containment_profile(),
-      agent_root: agent_root_state()
+      agent_root: AgentRootView.state(AgentRoot.advertised?())
     )
     |> put_edited(applied)
-  end
-
-  # 037: the committed pack is only probed when agent root is advertised.
-  defp agent_root_state do
-    if AgentRoot.advertised?(),
-      do: AgentRootView.state(true, TargetPack.agent_root_warning(Config.repo())),
-      else: AgentRootView.state(false, :ok)
   end
 
   defp applied_fields do
@@ -71,7 +60,6 @@ defmodule Autonomous.Web.ConfigLive do
       Map.new(Pipeline.phases(), fn phase -> {"model_#{phase}", Config.model_for(phase)} end)
 
     Map.merge(models, %{
-      "budget_usd" => Ledger.snapshot().budget,
       "pr_base" => Config.pr_base(),
       "pr_remote" => Config.pr_remote()
     })
@@ -80,15 +68,6 @@ defmodule Autonomous.Web.ConfigLive do
   defp put_edited(socket, edited) do
     changes = ConfigDiff.diff(socket.assigns.applied, edited)
     assign(socket, edited: edited, changes: changes, dirty: ConfigDiff.dirty?(changes))
-  end
-
-  # 030, contracts/operator-surfaces.md: `nil` unless the live run's profile
-  # is permissive — `Coordinator`'s snapshot only ever carries the key then.
-  defp live_containment_profile do
-    case coordinator_status() do
-      nil -> nil
-      status -> Map.get(status, :containment_profile)
-    end
   end
 
   # ---- edit / reset / apply ---------------------------------------------
@@ -119,63 +98,20 @@ defmodule Autonomous.Web.ConfigLive do
          |> refresh()}
 
       {:error, errors} ->
-        {:noreply, assign(socket, errors: refine_errors(errors, edited))}
+        {:noreply, assign(socket, errors: errors)}
     end
   end
 
-  # The range slider mirrors the number input: whichever the operator touched
-  # last supplies the budget (`_target` names the changed control).
   defp edited_from(params, prior) do
-    budget =
-      if params["_target"] == ["budget_range"],
-        do: params["budget_range"],
-        else: params["budget_usd"]
-
-    prior
-    |> Map.new(fn {field, old} ->
-      {field, if(field == "budget_usd", do: budget || old, else: params[field] || old)}
-    end)
+    Map.new(prior, fn {field, old} -> {field, params[field] || old} end)
   end
 
   defp build_change(edited) do
     %{
       models: Map.new(Pipeline.phases(), fn phase -> {phase, edited["model_#{phase}"]} end),
-      budget_usd: budget_amount(edited["budget_usd"]),
       pr_base: edited["pr_base"] || "",
       pr_remote: edited["pr_remote"] || ""
     }
-  end
-
-  defp budget_amount(value) do
-    case ConfigDiff.parse_cents(value) do
-      {:ok, cents} -> cents / 100
-      :invalid -> :invalid
-    end
-  end
-
-  defp refine_errors(errors, edited) do
-    if Map.has_key?(errors, :budget_usd) and
-         ConfigDiff.parse_cents(edited["budget_usd"]) == :invalid,
-       do:
-         Map.put(
-           errors,
-           :budget_usd,
-           "budget must be a non-negative amount with at most two decimals"
-         ),
-       else: errors
-  end
-
-  # `Float.to_string(2000.0)` is "2.0e3"; a number input needs plain decimals.
-  defp budget_input_value(value) when is_float(value),
-    do: :erlang.float_to_binary(value, decimals: 2)
-
-  defp budget_input_value(value), do: value
-
-  defp slider_value(edited, applied) do
-    case ConfigDiff.parse_cents(edited["budget_usd"]) do
-      {:ok, cents} -> cents / 100
-      :invalid -> applied["budget_usd"]
-    end
   end
 
   # Mirrors ConsoleProjection's own :reconcile tick so an applied config
@@ -188,7 +124,6 @@ defmodule Autonomous.Web.ConfigLive do
       {:console, :reconciled,
        %{
          coordinator: coordinator_status(),
-         ledger: ConsoleProjection.ledger_or_last_known(),
          delayed?: false
        }}
     )
@@ -244,41 +179,6 @@ defmodule Autonomous.Web.ConfigLive do
           </.form_refusal>
         </fieldset>
 
-        <div class="config-grid">
-          <fieldset class="config-budget form-panel">
-            <legend class="sr-only">Budget</legend>
-            <div class="range-row-head">
-              <label for="budget-input" class="config-toggle-title">Cost breaker budget</label>
-              <span class="range-row-value" id="budget-range-value">
-                ${format_money(slider_value(@edited, @applied))}
-              </span>
-            </div>
-            <input
-              type="number"
-              id="budget-input"
-              name="budget_usd"
-              min="0"
-              step="0.01"
-              value={budget_input_value(@edited["budget_usd"])}
-              class="console-input"
-              phx-debounce="300"
-            />
-            <input
-              type="range"
-              name="budget_range"
-              min="0"
-              max="500"
-              step="0.5"
-              value={budget_input_value(slider_value(@edited, @applied))}
-              class="range-input"
-              aria-label="Cost breaker budget slider"
-            />
-            <.form_refusal :if={@errors[:budget_usd]} label="Budget refused" data-error="budget_usd">
-              {@errors[:budget_usd]}
-            </.form_refusal>
-          </fieldset>
-        </div>
-
         <fieldset class="config-pr form-panel">
           <legend class="sr-only">PR workflow</legend>
           <div class="config-toggle-row">
@@ -316,24 +216,6 @@ defmodule Autonomous.Web.ConfigLive do
           </div>
         </fieldset>
 
-        <fieldset
-          :if={Containment.permissive?(@containment_default) or Containment.permissive?(@containment_live)}
-          class="config-pr form-panel"
-          data-containment
-        >
-          <legend class="sr-only">Containment</legend>
-          <div :if={Containment.permissive?(@containment_default)} class="config-toggle-row">
-            <div class="config-toggle-title">
-              containment_profile default: {@containment_default}
-            </div>
-          </div>
-          <div :if={Containment.permissive?(@containment_live)} class="config-toggle-row">
-            <div class="config-toggle-title">
-              containment_profile (live run): {@containment_live}
-            </div>
-          </div>
-        </fieldset>
-
         <fieldset class="config-pr form-panel" data-instance>
           <legend class="sr-only">Instance</legend>
           <.record_block label="instance">
@@ -345,9 +227,6 @@ defmodule Autonomous.Web.ConfigLive do
               <dt :if={@agent_root != :hidden}>agent root</dt>
               <dd :if={@agent_root != :hidden} class="config-instance-id" data-agent-root>
                 {AgentRootView.summary()}
-                <span :if={match?({:pack_outdated, _}, @agent_root)} data-agent-root-warning>
-                  {AgentRootView.warning(@agent_root)}
-                </span>
               </dd>
             </dl>
           </.record_block>

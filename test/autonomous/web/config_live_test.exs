@@ -1,13 +1,12 @@
 defmodule Autonomous.Web.ConfigLiveTest do
-  # Mutates global app env (:models, :max_concurrency, :pr_*) and the
-  # app-supervised default-named Ledger's budget — must not run concurrently
-  # with another test claiming those globals.
+  # Mutates global app env (:models, :pr_*) — must not run concurrently with
+  # another test claiming those globals.
   use Autonomous.StoreCase, async: false
 
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
 
-  alias Autonomous.{Config, Coordinator, Feature, Ledger, RepoIdentity}
+  alias Autonomous.{Config, Coordinator, Feature, RepoIdentity}
 
   @endpoint Autonomous.Web.Endpoint
 
@@ -15,17 +14,13 @@ defmodule Autonomous.Web.ConfigLiveTest do
     prior = %{
       models: Config.models(),
       pr_base: Application.get_env(:autonomous, :pr_base),
-      pr_remote: Application.get_env(:autonomous, :pr_remote),
-      budget_usd: Ledger.snapshot().budget,
-      containment_profile: Application.get_env(:autonomous, :containment_profile)
+      pr_remote: Application.get_env(:autonomous, :pr_remote)
     }
 
     on_exit(fn ->
       Application.put_env(:autonomous, :models, prior.models)
       restore(:pr_base, prior.pr_base)
       restore(:pr_remote, prior.pr_remote)
-      restore(:containment_profile, prior.containment_profile)
-      Ledger.set_budget(prior.budget_usd)
     end)
 
     {:ok, conn: Phoenix.ConnTest.build_conn()}
@@ -43,7 +38,6 @@ defmodule Autonomous.Web.ConfigLiveTest do
       "model_analyze" => Config.model_for(:analyze),
       "model_implement" => Config.model_for(:implement),
       "model_converge" => Config.model_for(:converge),
-      "budget_usd" => to_string(Ledger.snapshot().budget),
       "pr_base" => Config.pr_base(),
       "pr_remote" => Config.pr_remote()
     }
@@ -51,14 +45,15 @@ defmodule Autonomous.Web.ConfigLiveTest do
     Map.merge(base, overrides)
   end
 
-  test "budget input renders plain decimals, never scientific notation", %{conn: conn} do
-    Ledger.set_budget(2000.0)
-    {:ok, _view, html} = live(conn, "/config")
+  test "039: renders no budget control — cost is informational", %{conn: conn} do
+    {:ok, view, html} = live(conn, "/config")
 
-    assert html =~ ~s(value="2000.00")
+    refute has_element?(view, ~s(input[name="budget_usd"]))
+    refute has_element?(view, ~s(input[name="budget_range"]))
+    refute html =~ ~r/budget|breaker/i
   end
 
-  test "renders current model routing/budget/PR settings", %{conn: conn} do
+  test "renders current model routing/PR settings", %{conn: conn} do
     {:ok, _view, html} = live(conn, "/config")
 
     assert html =~ ~s(data-form="config")
@@ -89,28 +84,6 @@ defmodule Autonomous.Web.ConfigLiveTest do
     refute html =~ "config-concurrency"
   end
 
-  test "submits edits and reflects them post-apply with a toast", %{conn: conn} do
-    {:ok, view, _html} = live(conn, "/config")
-
-    params = submit_params(%{"budget_usd" => "42.5"})
-    html = render_submit(view, "apply", params)
-
-    assert html =~ "Configuration applied"
-    assert Ledger.snapshot().budget == 42.5
-    assert html =~ ~s(value="42.50")
-  end
-
-  test "invalid input surfaces a field error and applies nothing", %{conn: conn} do
-    {:ok, view, _html} = live(conn, "/config")
-    before = Ledger.snapshot().budget
-
-    params = submit_params(%{"budget_usd" => "-5"})
-    html = render_submit(view, "apply", params)
-
-    assert html =~ ~s(data-error="budget_usd")
-    assert Ledger.snapshot().budget == before
-  end
-
   test "submits PR base/remote edits and reflects them post-apply", %{conn: conn} do
     {:ok, view, _html} = live(conn, "/config")
 
@@ -123,22 +96,9 @@ defmodule Autonomous.Web.ConfigLiveTest do
     assert Config.pr_remote() == "upstream"
   end
 
-  # ---- 030: containment profile visibility (US3, contracts/operator-surfaces.md)
+  # ---- 039: no containment section ------------------------------------------
 
-  test "shows the containment_profile default row only when the default is permissive", %{
-    conn: conn
-  } do
-    {:ok, _view, html} = live(conn, "/config")
-    refute html =~ "containment_profile default:"
-
-    Application.put_env(:autonomous, :containment_profile, :permissive)
-    {:ok, _view, html} = live(conn, "/config")
-    assert html =~ "containment_profile default: permissive"
-  end
-
-  test "shows the live run's containment_profile row only when that run is permissive", %{
-    conn: conn
-  } do
+  test "renders no containment section, even for a legacy live run context", %{conn: conn} do
     {:ok, pid} =
       Coordinator.start_link(
         name: Coordinator,
@@ -150,49 +110,22 @@ defmodule Autonomous.Web.ConfigLiveTest do
 
     on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
 
-    {:ok, _view, html} = live(conn, "/config")
+    {:ok, view, html} = live(conn, "/config")
 
-    assert html =~ "containment_profile (live run): permissive"
+    refute has_element?(view, "[data-containment]")
+    refute html =~ ~r/containment|permissive/i
   end
 
   # ---- 037: agent root row ------------------------------------------------
 
-  defp committed_pack_repo(contract) do
-    repo = Path.join(System.tmp_dir!(), "cfg_pack_#{System.unique_integer([:positive])}")
-    File.mkdir_p!(repo)
-    on_exit(fn -> File.rm_rf!(repo) end)
-    {:ok, _} = Autonomous.TargetPack.install(repo)
-    hook = Path.join(repo, ".claude/hooks/scope_guard.py")
+  defp advertise_agent_root do
+    prior = {System.get_env("AUTONOMOUS_CONTAINER"), System.get_env("AUTONOMOUS_AGENT_ROOT")}
 
-    File.write!(
-      hook,
-      String.replace(File.read!(hook), "PACK_CONTRACT = 5", "PACK_CONTRACT = #{contract}")
-    )
-
-    for args <- [
-          ["init", "-q", "-b", "main"],
-          ["config", "user.email", "t@e.com"],
-          ["config", "user.name", "T"],
-          ["add", "-A"],
-          ["commit", "-q", "-m", "pack"]
-        ],
-        do: {_, 0} = System.cmd("git", ["-C", repo | args], stderr_to_stdout: true)
-
-    repo
-  end
-
-  defp advertise_agent_root(repo) do
-    prior =
-      {Application.get_env(:autonomous, :repo), System.get_env("AUTONOMOUS_CONTAINER"),
-       System.get_env("AUTONOMOUS_AGENT_ROOT")}
-
-    Application.put_env(:autonomous, :repo, repo)
     System.put_env("AUTONOMOUS_CONTAINER", "1")
     System.put_env("AUTONOMOUS_AGENT_ROOT", "1")
 
     on_exit(fn ->
-      {r, c, a} = prior
-      restore(:repo, r)
+      {c, a} = prior
 
       for {k, v} <- [{"AUTONOMOUS_CONTAINER", c}, {"AUTONOMOUS_AGENT_ROOT", a}] do
         if v, do: System.put_env(k, v), else: System.delete_env(k)
@@ -207,21 +140,15 @@ defmodule Autonomous.Web.ConfigLiveTest do
     refute html =~ "data-agent-root"
   end
 
-  test "agent root: advertised with a current pack shows the available row", %{conn: conn} do
-    advertise_agent_root(committed_pack_repo(5))
+  test "agent root: advertised shows the available row — no pack warning (039)", %{conn: conn} do
+    advertise_agent_root()
     {:ok, _view, html} = live(conn, "/config")
-    assert html =~ "available — strict allows sudo apt-get/apt install"
+    assert html =~ "data-agent-root"
+    assert html =~ "available — sessions may sudo apt-get/apt install missing packages"
     refute html =~ "data-agent-root-warning"
   end
 
-  test "agent root: advertised with an old pack adds the warning", %{conn: conn} do
-    advertise_agent_root(committed_pack_repo(4))
-    {:ok, _view, html} = live(conn, "/config")
-    assert html =~ "available — strict allows sudo apt-get/apt install"
-    assert html =~ "committed pack is contract 4; re-run TargetPack.install/2 and commit"
-  end
-
-  # ---- 033 US5: dirty tracking, cent-precise budget, sticky bar -----------
+  # ---- 033 US5: dirty tracking, sticky bar ---------------------------------
 
   test "form is clean on mount: data-dirty absent and no unsaved count", %{conn: conn} do
     {:ok, view, _html} = live(conn, "/config")
@@ -236,40 +163,16 @@ defmodule Autonomous.Web.ConfigLiveTest do
     {:ok, view, _html} = live(conn, "/config")
 
     view
-    |> form("#config-form", %{"model_plan" => "opus", "budget_usd" => "12.34"})
+    |> form("#config-form", %{"model_plan" => "opus", "pr_base" => "dirty-x-branch"})
     |> render_change()
 
-    # model_plan may already be opus in config; budget alone is a guaranteed change
+    # model_plan may already be opus in config; pr_base alone is a guaranteed change
     assert has_element?(view, ~s(#config-form[data-dirty="true"]))
     assert render(view) =~ "unsaved"
 
     render_click(view, "reset", %{})
     refute has_element?(view, ~s(#config-form[data-dirty="true"]))
     refute has_element?(view, "[data-unsaved]")
-  end
-
-  test "budget is a cent-precise number input authority with no inline script", %{conn: conn} do
-    {:ok, view, html} = live(conn, "/config")
-
-    assert has_element?(
-             view,
-             ~s(input[type="number"][name="budget_usd"][step="0.01"].console-input)
-           )
-
-    refute html =~ "oninput"
-  end
-
-  test "a budget with more than two decimals is refused and the form stays dirty", %{conn: conn} do
-    {:ok, view, _html} = live(conn, "/config")
-    before = Ledger.snapshot().budget
-
-    params = submit_params(%{"budget_usd" => "12.345"})
-    view |> form("#config-form", params) |> render_change()
-    html = render_submit(view, "apply", params)
-
-    assert html =~ ~s(data-error="budget_usd")
-    assert has_element?(view, ~s(#config-form[data-dirty="true"]))
-    assert Ledger.snapshot().budget == before
   end
 
   test "apply toast echoes the call with changed keys only", %{conn: conn} do

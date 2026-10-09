@@ -15,10 +15,6 @@ defmodule Autonomous.FeatureAgent do
       carried alongside it. Both are a stable anchor for future prompt
       injection (state only — no phase request is altered by this feature).
     * `session_id` — Claude session id, carried forward for resume.
-    * `containment` — (030) `"strict"` (default) or `"permissive"`, seeded from
-      the run's `RunContext.containment_profile` by `feature.init`; passed to
-      every `PhaseRequest`/`PhaseRequest.build_remediation` call for this
-      feature.
     * `status` — `:pending → :running →` terminal (`:done | :escalated |
       :halted | :failed`), set by `feature.finalize`.
     * `last_outcome` / `last_signals` / `last_result` — the most recent phase
@@ -46,7 +42,6 @@ defmodule Autonomous.FeatureAgent do
       remediation_prompt: [type: {:or, [nil, :string]}, default: nil],
       remediation_model: [type: {:or, [nil, :string]}, default: nil],
       session_id: [type: :string, default: nil],
-      containment: [type: :string, default: "strict"],
       status: [type: :atom, default: :pending],
       last_outcome: [type: :atom, default: nil],
       last_signals: [type: :map, default: %{}],

@@ -623,23 +623,6 @@ defmodule Autonomous.PhaseStepTest do
       assert length(agent.state.history) == 3
     end
 
-    test "a tripped breaker suppresses the retry (FR-010)" do
-      {:ok, ledger} = Autonomous.Ledger.start_link(budget: 0.0, name: nil)
-      assert Autonomous.Ledger.breaker_tripped?(ledger)
-      Application.put_env(:autonomous, :phase_step_test_scenario, :died_always)
-
-      agent =
-        PhaseStep.run(start_agent!(), feature(), :clarify,
-          step: 1,
-          timeout: 5_000,
-          retries: 1,
-          ledger: ledger
-        )
-
-      assert agent.state.last_outcome == :error
-      assert length(agent.state.history) == 1
-    end
-
     test "a requested drain suppresses the retry (FR-010)" do
       me = self()
       :ets.insert(Autonomous.Workers.DrainRequests, {me, DateTime.utc_now()})
@@ -675,8 +658,8 @@ defmodule Autonomous.PhaseStepTest do
     end
   end
 
-  describe "untrusted workspace (036)" do
-    test "is never retried, even with a retry budget; fails by name" do
+  describe "untrusted workspace (039: warn-only)" do
+    test "an untrusted workspace neither fails nor retries the phase" do
       Application.put_env(:jido_claude, :sdk_module, Autonomous.SdkProxy)
       Application.put_env(:autonomous, :sdk_proxy_inner, FakeSDK)
       on_exit(fn -> Application.delete_env(:autonomous, :sdk_proxy_inner) end)
@@ -685,13 +668,13 @@ defmodule Autonomous.PhaseStepTest do
       agent =
         PhaseStep.run(start_agent!(), feature(), :converge, step: 1, timeout: 5_000, retries: 2)
 
-      assert agent.state.last_outcome == :error
       assert length(agent.state.history) == 1
+      refute Map.has_key?(agent.state.last_signals, :untrusted_workspace)
 
-      assert {:failed,
-              {:untrusted_workspace, :converge,
-               %{workspace: "/x/repo", kinds: ["permissions.allow"]}}} =
-               Autonomous.Pipeline.next(:converge, :error, agent.state.last_signals)
+      assert agent.state.last_result.untrusted_workspace == %{
+               workspace: "/x/repo",
+               kinds: ["permissions.allow"]
+             }
     end
   end
 end

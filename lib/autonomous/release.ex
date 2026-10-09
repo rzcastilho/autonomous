@@ -28,11 +28,12 @@ defmodule Autonomous.Release do
   @doc """
   Decide what happens next, given the run's `features`, a `feature_id =>
   status` map (a feature absent from the map uses its struct `status`), and
-  whether the cost breaker is tripped.
+  whether new releases are `blocked?` (the persistence breaker — the store
+  cannot be written, 018). 039: cost never blocks a release.
 
   Rules, in evaluation order:
 
-  1. breaker tripped ⇒ `:none` (Principle IV — drain, don't kill)
+  1. blocked ⇒ `:none` (Principle IV — drain, don't kill)
   2. any feature `:escalated`/`:halted`/`:failed` ⇒ `{:stopped, id, status}`
      (the lowest-ordered one, when more than one)
   3. any feature `:running`/`:awaiting_answers` ⇒ `:none` (structural
@@ -44,12 +45,12 @@ defmodule Autonomous.Release do
           {:release, Feature.t()}
           | :none
           | {:stopped, String.t(), Feature.status()}
-  def next(features, statuses, breaker_tripped?)
-      when is_list(features) and is_map(statuses) and is_boolean(breaker_tripped?) do
+  def next(features, statuses, blocked?)
+      when is_list(features) and is_map(statuses) and is_boolean(blocked?) do
     ordered = order(features)
 
     cond do
-      breaker_tripped? ->
+      blocked? ->
         :none
 
       stopped = find_stopped(ordered, statuses) ->

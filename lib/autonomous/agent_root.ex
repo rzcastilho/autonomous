@@ -1,8 +1,10 @@
 defmodule Autonomous.AgentRoot do
   @moduledoc """
   Agent root (feature 037): an opt-in, container-only capability that lets a
-  `strict` session install missing operating-system packages with
-  `sudo apt-get`/`apt` (the `scope_guard.py` pack-contract-5 exception).
+  session install missing operating-system packages with `sudo apt-get`/`apt`.
+  039: nothing in-tree restricts the `sudo` grammar any more (the hook is
+  gone); the image's `APT::Get::Remove "false"` and the prompt's guidance
+  ("never remove, purge or upgrade") are what remain.
 
   `advertised?/1` is the module's only environment read — true when the
   entrypoint verified `sudo -n true` and exported `AUTONOMOUS_AGENT_ROOT=1`
@@ -32,30 +34,18 @@ defmodule Autonomous.AgentRoot do
   def prompt_note(true), do: "\n\n" <> Prompts.load("agent_root")
   def prompt_note(false), do: ""
 
-  @doc """
-  The `sudo … apt-get|apt install <pkgs>` segments of the session's Bash calls
-  whose result was not a `scope_guard[` denial.
-  """
+  @doc "The `sudo … apt-get|apt install <pkgs>` segments of the session's Bash calls."
   @spec installs(PhaseResult.t() | nil) :: [install()]
   def installs(%PhaseResult{tool_events: events}) do
-    denied =
-      for %{kind: :result, payload: %{"call_id" => id, "output" => out}} <- events,
-          is_binary(id),
-          denied?(out),
-          into: MapSet.new(),
-          do: id
-
-    for %{kind: :call, payload: %{"name" => "Bash", "input" => %{"command" => cmd}} = p} <-
-          events,
+    for %{kind: :call, payload: %{"name" => "Bash", "input" => %{"command" => cmd}}} <- events,
         is_binary(cmd),
-        not MapSet.member?(denied, p["call_id"]),
         install <- command_installs(cmd),
         do: install
   end
 
   def installs(_), do: []
 
-  @doc "Log one line per allowed install in `result` (FR-018). Nothing is persisted."
+  @doc "Log one line per install in `result` (FR-018). Nothing is persisted."
   @spec log_installs(Feature.t(), atom(), PhaseResult.t() | nil) :: :ok
   def log_installs(%Feature{} = feature, phase, result) do
     label = Feature.spec_label(feature) || feature.id
@@ -69,9 +59,6 @@ defmodule Autonomous.AgentRoot do
 
     :ok
   end
-
-  defp denied?(out) when is_binary(out), do: String.contains?(out, "scope_guard[")
-  defp denied?(_), do: false
 
   defp command_installs(cmd) do
     cmd

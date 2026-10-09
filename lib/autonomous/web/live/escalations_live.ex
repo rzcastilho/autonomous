@@ -76,11 +76,7 @@ defmodule Autonomous.Web.EscalationsLive do
 
   defp refresh(socket) do
     view =
-      ConsoleReadModel.merge(
-        coordinator_status(),
-        ledger_snapshot(),
-        ConsoleProjection.read_safe()
-      )
+      ConsoleReadModel.merge(coordinator_status(), ConsoleProjection.read_safe())
 
     run_id = current_run_id()
 
@@ -116,8 +112,6 @@ defmodule Autonomous.Web.EscalationsLive do
   end
 
   defp coordinator_status, do: ConsoleProjection.coordinator_or_last_known()
-
-  defp ledger_snapshot, do: ConsoleProjection.ledger_or_last_known()
 
   # ---- EscalationView assembly (data-model.md) -----------------------------
 
@@ -451,7 +445,7 @@ defmodule Autonomous.Web.EscalationsLive do
     do: "a run is already live for this repository — stop it, or retry with force"
 
   # 026: `:force`'s own drain timed out — distinct wording from the plain
-  # active-run refusal above and from a parked-run/breaker message; names
+  # active-run refusal above and from a parked-run message; names
   # what is still working so the operator can judge whether it's genuinely
   # stuck before retrying with force again.
   defp format_resume_error({:drain_timeout, stuck}) do

@@ -24,7 +24,6 @@ defmodule Autonomous.ChunkRunner do
     Chunking,
     Config,
     Cost,
-    Ledger,
     PhaseResult,
     PhaseSession,
     PhaseStep,
@@ -50,7 +49,6 @@ defmodule Autonomous.ChunkRunner do
           # derived from that (`PhaseSession.call_timeout/1`) — never this value.
           required(:timeout) => timeout(),
           required(:step) => pos_integer(),
-          required(:ledger) => pid() | nil,
           optional(:start_task_phase) => TaskPhaseRef.t() | pos_integer() | nil,
           optional(:reset_implement_sessions) => boolean(),
           optional(:stack_base) => String.t() | nil
@@ -184,9 +182,6 @@ defmodule Autonomous.ChunkRunner do
       {:done, _state1} ->
         finish(ctx, agent)
 
-      {:halted, :breaker, _state1} ->
-        halt(ctx, agent, :breaker)
-
       {:halted, :superseded, _state1} ->
         halt(ctx, agent, :superseded)
 
@@ -244,7 +239,6 @@ defmodule Autonomous.ChunkRunner do
           outcome: outcome,
           progress?: progress?,
           plan: after_plan,
-          breaker?: breaker_tripped?(ctx.ledger),
           drain?: Workers.drain_requested?(),
           transient?: transient?,
           error: result && result.error
@@ -252,7 +246,6 @@ defmodule Autonomous.ChunkRunner do
         |> maybe_put_drift(drift)
         |> maybe_put_backgrounded(agent1.state.last_signals[:backgrounded])
         |> maybe_put_session_died(agent1.state.last_signals[:session_died])
-        |> maybe_put_untrusted(agent1.state.last_signals[:untrusted_workspace])
 
       stop_meta =
         Map.merge(meta, %{
@@ -316,11 +309,6 @@ defmodule Autonomous.ChunkRunner do
 
   defp maybe_put_backgrounded(signals, cmds) when cmds in [nil, []], do: signals
   defp maybe_put_backgrounded(signals, cmds), do: Map.put(signals, :backgrounded, cmds)
-
-  defp maybe_put_untrusted(signals, obs) when is_map(obs),
-    do: Map.put(signals, :untrusted_workspace, obs)
-
-  defp maybe_put_untrusted(signals, _), do: signals
 
   defp maybe_put_session_died(signals, nil), do: signals
   defp maybe_put_session_died(signals, died), do: Map.put(signals, :session_died, died)
@@ -475,7 +463,7 @@ defmodule Autonomous.ChunkRunner do
   # A halt/failure below has no `Pipeline.next/3` vocabulary of its own
   # (FR-008: `Pipeline.next/3` stays untouched) — `terminal_reason` is the
   # existing `FeatureAgent` field the runner reads to short-circuit straight
-  # to the specific SC-002 reason (or the breaker halt) instead of the
+  # to the specific SC-002 reason (or the drain halt) instead of the
   # generic `{:implement, :error}` `Pipeline.next/3` would otherwise produce.
   defp halt(ctx, agent, reason) do
     result = rollup(:halted, %{}, reason, step_cost(ctx, agent))
@@ -531,9 +519,6 @@ defmodule Autonomous.ChunkRunner do
   defp rollup_text(:ok, _signals, _reason),
     do: "implement step complete — every task-phase dispatched"
 
-  defp rollup_text(:halted, _signals, :breaker),
-    do: "implement step halted — cost breaker tripped at a task-phase boundary"
-
   defp rollup_text(:halted, _signals, :superseded),
     do: "implement step drained — superseded by a new run at a task-phase boundary"
 
@@ -580,7 +565,4 @@ defmodule Autonomous.ChunkRunner do
       _ -> nil
     end
   end
-
-  defp breaker_tripped?(nil), do: false
-  defp breaker_tripped?(ledger), do: Ledger.breaker_tripped?(ledger)
 end

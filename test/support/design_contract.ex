@@ -917,22 +917,12 @@ defmodule Autonomous.Web.DesignContract do
     end
   end
 
-  # Exactly two loci are allowlisted (design-guard.md §3.4): `cost_gauge/1`'s
-  # two fill-width styles. Anything else carrying `style=` fires.
-  @allowed_inline_style_re ~r/style=\{"width:\s*#\{@(?:fill|committed_fill)\}%;"\}/
-
+  # No locus is allowlisted any more (design-guard.md §3.4): the only two —
+  # `cost_gauge/1`'s fill-width styles — went with the gauge (039). Anything
+  # carrying `style=` fires.
   defp inline_style_color(path, line, line_no) do
-    case Regex.scan(~r/style=\{"[^"]*"\}/, line) do
-      [] ->
-        nil
-
-      matches ->
-        if Enum.all?(matches, fn [m] -> Regex.match?(@allowed_inline_style_re, m) end) do
-          nil
-        else
-          violation(:inline_style_color, path, line_no, String.trim(line))
-        end
-    end
+    if Regex.match?(~r/style=\{"[^"]*"\}/, line),
+      do: violation(:inline_style_color, path, line_no, String.trim(line))
   end
 
   defp decode_entities(line) do

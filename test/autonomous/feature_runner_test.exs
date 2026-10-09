@@ -280,6 +280,7 @@ defmodule Autonomous.FeatureRunnerTest do
     File.mkdir_p!(Path.join(repo, ".claude/skills"))
     File.write!(Path.join(repo, ".claude/skills/.gitkeep"), "")
     File.write!(Path.join(repo, ".claude/settings.json"), "{}")
+    File.write!(Path.join(repo, ".claude/autonomous-pack.json"), ~s({"contract": 6}))
     git!(repo, ["add", "-A"])
     git!(repo, ["commit", "-q", "-m", "base"])
 
@@ -347,7 +348,7 @@ defmodule Autonomous.FeatureRunnerTest do
 
   test "happy path: runs the full pipeline to :done and removes the worktree" do
     wt = scaffolded_worktree()
-    {:ok, ledger} = Ledger.start_link(budget: 100, name: nil)
+    {:ok, ledger} = Ledger.start_link(name: nil)
 
     result = FeatureRunner.run(feature(), worktree: wt, ledger: ledger, notify: self())
 
@@ -1222,14 +1223,16 @@ defmodule Autonomous.FeatureRunnerTest do
     assert log =~ "speckit: 001 checkpoint after specify"
   end
 
-  test "breaker tripping mid-run halts the feature (drain, not kill)" do
-    # budget below one phase's cost -> after the first phase records cost, the
-    # breaker trips and the runner halts before the next phase.
-    {:ok, ledger} = Ledger.start_link(budget: 0.05, name: nil)
-    result = FeatureRunner.run(feature(), ledger: ledger, notify: self())
-    assert result.status == :halted
-    assert result.reason == :breaker
-    assert_received {:feature_finished, "001", :halted, :breaker}
+  test "039: large prior spend never halts the feature — it runs to :done" do
+    wt = scaffolded_worktree()
+    {:ok, ledger} = Ledger.start_link(name: nil)
+    Ledger.record(ledger, nil, 10_000.0)
+
+    result = FeatureRunner.run(feature(), worktree: wt, ledger: ledger, notify: self())
+
+    assert result.status == :done
+    assert_received {:feature_finished, "001", :done, _}
+    assert_in_delta Ledger.spent(ledger), 10_000.0 + result.cost_total, 1.0e-6
   end
 
   test "branch drift (027, US2): a session that leaves the orchestrator's branch fails, keeps the worktree, and writes no further git state" do
@@ -1596,7 +1599,7 @@ defmodule Autonomous.FeatureRunnerTest do
     test "an absent, blank, or whitespace-only remediation_prompt runs no remediation step (FR-004/SC-002)" do
       for prompt <- [nil, "", "   \n\t "] do
         wt = scaffolded_worktree()
-        {:ok, ledger} = Ledger.start_link(budget: 100, name: nil)
+        {:ok, ledger} = Ledger.start_link(name: nil)
 
         test_pid = self()
         handler = "no-remediation-tele-#{System.unique_integer([:positive])}"

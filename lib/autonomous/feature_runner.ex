@@ -28,7 +28,6 @@ defmodule Autonomous.FeatureRunner do
     Describe,
     FeatureAgent,
     InteractiveClarify,
-    Ledger,
     NeedsHuman,
     PhaseResult,
     PhaseSession,
@@ -119,7 +118,6 @@ defmodule Autonomous.FeatureRunner do
     remediation_model = Keyword.get(opts, :remediation_model)
     run_context = Keyword.get(opts, :run_context)
     layout = Keyword.get(opts, :layout)
-    containment = (run_context && run_context.containment_profile) || "strict"
     # Resolved lazily at each fork-point lookup (`merge_base/2`, `ChunkRunner`)
     # — a dry run with no worktree never looks one up, and must not pay for a
     # `Config.pr_base()` that may not be configured at all.
@@ -160,14 +158,13 @@ defmodule Autonomous.FeatureRunner do
               phase: start_phase,
               resume_prompt: resume_prompt,
               remediation_prompt: remediation_prompt,
-              remediation_model: remediation_model,
-              containment: containment
+              remediation_model: remediation_model
             },
             timeout
           )
 
         {status, reason, agent} =
-          case maybe_run_remediation(pid, feature, timeout, remediation_prompt, run_key, ledger) do
+          case maybe_run_remediation(pid, feature, timeout, remediation_prompt, run_key) do
             {:error, agent} ->
               {:failed, remediation_failure_reason(agent), agent}
 
@@ -178,7 +175,6 @@ defmodule Autonomous.FeatureRunner do
                 start_phase,
                 Pipeline.step_of(start_phase),
                 timeout,
-                ledger,
                 worktree,
                 run_context,
                 layout,
@@ -190,7 +186,7 @@ defmodule Autonomous.FeatureRunner do
           end
 
         call(pid, "feature.finalize", %{status: status, reason: reason}, timeout)
-        {message, pr} = commit_message_and_pr(feature, status, worktree, layout, containment)
+        {message, pr} = commit_message_and_pr(feature, status, worktree, layout)
         handle_worktree(feature, status, reason, worktree, message, stack_base)
 
         if drained?(status, reason) do
@@ -227,7 +223,7 @@ defmodule Autonomous.FeatureRunner do
   # guarantees "at most once, before the target phase only" (FR-005/SC-003).
   # Blank prompt = zero overhead (FR-004/SC-002): no signal, no telemetry span,
   # no cost.
-  defp maybe_run_remediation(pid, feature, timeout, remediation_prompt, run_key, ledger) do
+  defp maybe_run_remediation(pid, feature, timeout, remediation_prompt, run_key) do
     if blank?(remediation_prompt) do
       :ok
     else
@@ -238,7 +234,6 @@ defmodule Autonomous.FeatureRunner do
           timeout,
           Config.phase_max_retries(),
           run_key,
-          ledger,
           false
         )
 
@@ -252,15 +247,14 @@ defmodule Autonomous.FeatureRunner do
   #
   # 034: a session that *died* (CLI exited before or without a result) earns
   # one fresh session through `SessionRetry.once/2` — its own budget, so it
-  # never double-counts with the transient one; breaker/drain suppress it.
-  defp remediation_with_retry(pid, feature, timeout, retries, run_key, ledger, died_retried?) do
+  # never double-counts with the transient one; a drain suppresses it.
+  defp remediation_with_retry(pid, feature, timeout, retries, run_key, died_retried?) do
     agent = run_remediation(pid, feature, timeout, run_key)
     st = agent.state
 
     died_verdict =
       SessionRetry.once(st.last_signals, %{
         retried?: died_retried?,
-        breaker?: breaker_tripped?(ledger),
         drain?: Workers.drain_requested?()
       })
 
@@ -272,14 +266,14 @@ defmodule Autonomous.FeatureRunner do
             "#{get_in(st.last_signals, [:session_died, :excerpt])} — retrying once"
         )
 
-        remediation_with_retry(pid, feature, timeout, retries, run_key, ledger, true)
+        remediation_with_retry(pid, feature, timeout, retries, run_key, true)
 
       retries > 0 and st.last_outcome == :error and PhaseResult.transient?(st.last_result) ->
         Logger.warning(
           "feature #{feature.id} remediation failed transiently — retrying (#{retries} left)"
         )
 
-        remediation_with_retry(pid, feature, timeout, retries - 1, run_key, ledger, died_retried?)
+        remediation_with_retry(pid, feature, timeout, retries - 1, run_key, died_retried?)
 
       true ->
         agent
@@ -323,10 +317,6 @@ defmodule Autonomous.FeatureRunner do
   defp remediation_failure_reason(%{state: %{last_signals: %{session_died: %{} = d}}}),
     do: {:session_died, {:remediation, 1}, d}
 
-  # 036: strict run, untrusted workspace — never retried; the operator must trust it.
-  defp remediation_failure_reason(%{state: %{last_signals: %{untrusted_workspace: %{} = obs}}}),
-    do: {:untrusted_workspace, {:remediation, 1}, obs}
-
   defp remediation_failure_reason(_agent), do: :remediation_failed
 
   # ---- loop ---------------------------------------------------------------
@@ -337,7 +327,6 @@ defmodule Autonomous.FeatureRunner do
          phase,
          step,
          timeout,
-         ledger,
          worktree,
          run_context,
          layout,
@@ -347,7 +336,7 @@ defmodule Autonomous.FeatureRunner do
          clarify_rounds_used
        ) do
     started_at = DateTime.utc_now()
-    agent = run_step(pid, feature, phase, step, timeout, ledger, worktree, layout, step_opts)
+    agent = run_step(pid, feature, phase, step, timeout, worktree, layout, step_opts)
     st = agent.state
     gate_sigs = gate_signals(phase, st, step_opts)
 
@@ -407,14 +396,11 @@ defmodule Autonomous.FeatureRunner do
 
     case decorated do
       {:cont, next} ->
-        # Drain-don't-kill: the current phase finished; if the breaker has since
-        # tripped, halt before starting the next phase rather than mid-phase.
-        # A persistence failure drains the same way, at the same point
-        # (FR-010, contracts/persistence-failure.md).
+        # Drain-don't-kill: the current phase finished; if a drain has since
+        # been requested, halt before starting the next phase rather than
+        # mid-phase. A persistence failure drains the same way, at the same
+        # point (FR-010, contracts/persistence-failure.md).
         cond do
-          breaker_tripped?(ledger) ->
-            {:halted, :breaker, agent}
-
           Workers.drain_requested?() ->
             {:halted, :superseded, agent}
 
@@ -428,7 +414,6 @@ defmodule Autonomous.FeatureRunner do
               next,
               step + 1,
               timeout,
-              ledger,
               worktree,
               run_context,
               layout,
@@ -455,7 +440,6 @@ defmodule Autonomous.FeatureRunner do
           pid,
           feature,
           agent,
-          ledger,
           worktree,
           run_context,
           layout,
@@ -480,7 +464,7 @@ defmodule Autonomous.FeatureRunner do
 
   # ---- interactive clarify (029, contracts/wait-protocol.md) ----------------
   #
-  # Reached only from `loop/13`'s `{:escalated, :needs_human} when phase ==
+  # Reached only from `loop/12`'s `{:escalated, :needs_human} when phase ==
   # :clarify` clause, strictly after the ordinary per-phase boundary
   # (`record_attempt/9`, checkpoint included) has already run — this never
   # duplicates that write (research.md R12).
@@ -489,7 +473,6 @@ defmodule Autonomous.FeatureRunner do
          pid,
          feature,
          agent,
-         ledger,
          worktree,
          run_context,
          layout,
@@ -521,7 +504,6 @@ defmodule Autonomous.FeatureRunner do
           pid: pid,
           feature: feature,
           agent: agent,
-          ledger: ledger,
           worktree: worktree,
           run_context: run_context,
           layout: layout,
@@ -584,9 +566,8 @@ defmodule Autonomous.FeatureRunner do
     end
   end
 
-  # Tick (contracts/wait-protocol.md § Tick): drain and breaker are checked
-  # first, every tick, and neither starts a session or spends (FR-004,
-  # FR-011). Every other branch reads the round row transactionally — the
+  # Tick (contracts/wait-protocol.md § Tick): drain is checked first, every
+  # tick, and never starts a session or spends (FR-004, FR-011). Every other branch reads the round row transactionally — the
   # runner acts on the transaction's result, never on the message that woke
   # it (research.md R3), so a lost `{:clarify_answered, _}` message costs at
   # most one `poll_ms` tick (SC-002).
@@ -595,7 +576,6 @@ defmodule Autonomous.FeatureRunner do
 
     cond do
       Workers.drain_requested?() -> finish_wait(ctx, :drained, :drained)
-      breaker_tripped?(ctx.ledger) -> finish_wait(ctx, :breaker, :breaker)
       true -> read_clarify_round(ctx)
     end
   end
@@ -660,23 +640,19 @@ defmodule Autonomous.FeatureRunner do
   end
 
   defp exit_for(:timed_out), do: :answer_timeout
-  defp exit_for(:breaker), do: :breaker
   defp exit_for(:drained), do: :drained
   defp exit_for(_other), do: :restart
 
   # Answered path (contracts/wait-protocol.md § Answered path). Step 1: a
-  # breaker/drain that tripped in the gap between the answer landing and this
+  # drain requested in the gap between the answer landing and this
   # tick observing it escalates without ever starting the re-run session,
   # leaving the round `:answered` with `applied_at: nil` so a later resume can
   # still reuse it (research.md R12). Steps 2-4: resume the feature, fold the
-  # answers into a fresh `:clarify` session via the ordinary `loop/13` path —
+  # answers into a fresh `:clarify` session via the ordinary `loop/12` path —
   # re-entering `Pipeline.next/3` and `decide/3` exactly as any other clarify
   # attempt would, with `rounds_used` advanced by one.
   defp answered(ctx, round) do
     cond do
-      breaker_tripped?(ctx.ledger) ->
-        {:escalated, InteractiveClarify.on_exit(:breaker), ctx.agent}
-
       Workers.drain_requested?() ->
         {:escalated, InteractiveClarify.on_exit(:drained), ctx.agent}
 
@@ -701,7 +677,6 @@ defmodule Autonomous.FeatureRunner do
           :clarify,
           ctx.step,
           ctx.timeout,
-          ctx.ledger,
           ctx.worktree,
           ctx.run_context,
           ctx.layout,
@@ -843,11 +818,11 @@ defmodule Autonomous.FeatureRunner do
   # `Chunking.next/2`'s row 1 — the outer transient-retry wrapper
   # (`run_phase_with_retry/8`) would be meaningless wrapped around a call that
   # already represents N sessions, not one. Every other phase is unchanged.
-  defp run_step(pid, feature, :implement, step, timeout, ledger, worktree, layout, step_opts) do
+  defp run_step(pid, feature, :implement, step, timeout, worktree, layout, step_opts) do
     chunk_opts =
       Map.take(step_opts, [:start_task_phase, :reset_implement_sessions, :run_key, :stack_base])
 
-    run_chunked_phase(pid, feature, step, timeout, ledger, worktree, layout, chunk_opts)
+    run_chunked_phase(pid, feature, step, timeout, worktree, layout, chunk_opts)
   end
 
   # `:analyze` (017) delegates to `AnalyzeRunner`, which drives the bounded
@@ -856,7 +831,7 @@ defmodule Autonomous.FeatureRunner do
   # exactly one `:analyze` outcome, exactly once (FR-007). With the loop
   # disabled the runner short-circuits to the same `PhaseStep.run/4` call the
   # generic clause makes.
-  defp run_step(pid, feature, :analyze, step, timeout, ledger, worktree, layout, step_opts) do
+  defp run_step(pid, feature, :analyze, step, timeout, worktree, layout, step_opts) do
     AnalyzeRunner.run(%{
       pid: pid,
       feature: feature,
@@ -864,7 +839,6 @@ defmodule Autonomous.FeatureRunner do
       layout: layout,
       timeout: timeout,
       step: step,
-      ledger: ledger,
       settings: Map.fetch!(step_opts, :remediation_settings),
       run_key: Map.get(step_opts, :run_key)
     })
@@ -874,17 +848,16 @@ defmodule Autonomous.FeatureRunner do
   # `step_opts.clarify_answers` (`nil` on the first attempt and on every phase
   # but `:clarify` — a plain `PhaseStep.run/4` no-op there, byte-identical to
   # the generic clause below).
-  defp run_step(pid, feature, :clarify, step, timeout, ledger, _worktree, _layout, step_opts) do
+  defp run_step(pid, feature, :clarify, step, timeout, _worktree, _layout, step_opts) do
     PhaseStep.run(pid, feature, :clarify,
       step: step,
       timeout: timeout,
-      ledger: ledger,
       operator_answers: Map.get(step_opts, :clarify_answers)
     )
   end
 
-  defp run_step(pid, feature, phase, step, timeout, ledger, _worktree, _layout, _step_opts) do
-    PhaseStep.run(pid, feature, phase, step: step, timeout: timeout, ledger: ledger)
+  defp run_step(pid, feature, phase, step, timeout, _worktree, _layout, _step_opts) do
+    PhaseStep.run(pid, feature, phase, step: step, timeout: timeout)
   end
 
   # The same [:speckit, :phase] span every other phase gets, wrapping the
@@ -894,7 +867,7 @@ defmodule Autonomous.FeatureRunner do
   # becomes this feature run's durable `:implement` phase attempt, recorded
   # below by the caller — each intermediate chunk's own result is not
   # separately persisted (018).
-  defp run_chunked_phase(pid, feature, step, timeout, ledger, worktree, layout, chunk_opts) do
+  defp run_chunked_phase(pid, feature, step, timeout, worktree, layout, chunk_opts) do
     meta = %{
       feature_id: feature.id,
       phase: :implement,
@@ -913,8 +886,7 @@ defmodule Autonomous.FeatureRunner do
             worktree: worktree,
             layout: layout,
             timeout: timeout,
-            step: step,
-            ledger: ledger
+            step: step
           })
         )
 
@@ -933,8 +905,8 @@ defmodule Autonomous.FeatureRunner do
   # An edge module that drives its own sub-loop (`ChunkRunner` for `:implement`,
   # `AnalyzeRunner` for `:analyze`) resolves halt/failure reasons
   # `Pipeline.next/3` has no vocabulary for — a chunked implement's SC-002
-  # reasons and breaker halt, the analyze loop's `:remediation_failed` and its
-  # own breaker halt — below `Pipeline.next/3`'s single generic `{phase,
+  # reasons and drain halt, the analyze loop's `:remediation_failed` and its
+  # own drain halt — below `Pipeline.next/3`'s single generic `{phase,
   # :error}`. `Pipeline.next/3` itself stays untouched. `terminal_reason` is
   # the existing `FeatureAgent` field (added in 013 for post-finalize
   # bookkeeping) reused as the seam both edge modules share, so the specific
@@ -1053,9 +1025,6 @@ defmodule Autonomous.FeatureRunner do
   defp diversion_evidence(agent),
     do: Map.get(agent.state.last_signals || %{}, :diversion_evidence, %{})
 
-  defp breaker_tripped?(nil), do: false
-  defp breaker_tripped?(ledger), do: Ledger.breaker_tripped?(ledger)
-
   defp store_unwritable?(nil), do: false
   defp store_unwritable?(_run_key), do: Store.Health.failed?()
 
@@ -1128,10 +1097,10 @@ defmodule Autonomous.FeatureRunner do
   # and the git history it describes always agree. Claude-authored via
   # `Describe.run/3` (019: every run publishes a PR, unconditionally). A
   # describe failure logs and falls back — never blocks.
-  defp commit_message_and_pr(feature, :done, %Worktree{} = wt, layout, containment) do
+  defp commit_message_and_pr(feature, :done, %Worktree{} = wt, layout) do
     fallback = "speckit: feature #{feature.id} pipeline artifacts (done)"
 
-    case Describe.run(feature, wt, layout, containment: containment) do
+    case Describe.run(feature, wt, layout) do
       {:ok, d} ->
         message = if d.commit_message == "", do: fallback, else: d.commit_message
         {message, %{pr_title: d.pr_title, pr_body: d.pr_body}}
@@ -1142,7 +1111,7 @@ defmodule Autonomous.FeatureRunner do
     end
   end
 
-  defp commit_message_and_pr(feature, status, _wt, _layout, _containment) do
+  defp commit_message_and_pr(feature, status, _wt, _layout) do
     {"speckit: feature #{feature.id} pipeline artifacts (#{status})", nil}
   end
 
@@ -1185,7 +1154,7 @@ defmodule Autonomous.FeatureRunner do
        ),
        do: :ok
 
-  # `AnalyzeRunner`'s failure and breaker paths already committed the analyze
+  # `AnalyzeRunner`'s failure and drain paths already committed the analyze
   # run, and hand back the *remediation* agent — recording that here would
   # overwrite the analyze attempt with the corrective step's outcome, cost and
   # transcript at the same `attempt_id`. Write the checkpoint alone; the

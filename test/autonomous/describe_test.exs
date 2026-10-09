@@ -33,7 +33,7 @@ defmodule Autonomous.DescribeTest do
   defp restore_sdk(nil), do: Application.delete_env(:jido_claude, :sdk_module)
   defp restore_sdk(val), do: Application.put_env(:jido_claude, :sdk_module, val)
 
-  describe "containment env markers (030, T016)" do
+  describe "no containment env markers (039)" do
     setup do
       original = Application.get_env(:jido_claude, :sdk_module)
       Application.put_env(:jido_claude, :sdk_module, EnvCapturingSDK)
@@ -43,24 +43,11 @@ defmodule Autonomous.DescribeTest do
 
     defp feature, do: %Feature{id: "001", number: 1, slug: "s", path: "p.md"}
 
-    test "carries AUTONOMOUS_ORCHESTRATED=1 under strict" do
-      assert {:ok, _} = Describe.run(feature(), %{path: "."}, nil, containment: "strict")
+    test "carries neither retired marker (039)" do
+      assert {:ok, _} = Describe.run(feature(), %{path: "."}, nil)
       assert_received {:captured_env, env}
-      assert env["AUTONOMOUS_ORCHESTRATED"] == "1"
-      assert env["AUTONOMOUS_CONTAINMENT_PROFILE"] == "strict"
-    end
-
-    test "carries AUTONOMOUS_ORCHESTRATED=1 under permissive" do
-      assert {:ok, _} = Describe.run(feature(), %{path: "."}, nil, containment: "permissive")
-      assert_received {:captured_env, env}
-      assert env["AUTONOMOUS_ORCHESTRATED"] == "1"
-      assert env["AUTONOMOUS_CONTAINMENT_PROFILE"] == "permissive"
-    end
-
-    test "defaults to strict when no :containment option is given" do
-      assert {:ok, _} = Describe.run(feature(), %{path: "."}, nil, [])
-      assert_received {:captured_env, env}
-      assert env["AUTONOMOUS_CONTAINMENT_PROFILE"] == "strict"
+      refute Map.has_key?(env, "AUTONOMOUS_ORCHESTRATED")
+      refute Map.has_key?(env, "AUTONOMOUS_CONTAINMENT_PROFILE")
     end
   end
 

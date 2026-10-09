@@ -96,6 +96,7 @@ defmodule Autonomous.ResumeBacklogE2ETest do
     File.mkdir_p!(Path.join(repo, ".claude/skills"))
     File.write!(Path.join(repo, ".claude/skills/.gitkeep"), "")
     File.write!(Path.join(repo, ".claude/settings.json"), "{}")
+    File.write!(Path.join(repo, ".claude/autonomous-pack.json"), ~s({"contract": 6}))
     git!(repo, ["init", "-q", "-b", "main"])
     git!(repo, ["config", "user.email", "t@e.com"])
     git!(repo, ["config", "user.name", "T"])

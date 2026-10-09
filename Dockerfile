@@ -135,8 +135,8 @@ RUN if [ -n "$EXTRA_APT_PACKAGES" ]; then \
 
 # ---- Agent root (feature 037, FR-005/FR-006) --------------------------------------
 # The grant names no user so it fits whatever uid the container runs as. The
-# boundaries are the scope_guard.py grammar (per command) and the container; the
-# apt.conf drop-in makes apt refuse any install that would remove a package.
+# container is the boundary (039: no per-command sudo grammar); the apt.conf
+# drop-in makes apt refuse any install that would remove a package.
 RUN if [ "$WITH_AGENT_ROOT" = 1 ]; then \
       apt-get update \
    && apt-get install -y --no-install-recommends sudo \

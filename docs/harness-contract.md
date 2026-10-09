@@ -92,8 +92,8 @@ Consequences for later phases:
   the per-phase config estimate only when it is absent. Because the flag says
   `false`, never *require* the usage event — always keep the estimate path.
 - **`cancellation?: false`** → no hard mid-phase cancel via the adapter. Fine:
-  the breaker uses drain-don't-kill (finish current phase, then halt), never a
-  hard cancel.
+  supersession drain uses drain-don't-kill (finish current phase, then halt),
+  never a hard cancel (the cost breaker that also drained was removed in 039).
 - **`resume?: true`** → session resume is available (session ids in the Claude
   signals) — enables mid-pipeline escalation resume (shipped via
   `Autonomous.resume/2`).
@@ -106,17 +106,11 @@ Consequences for later phases:
   - **Superseded finding (030, research.md R2):** an earlier read of this
     template found `--dangerously-skip-permissions` here. The real SDK path
     passes `--permission-mode <mode>` instead — sourced from
-    `PhaseRequest.build/3`'s `permission_mode` field (`:plan`/`:accept_edits`/
-    `:bypass_permissions` per phase and containment profile, feature 030) —
-    and `--dangerously-skip-permissions` is not emitted. Per-phase permissions
-    therefore genuinely govern tool access rather than being pure
-    belt-and-suspenders over an ignored flag. In-tree scope enforcement still
-    layers the committed `.claude/settings.json` + PreToolUse hook (Phase 5)
-    on top — the hook is what applies uniformly regardless of which
-    `--permission-mode` a given phase/profile requests, and under the
-    `permissive` containment profile (030) it is the *only* layer, since that
-    profile's `permission_mode` is `:bypass_permissions` with no tool
-    exclusion beyond FR-008 — see `docs/enforcement.md`.
+    `PhaseRequest.build/3`'s `permission_mode` field (since 039,
+    `:bypass_permissions` for every session) — and
+    `--dangerously-skip-permissions` is not emitted. The per-phase
+    containment profiles and the PreToolUse hook layer were removed in 039;
+    the container is the boundary — see `docs/enforcement.md`.
 - Auth: one of `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY` /
   `CLAUDE_CODE_API_KEY` must be in the host env.
 - Compatibility probe: `claude --help` must show `--output-format`,

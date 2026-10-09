@@ -102,8 +102,7 @@ defmodule Autonomous.Actions.RunAutoRemediationTest do
       session_id: nil,
       ledger: nil,
       cost_total: 0.0,
-      history: [],
-      containment: "strict"
+      history: []
     }
 
     %{agent: %{state: Map.merge(base, state_overrides)}}
@@ -112,7 +111,7 @@ defmodule Autonomous.Actions.RunAutoRemediationTest do
   defp restore_sdk(nil), do: Application.delete_env(:jido_claude, :sdk_module)
   defp restore_sdk(val), do: Application.put_env(:jido_claude, :sdk_module, val)
 
-  describe "containment env markers (030, T016)" do
+  describe "no containment env markers (039)" do
     setup do
       original = Application.get_env(:jido_claude, :sdk_module)
       Application.put_env(:jido_claude, :sdk_module, EnvCapturingSDK)
@@ -120,20 +119,16 @@ defmodule Autonomous.Actions.RunAutoRemediationTest do
       :ok
     end
 
-    test "carries AUTONOMOUS_ORCHESTRATED=1 under strict" do
-      params = %{prompt: "fix it", model: "sonnet", attempt: 1}
-      assert {:ok, _} = RunAutoRemediation.run(params, context(%{containment: "strict"}))
-      assert_received {:captured_env, env}
-      assert env["AUTONOMOUS_ORCHESTRATED"] == "1"
-      assert env["AUTONOMOUS_CONTAINMENT_PROFILE"] == "strict"
-    end
+    test "carries neither retired marker (039)" do
+      assert {:ok, _} =
+               RunAutoRemediation.run(
+                 %{prompt: "fix it", model: "sonnet", attempt: 1},
+                 context(%{})
+               )
 
-    test "carries AUTONOMOUS_ORCHESTRATED=1 under permissive" do
-      params = %{prompt: "fix it", model: "sonnet", attempt: 1}
-      assert {:ok, _} = RunAutoRemediation.run(params, context(%{containment: "permissive"}))
       assert_received {:captured_env, env}
-      assert env["AUTONOMOUS_ORCHESTRATED"] == "1"
-      assert env["AUTONOMOUS_CONTAINMENT_PROFILE"] == "permissive"
+      refute Map.has_key?(env, "AUTONOMOUS_ORCHESTRATED")
+      refute Map.has_key?(env, "AUTONOMOUS_CONTAINMENT_PROFILE")
     end
   end
 

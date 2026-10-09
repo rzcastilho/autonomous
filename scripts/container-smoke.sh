@@ -4,7 +4,7 @@
 # FAIL. Sections are added per user story — see
 # specs/031-containerized-runtime/quickstart.md.
 #
-#   scripts/container-smoke.sh [us1|us2|us3|us4|us5|us6|secrets|trust|us-trust-hook|sysdeps]
+#   scripts/container-smoke.sh [us1|us2|us3|us4|us5|us6|secrets|trust|sysdeps]
 #
 # Needs: Docker Engine + Compose v2, the image built (scripts/autonomous build).
 # Agent-auth checks (SC-011) spend a few cents and run only with SMOKE_AGENT=1.
@@ -146,20 +146,6 @@ us1() {
     '' | MISSING) fail "System.find_executable(\"claude\") is non-nil inside the VM" ;;
     *) pass "System.find_executable(\"claude\") is non-nil inside the VM ($vm)" ;;
   esac
-
-  # FR-009: an orchestrated strict session is denied an out-of-tree write, naming
-  # the profile and the rule. Runs the real hook inside the image.
-  denial="$(docker run --rm --user "$(id -u):$(id -g)" \
-    -v "$root/priv/target_pack/.claude/hooks:/hooks:ro" \
-    -e AUTONOMOUS_ORCHESTRATED=1 -e AUTONOMOUS_CONTAINMENT_PROFILE=strict \
-    --entrypoint sh "$IMAGE" -c \
-    'echo "{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"/etc/passwd\"},\"cwd\":\"/tmp/wt\"}" | python3 /hooks/scope_guard.py' 2>&1)"
-  if printf '%s' "$denial" | grep -q '"permissionDecision": *"deny"' \
-    && printf '%s' "$denial" | grep -qi 'strict' && printf '%s' "$denial" | grep -qi 'outside worktree'; then
-    pass "strict orchestrated session is denied an out-of-tree write (profile and rule named)"
-  else
-    fail "strict orchestrated session is denied an out-of-tree write: $denial"
-  fi
 
   # Feature 034 (US2): --with-login seeds a private ~/.claude.json from a
   # read-only seed mount. No spend; runs the real entrypoint's seed-config step.
@@ -527,12 +513,6 @@ us5() {
     *SHOT-OK*) pass "desktop: click + screenshot written under a virtual display" ;;
     *) fail "desktop: click + screenshot written: $(printf '%s' "$out" | tail -n2)" ;;
   esac
-
-  # A strict orchestrated session is allowed to run those commands (hook matrix).
-  hook=priv/target_pack/.claude/hooks/scope_guard.py
-  verdict="$(printf '%s' '{"tool_name":"Bash","tool_input":{"command":"npx playwright test 2>/dev/null"},"cwd":"/tmp/wt"}' \
-    | AUTONOMOUS_ORCHESTRATED=1 AUTONOMOUS_CONTAINMENT_PROFILE=strict python3 "$hook")"
-  if [ -z "$verdict" ]; then pass "strict hook allows the device-sink redirect"; else fail "strict hook allows the device-sink redirect: $verdict"; fi
 }
 
 us6() {
@@ -682,38 +662,6 @@ trust() {
   fi
 }
 
-# Feature 036 (US4): does scope_guard still deny while the workspace is untrusted?
-us_trust_hook() {
-  echo "== Trust hook: strict containment under an untrusted workspace (feature 036)"
-  if [ "${SMOKE_AGENT:-0}" != 1 ]; then
-    skip "us-trust-hook (set SMOKE_AGENT=1; spends a few cents)"
-    return
-  fi
-  scratch="$(make_target trust-hook)"
-  mkdir -p "$scratch/.claude"
-  cp -R priv/target_pack/.claude/. "$scratch/.claude/"
-  git -C "$scratch" add -A && git -C "$scratch" -c user.name=smoke -c user.email=smoke@example.com commit -q -m pack
-  ver="$(docker run --rm --entrypoint claude "$IMAGE" --version 2>/dev/null | tr -d '\r')"
-  attempt() { # attempt <label> <trust: yes|no>
-    docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp/th -e ANTHROPIC_API_KEY -e CLAUDE_CODE_OAUTH_TOKEN \
-      -e AUTONOMOUS_ORCHESTRATED=1 -e AUTONOMOUS_CONTAINMENT_PROFILE=strict \
-      -e AUTONOMOUS_REPO=/work -e AUTONOMOUS_WORKTREE_ROOT=/tmp/wt -e TRUST="$2" \
-      -v "$root/scripts/container-entrypoint.sh:/ep.sh:ro" -v "$scratch:/work" -w /work \
-      --entrypoint sh "$IMAGE" -c 'mkdir -p /tmp/th; [ "$TRUST" = yes ] && sh /ep.sh trust-config 2>/dev/null
-        claude -p "Write the text hi to /tmp/outside using the Write tool, then say done." --permission-mode acceptEdits >/tmp/out.txt 2>/tmp/err.txt
-        printf "untrusted_warning=%s " "$(grep -c "has not been trusted" /tmp/err.txt)"
-        printf "guard_denied=%s " "$(cat /tmp/out.txt /tmp/err.txt | grep -ci "write_outside_worktree\|outside worktree\|hook")"
-        printf "file_written=%s\n" "$([ -e /tmp/outside ] && echo 1 || echo 0)"' 2>&1 | tail -1
-  }
-  u="$(attempt untrusted no)"
-  t="$(attempt trusted yes)"
-  echo "us-trust-hook claude=$ver untrusted: $u"
-  echo "us-trust-hook claude=$ver trusted:   $t"
-  case "$t" in *file_written=0*) pass "trusted workspace: out-of-tree write denied" ;; *) fail "trusted workspace: write not denied ($t)" ;; esac
-  case "$u" in *guard_denied=0*) fail "untrusted workspace: no scope_guard denial seen (session may not have authenticated or attempted the write): $u"; return ;; esac
-  case "$u" in *file_written=0*) pass "untrusted workspace: write still denied (hook ran)" ;; *) fail "untrusted workspace: write went through ($u) — record in docs/container.md" ;; esac
-}
-
 # Feature 037: declared system packages (--apt) and agent root (--agent-root).
 # SMOKE_IMAGE=autonomous-release:local checks the release image the same way.
 sysdeps() {
@@ -737,7 +685,10 @@ sysdeps() {
       *) fail "entrypoint did not advertise agent root" ;;
     esac
     check "sudo apt-get install $probe" sd "sudo -n apt-get update && sudo -n apt-get install -y --no-install-recommends '$probe'"
-    if sd "sudo -n apt-get remove -y '$probe'" >/dev/null 2>&1; then
+    # Install then remove in one container: each `sd` is a fresh `docker run --rm`,
+    # and removing a package that is not installed exits 0 without hitting the guard.
+    if sd "sudo -n apt-get update -qq && sudo -n apt-get install -y -qq --no-install-recommends '$probe' \
+      && sudo -n apt-get remove -y '$probe'" >/dev/null 2>&1; then
       fail "apt-get remove was not refused (APT::Get::Remove)"
     else
       pass "apt-get remove refused"
@@ -761,10 +712,9 @@ case "$section" in
   us6) us6 ;;
   secrets) secrets ;;
   trust) trust ;;
-  us-trust-hook) us_trust_hook ;;
   sysdeps) sysdeps ;;
-  all) us1; us2; us3; us4; us5; us6; secrets; trust; us_trust_hook; sysdeps ;;
-  *) echo "usage: scripts/container-smoke.sh [us1|us2|us3|us4|us5|us6|secrets|trust|us-trust-hook|sysdeps]" >&2; exit 2 ;;
+  all) us1; us2; us3; us4; us5; us6; secrets; trust; sysdeps ;;
+  *) echo "usage: scripts/container-smoke.sh [us1|us2|us3|us4|us5|us6|secrets|trust|sysdeps]" >&2; exit 2 ;;
 esac
 
 echo

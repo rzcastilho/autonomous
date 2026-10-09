@@ -19,8 +19,7 @@ defmodule Autonomous.Actions.InitFeature do
       # "expected string, got: nil". `{:or, [nil, :string]}` accepts both.
       resume_prompt: [type: {:or, [nil, :string]}, default: nil],
       remediation_prompt: [type: {:or, [nil, :string]}, default: nil],
-      remediation_model: [type: {:or, [nil, :string]}, default: nil],
-      containment: [type: :string, default: "strict"]
+      remediation_model: [type: {:or, [nil, :string]}, default: nil]
     ]
 
   alias Autonomous.Pipeline
@@ -40,7 +39,6 @@ defmodule Autonomous.Actions.InitFeature do
        resume_prompt: params.resume_prompt,
        remediation_prompt: params.remediation_prompt,
        remediation_model: params.remediation_model,
-       containment: params.containment,
        status: :running,
        history: []
      }}

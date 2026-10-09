@@ -166,8 +166,7 @@ defmodule Autonomous.Actions.RunFeaturePhaseTest do
       cost_total: 0.0,
       history: [],
       resume_phase: nil,
-      resume_prompt: nil,
-      containment: "strict"
+      resume_prompt: nil
     }
 
     %{agent: %{state: Map.merge(base, state_overrides)}}
@@ -225,10 +224,10 @@ defmodule Autonomous.Actions.RunFeaturePhaseTest do
   defp restore(app, key, nil), do: Application.delete_env(app, key)
   defp restore(app, key, val), do: Application.put_env(app, key, val)
 
-  # 030, T016: every RunRequest built for RunFeaturePhase carries
-  # AUTONOMOUS_ORCHESTRATED=1 (env markers set under both containment profiles,
-  # research R3) — verified end-to-end through the real PhaseRequest.build/3
-  # + adapter option-building seam, not just PhaseRequest's own unit tests.
+  # 039: no RunRequest built for RunFeaturePhase carries the retired
+  # AUTONOMOUS_ORCHESTRATED/AUTONOMOUS_CONTAINMENT_PROFILE markers — verified
+  # end-to-end through the real PhaseRequest.build/3 + adapter option-building
+  # seam, not just PhaseRequest's own unit tests.
   defmodule EnvCapturingSDK do
     alias ClaudeAgentSDK.Message
 
@@ -255,7 +254,7 @@ defmodule Autonomous.Actions.RunFeaturePhaseTest do
     end
   end
 
-  describe "containment env markers (030, T016)" do
+  describe "no containment env markers (039)" do
     setup do
       original = Application.get_env(:jido_claude, :sdk_module)
       Application.put_env(:jido_claude, :sdk_module, EnvCapturingSDK)
@@ -263,34 +262,22 @@ defmodule Autonomous.Actions.RunFeaturePhaseTest do
       :ok
     end
 
-    test "strict-profile session carries AUTONOMOUS_ORCHESTRATED=1 and profile strict" do
-      assert {:ok, _} = RunFeaturePhase.run(%{phase: :analyze}, context(%{containment: "strict"}))
+    test "a phase session carries neither retired marker" do
+      assert {:ok, _} = RunFeaturePhase.run(%{phase: :analyze}, context(%{}))
       assert_received {:captured_env, env}
-      assert env["AUTONOMOUS_ORCHESTRATED"] == "1"
-      assert env["AUTONOMOUS_CONTAINMENT_PROFILE"] == "strict"
+      refute Map.has_key?(env, "AUTONOMOUS_ORCHESTRATED")
+      refute Map.has_key?(env, "AUTONOMOUS_CONTAINMENT_PROFILE")
     end
 
-    test "permissive-profile session carries AUTONOMOUS_ORCHESTRATED=1 and profile permissive" do
-      assert {:ok, _} =
-               RunFeaturePhase.run(%{phase: :analyze}, context(%{containment: "permissive"}))
-
-      assert_received {:captured_env, env}
-      assert env["AUTONOMOUS_ORCHESTRATED"] == "1"
-      assert env["AUTONOMOUS_CONTAINMENT_PROFILE"] == "permissive"
-    end
-
-    test "an implement chunk session (scoped) also carries the marker" do
+    test "an implement chunk session (scoped) carries neither either" do
       tp = %Autonomous.TaskPlan.TaskPhase{ordinal: 1, number: "1", title: "Setup", tasks: []}
 
       assert {:ok, _} =
-               RunFeaturePhase.run(
-                 %{phase: :implement, scope: {:task_phase, tp}},
-                 context(%{containment: "permissive"})
-               )
+               RunFeaturePhase.run(%{phase: :implement, scope: {:task_phase, tp}}, context(%{}))
 
       assert_received {:captured_env, env}
-      assert env["AUTONOMOUS_ORCHESTRATED"] == "1"
-      assert env["AUTONOMOUS_CONTAINMENT_PROFILE"] == "permissive"
+      refute Map.has_key?(env, "AUTONOMOUS_ORCHESTRATED")
+      refute Map.has_key?(env, "AUTONOMOUS_CONTAINMENT_PROFILE")
     end
   end
 

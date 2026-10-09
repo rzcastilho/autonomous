@@ -61,7 +61,7 @@ defmodule Autonomous.RunPhaseTest do
   setup do
     original = Application.get_env(:jido_claude, :sdk_module)
     on_exit(fn -> restore(:jido_claude, :sdk_module, original) end)
-    ledger = start_supervised!({Ledger, budget: 100, name: nil})
+    ledger = start_supervised!({Ledger, name: nil})
     %{ledger: ledger}
   end
 

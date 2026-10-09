@@ -36,11 +36,12 @@ defmodule Autonomous.InteractiveClarify do
 
   @doc """
   Map a wait exit to its escalation reason (data-model.md, research.md R5).
+  039: the cost-breaker exit is gone; `{:needs_human, :breaker}` survives
+  only in pre-039 records (rendered by `Report.format_reason/1`).
   """
-  @spec on_exit(:answer_timeout | :breaker | :drained | :restart) ::
-          {:needs_human, :answer_timeout | :breaker | :drained | :restart}
+  @spec on_exit(:answer_timeout | :drained | :restart) ::
+          {:needs_human, :answer_timeout | :drained | :restart}
   def on_exit(:answer_timeout), do: {:needs_human, :answer_timeout}
-  def on_exit(:breaker), do: {:needs_human, :breaker}
   def on_exit(:drained), do: {:needs_human, :drained}
   def on_exit(:restart), do: {:needs_human, :restart}
 

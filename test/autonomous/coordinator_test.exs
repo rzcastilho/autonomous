@@ -122,42 +122,34 @@ defmodule Autonomous.CoordinatorTest do
     assert report.stopped_by == %{feature_id: "001", status: :halted, reason: nil}
   end
 
-  # ---- breaker (drain, don't kill; Principle IV) ------------------------------
+  # ---- cost is informational (039, SC-001, FR-001) -----------------------------
 
-  test "a tripped breaker releases nothing (pre-tripped ledger)" do
-    {:ok, ledger} = Ledger.start_link(budget: 0.0, name: nil)
-    features = [feat("001"), feat("002")]
-    start(features, ledger: ledger)
+  test "large spend never halts: every feature reaches :done and spend is the sum" do
+    {:ok, ledger} = Ledger.start_link(name: nil)
+    test_pid = self()
 
-    refute_received {:started, _, _}
+    # A stub runner that records a very large cost per feature, then finishes
+    # it :done — the Coordinator must keep releasing regardless of spend.
+    runner = fn feature, notify ->
+      Ledger.record(ledger, nil, 10_000.0)
+      send(test_pid, {:ran, feature.id})
+      notify.(feature.id, :done, nil)
+    end
+
+    features = [feat("001"), feat("002"), feat("003"), feat("004")]
+
+    {:ok, pid} =
+      Coordinator.start_link(features: features, runner: runner, owner: self(), ledger: ledger)
+
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
     assert_receive {:run_complete, report}, 1_000
-    assert report.breaker_tripped
-    assert Enum.sort(report.not_started) == ["001", "002"]
-    assert report.done == []
+    assert report.done == ["001", "002", "003", "004"]
+    assert report.not_started == []
     assert report.stopped_by == nil
-  end
-
-  test "breaker tripping mid-chain drains the in-flight feature then releases no more, and the report names it as the stopper" do
-    {:ok, ledger} = Ledger.start_link(budget: 100.0, name: nil)
-    features = [feat("001"), feat("002")]
-    start(features, ledger: ledger)
-
-    n1 = await_started("001")
-    # trip the breaker while 001 is in flight
-    Ledger.record(ledger, nil, 150.0)
-    # the breaker-driven drain halts 001 between phases (FeatureRunner's job;
-    # simulated here via the controllable runner's notify).
-    n1.("001", :halted, :breaker_drain)
-
-    refute_received {:started, "002", _}
-    assert_receive {:run_complete, report}, 1_000
-    assert report.halted == ["001"]
-    assert report.not_started == ["002"]
-    assert report.breaker_tripped
-    # Reported even though the breaker masks `Release.next/3`'s own return
-    # (rule 1 always wins once tripped) — the Coordinator computes it
-    # independently so the operator can still see what broke (FR-017).
-    assert report.stopped_by == %{feature_id: "001", status: :halted, reason: :breaker_drain}
+    assert report.spend == 40_000.0
+    refute Map.has_key?(report, :breaker_tripped)
+    refute Map.has_key?(Coordinator.status(pid), :breaker_tripped)
   end
 
   # ---- report/state shape (019: no cap, no blocked) ---------------------------
@@ -263,34 +255,10 @@ defmodule Autonomous.CoordinatorTest do
     assert report.done == ["001", "002"]
   end
 
-  # ---- 030: containment_profile visibility (US3) ---------------------------
+  # ---- 039: no containment profile on any surface ---------------------------
 
-  test "final report and status snapshot carry containment_profile only for a permissive run" do
+  test "final report and status snapshot never carry containment_profile — even from a legacy context" do
     pid = start([feat("001")], context: %{containment_profile: "permissive"})
-
-    assert Coordinator.status(pid).containment_profile == "permissive"
-
-    n1 = await_started("001")
-    n1.("001", :done, nil)
-
-    assert_receive {:run_complete, report}, 1_000
-    assert report.containment_profile == "permissive"
-  end
-
-  test "final report and status snapshot omit containment_profile for a strict run" do
-    pid = start([feat("001")], context: %{containment_profile: "strict"})
-
-    refute Map.has_key?(Coordinator.status(pid), :containment_profile)
-
-    n1 = await_started("001")
-    n1.("001", :done, nil)
-
-    assert_receive {:run_complete, report}, 1_000
-    refute Map.has_key?(report, :containment_profile)
-  end
-
-  test "final report and status snapshot omit containment_profile with no context" do
-    pid = start([feat("001")])
 
     refute Map.has_key?(Coordinator.status(pid), :containment_profile)
 

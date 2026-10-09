@@ -6,8 +6,8 @@ defmodule Autonomous.LedgerLiteDryRunTest do
   no worktrees, no spend. Proves the orchestration wiring the live validation
   run depends on: strict ascending-numeric-order release (one feature at a
   time — 019 retired both `prereqs` and the cap/wave shape, see
-  `Release.next/3`) and the breaker drill (trip → drain → correct tally,
-  bounded spend).
+  `Release.next/3`) and the spend drill (039: spend accumulates past any
+  former budget, never stops the run, and tallies correctly).
 
   Deterministic: the runner hands each feature's `notify` to the test, so the
   test controls exactly when features finish. No timers.
@@ -66,21 +66,20 @@ defmodule Autonomous.LedgerLiteDryRunTest do
     assert order == ~w(001 002 003 004 005 006 007)
   end
 
-  test "breaker drill: spend trips the breaker mid-run, drains, tallies correctly", %{
+  test "spend drill: spend accumulates through the whole backlog and never stops it", %{
     features: features
   } do
     cost = 4.70
-    budget = 12.0
-    {:ok, ledger} = Ledger.start_link(budget: budget, name: nil)
+    {:ok, ledger} = Ledger.start_link(name: nil)
 
     start(features, ledger: ledger)
 
     report = drive_serial_spending(ledger, cost)
 
-    # $4.70 * 3 = $14.10 >= $12 budget → trips after the third feature.
-    assert report.breaker_tripped
-    assert Enum.sort(report.done) == ~w(001 002 003)
-    assert Enum.sort(report.not_started) == ~w(004 005 006 007)
+    # $4.70 * 7 = $32.90 — well past the former $12 drill budget; nothing trips.
+    refute Map.has_key?(report, :breaker_tripped)
+    assert Enum.sort(report.done) == ~w(001 002 003 004 005 006 007)
+    assert report.not_started == []
     assert report.halted == []
     assert report.escalated == []
     assert report.failed == []
@@ -94,9 +93,7 @@ defmodule Autonomous.LedgerLiteDryRunTest do
 
     assert Enum.sort(accounted) == ~w(001 002 003 004 005 006 007)
 
-    # Spend is bounded by budget + one reservation (the breaker invariant).
-    assert report.spend < budget + cost
-    assert report.spend == 3 * cost
+    assert_in_delta report.spend, 7 * cost, 1.0e-9
   end
 
   # ---- drivers ------------------------------------------------------------
@@ -118,7 +115,7 @@ defmodule Autonomous.LedgerLiteDryRunTest do
   end
 
   # Serial drive that records `cost` against the ledger for each started feature
-  # before completing it, so committed spend crosses the budget mid-run.
+  # before completing it.
   defp drive_serial_spending(ledger, cost) do
     receive do
       {:started, id, notify} ->

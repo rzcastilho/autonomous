@@ -79,6 +79,7 @@ defmodule Autonomous.RunDirectoryLayoutTest do
     File.mkdir_p!(Path.join(repo, ".claude/skills"))
     File.write!(Path.join(repo, ".claude/skills/.keep"), "")
     File.write!(Path.join(repo, ".claude/settings.json"), "{}")
+    File.write!(Path.join(repo, ".claude/autonomous-pack.json"), ~s({"contract": 6}))
     File.mkdir_p!(Path.join(repo, ".specify"))
     File.write!(Path.join(repo, ".specify/.keep"), "")
     {_, 0} = System.cmd("git", ["-C", repo, "add", "-A"])

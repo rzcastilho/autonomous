@@ -100,8 +100,7 @@ defmodule Autonomous.Actions.AgentRootLoggingTest do
       resume_phase: nil,
       resume_prompt: nil,
       remediation_prompt: "fix",
-      remediation_model: nil,
-      containment: "strict"
+      remediation_model: nil
     }
 
     %{agent: %{state: Map.merge(base, extra)}}
@@ -125,12 +124,8 @@ defmodule Autonomous.Actions.AgentRootLoggingTest do
       assert log =~ "agent root: feature 003 #{label} installed system packages: libfoo-dev"
     end
 
-    test "#{name}: a denied install is not logged" do
-      script(
-        "sudo apt-get install -y libfoo-dev",
-        "scope_guard[strict|orchestrated]: bash_sudo: sudo"
-      )
-
+    test "#{name}: a non-install command is not logged" do
+      script("sudo dpkg -s libfoo-dev", "ok")
       {_, fun, _} = Enum.find(@sites, &(elem(&1, 0) == unquote(name)))
       log = capture_log(fn -> fun.(ctx(%{})) end)
       refute log =~ "agent root:"

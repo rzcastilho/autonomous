@@ -165,7 +165,7 @@ defmodule Autonomous.ResumeRunTest do
     on_exit(fn -> File.rm_rf(layout.worktree_root) end)
 
     features = [feat("001"), feat("002"), feat("003"), feat("004")]
-    context = %RunContext{budget_usd: 100.0}
+    context = %RunContext{}
 
     run_key =
       open_run(Application.get_env(:autonomous, :repo), layout, features, context)
@@ -218,7 +218,7 @@ defmodule Autonomous.ResumeRunTest do
     on_exit(fn -> File.rm_rf(layout.worktree_root) end)
     repo = Application.get_env(:autonomous, :repo)
 
-    open_run(repo, layout, [feat("001")], %RunContext{budget_usd: 100.0})
+    open_run(repo, layout, [feat("001")], %RunContext{})
 
     # Simulate an active, unfinished run: a runner that never notifies.
     {:ok, blocking_pid} =
@@ -267,7 +267,7 @@ defmodule Autonomous.ResumeRunTest do
     on_exit(fn -> File.rm_rf(layout.worktree_root) end)
     repo = Application.get_env(:autonomous, :repo)
 
-    run_key = open_run(repo, layout, [feat("998")], %RunContext{budget_usd: 100.0})
+    run_key = open_run(repo, layout, [feat("998")], %RunContext{})
 
     me = self()
     {:ok, worker_pid} = Autonomous.Workers.spawn(run_key, "998", fn -> drain_aware_worker(me) end)
@@ -288,7 +288,7 @@ defmodule Autonomous.ResumeRunTest do
     on_exit(fn -> File.rm_rf(layout.worktree_root) end)
     repo = Application.get_env(:autonomous, :repo)
 
-    run_key = open_run(repo, layout, [feat("997")], %RunContext{budget_usd: 100.0})
+    run_key = open_run(repo, layout, [feat("997")], %RunContext{})
 
     me = self()
     {:ok, worker_pid} = Autonomous.Workers.spawn(run_key, "997", fn -> drain_aware_worker(me) end)
@@ -316,17 +316,16 @@ defmodule Autonomous.ResumeRunTest do
   # unconditionally exercised by every test in this file (e.g. immediately
   # above) and by `coordinator_test.exs`/`release_test.exs` directly. What
   # remains meaningful here is that the run's other recorded settings
-  # (`budget_usd`/`plan_stack`/`pr_base`/`pr_remote`) come from the STORE, not
+  # (`plan_stack`/`pr_base`/`pr_remote`) come from the STORE, not
   # live `Config` — `run_context_test.exs`/`resume_test.exs` already cover
   # `RunContext.merge/2`'s precedence directly; this proves it end-to-end
   # through `resume_run/1` specifically.
-  test "the resumed run re-executes under the run's recorded budget_usd/plan_stack/pr_base/pr_remote, not live Config" do
+  test "the resumed run re-executes under the run's recorded plan_stack/pr_base/pr_remote, not live Config" do
     layout = done_layout("999-cap")
     on_exit(fn -> File.rm_rf(layout.worktree_root) end)
     repo = Application.get_env(:autonomous, :repo)
 
     context = %RunContext{
-      budget_usd: 100.0,
       plan_stack: ["research", "plan"],
       pr_base: "develop",
       pr_remote: "upstream"
@@ -353,7 +352,7 @@ defmodule Autonomous.ResumeRunTest do
     assert Enum.sort(report.done) == ["001", "002", "003"]
 
     assert {:ok, detail} = Store.run(run_key)
-    assert detail.settings["budget_usd"] == 100.0
+    refute Map.has_key?(detail.settings, "budget_usd")
     assert detail.settings["plan_stack"] == ["research", "plan"]
     assert detail.settings["pr_base"] == "develop"
     assert detail.settings["pr_remote"] == "upstream"
@@ -367,7 +366,7 @@ defmodule Autonomous.ResumeRunTest do
     repo = Application.get_env(:autonomous, :repo)
 
     run_key =
-      open_run(repo, layout, [feat("001"), feat("002")], %RunContext{budget_usd: 100.0})
+      open_run(repo, layout, [feat("001"), feat("002")], %RunContext{})
 
     seed_converge_marker(run_key, "001")
 
@@ -386,7 +385,7 @@ defmodule Autonomous.ResumeRunTest do
     repo = Application.get_env(:autonomous, :repo)
 
     run_key =
-      open_run(repo, layout, [feat("001"), feat("002")], %RunContext{budget_usd: 100.0})
+      open_run(repo, layout, [feat("001"), feat("002")], %RunContext{})
 
     :ok = Writer.record_feature_terminal(run_key, "001", :done, :test_fixture, [])
     :ok = Writer.record_feature_terminal(run_key, "002", :escalated, :test_fixture, [])
@@ -401,58 +400,22 @@ defmodule Autonomous.ResumeRunTest do
 
   # ---- cost continuity across a crash (T036-T037, US3, FR-012/013) -----------
 
-  test "resume_run/1 with recorded spend >= budget trips the breaker and releases zero new features" do
-    prev_budget = Ledger.snapshot(Ledger).budget
-    on_exit(fn -> Ledger.set_budget(Ledger, prev_budget) end)
-
-    :ok = Ledger.set_budget(Ledger, 5.0)
-
-    layout = done_layout("999-breaker")
-    on_exit(fn -> File.rm_rf(layout.worktree_root) end)
-    repo = Application.get_env(:autonomous, :repo)
-
-    run_key =
-      open_run(repo, layout, [feat("001")], %RunContext{budget_usd: 5.0})
-
-    :ok =
-      Writer.record_phase_attempt(run_key, %{
-        attempt: minimal_attempt("001", :specify),
-        cost: %{amount_usd: 5.0, kind: :estimate}
-      })
-
-    me = self()
-    assert {:ok, pid} = Autonomous.resume_run(runner: capturing_runner(me), owner: me)
-    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
-
-    assert Ledger.breaker_tripped?(Ledger)
-    refute_received {:started, _, _}
-
-    assert_receive {:run_complete, report}, 1_000
-    assert report.done == []
-
-    # invariant: committed < budget + max single reservation still holds — no
-    # reservation is granted once committed already fills the (restored) budget.
-    assert Ledger.reserve(Ledger, 1) == {:error, :budget_exceeded}
-  end
-
   test "resume_run/1 restores committed spend from the run's cost-entry roll-up, not zero" do
-    prev_budget = Ledger.snapshot(Ledger).budget
-    on_exit(fn -> Ledger.set_budget(Ledger, prev_budget) end)
-
     # T040: `restore_ledger/1` restores an ABSOLUTE figure — the run's own
     # cost-entry roll-up, not a delta onto whatever this (shared, per-test-file)
     # `Ledger` process already committed from an earlier test — so the
     # target is the roll-up itself, and `Ledger.restore/2`'s own
     # `max(committed, recorded)` monotonicity is what "not zero" asserts.
+    # 039: the recorded spend is informational — far above any former
+    # budget, it still releases the feature.
     target = 7.0
-    :ok = Ledger.set_budget(Ledger, target + 100.0)
 
     layout = done_layout("001-spend")
     on_exit(fn -> File.rm_rf(layout.worktree_root) end)
     repo = Application.get_env(:autonomous, :repo)
 
     run_key =
-      open_run(repo, layout, [feat("001")], %RunContext{budget_usd: target + 100.0})
+      open_run(repo, layout, [feat("001")], %RunContext{})
 
     :ok =
       Writer.record_phase_attempt(run_key, %{
@@ -603,6 +566,7 @@ defmodule Autonomous.ResumeRunTest do
     File.mkdir_p!(Path.join(repo, ".claude/skills"))
     File.write!(Path.join(repo, ".claude/skills/.gitkeep"), "")
     File.write!(Path.join(repo, ".claude/settings.json"), "{}")
+    File.write!(Path.join(repo, ".claude/autonomous-pack.json"), ~s({"contract": 6}))
 
     spec_dir = Path.join(repo, "specs/#{Feature.spec_id(feature)}-#{feature.slug}")
     File.mkdir_p!(spec_dir)
@@ -687,7 +651,7 @@ defmodule Autonomous.ResumeRunTest do
         "speckit: #{id} checkpoint after tasks"
       ])
 
-      run_key = open_run(repo, layout, [feature], %RunContext{budget_usd: 100.0})
+      run_key = open_run(repo, layout, [feature], %RunContext{})
       :ok = Writer.record_spec_number(run_key, id, n)
 
       :ok =
@@ -753,7 +717,7 @@ defmodule Autonomous.ResumeRunTest do
     {:ok, segment} = RepoIdentity.resolve(repo)
     {:ok, layout} = Layout.build(repo, segment, {:breakdown, "pkg"})
 
-    open_run(repo, layout, [feat(id, 1)], %RunContext{budget_usd: 100.0})
+    open_run(repo, layout, [feat(id, 1)], %RunContext{})
 
     me = self()
     assert {:ok, pid} = Autonomous.resume_run(owner: me)

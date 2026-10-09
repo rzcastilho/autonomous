@@ -106,10 +106,7 @@ defmodule Autonomous.RecordRecoveryTest do
               created_at: &1.created_at
             }
           ),
-        settings:
-          RunContext.to_map(%RunContext{
-            budget_usd: 100.0
-          }),
+        settings: RunContext.to_map(%RunContext{}),
         scope: {:breakdown, "core-ledger"},
         layout: layout
       })

@@ -41,7 +41,7 @@ defmodule Autonomous.Web.TriggerLiveTest do
     Application.put_env(:autonomous, :breakdown_dir, "")
   end
 
-  test "Backlog mode shows source/count/DAG-validated/max-concurrency/budget; Start enabled on a valid DAG",
+  test "Backlog mode shows source/count/DAG-validated; Start enabled on a valid DAG",
        %{conn: conn} do
     point_backlog_at(@valid_dir)
 
@@ -438,7 +438,9 @@ defmodule Autonomous.Web.TriggerLiveTest do
   # ---- 033 US2: grouped options, honest summary
 
   describe "option groups and summary (033)" do
-    test "options sit in three labelled fieldsets, one control per row", %{conn: conn} do
+    test "options sit in two labelled fieldsets, one control per row (039: no containment)", %{
+      conn: conn
+    } do
       point_backlog_at(@valid_dir)
 
       {:ok, _view, html} = live(conn, "/trigger")
@@ -449,7 +451,7 @@ defmodule Autonomous.Web.TriggerLiveTest do
         |> LazyHTML.query("fieldset[data-option-group]")
         |> LazyHTML.attribute("data-option-group")
 
-      assert groups == ["auto_remediation", "interactive_clarify", "containment_profile"]
+      assert groups == ["auto_remediation", "interactive_clarify"]
 
       for g <- groups do
         fieldset = LazyHTML.query(doc, ~s(fieldset[data-option-group="#{g}"]))
@@ -458,7 +460,18 @@ defmodule Autonomous.Web.TriggerLiveTest do
 
       assert html =~ "auto_remediation_threshold"
       assert html =~ "auto_remediation_exhaustion_policy"
-      assert html =~ "containment_profile"
+      refute html =~ "containment_profile"
+      refute html =~ "data-containment"
+    end
+
+    test "the container notice shows when not containerized (039, test config)", %{conn: conn} do
+      point_backlog_at(@valid_dir)
+
+      {:ok, _view, html} = live(conn, "/trigger")
+
+      assert html =~ "data-container-notice"
+      assert html =~ "OUTSIDE the container"
+      assert html =~ "scripts/autonomous"
     end
 
     test "the backlog summary uses statement labels and a repo-relative source", %{conn: conn} do
@@ -466,8 +479,10 @@ defmodule Autonomous.Web.TriggerLiveTest do
 
       {:ok, _view, html} = live(conn, "/trigger")
 
-      for label <- ["Source", "Feature count", "DAG validated", "Run shape", "Budget"],
+      for label <- ["Source", "Feature count", "DAG validated", "Run shape"],
           do: assert(html =~ "<dt>#{label}</dt>")
+
+      refute html =~ "<dt>Budget</dt>"
 
       refute html =~ "DAG validated?"
       refute html =~ "…/autonomous"

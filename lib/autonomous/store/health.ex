@@ -1,7 +1,7 @@
 defmodule Autonomous.Store.Health do
   @moduledoc """
   Persistence breaker (018, research R9, contracts/persistence-failure.md) —
-  a thin `GenServer` mirroring `Ledger`'s shape exactly: holds
+  a thin `GenServer`: holds
   `:ok | {:failed, reason, DateTime.t()}`, nothing more. The two call sites
   (`Coordinator.advance/1` releasing nothing new, `FeatureRunner`'s
   inter-phase drain point) decide what a failure means; this module only

@@ -27,9 +27,11 @@ defmodule Autonomous.Web.TriggerLive do
     Backlog,
     Config,
     ConsoleProjection,
+    ContainerGuard,
     Coordinator,
     InteractiveClarify,
     Remediation,
+    RuntimeNotice,
     Severity
   }
 
@@ -58,7 +60,7 @@ defmodule Autonomous.Web.TriggerLive do
        clarify_timeout_min: to_string(div(Config.clarify_answer_timeout_s(), 60)),
        clarify_rounds: to_string(Config.clarify_max_rounds()),
        clarify_error: nil,
-       containment_profile: Config.containment_profile() |> to_string(),
+       container_notice: RuntimeNotice.container_warning(ContainerGuard.containerized?()),
        active_run_id: active_run_id(),
        confirm: %{backlog: :idle, single_spec: :idle},
        description: "",
@@ -183,12 +185,6 @@ defmodule Autonomous.Web.TriggerLive do
        clarify_rounds: Map.get(params, "max_rounds", socket.assigns.clarify_rounds),
        clarify_error: nil
      )}
-  end
-
-  # ---- containment profile (030, contracts/operator-surfaces.md Trigger form) ----
-
-  def handle_event("set_containment_profile", %{"profile" => profile}, socket) do
-    {:noreply, assign(socket, containment_profile: profile)}
   end
 
   def handle_event("cancel_start", %{"action" => action}, socket) do
@@ -351,8 +347,7 @@ defmodule Autonomous.Web.TriggerLive do
         auto_remediation_exhaustion_policy: settings.exhaustion_policy,
         interactive_clarify: clarify.enabled?,
         clarify_answer_timeout_s: clarify.answer_timeout_s,
-        clarify_max_rounds: clarify.max_rounds,
-        containment_profile: socket.assigns.containment_profile
+        clarify_max_rounds: clarify.max_rounds
       ]
 
       base = maybe_put_slug(base, socket.assigns[:selected_package])
@@ -442,10 +437,11 @@ defmodule Autonomous.Web.TriggerLive do
   defp maybe_put_slug(opts, nil), do: opts
   defp maybe_put_slug(opts, slug), do: Keyword.put(opts, :slug, slug)
 
-  defp format_start_error({:preflight, problems}), do: "Preflight failed: #{inspect(problems)}"
+  defp format_start_error({:preflight, problems}),
+    do: "Preflight failed: " <> Enum.map_join(problems, "; ", &Autonomous.Report.format_reason/1)
 
   # 026: a fresh run's own drain-before-supersede timed out — distinct
-  # wording from a preflight failure or the cost breaker (FR-011); nothing
+  # wording from a preflight failure (FR-011); nothing
   # was started, so retrying (once the worker is confirmed stuck) is safe.
   defp format_start_error({:drain_timeout, stuck}) do
     "Still working, nothing started: #{drain_stuck_features(stuck)} — " <>
@@ -556,8 +552,6 @@ defmodule Autonomous.Web.TriggerLive do
           </dd>
           <dt>Run shape</dt>
           <dd>stacked sequential — one feature at a time</dd>
-          <dt>Budget</dt>
-          <dd>${format_money(Config.budget_usd())}</dd>
         </dl>
 
         <.form_refusal :if={not @backlog_preview.dag_valid?} label="Backlog invalid" data-error="dag">
@@ -753,27 +747,9 @@ defmodule Autonomous.Web.TriggerLive do
         {elem(@clarify_error, 1)}
       </.form_refusal>
 
-      <fieldset class="option-group" data-option-group="containment_profile" data-containment-control>
-        <legend class="sr-only">containment_profile</legend>
-        <div class="config-toggle-title">Containment</div>
-
-        <form id="containment-form" phx-change="set_containment_profile">
-          <label class="option-row field-label-inline">
-            <span class="option-name">containment_profile</span>
-            <select name="profile" class="console-input" data-containment-select>
-              <option value="strict" selected={@containment_profile == "strict"}>strict</option>
-              <option value="permissive" selected={@containment_profile == "permissive"}>
-                permissive
-              </option>
-            </select>
-          </label>
-        </form>
-
-        <p :if={@containment_profile == "permissive"} class="pr-hint" data-containment-note>
-          Permissive: no pack deny list, full write/Bash/network access every phase.
-          Container recipe recommended (docs/enforcement.md).
-        </p>
-      </fieldset>
+      <p :if={@container_notice} class="pr-hint" data-container-notice>
+        {@container_notice}
+      </p>
 
       <.start_controls
         :if={@mode == :backlog}

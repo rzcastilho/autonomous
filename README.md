@@ -2,10 +2,10 @@
 
 An autonomous, spec-driven build pipeline on the BEAM. It drives the GitHub Spec
 Kit loop (`specify → clarify → plan → tasks → analyze → implement → converge`)
-feature-by-feature through the Claude Code CLI, in parallel git worktrees, with
-per-phase model routing, an Opus reviewer standing in for the human at
-`clarify`, a deterministic `analyze` gate over the project constitution, and a
-cost circuit breaker.
+feature-by-feature through the Claude Code CLI, one feature at a time in its own
+git worktree, with per-phase model routing, an Opus reviewer standing in for the
+human at `clarify`, a deterministic `analyze` gate over the project
+constitution, and per-phase cost reporting.
 
 Control plane = Jido/OTP. Data plane = the `claude` CLI wrapped by the
 `jido_harness` `:claude` provider. No UI — the operator surface is `iex`.
@@ -48,14 +48,14 @@ iex> {:ok, _} = Autonomous.run()
 iex> Autonomous.print_status()
 ```
 
-See **`docs/runbook.md`** to run, watch, and unblock a run (escalations, breaker,
-`resolve/1`).
+See **`docs/runbook.md`** to run, watch, and unblock a run (escalations, parked
+runs, `resolve/1`).
 
 ## Configuration
 
 `config/config.exs`, under `:autonomous`: `repo`, `breakdown_dir`,
-`worktree_root`, per-phase `models` (aliases — see below), `max_concurrency`,
-`budget_usd`, `implement_max_turns`, `speckit_version`.
+`worktree_root`, per-phase `models` (aliases — see below), `implement_max_turns`,
+`speckit_version`.
 
 Models are **aliases** (`opus`/`sonnet`), not full strings: the pinned
 ClaudeAgentSDK catalog rejects `claude-opus-4-8`. Pin reproducibility with the

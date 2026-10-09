@@ -9,9 +9,9 @@ defmodule Autonomous do
   """
 
   alias Autonomous.{
-    AgentRoot,
     Backlog,
     Config,
+    ContainerGuard,
     Coordinator,
     Feature,
     FeatureRunner,
@@ -28,6 +28,7 @@ defmodule Autonomous do
     Report,
     RepoIdentity,
     RunContext,
+    RuntimeNotice,
     SingleSpec,
     SpecNumber,
     StackTracker,
@@ -77,8 +78,8 @@ defmodule Autonomous do
   preflight step and before any side effect (FR-004, SC-005,
   contracts/run-start.md).
 
-  Captures the nine run-shaping settings (`budget_usd`, `plan_stack`,
-  `pr_base`, `pr_remote`, the five `auto_remediation*` keys) from the
+  Captures the run-shaping settings (`plan_stack`, `pr_base`, `pr_remote`,
+  the five `auto_remediation*` keys, the interactive-clarify keys) from the
   effective opts at call time (`RunContext.capture/1`) and threads them into
   every feature's `FeatureRunner.run/2` call, so a diverted feature's
   checkpoint records the run shape it actually ran under (FR-006) — see
@@ -118,16 +119,15 @@ defmodule Autonomous do
   """
   @spec run(keyword()) :: GenServer.on_start() | {:error, term()}
   def run(opts \\ []) do
-    run_context = RunContext.capture(opts)
-
     # Retired-option refusal is the FIRST preflight step (contracts/run-start.md
     # § Preflight order) — before remediation settings, before the store run
     # opens, before a run directory is ensured. A refused start supersedes
-    # nothing and creates nothing.
+    # nothing and creates nothing. 039: it also precedes capturing the run
+    # context, so a retired option's value is never even read.
     with :ok <- reject_retired_opts(opts),
+         run_context = RunContext.capture(opts),
          {:ok, _settings} <- preflight_remediation(run_context),
          {:ok, _settings} <- preflight_interactive_clarify(run_context),
-         :ok <- preflight_containment(opts, run_context),
          :ok <- preflight_parked_run(opts),
          {:ok, layout} <- preflight_layout(opts),
          {:ok, run_key} <- open_or_continue_run(opts, run_context, layout) do
@@ -135,35 +135,6 @@ defmodule Autonomous do
       run_stacked(opts, run_context, layout, run_key)
     end
   end
-
-  # 030: `run_context.containment_profile` is already normalized/defaulted by
-  # `RunContext.capture/1` (via `Containment.normalize/1`), so an invalid
-  # explicit `:containment_profile` opt is caught here — before any store
-  # write — rather than surfacing as a raise deep in `RunContext.capture/1`.
-  # `"permissive"` additionally requires the target's **committed** pack to be
-  # contract 3 (no test-mode skip: an operator opting into relaxed
-  # containment must have the relaxed pack actually installed).
-  defp preflight_containment(opts, run_context) do
-    case Keyword.fetch(opts, :containment_profile) do
-      :error ->
-        :ok
-
-      {:ok, value} ->
-        case Autonomous.Containment.normalize(value) do
-          {:error, reason} -> {:error, {:preflight, [reason]}}
-          {:ok, _profile} -> check_containment_pack(run_context)
-        end
-    end
-  end
-
-  defp check_containment_pack(%RunContext{containment_profile: "permissive"}) do
-    case TargetPack.verify(Config.repo(), profile: "permissive") do
-      :ok -> :ok
-      {:error, problems} -> {:error, {:preflight, problems}}
-    end
-  end
-
-  defp check_containment_pack(_run_context), do: :ok
 
   # 019, FR-020a/FR-020b: a `:parked` run for the repository blocks every new
   # backlog/ad-hoc start until the operator resolves it — checked directly
@@ -189,8 +160,10 @@ defmodule Autonomous do
   # 019, FR-004/SC-005: `:pr_workflow`/`:max_concurrency` are retired — they
   # named a run-shape decision that no longer exists — refused by name, not
   # silently ignored, on every entry point that ultimately starts or
-  # continues a run.
-  @retired_opts [:pr_workflow, :max_concurrency]
+  # continues a run. 039: `:budget_usd` (cost is informational — runs never
+  # stop on spend) and `:containment_profile` (one containment behaviour)
+  # join them, refused the same way.
+  @retired_opts [:pr_workflow, :max_concurrency, :budget_usd, :containment_profile]
 
   defp reject_retired_opts(opts) do
     case Enum.filter(@retired_opts, &Keyword.has_key?(opts, &1)) do
@@ -385,7 +358,7 @@ defmodule Autonomous do
   slug derived (`SingleSpec.build/3`); the description is materialized as a
   one-off breakdown seed inside the feature's worktree so the existing
   `specify` phase reads it unchanged, then the feature runs as a wave of one
-  through `run/1`. All safety behavior (clarify/analyze gates, cost breaker,
+  through `run/1`. All safety behavior (clarify/analyze gates, supersession drain,
   containment, transcripts, worktree retention) is inherited from `run/1`
   unchanged.
 
@@ -705,7 +678,10 @@ defmodule Autonomous do
           | {:error, {:continue_restore_failed, term(), term()}}
           | {:error, term()}
   def continue_run(opts \\ []) do
-    with :ok <- guard_active_run(opts),
+    # 039: refused first, ahead of the parked-run lookup, so a retired option
+    # reads as itself even when there is no parked run (contracts/run-start.md § 1).
+    with :ok <- reject_retired_opts(opts),
+         :ok <- guard_active_run(opts),
          {:ok, run_key, stopped_by, stopped_reason} <- find_parked_run_snapshot(opts),
          :ok <- preflight_store_capacity() do
       # 035: nothing durable happens here any more. The `:parked -> :in_flight`
@@ -828,8 +804,8 @@ defmodule Autonomous do
       `resume_run/1`'s option of the same name (016, FR-010a); default
       `false`.
 
-  Also reapplies the run-shaping context (`budget_usd`, `plan_stack`,
-  `pr_base`, `pr_remote`, the five `auto_remediation*` keys) the checkpoint
+  Also reapplies the run-shaping context (`plan_stack`, `pr_base`,
+  `pr_remote`, the five `auto_remediation*` keys) the checkpoint
   recorded at the original run's start (FR-006), so the resumed run
   re-executes under its original shape without the caller re-declaring it.
   Precedence (fixed, documented once): **explicit resume opt > recorded
@@ -868,7 +844,6 @@ defmodule Autonomous do
     with :ok <- reject_retired_opts(opts),
          :ok <- guard_active_run(opts),
          {:ok, run_key, detail} <- read_resume_run(opts),
-         :ok <- guard_containment_profile(opts, detail),
          {:ok, feature_record} <- find_feature_record(detail, feature_id),
          {:ok, feature} <- resolve_identity(feature_id, feature_record, opts),
          {:ok, route} <-
@@ -1022,6 +997,7 @@ defmodule Autonomous do
           run_key
         )
       )
+      |> Keyword.put(:verify_target, true)
     end
   end
 
@@ -1188,6 +1164,7 @@ defmodule Autonomous do
           run_key
         )
       )
+      |> Keyword.put(:verify_target, true)
     end
   end
 
@@ -1325,7 +1302,6 @@ defmodule Autonomous do
     with :ok <- reject_retired_opts(opts),
          :ok <- guard_active_run(opts),
          {:ok, run_key, detail} <- read_resume_run(opts),
-         :ok <- guard_containment_profile(opts, detail),
          {:ok, scope} <- restore_run_scope(detail, opts) do
       scope.merged_opts
       |> maybe_put_layout(scope.layout)
@@ -1348,7 +1324,7 @@ defmodule Autonomous do
   closes (016 US3, FR-016-020). Unions the (possibly narrowed) store run
   record's features with the backlog on disk plus per-feature durable
   evidence (`Recovery.Rebuild.propose/3`) and returns the proposal. Never
-  runs a phase, never spends budget, never starts a `Coordinator`.
+  runs a phase, never spends, never starts a `Coordinator`.
 
   Options:
     * `:confirm` — `true` persists the union rule through the store: every
@@ -1878,33 +1854,6 @@ defmodule Autonomous do
     repo
   end
 
-  # 030, FR-004: the containment profile is fixed at run start and never
-  # renegotiated on resume/continue — a resume/continue_run/resume_run call
-  # with no explicit `:containment_profile` opt inherits the recorded value
-  # silently (the ordinary `RunContext.merge/2` precedence does that once
-  # dispatched); an explicit opt equal to the recorded value is accepted as a
-  # no-op; a *different* explicit value is refused before any side effect.
-  defp guard_containment_profile(opts, detail) do
-    case Keyword.fetch(opts, :containment_profile) do
-      :error ->
-        :ok
-
-      {:ok, value} ->
-        recorded = RunContext.from_map(detail.settings).containment_profile
-
-        case Autonomous.Containment.normalize(value) do
-          {:ok, ^recorded} ->
-            :ok
-
-          {:ok, _other} ->
-            {:error, {:preflight, [{:containment_profile_locked, recorded}]}}
-
-          {:error, reason} ->
-            {:error, {:preflight, [reason]}}
-        end
-    end
-  end
-
   defp coordinator_active_pid do
     case Process.whereis(@coordinator) do
       nil -> :inactive
@@ -1959,6 +1908,7 @@ defmodule Autonomous do
         :executor,
         resume_run_executor(run_context, layout, resume_phases, run_key)
       )
+      |> Keyword.put(:verify_target, true)
     end
   end
 
@@ -2412,14 +2362,9 @@ defmodule Autonomous do
     else
       # 019, FR-003: the pack + PR-remote preflight is unconditional now —
       # every run publishes a PR, so there is no non-PR path left to fall
-      # back to. 030: profile from the captured run context.
-      case TargetPack.verify(Config.repo(),
-             check_remote: Config.pr_remote(),
-             profile: run_context.containment_profile || "strict"
-           ) do
+      # back to. 039: the pack contract check runs on every run.
+      case TargetPack.verify(Config.repo(), check_remote: Config.pr_remote()) do
         :ok ->
-          warn_agent_root_pack(run_context.containment_profile || "strict")
-
           case preflight_layout(opts) do
             {:ok, layout} ->
               opts =
@@ -2541,7 +2486,11 @@ defmodule Autonomous do
   defp run_stacked(opts, run_context, layout, run_key) do
     test_mode? = Keyword.has_key?(opts, :runner) or Keyword.has_key?(opts, :executor)
 
-    with :ok <- preflight_stacked(test_mode?, run_context.containment_profile),
+    # 039: a resume/continue injects its own `:executor` but still verifies
+    # the target pack (`:verify_target`) — only a caller-supplied seam skips it.
+    verify? = not test_mode? or Keyword.get(opts, :verify_target, false)
+
+    with :ok <- preflight_stacked(not verify?),
          {:ok, marker} <- begin_continue(opts) do
       result = start_stacked_run(opts, marker, run_context, layout, run_key, test_mode?)
       finish_stacked_run(result, marker, opts, run_key)
@@ -2686,45 +2635,36 @@ defmodule Autonomous do
     |> Enum.map(&Worktree.locate(&1).branch)
   end
 
-  # Preflight the real target (pack scaffold + committed constitution + remote)
-  # unless a seam is injected (tests supply their own features/executor).
-  # `profile` (030) — the run's containment profile; `"permissive"` also
-  # requires the committed pack to be contract 3 (already checked once, at
-  # `run/1` preflight, by `preflight_containment/2` — repeated here so
-  # `run_spec/2`'s own `spec_run_opts/3` path, which does not go through
-  # `run/1`'s preflight chain directly, still enforces it).
-  defp preflight_stacked(true, _profile), do: :ok
-
-  defp preflight_stacked(false, profile) do
-    case TargetPack.verify(Config.repo(),
-           check_remote: Config.pr_remote(),
-           profile: profile || "strict"
-         ) do
-      :ok ->
-        warn_agent_root_pack(profile || "strict")
-        :ok
-
-      {:error, problems} ->
-        {:error, {:preflight, problems}}
+  # Preflight the real target (pack scaffold + committed constitution + remote
+  # + pack contract 6, 039) unless a seam is injected (tests supply their own
+  # features/executor). `run_spec/2`'s `spec_run_opts/3` runs the same verify
+  # itself before injecting its seed executor. Then the container notice
+  # (contracts/run-start.md §3–§4): never an error, so it is emitted for a
+  # seam-injected run too — `ContainerGuard.containerized?/0` is false under
+  # the test config, so tests see it as well.
+  defp preflight_stacked(test_mode?) do
+    with :ok <- verify_target(test_mode?) do
+      container_notice()
     end
   end
 
-  # 037: with agent root advertised under `strict`, an older committed pack keeps
-  # denying `sudo` (fail closed). Not a preflight problem — warn and start.
-  defp warn_agent_root_pack("strict") do
-    with true <- AgentRoot.advertised?(),
-         {:warning, {:pack_below_agent_root_contract, found, _min}} <-
-           TargetPack.agent_root_warning(Config.repo()) do
-      Logger.warning(
-        "agent root is available but the committed pack is contract #{found}; " <>
-          "strict sessions will keep denying sudo until TargetPack.install/2 is re-run and committed"
-      )
+  defp verify_target(true), do: :ok
+
+  defp verify_target(false) do
+    case TargetPack.verify(Config.repo(), check_remote: Config.pr_remote()) do
+      :ok -> :ok
+      {:error, problems} -> {:error, {:preflight, problems}}
+    end
+  end
+
+  defp container_notice do
+    case RuntimeNotice.container_warning(ContainerGuard.containerized?()) do
+      nil -> :ok
+      text -> Logger.warning(text)
     end
 
     :ok
   end
-
-  defp warn_agent_root_pack(_profile), do: :ok
 
   # A backlog feature branches from, and targets, the newest completed branch
   # still open; on `:done` its own branch joins the chain for the next feature.
@@ -3026,9 +2966,7 @@ defmodule Autonomous do
   # recorded on :done (018 — replaces `Describe.read_pr/2`); fall back to a
   # template if it is absent/empty or this run isn't store-backed.
   defp pr_text(feature, base) do
-    note =
-      Remediation.pr_note(store_advanced_with_findings(feature.id)) <>
-        Autonomous.Containment.pr_note(store_containment_profile())
+    note = Remediation.pr_note(store_advanced_with_findings(feature.id))
 
     case store_pr_description(feature.id) do
       %{pr_title: t, pr_body: b} when t not in [nil, ""] and b not in [nil, ""] ->
@@ -3039,18 +2977,6 @@ defmodule Autonomous do
          "Autonomous build of feature #{feature.id} (#{feature.slug}) by " <>
            "autonomous.\n\nnumber: #{feature.id}\nspec_number: #{spec_number_label(feature)}\n\n" <>
            "Stacked on `#{base}`." <> note}
-    end
-  end
-
-  # Read from the recorded run's settings, not the live `Config` default —
-  # a publish-only resume must write the same note the original publish
-  # would have (contracts/operator-surfaces.md).
-  defp store_containment_profile do
-    with run_key when run_key != nil <- current_run_key(),
-         {:ok, detail} <- Store.run(run_key) do
-      Map.get(detail.settings, "containment_profile")
-    else
-      _ -> nil
     end
   end
 

@@ -12,26 +12,27 @@ defmodule Autonomous.Coordinator do
   process-spawning into action bodies, which the plan itself flags as a purity
   hazard. Jido remains the substrate for the autonomous units (`FeatureAgent`).
 
-  The runner-spawning is an injected seam (`:runner`) so the wave/DAG/breaker
+  The runner-spawning is an injected seam (`:runner`) so the release/drain
   logic is fully unit-testable without a CLI, worktrees, or agents. The facade
   (`Autonomous.run/0`) supplies the real runner.
 
-  ## Breaker
+  ## Persistence drain
 
-  A tripped `Ledger` breaker releases **no new** features; in-flight features
-  drain (finish their current phase, then halt — enforced in `FeatureRunner`).
-  When the in-flight set empties with nothing releasable, the run finalizes;
-  undelivered `:pending` features are reported `not_started` (019: no
-  prerequisites, so nothing is ever `blocked` — see `Release.next/3`).
+  An unwritable store (`Store.Health`, 018) releases **no new** features;
+  in-flight features drain (finish their current phase, then halt — enforced
+  in `FeatureRunner`). When the in-flight set empties with nothing
+  releasable, the run finalizes; undelivered `:pending` features are reported
+  `not_started`. 039: cost never blocks a release — the `Ledger` only
+  accumulates spend for the report.
 
   ## Stop-on-first-broken-link and parking (019)
 
   `Release.next/3` returning `{:stopped, id, status}` (a non-done terminal —
-  `:escalated`/`:halted`/`:failed` — with the breaker not tripped) means the
+  `:escalated`/`:halted`/`:failed` — with the store writable) means the
   chain broke: once in-flight drains to empty, the Coordinator **parks** the
   run (`Store.Writer.park_run/2`, `:in_flight -> :parked`) instead of closing
   it, and the final report's `stopped_by` names the feature and why
-  (FR-017). A breaker/persistence-failure drain is unchanged from pre-019 —
+  (FR-017). A persistence-failure drain is unchanged from pre-019 —
   it stays `:in_flight` (unless every feature reached `:done`) for
   `resume/2`/`resume_run/1` to revisit, never parked.
 
@@ -41,9 +42,9 @@ defmodule Autonomous.Coordinator do
   before this process starts — the runner closures it hands to `:runner`
   need the same `run_key` this process holds) via
   `Store.Writer.open_run/2`. The Coordinator's own store touch-points are:
-  a tripped `Store.Health` — checked in `advance/1` at the same point as the
-  breaker, releasing nothing new — `Store.Writer.park_run/2` on a genuine
-  stop, and `Store.Writer.close_run/3` on an ordinary/breaker drain — so the
+  a tripped `Store.Health` — checked in `advance/1`, releasing nothing new —
+  `Store.Writer.park_run/2` on a genuine stop, and `Store.Writer.close_run/3`
+  on an ordinary/persistence drain — so the
   run's terminal outcome is durable the moment the report is built. The
   console reads this same store via `run_detail/1` (`MissionControlLive`/
   `PipelineDagLive`/`EscalationsLive`) rather than any state this process
@@ -52,7 +53,7 @@ defmodule Autonomous.Coordinator do
 
   use GenServer
 
-  alias Autonomous.{Containment, Feature, Ledger, Release, Store}
+  alias Autonomous.{Feature, Ledger, Release, Store}
   alias Autonomous.Store.{Health, Query, Writer}
 
   @type status :: Feature.status()
@@ -79,7 +80,8 @@ defmodule Autonomous.Coordinator do
   Start a run. Options:
 
     * `:features` — list of `%Feature{}` (the validated backlog). Required.
-    * `:ledger` — `Ledger` server for the breaker (optional; no breaker if nil).
+    * `:ledger` — `Ledger` server whose spend the report carries (optional;
+      spend is `0.0` if nil).
     * `:runner` — `fun (feature, notify)` that starts the feature's work and
       arranges for `notify.(id, status, reason)` on terminal. Required.
     * `:owner` — pid to receive `{:run_complete, report}` (optional).
@@ -198,7 +200,7 @@ defmodule Autonomous.Coordinator do
     Release.next(feature_list(state), state.statuses, blocked?(state))
   end
 
-  defp blocked?(state), do: breaker_tripped?(state) or store_unwritable?(state)
+  defp blocked?(state), do: store_unwritable?(state)
 
   defp spawn_feature(%Feature{id: id} = feature, state) do
     notify = fn fid, status, reason -> notify(state.self_pid, fid, status, reason) end
@@ -215,11 +217,11 @@ defmodule Autonomous.Coordinator do
   end
 
   # The run ends when nothing is in flight and nothing more can be released
-  # (all remaining pending features are stopped-behind, or the breaker/
-  # persistence drained them). 019: a genuine stop (any non-done terminal,
-  # with the breaker NOT masking it) is a **park**, not a drain — the run
+  # (all remaining pending features are stopped-behind, or a persistence
+  # failure drained them). 019: a genuine stop (any non-done terminal, with
+  # the persistence block NOT masking it) is a **park**, not a drain — the run
   # record moves `:in_flight -> :parked` and the operator resolves it via
-  # `continue_run/1`/`end_run/1` (contracts/parked-run.md). A breaker/
+  # `continue_run/1`/`end_run/1` (contracts/parked-run.md). A
   # persistence-failure drain is unchanged from pre-019: it stays
   # `:in_flight` unless every feature actually reached `:done`, so
   # `resume/2`/`resume_run/1` can still find and revisit it. A no-op when
@@ -248,12 +250,12 @@ defmodule Autonomous.Coordinator do
     %{state | finished?: true, report: report, stopped_by: stopped}
   end
 
-  # The stopper `Release.next/3` would report were the breaker not tripped —
-  # computed independently of `next_decision/1` so a tripped breaker (which
+  # The stopper `Release.next/3` would report were releases not blocked —
+  # computed independently of `next_decision/1` so a persistence block (which
   # forces `next/3` to `:none` unconditionally, rule 1) never hides which
   # feature broke the chain from the final report's `stopped_by` (FR-017,
   # contracts/run-start.md § Report — `stopped_by` is non-nil whenever a
-  # non-done terminal feature exists at drain, breaker or not).
+  # non-done terminal feature exists at drain, blocked or not).
   defp stopped_feature(state) do
     case Release.next(feature_list(state), state.statuses, false) do
       {:stopped, id, status} -> {id, status, Map.get(state.reasons, id)}
@@ -304,7 +306,7 @@ defmodule Autonomous.Coordinator do
 
     done = ids(grouped, :done)
 
-    base = %{
+    %{
       done: done,
       escalated: ids(grouped, :escalated),
       halted: ids(grouped, :halted),
@@ -312,28 +314,10 @@ defmodule Autonomous.Coordinator do
       not_started: ids(grouped, :pending),
       stopped_by: format_stopped(stopped),
       spend: spend(state),
-      breaker_tripped: breaker_tripped?(state),
       advanced_with_findings: advanced_with_findings(state, done),
       clarify_rounds: clarify_rounds_report(state)
     }
-
-    with_containment_profile(base, state)
   end
-
-  # 030, contracts/operator-surfaces.md: present only for a permissive run —
-  # a strict run's report stays byte-identical to pre-030 (FR-002).
-  defp with_containment_profile(map, state) do
-    profile = containment_profile(state)
-
-    if Containment.permissive?(profile) do
-      Map.put(map, :containment_profile, profile)
-    else
-      map
-    end
-  end
-
-  defp containment_profile(%__MODULE__{context: %{containment_profile: profile}}), do: profile
-  defp containment_profile(_state), do: nil
 
   # 029, data-model.md Coordinator report, research.md R15: `%{}` when the
   # mode is off (no rounds ever opened) or this Coordinator isn't store-backed
@@ -412,13 +396,11 @@ defmodule Autonomous.Coordinator do
       totals: state.statuses |> Map.values() |> Enum.frequencies(),
       inflight: MapSet.to_list(state.inflight),
       spend: spend(state),
-      breaker_tripped: breaker_tripped?(state),
       finished?: state.finished?,
       report: state.report,
       layout: state.layout,
       context: state.context
     }
-    |> with_containment_profile(state)
   end
 
   defp elapsed_ms(state, id) do
@@ -439,12 +421,9 @@ defmodule Autonomous.Coordinator do
 
   defp feature_list(state), do: Map.values(state.features)
 
-  defp breaker_tripped?(%__MODULE__{ledger: nil}), do: false
-  defp breaker_tripped?(%__MODULE__{ledger: ledger}), do: Ledger.breaker_tripped?(ledger)
-
   # A store-less Coordinator (`run_key: nil`, most tests) never treats the
   # store as unwritable — the seam is inert without a real run to record
-  # against, same shape as `breaker_tripped?/1` with a `nil` ledger.
+  # against.
   defp store_unwritable?(%__MODULE__{run_key: nil}), do: false
   defp store_unwritable?(%__MODULE__{run_key: _}), do: Health.failed?()
 

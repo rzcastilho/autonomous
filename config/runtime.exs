@@ -38,6 +38,22 @@ if config_env() != :test do
     """
   end
 
+  # 039: cost is informational (runs never stop on spend) and there is one
+  # containment behaviour — both former knobs are refused the same way.
+  if System.get_env("AUTONOMOUS_BUDGET_USD") do
+    raise """
+    AUTONOMOUS_BUDGET_USD is retired (039: cost is informational; runs never \
+    stop on spend). Remove it from the environment.
+    """
+  end
+
+  if System.get_env("AUTONOMOUS_CONTAINMENT_PROFILE") do
+    raise """
+    AUTONOMOUS_CONTAINMENT_PROFILE is retired (039: there is one containment \
+    behaviour; run in the container). Remove it from the environment.
+    """
+  end
+
   # Target Spec Kit repo the orchestrator drives.
   case config_env() do
     :prod ->
@@ -57,10 +73,6 @@ if config_env() != :test do
     pr_base: System.get_env("AUTONOMOUS_PR_BASE") || "main",
     # Remote to push feature branches to and to preflight.
     pr_remote: System.get_env("AUTONOMOUS_PR_REMOTE") || "origin"
-
-  if v = System.get_env("AUTONOMOUS_BUDGET_USD") do
-    config :autonomous, budget_usd: elem(Float.parse(v), 0)
-  end
 
   # Preferred stack handed to the plan phase. Unset/empty (the default) means
   # plan derives the stack from the target's constitution and manifest, which is

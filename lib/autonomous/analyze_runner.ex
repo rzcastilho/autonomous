@@ -27,7 +27,6 @@ defmodule Autonomous.AnalyzeRunner do
     AnalyzeResult,
     Config,
     Cost,
-    Ledger,
     PhaseResult,
     PhaseSession,
     PhaseStep,
@@ -50,7 +49,6 @@ defmodule Autonomous.AnalyzeRunner do
           required(:layout) => Autonomous.Layout.t() | nil,
           required(:timeout) => timeout(),
           required(:step) => pos_integer(),
-          required(:ledger) => pid() | atom() | nil,
           required(:settings) => Settings.t(),
           optional(:run_key) => {binary(), binary()} | nil
         }
@@ -75,8 +73,7 @@ defmodule Autonomous.AnalyzeRunner do
   def run(%{settings: %Settings{enabled?: false}} = ctx) do
     PhaseStep.run(ctx.pid, ctx.feature, :analyze,
       step: ctx.step,
-      timeout: ctx.timeout,
-      ledger: ctx.ledger
+      timeout: ctx.timeout
     )
   end
 
@@ -101,7 +98,6 @@ defmodule Autonomous.AnalyzeRunner do
       step: :analyze,
       outcome: agent.state.last_outcome,
       result: parsed_result(agent),
-      breaker?: breaker_tripped?(ctx.ledger),
       drain?: Workers.drain_requested?()
     }
 
@@ -111,9 +107,6 @@ defmodule Autonomous.AnalyzeRunner do
 
       {:gate, {:exhausted, n}, state1} ->
         finish(ctx, state1, agent, n)
-
-      {:halted, :breaker, state1} ->
-        halt(ctx, state1, agent, :breaker)
 
       {:halted, :superseded, state1} ->
         halt(ctx, state1, agent, :superseded)
@@ -134,7 +127,7 @@ defmodule Autonomous.AnalyzeRunner do
     {agent, outcome} = remediate(ctx, state, findings)
 
     # The remediation step's own outcome goes back through the pure table so
-    # rows 3 (remediation failed) and 4 (breaker) — and their documented
+    # rows 3 (remediation failed) and 4 (drain) — and their documented
     # 3-before-4 order — are decided in one place. Any other row is the
     # table's findings-based tail evaluated against the *stale* analyze result
     # and is deliberately ignored: only a fresh analyze run may consume the
@@ -142,14 +135,10 @@ defmodule Autonomous.AnalyzeRunner do
     case Remediation.next(state, %{
            step: :remediation,
            outcome: outcome,
-           breaker?: breaker_tripped?(ctx.ledger),
            drain?: Workers.drain_requested?()
          }) do
       {:failed, :remediation_failed, state1} ->
         fail(ctx, state1, agent)
-
-      {:halted, :breaker, state1} ->
-        halt(ctx, state1, agent, :breaker)
 
       {:halted, :superseded, state1} ->
         halt(ctx, state1, agent, :superseded)
@@ -179,7 +168,6 @@ defmodule Autonomous.AnalyzeRunner do
       PhaseStep.run(ctx.pid, ctx.feature, :analyze,
         step: ctx.step,
         timeout: ctx.timeout,
-        ledger: ctx.ledger,
         span_meta: %{attempt: k, limit: state.settings.attempt_limit}
       )
 
@@ -282,8 +270,8 @@ defmodule Autonomous.AnalyzeRunner do
     end)
   end
 
-  # 034: one fresh session when the first one died; the breaker and a
-  # requested drain suppress it (`SessionRetry.once/2`). Every dead attempt
+  # 034: one fresh session when the first one died; a requested drain
+  # suppresses it (`SessionRetry.once/2`). Every dead attempt
   # still has its own history entry (the action appends one per call).
   defp call_remediation(ctx, signal, attempt, retried?) do
     Workers.session_started(ctx.timeout)
@@ -292,7 +280,6 @@ defmodule Autonomous.AnalyzeRunner do
     verdict =
       SessionRetry.once(agent.state.last_signals, %{
         retried?: retried?,
-        breaker?: breaker_tripped?(ctx.ledger),
         drain?: Workers.drain_requested?()
       })
 
@@ -467,7 +454,6 @@ defmodule Autonomous.AnalyzeRunner do
     )
   end
 
-  defp halt_log_reason(:breaker), do: "breaker tripped"
   defp halt_log_reason(:superseded), do: "superseded by a new run"
 
   defp fail(ctx, state, agent) do
@@ -491,9 +477,6 @@ defmodule Autonomous.AnalyzeRunner do
   defp remediation_failure(%{state: %{last_signals: %{session_died: %{} = d}}}, state),
     do: {:session_died, {:remediation, state.attempts_used}, d}
 
-  defp remediation_failure(%{state: %{last_signals: %{untrusted_workspace: %{} = obs}}}, state),
-    do: {:untrusted_workspace, {:remediation, state.attempts_used}, obs}
-
   defp remediation_failure(_agent, _state), do: :remediation_failed
 
   # Provenance, never budget (FR-015): recorded so an operator can see what was
@@ -510,7 +493,4 @@ defmodule Autonomous.AnalyzeRunner do
   end
 
   defp patch(agent, kvs), do: %{agent | state: Map.merge(agent.state, Map.new(kvs))}
-
-  defp breaker_tripped?(nil), do: false
-  defp breaker_tripped?(ledger), do: Ledger.breaker_tripped?(ledger)
 end

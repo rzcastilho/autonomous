@@ -8,8 +8,8 @@ defmodule Autonomous.Workers do
   `Autonomous.WorkerRegistry` (`Registry`, `keys: :duplicate`), keyed
   by `repo_id`. The worker itself publishes its current session's deadline via
   `session_started/1`; `drain_requested?/0` is the boundary predicate every
-  session-driving site (phase, chunk, remediation) consults immediately after
-  the breaker check, at exactly the point where the preceding session's
+  session-driving site (phase, chunk, remediation) consults at a boundary,
+  at exactly the point where the preceding session's
   attempt/checkpoint/transcript are already recorded.
 
   A registered worker's mutable deadline lives in a public ETS table keyed by

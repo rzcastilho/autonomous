@@ -64,7 +64,7 @@ defmodule Autonomous.Integration.AnalyzeLoopTest do
     repo = fixture_repo()
     feature = fixture_feature(repo)
     worktree = worktree_for(repo, feature)
-    {:ok, ledger} = Ledger.start_link(budget: 25.0, name: nil)
+    {:ok, ledger} = Ledger.start_link(name: nil)
 
     context = %RunContext{
       auto_remediation: true,
@@ -136,7 +136,7 @@ defmodule Autonomous.Integration.AnalyzeLoopTest do
     repo = fixture_repo()
     feature = fixture_feature(repo)
     worktree = worktree_for(repo, feature)
-    {:ok, ledger} = Ledger.start_link(budget: 25.0, name: nil)
+    {:ok, ledger} = Ledger.start_link(name: nil)
 
     result =
       FeatureRunner.run(feature,

@@ -1,4 +1,7 @@
 defmodule Autonomous.UntrustedGateTest do
+  # 039: the untrusted-workspace gate was strict-only; with one containment
+  # behaviour every site only warns — the observation is recorded on the
+  # result, never signalled, never fails the phase.
   # async: false — toggles the global :jido_claude sdk_module.
   use ExUnit.Case, async: false
 
@@ -62,7 +65,7 @@ defmodule Autonomous.UntrustedGateTest do
     if line, do: Process.put(:line, line)
   end
 
-  defp ctx(containment) do
+  defp ctx do
     %{
       agent: %{
         state: %{
@@ -77,8 +80,7 @@ defmodule Autonomous.UntrustedGateTest do
           resume_phase: nil,
           resume_prompt: nil,
           remediation_prompt: "fix",
-          remediation_model: nil,
-          containment: containment
+          remediation_model: nil
         }
       }
     }
@@ -92,47 +94,34 @@ defmodule Autonomous.UntrustedGateTest do
 
   for {site, idx} <- Enum.with_index([:feature_phase, :auto_remediation, :remediation]) do
     describe "#{site}" do
-      test "strict + observation sets the signal and fails the outcome" do
-        {_, run, params} = Enum.at(@sites, unquote(idx))
-        use_sdk(UntrustedSDK, @untrusted)
-        {:ok, u} = quiet(fn -> run.(params, ctx("strict")) end)
-
-        assert u.last_outcome == :error
-
-        assert u.last_signals.untrusted_workspace == %{
-                 workspace: "/x/repo",
-                 kinds: ["permissions.allow"]
-               }
-
-        assert u.last_result.untrusted_workspace == u.last_signals.untrusted_workspace
-      end
-
-      test "permissive + observation only warns" do
+      test "an observation only warns: outcome ok, no signal, recorded on the result" do
         {_, run, params} = Enum.at(@sites, unquote(idx))
         use_sdk(UntrustedSDK, @untrusted)
         parent = self()
 
-        log =
-          capture_log(fn -> send(parent, {:r, run.(params, ctx("permissive"))}) end)
+        log = capture_log(fn -> send(parent, {:r, run.(params, ctx())}) end)
 
         assert_received {:r, {:ok, u}}
         assert u.last_outcome == :ok
         refute Map.has_key?(u.last_signals, :untrusted_workspace)
 
+        assert u.last_result.untrusted_workspace == %{
+                 workspace: "/x/repo",
+                 kinds: ["permissions.allow"]
+               }
+
         assert log =~
-                 "untrusted workspace /x/repo: CLI ignored permissions.allow from the committed pack; continuing under permissive"
+                 "untrusted workspace /x/repo: CLI ignored permissions.allow from the committed pack; continuing"
       end
 
-      test "no observation: no signal under either profile" do
+      test "no observation: no signal, nothing recorded" do
         {_, run, params} = Enum.at(@sites, unquote(idx))
         use_sdk(QuietSDK)
 
-        for profile <- ["strict", "permissive"] do
-          {:ok, u} = quiet(fn -> run.(params, ctx(profile)) end)
-          assert u.last_outcome == :ok
-          refute Map.has_key?(u.last_signals, :untrusted_workspace)
-          assert u.last_result.untrusted_workspace == nil
-        end
+        {:ok, u} = quiet(fn -> run.(params, ctx()) end)
+        assert u.last_outcome == :ok
+        refute Map.has_key?(u.last_signals, :untrusted_workspace)
+        assert u.last_result.untrusted_workspace == nil
       end
     end
   end
@@ -147,9 +136,9 @@ defmodule Autonomous.UntrustedGateTest do
   describe "Pipeline row" do
     @obs %{workspace: "/x/repo", kinds: ["permissions.allow"]}
 
-    test "pipeline gate" do
+    test "no pipeline gate: an untrusted observation is not a failure reason (039)" do
       assert Pipeline.next(:plan, :error, %{untrusted_workspace: @obs}) ==
-               {:failed, {:untrusted_workspace, :plan, @obs}}
+               Pipeline.next(:plan, :error, %{})
     end
   end
 end

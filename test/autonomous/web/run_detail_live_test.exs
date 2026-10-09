@@ -463,9 +463,9 @@ defmodule Autonomous.Web.RunDetailLiveTest do
     assert html =~ "rounds exhausted — 2 of 2 used"
   end
 
-  # ---- 030: containment profile visibility (US3, contracts/operator-surfaces.md)
+  # ---- 039: a legacy (pre-039) run renders, hiding its retired settings ------
 
-  test "a permissive run's header shows the CONTAINMENT block and the SETTINGS chip",
+  test "a legacy permissive run's header shows no Containment block and no retired setting",
        %{conn: conn, repo_id: repo_id} do
     features = [
       %{
@@ -488,20 +488,10 @@ defmodule Autonomous.Web.RunDetailLiveTest do
 
     {:ok, _view, html} = live(conn, "/runs/#{run_id}")
 
-    assert html =~ ~s(data-containment)
-    assert html =~ "Containment"
-    assert html =~ "containment_profile=<span>permissive</span>"
-    assert html =~ "enforcement.md"
-  end
-
-  test "a strict run's header omits the CONTAINMENT block and the SETTINGS chip",
-       %{conn: conn, repo_id: repo_id} do
-    run_id = open(repo_id, ["001"])
-
-    {:ok, _view, html} = live(conn, "/runs/#{run_id}")
-
+    refute html =~ "data-containment"
     refute html =~ "Containment"
     refute html =~ "containment_profile"
+    refute html =~ "budget_usd"
   end
 
   # ---- 033 US1: real, readable run data
@@ -547,11 +537,12 @@ defmodule Autonomous.Web.RunDetailLiveTest do
     assert html =~ "run settings"
     assert occurrences(html, "pr_base") == 1
     assert occurrences(html, "auto_remediation_threshold") == 1
-    assert occurrences(html, "containment_profile") == 1
+    assert occurrences(html, "containment_profile") == 0
+    assert occurrences(html, "budget_usd") == 0
     refute html =~ "&quot;main&quot;"
   end
 
-  test "a strict run records containment_profile yet shows it nowhere (033, 030 contract)",
+  test "a legacy strict run records containment_profile yet shows it nowhere (033, 039)",
        %{conn: conn, repo_id: repo_id} do
     run_id = open_with_settings(repo_id, %{budget_usd: 100.0, containment_profile: "strict"})
 

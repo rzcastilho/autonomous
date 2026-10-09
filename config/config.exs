@@ -136,11 +136,6 @@ config :autonomous,
   pr_base: "main",
   # Remote to push feature branches to (and preflight) in the PR workflow.
   pr_remote: "origin",
-  # Cost circuit-breaker budget for a run, in USD. Sized to ~5 features' worth
-  # of the recalibrated per-feature estimate (~$14.82) so the breaker drill trips
-  # mid-run over the 7-feature LedgerLite backlog (plan §7.2 trap 3). Raise for a
-  # non-drill run that should complete all 7 (>~$104).
-  budget_usd: 74.0,
   # Wall-clock deadline for one harness session (a phase, or one implement
   # chunk), enforced inside the action by `PhaseSession` — on expiry the CLI
   # subprocess is shut down cleanly and the session folds to a deadline result

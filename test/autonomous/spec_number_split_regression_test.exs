@@ -112,8 +112,7 @@ defmodule Autonomous.SpecNumberSplitRegressionTest do
     File.mkdir_p!(Path.join(repo, ".claude/skills"))
     File.write!(Path.join(repo, ".claude/skills/.gitkeep"), "")
     File.write!(Path.join(repo, ".claude/settings.json"), "{}")
-    File.mkdir_p!(Path.join(repo, ".claude/hooks"))
-    File.write!(Path.join(repo, ".claude/hooks/scope_guard.py"), "")
+    File.write!(Path.join(repo, ".claude/autonomous-pack.json"), ~s({"contract": 6}))
 
     # The earlier wave's finished feature this wave's "001" collides with —
     # complete, with every task checked off, so a resolution leak would make

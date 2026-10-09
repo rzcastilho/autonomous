@@ -1,5 +1,44 @@
 <!--
 Sync Impact Report
+Version change: 6.1.0 → 7.0.0
+Bump rationale: MAJOR. Feature 039 (remove cost budget breaker and strict
+  containment profile, research R12). Two MUST-level guarantees are removed,
+  the same class of backward-incompatible change as 6.0.0:
+  - Principle IV no longer bounds spend. The `Ledger` cost circuit breaker
+    (reserve, budget, trip) is gone; cost MUST still be measured per phase
+    attempt (actual preferred, estimate fallback), rolled up and shown, and
+    MUST NOT gate any work. Drain-don't-kill is kept for supersession and
+    persistence draining.
+  - Principle III no longer has profiles. The former `permissive` set is the
+    one behaviour for orchestrator sessions; the `strict` default, the
+    scope-guard hook, its sudo grammar, the resume profile lock and the
+    "containment was relaxed" visibility obligation are gone. The container is
+    the supported runtime and outer boundary; a non-container start warns
+    loudly and proceeds; the committed pack MUST meet the current contract or
+    preflight fails loud.
+  Principle numbering is kept (other specs cite III/IV/V by number).
+Modified principles:
+  - III. Least-Privilege Containment (Fail-Closed) → Container-Bounded Execution
+  - IV. Cost-Bounded Autonomy (Drain, Don't Kill) → Cost Transparency; Drain, Don't Kill
+  - V. Human-in-the-Loop Escalation: "a tripped cost breaker" dropped from the
+    interactive-clarify exit list; "subject to the cost breaker" dropped from
+    the remediation loop
+  - VII. Operator Surfaces Tell the Truth: global run state is run state,
+    subject and run spend; the budget gauge and breaker status rules are gone
+  - I. Pure Core: `Ledger` described as the cost accumulator
+Modified sections:
+  - Technology Stack → Backend: `Ledger` is the cost-accumulator `GenServer`
+  - Quality & Test Discipline: breaker test bullet → release and drain logic;
+    hook red-team bullet deleted with the hook
+Templates requiring updates: none (checked .specify/templates/*; principle-agnostic).
+  ✅ docs/design-constitution.md §185 amended in the same change (topbar shows
+     run spend, no gauge/limit/breaker).
+  ⚠️ docs/enforcement.md, docs/runbook.md, docs/container.md, docs/workflow.md,
+     README.md and CLAUDE.md describe current code; updated by feature 039's own
+     implementation (US3), in the same change that makes them false.
+Follow-up TODOs: none.
+
+Prior report (6.1.0):
 Version change: 6.0.2 → 6.1.0
 Bump rationale: MINOR. Feature 037 (container system packages, research R11).
   Principle III's `strict` profile gains one bounded exception: the scope-guard
@@ -402,8 +441,8 @@ Prior report (1.0.0):
 
 ### I. Pure Core, Isolated Contracts
 
-The pure logic layer (`Feature`, `Config`, `Pipeline`, `Ledger`, `Release`,
-`Backlog`) MUST NOT depend on the CLI, the harness, or Jido. All fast-moving
+The pure logic layer (`Feature`, `Config`, `Pipeline`, `Release`, `Backlog`,
+and the `Ledger` cost accumulator) MUST NOT depend on the CLI, the harness, or Jido. All fast-moving
 external contracts (jido_harness structs, the `claude` CLI surface, model
 catalog aliases) MUST be isolated behind an explicit boundary so pure logic never
 encodes a guess about them. Decision surfaces MUST be side-effect free: gate
@@ -430,7 +469,7 @@ otherwise be carried inward silently:
   Execution order has exactly one input — the operator's numbering — so an
   ambiguity in it MUST NOT be resolved by picking a file arbitrarily.
 - **Retired settings.** A setting the system no longer honours (a run-mode
-  flag, a concurrency limit) MUST be refused on every surface that can supply
+  flag, a concurrency limit, a spend budget, a containment profile) MUST be refused on every surface that can supply
   it — start options, environment variables, and stored configuration alike —
   rather than accepted and ignored. Accepting a value the system will not act
   on is indistinguishable, to an operator, from acting on it.
@@ -444,96 +483,63 @@ diagnose and stops waste before spend. The three named refusals are the cases
 where the wrong input is *plausible* — a renumbered backlog, a habitual export,
 an upgraded install — and therefore the cases where silence is most costly.
 
-### III. Least-Privilege Containment (Fail-Closed)
+### III. Container-Bounded Execution
 
-Headless sessions run without a human to approve tool calls, so containment
-MUST live in the committed target-repo pack and in per-phase permissions, not
-in CLI prompts. Every run has exactly one **containment profile**, fixed when
-the run starts and recorded with the run: `strict` or `permissive`.
+Headless sessions run without a human to approve tool calls. There is exactly
+**one** containment behaviour for orchestrator-started sessions:
 
-**`strict` is the default** for every run and for the shipped configuration.
-Under `strict`:
-
-- the PreToolUse scope-guard hook MUST deny out-of-tree writes, dangerous
-  Bash, pushes to a remote, and network access (download tools, web fetch,
-  web search);
-- `settings.json` MUST grant least privilege, and per-phase permissions
-  (`PhaseRequest`) MUST further narrow tools per phase (read-only phases stay
-  read-only);
-- enforcement MUST be layered (hook + per-phase permissions + container
-  recipe), never a single point of trust;
-- the hook MAY allow a privileged command only when both the in-container
-  marker and the verified agent-root marker are present, and only when every
-  privileged part refreshes the system package index, installs packages, or
-  queries the package database. Removal, upgrade, local package files, options
-  that execute commands, and every other privileged command stay denied. This
-  exception relies on the container as the outer boundary.
-
-A run MAY opt into **`permissive`**, per run or through the configured global
-default, subject to all of:
-
-- the pack keeps **no deny list** for well-formed requests, with no floor, and
-  every phase gets the same full tool set (file writes, Bash, network). The
-  only tool exclusions left are the headless subagent, scheduling and
-  background-watcher (`Monitor`) tools, which exist to keep sessions from ending while they wait on background work,
-  not to contain them;
-- the profile is recorded on the run at start. Resume, continue, and
-  publish-only resume MUST reuse the recorded profile and MUST refuse a
-  different one. A profile change needs a fresh run;
-- a permissive run MUST NOT start against a committed pack that cannot honor
-  the profile. Preflight fails loudly instead of running under other rules;
-- every operator surface that describes the run, and every PR body for a
-  feature built under it, MUST state that containment was relaxed
-  (Principle VII);
-- the container recipe is the recommended outer boundary, because no pack
-  deny list remains;
+- every phase gets the same full tool set (file writes, Bash, network) under
+  `bypass_permissions`. The only tool exclusions are the headless subagent,
+  scheduling and background-watcher (`Monitor`) tools, which exist to keep
+  sessions from ending while they wait on background work, not to contain
+  them;
+- the **container** (`scripts/autonomous`) is the supported runtime and the
+  outer boundary. A run that starts outside it MUST log a loud warning naming
+  the supported runtime and stating that sessions run with full access and no
+  in-tree deny list — and then proceed. The warning MUST NOT be turned into a
+  silent default, and it MUST NOT block;
+- a run MUST NOT start against a committed target-repo pack that does not meet
+  the current pack contract. Preflight fails loudly with reinstall
+  instructions instead of running under rules the pack cannot honour;
+- a Claude Code session that a human starts interactively in a target repo is
+  not an orchestrator session. The pack MUST NOT add denials to it; it stays
+  under the human's own Claude Code permission settings and prompts;
 - the correctness gates (branch drift, artifact substance, incomplete
-  session, analyze, clarify), the cost breaker, and the session deadlines are
-  not containment. They MUST behave identically under both profiles.
+  session, analyze, clarify) and the session deadlines are not containment.
+  They are unaffected by this principle.
 
-Under **every** profile and session origin:
+Rationale: The orchestrator executes model-authored actions against real
+repos, so it needs a real boundary — and an in-tree deny list was never one.
+It blocked legitimate work (fetching documentation, reaching a sibling
+directory, pushing a branch), hit attended human sessions, and still left the
+host exposed to anything the list did not name. 7.0.0 moves the boundary to
+where it can actually hold: the container, which bounds the filesystem, the
+network identity and the privileges of every session uniformly. Two profiles
+meant two sets of rules to keep correct, a resume lock, and a visibility
+obligation on every surface; one behaviour plus a loud non-container warning
+is simpler and tells the operator the truth about where the boundary is.
 
-- the hook MUST fail closed on malformed input: it denies file writes and
-  Bash when it cannot read the request;
-- every orchestrator-started session MUST carry a positive orchestrator
-  marker and its run's profile. The pack MUST resolve a session with no
-  marker and no positively identified interactive origin to `strict`, so
-  origin detection can only fail toward strict;
-- every pack denial MUST name the profile and the rule that fired.
+### IV. Cost Transparency; Drain, Don't Kill
 
-A Claude Code session that a human starts interactively in a target repo is
-not an orchestrator session. The pack MUST NOT add denials to it. That session
-stays under the human's own Claude Code permission settings and prompts.
+Cost MUST be measured for every phase attempt — actual reported spend
+preferred, the per-phase estimate only when actuals are unavailable — and
+rolled up per feature and per run in the `Ledger` cost accumulator. Cost MUST
+be shown on every operator surface that describes a run (Principle VII). Cost
+MUST NOT gate any work: no phase, chunk, remediation attempt, clarify wait or
+release may halt, drain, refuse or fail because of accumulated spend.
 
-Rationale: The orchestrator executes model-authored actions against real repos.
-Defense in depth that fails closed is the only safe default when the executing
-agent's output is not pre-reviewed. That is why `strict` is the default and
-keeps every earlier guarantee.
+When work must stop for any other reason — a superseding run, or a store that
+can no longer record state — the system MUST drain, not kill: no new work is
+released, and an in-flight session finishes (or reaches its own deadline)
+before the feature stops between phases.
 
-6.0.0 makes those guarantees conditional, deliberately. The pack's denials also
-hit the operator's own attended sessions, where a human already approves each
-action. They also stop autonomous phases from doing legitimate work: fetching
-documentation, reaching a sibling directory, pushing a branch. An operator who
-runs the orchestrator on their own machine and accepts that risk had no way to
-say so. The relaxation is explicit, per run, recorded, locked for the life of
-the run, and visible on every surface and every PR. Two things are not
-relaxed: fail-closed parsing, and strict for any session whose origin is in
-doubt. So the pack can never be silently turned off by a missing marker, a
-changed default, or a resume.
-
-### IV. Cost-Bounded Autonomy (Drain, Don't Kill)
-
-Every run MUST be governed by the `Ledger` cost circuit breaker. A reservation
-MUST be rejected once `committed + reserved >= budget`; the breaker trips at
-`committed >= budget`; the invariant `committed < budget + max single reservation`
-MUST hold. On a tripped breaker the system MUST drain, not kill: no new work is
-released, and an in-flight feature finishes its current phase then halts between
-phases. Cost accounting MUST prefer actual reported spend and fall back to the
-per-phase estimate only when actuals are unavailable.
-
-Rationale: Unbounded autonomous spend is the primary financial risk. Draining
-rather than killing preserves partial work and keeps the final tally honest and
-within budget plus one outstanding reservation.
+Rationale: A spend cap that halts mid-backlog turned out to cost more than it
+saved: it stopped runs an attended operator had already decided to pay for,
+and the partial work it preserved still had to be resumed by hand. What the
+operator needs is an honest, always-visible figure, recorded from real
+reported spend. Draining rather than killing is kept because its reason
+stands independent of cost: killing a live session mid-write orphans the CLI
+and corrupts the worktree.
 
 ### V. Human-in-the-Loop Escalation
 
@@ -557,8 +563,8 @@ operator the open questions, subject to all of:
   rounds, both recorded with the run;
 - every exit from the wait that is not a human answer MUST fall back to the
   unconditional escalation exactly, with a recorded reason naming the exit.
-  Those exits are: timeout, exhausted rounds, a tripped cost breaker, a
-  supersession drain, and an orchestrator restart;
+  Those exits are: timeout, exhausted rounds, a supersession drain, and an
+  orchestrator restart;
 - while waiting, no model session runs and no cost is reserved or committed
   (Principle IV). The feature still counts as the run's single in-flight
   feature, and its worktree is retained;
@@ -589,8 +595,8 @@ all of:
 - on exhaustion the gate decides the outcome from the **final** analyze run
   under the rules above **and the run's exhaustion policy** (below), with a
   recorded reason naming exhausted auto-remediation;
-- every attempt and every analyze re-run is subject to the cost breaker of
-  Principle IV and is individually recorded;
+- every attempt and every analyze re-run is cost-accounted (Principle IV) and
+  individually recorded;
 - it is switchable per run, and disabling it MUST restore fail-fast behaviour
   exactly.
 
@@ -727,10 +733,9 @@ this constitution. Its load-bearing rules:
   illustration, emoji, marketing copy — are prohibited.
 - **State is the content.** Every view MUST answer "what is happening right now"
   above the fold: status, progress, and spend are primary; chrome is secondary.
-  Global run state — run state, subject, budget gauge, breaker status — MUST
-  persist on every view, and a budget gauge MUST show committed and reserved
-  distinctly (Principle IV accounts for both, so a gauge that merges them
-  misreports the breaker's actual headroom).
+  Global run state — run state, subject, run spend — MUST persist on every
+  view. Spend is a plain figure: no surface may show a budget, limit or
+  breaker the system does not have (Principle IV).
 - **The UI speaks the system's vocabulary.** Labels MUST use the real
   identifiers an operator would type — function names (`resume/2`), atoms
   (`:escalated`), paths (`checkpoint.json`), config keys
@@ -766,9 +771,10 @@ this constitution. Its load-bearing rules:
   entity, one detail view. An empty state MUST state the healthy condition and
   why (`No open escalations`), never issue a call to action.
 
-Rationale: The console is how a human exercises the bounds that Principles IV
-and V mandate — a breaker to respect, an escalation to resolve, a recovery path
-to choose. A surface that renames `:escalated`, hides reserved spend, merges
+Rationale: The console is how a human exercises the bounds that Principle V
+mandates — an escalation to resolve, a recovery path to choose — and watches
+the spend Principle IV makes visible. A surface that renames `:escalated`,
+shows a spend limit that does not exist, merges
 `resume/2` with `resolve/1`, or animates something that is not actually running
 does not merely look wrong: it misinforms the only decision-maker the system
 defers to, at the exact moment it defers. Fixing the visual and interaction
@@ -789,7 +795,7 @@ Discipline). Erlang/OTP MAY be mise-managed; when pinned, it lives in
 **Backend (control plane + data plane).**
 
 - **OTP** is the control plane: a per-run `Coordinator` (plain `GenServer`)
-  supervises `Task`-based feature runners; `Ledger` is the cost-breaker
+  supervises `Task`-based feature runners; `Ledger` is the cost-accumulator
   `GenServer`; the app tree runs `Ledger` + a `Task.Supervisor`.
 - **Jido** (`~> 2.2`) provides the agent framework; `jido_harness` and
   `jido_claude` are the data-plane harness wrapping the `claude` CLI. Both are
@@ -916,15 +922,11 @@ four permitted keyframes.
   toolchain is `1.20.2-otp-28` per `mise.toml`, and the bare PATH is stale.
 - `warnings_as_errors` is ON: a compiler warning is a build failure and MUST be
   fixed, not suppressed.
-- The pure core MUST hold test coverage above 90%. Wave, DAG, and breaker logic
+- The pure core MUST hold test coverage above 90%. Release and drain logic
   MUST be tested through injected seams (e.g. the `:runner` seam) with no CLI or
   worktree dependency.
 - Real-harness and out-of-tree side effects MUST sit behind opt-in
   (`--include integration`) so the default suite stays hermetic.
-- Enforcement code (the scope-guard hook) MUST be tested against the real hook,
-  red-team style, not a mock, for every profile and session origin, with a
-  pinned environment so the result does not depend on the shell running the
-  suite.
 
 ## Development Workflow
 
@@ -954,4 +956,4 @@ deviation already is. Reviews and PRs MUST verify compliance with these
 principles; the constitution and the implementation plan together are the
 runtime guidance for autonomous and human contributors alike.
 
-**Version**: 6.1.0 | **Ratified**: 2026-07-11 | **Last Amended**: 2026-10-08
+**Version**: 7.0.0 | **Ratified**: 2026-07-11 | **Last Amended**: 2026-10-09

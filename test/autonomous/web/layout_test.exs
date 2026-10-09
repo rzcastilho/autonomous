@@ -129,7 +129,9 @@ defmodule Autonomous.Web.LayoutTest do
     assert clock =~ ~r/^\d{2}:\d{2}:\d{2} UTC$/
   end
 
-  test "the gauge shows band and amounts but no armed/tripped word", %{conn: conn} do
+  test "039: the topbar shows run spend as one plain USD figure — no gauge, no breaker", %{
+    conn: conn
+  } do
     {:ok, pid} =
       Coordinator.start_link(
         name: Coordinator,
@@ -141,12 +143,12 @@ defmodule Autonomous.Web.LayoutTest do
     on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
 
     {:ok, _view, html} = live(conn, "/")
-    [gauge] = Regex.run(~r/<div[^>]*class="cost-gauge".*?<\/span>/s, html)
+    [spend] = Regex.run(~r/<span class="topbar-spend"[^>]*>.*?\$\d+\.\d{2}/s, html)
 
-    assert gauge =~ ~r/data-band="(safe|warning|tripped)"/
-    assert gauge =~ ~r/\$\d+\.\d{2} \+ \$\d+\.\d{2} \/ \$\d+\.\d{2}/
-    refute gauge =~ "armed"
-    refute gauge =~ "(tripped"
+    assert spend =~ "spend"
+    refute html =~ "cost-gauge"
+    refute html =~ "data-band"
+    refute html =~ ~r/breaker|budget|reserved/i
   end
 
   test "Escalations badge is hidden when no feature is escalated/halted/failed", %{conn: conn} do
@@ -186,10 +188,10 @@ defmodule Autonomous.Web.LayoutTest do
     {:ok, _view, html} = live(conn, "/")
 
     assert html =~ "No active run"
-    refute html =~ "cost-gauge"
+    refute html =~ "data-spend"
   end
 
-  test "status bar renders the active-run shell (gauge, armed/tripped) when a Coordinator is running",
+  test "status bar renders the active-run shell (state, spend) when a Coordinator is running",
        %{
          conn: conn
        } do
@@ -206,8 +208,8 @@ defmodule Autonomous.Web.LayoutTest do
     {:ok, _view, html} = live(conn, "/")
 
     assert html =~ "Active run"
-    assert html =~ "cost-gauge"
-    assert html =~ "armed"
+    assert html =~ "data-spend"
+    refute html =~ "armed"
   end
 
   # A parked run's Coordinator stays alive awaiting the operator's

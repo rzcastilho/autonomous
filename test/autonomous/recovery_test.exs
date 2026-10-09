@@ -109,6 +109,7 @@ defmodule Autonomous.RecoveryTest do
     File.mkdir_p!(Path.join(repo, ".claude/skills"))
     File.write!(Path.join(repo, ".claude/skills/.gitkeep"), "")
     File.write!(Path.join(repo, ".claude/settings.json"), "{}")
+    File.write!(Path.join(repo, ".claude/autonomous-pack.json"), ~s({"contract": 6}))
     git!(repo, ["init", "-q", "-b", "main"])
     git!(repo, ["config", "user.email", "t@example.com"])
     git!(repo, ["config", "user.name", "Tester"])
@@ -155,10 +156,7 @@ defmodule Autonomous.RecoveryTest do
               created_at: &1.created_at
             }
           ),
-        settings:
-          RunContext.to_map(%RunContext{
-            budget_usd: 100.0
-          }),
+        settings: RunContext.to_map(%RunContext{}),
         scope: scope_of(layout),
         layout: layout
       })

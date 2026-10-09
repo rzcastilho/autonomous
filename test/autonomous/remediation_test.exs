@@ -173,7 +173,7 @@ defmodule Autonomous.RemediationTest do
   describe "next/2 — row order and outcomes" do
     test "row 1: disabled short-circuits to :gate regardless of everything else" do
       state = base_state(%{settings: %Settings{enabled?: false}})
-      signals = %{step: :analyze, outcome: :error, breaker?: true}
+      signals = %{step: :analyze, outcome: :error, drain?: true}
       assert {:gate, result_state} = Remediation.next(state, signals)
       assert result_state.attempts_used == 0
     end
@@ -192,51 +192,19 @@ defmodule Autonomous.RemediationTest do
       end
     end
 
-    test "row 2 before row 4: an errored analyze step gates even if the breaker tripped" do
-      state = base_state()
-      signals = %{step: :analyze, outcome: :error, breaker?: true}
-      assert {:gate, _state} = Remediation.next(state, signals)
-    end
-
-    test "row 3 before row 4: a remediation failure is named even if the breaker tripped" do
-      state = base_state()
-      signals = %{step: :remediation, outcome: :error, breaker?: true}
-      assert {:failed, :remediation_failed, _state} = Remediation.next(state, signals)
-    end
-
-    test "row 4: breaker tripped between steps halts" do
-      state = base_state()
-      signals = %{step: :analyze, outcome: :ok, result: result([]), breaker?: true}
-      assert {:halted, :breaker, _state} = Remediation.next(state, signals)
-    end
-
-    test "row 4b (026): a drain requested between steps halts as :superseded" do
+    test "row 4 (026): a drain requested between steps halts as :superseded" do
       state = base_state()
       signals = %{step: :analyze, outcome: :ok, result: result([]), drain?: true}
       assert {:halted, :superseded, _state} = Remediation.next(state, signals)
     end
 
-    test "row 4b (026): a tripped breaker wins over a drain request (FR-011)" do
-      state = base_state()
-
-      signals = %{
-        step: :analyze,
-        outcome: :ok,
-        result: result([]),
-        breaker?: true,
-        drain?: true
-      }
-
-      assert {:halted, :breaker, _state} = Remediation.next(state, signals)
-    end
-
-    test "row 2 before row 4b: an errored analyze step gates even if a drain was requested" do
+    test "row 2 before row 4: an errored analyze step gates even if a drain was requested" do
       state = base_state()
       signals = %{step: :analyze, outcome: :error, drain?: true}
       assert {:gate, _state} = Remediation.next(state, signals)
     end
 
-    test "row 3 before row 4b: a remediation failure is named even if a drain was requested" do
+    test "row 3 before row 4: a remediation failure is named even if a drain was requested" do
       state = base_state()
       signals = %{step: :remediation, outcome: :error, drain?: true}
       assert {:failed, :remediation_failed, _state} = Remediation.next(state, signals)

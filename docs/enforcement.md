@@ -1,161 +1,176 @@
 # Enforcement & containment
 
+There is one containment behaviour (feature 039, constitution 7.0.0
+Principle III, Container-Bounded Execution). Every orchestrator-driven session
+gets the same full tool set; the **container is the boundary**. Two pieces
+remain on the orchestrator side:
+
+1. **Container isolation** — the supported runtime and the outer boundary
+   (see below and `docs/container.md`).
+2. **Per-phase session permissions** — one full set, passed on every
+   `RunRequest`.
+
+A third piece is a precondition rather than a layer: the **committed target
+pack** must meet the current pack contract (6), or the run refuses to start.
+
+The `strict`/`permissive` containment profiles, the `scope_guard.py`
+PreToolUse hook, its in-tree deny list and its closed `sudo` grammar, and the
+`AUTONOMOUS_ORCHESTRATED` / `AUTONOMOUS_CONTAINMENT_PROFILE` session markers
+were removed in 039. A `containment_profile` run option, app-env key or
+`AUTONOMOUS_CONTAINMENT_PROFILE` env var is refused naming the key
+(`{:error, {:preflight, [{:retired_option, :containment_profile}]}}` at run
+start; boot aborts for app env / env).
+
+## Per-phase session permissions
+
 The Claude adapter's real SDK path passes `--permission-mode` (not
 `--dangerously-skip-permissions`, which was a Phase 0 finding since superseded
-— see `docs/harness-contract.md`), so per-phase permissions genuinely govern
-tool access; the scope-guard hook remains the layer that works regardless of
-those flags.
+— see `docs/harness-contract.md`). `PhaseRequest.build/3` sets the same
+first-class `RunRequest` fields for every phase, remediation and describe
+session:
 
-## Two containment profiles (feature 030)
+- `permission_mode: :bypass_permissions`;
+- `allowed_tools`: `Read Write Edit MultiEdit NotebookEdit Bash Grep Glob
+  WebFetch WebSearch` (pre-approved so the headless CLI runs them
+  non-interactively — Bash is required by the Spec Kit phase scripts);
+- `disallowed_tools`: `Agent Task ScheduleWakeup Monitor`. These are headless
+  exclusions, not containment: a subagent or background watcher lets the model
+  end its turn "waiting", which ends a headless session (the incomplete-session
+  gate then fails the phase), and `ScheduleWakeup` is meaningless in a one-shot
+  session.
 
-Every run picks one of two profiles, recorded once at `run/1` and locked for
-its lifetime (resume/continue never renegotiate it):
-
-- **`strict`** (default). Byte-identical to the pre-030 behaviour described
-  below: the hook denies out-of-tree writes and dangerous Bash for every
-  orchestrator-driven session, and each phase gets scoped
-  `permission_mode`/`allowed_tools`.
-- **`permissive`** (opt-in, per run). The hook applies no deny list and every
-  phase gets full write/Bash/network access
-  (`permission_mode: :bypass_permissions`, `WebFetch`/`WebSearch` allowed;
-  only `Agent`/`Task`/`ScheduleWakeup` stay excluded, FR-008). Choose this only
-  when the target genuinely needs push/network/out-of-tree access a feature
-  can't get otherwise, and prefer the container recipe below alongside it —
-  `permissive` removes the hook's own safety net.
+The launch env carries the shell timeouts (feature 032) and, when the
+container advertises agent root, the `AgentRoot.session_env/1` markers. No
+containment marker is sent.
 
 The operator's own **interactive** Claude Code session in a target repo is
-never denied by the pack, under either profile — origin (human vs.
-orchestrated) is resolved from `AUTONOMOUS_ORCHESTRATED`/
-`AUTONOMOUS_CONTAINMENT_PROFILE` env markers the orchestrator sets on every
-session it starts, falling back to `CLAUDE_CODE_ENTRYPOINT=cli` to detect a
-human shell. Anything undecided resolves to `strict`'s rule set (fail closed).
-A permissive run is visible everywhere it applies — the final report, the
-console topbar/Run Detail/Configuration page, and the PR body all show
-`containment: permissive` (or omit the marker entirely under `strict`, so that
-surface stays byte-identical). See `contracts/operator-surfaces.md` under
-`specs/030-permissive-containment/`.
+never denied by the pack: the pack carries no hook and no `permissions.deny`.
 
-### Strict package-manager exception (feature 037, pack contract 5)
+## Container isolation (feature 031)
 
-Under `strict`, `sudo` stays denied (`bash_sudo`) **except** when both
-`AUTONOMOUS_CONTAINER=1` (image `ENV`) and `AUTONOMOUS_AGENT_ROOT=1` (exported by the
-entrypoint only after `sudo -n true` succeeds) are present *and* every `sudo` in the
-command matches this closed grammar:
+The orchestrator and the `claude` CLI run inside the image from `/Dockerfile`,
+started by `scripts/autonomous`. Only the target repo, its worktree root, and
+the instance state directory are mounted read-write. The process runs as the
+host user, never root; without `--agent-root` the image carries no `sudo`, so
+system writes fail at the OS layer. This bounds blast radius to the mounted
+paths. See `docs/container.md` for operation.
 
-```text
-sudo [-n] [DEBIAN_FRONTEND=noninteractive]
-     apt-get|apt  update
-   | apt-get|apt  install  (-y|--yes|--assume-yes|-q|-qq|--quiet|--no-install-recommends | <package>)+
-   | apt          list|show|policy …
-   | dpkg         -l|--list|-s|--status|-L|--listfiles|-S|--search|--get-selections …
-```
+**Starting outside the container.** `ContainerGuard.check!/0` refuses a boot
+outside the image whenever `require_container` is true, so a host start only
+happens where that guard was deliberately disabled (host development, tests).
+In that case every run start (`run/1`, `run_spec/2`, resume, continue) logs the
+multi-line `RuntimeNotice.container_warning/1` text — the run is starting
+outside the container, sessions have full tool access and no in-tree deny
+list, `scripts/autonomous` is the supported runtime — and **proceeds**. The
+console Trigger start-confirm shows the same warning.
 
-`sudo` must start its segment (`&&`, `||`, `;`, `|`, `&`, newline); redirects are left to
-the unchanged `bash_redirect_outside_worktree` rule. Still denied: `remove`, `purge`,
-`autoremove`, `upgrade`/`dist-upgrade`, `-o`/`-c`/`--option`, local package files
-(`./x.deb`, any `/`), `dpkg -i`, `sh -c`, `-E`, `-u`, command/process substitution,
-backticks, subshells, unbalanced quotes, and every other sudo'd program. Every other
-strict rule (`git push`, `curl`/`wget` at the start, `rm -rf /`, …) still judges the whole
-command, and `permissive` / interactive sessions are unchanged.
+### Agent root (feature 037)
 
-**Why `NOPASSWD: ALL` is acceptable.** Narrowing sudoers to apt would not be a boundary
-— `apt-get -o APT::Update::Pre-Invoke=…` and maintainer scripts execute arbitrary code.
-The policy is the hook grammar above (which refuses `-o` and local packages); the outer
-boundary is the container itself, which is why the exception needs the in-container
-marker. Enabling `--agent-root` is an explicit operator decision per image.
+`scripts/autonomous build --agent-root` builds passwordless `sudo` (any uid)
+plus `APT::Get::Remove "false"`; the entrypoint exports
+`AUTONOMOUS_AGENT_ROOT=1` only after `sudo -n true` succeeds. When advertised,
+`implement`/`converge` sessions get a prompt note telling them to install
+missing OS packages with `sudo apt-get update && sudo apt-get install -y
+--no-install-recommends <pkgs>` and never to remove, purge or upgrade, and
+`AgentRoot.log_installs/3` logs every install after each session. That note is
+**guidance only**: the closed `sudo` grammar that used to be enforced by
+`scope_guard.py` was removed in 039. With agent root enabled the session has
+root inside the container; the container is the boundary, which is why
+enabling `--agent-root` is an explicit operator decision per image.
 
-Containment is otherwise the same three overlapping layers:
+### Open gaps
 
-1. **PreToolUse scope-guard hook** — `priv/target_pack/.claude/hooks/scope_guard.py`.
-   Under `strict`, denies file writes (`Write`/`Edit`/`MultiEdit`/`NotebookEdit`)
-   resolving outside the worktree, dangerous Bash (`rm -rf /`, `sudo`,
-   `git push`, `curl|sh`, redirects to absolute paths outside the tree), and
-   `WebFetch`/`WebSearch`. Fails **closed** on unparseable input under every
-   origin/profile. Under `permissive`, the hook allows everything (no rule
-   list consulted). `settings.json` carries no `permissions.deny` of its own
-   any more — every denial decision lives in the hook, since a
-   `permissions.deny` entry used to block the operator's own interactive
-   sessions too.
-2. **Per-phase RunRequest permissions** — `PhaseRequest.build/3` sets
-   `permission_mode`/`allowed_tools`/`disallowed_tools` per phase and per
-   containment profile (analyze read-only via `:plan` under `strict`;
-   implement scoped writes via `:accept_edits` under `strict`; full access
-   under `permissive`). The adapter forwards these. Belt-and-suspenders with
-   the hook under `strict`; under `permissive` this layer also grants full
-   access, so the hook is the only thing standing between the session and the
-   host — hence the container recommendation.
-3. **Container isolation (optional, defense in depth)** — see below;
-   recommended whenever a run uses `permissive`.
+- **No egress restriction (FR-029).** The container has unrestricted outbound
+  network, and sessions may use `WebFetch`/`WebSearch` and network-reaching
+  Bash. An egress allowlist (Anthropic API host plus whatever a feature needs)
+  is not implemented; add one at the Docker/host firewall level if the run
+  needs it.
+- **No in-tree deny list.** Nothing inside the container stops a session from
+  writing anywhere the container user can write, `git push`ing, or running
+  package-manager downloads. Those effects are bounded by the mounts and the
+  container, not by the pack.
 
-## Installing the pack in a target repo
+## Target pack (contract 6)
 
-The pack travels into every worktree because it is committed in the base repo.
+The pack lives in `priv/target_pack/.claude/` and travels into every worktree
+because it is committed in the target's base repo:
+
+| Path | Contract 6 |
+|---|---|
+| `settings.json` | `env` (032 shell timeouts), `permissions.defaultMode`, `permissions.allow`. No `hooks`, no `permissions.deny`. |
+| `autonomous-pack.json` | `{"contract": 6}` — the contract marker |
+| `skills/` | Spec Kit skills (unchanged) |
+
+### What `TargetPack.verify/2` checks
+
+`verify/2` runs on **every** run, resume, continue and `run_spec/2` (there is
+no `:profile` option). Reading the committed tree, it requires:
+
+1. `.claude/settings.json` and `.claude/skills/` present;
+2. a real constitution — the template marker gone, non-empty, and committed;
+3. the pack contract (`check_pack_contract/2`):
+   - `.claude/autonomous-pack.json` exists, decodes, and `contract >= 6`;
+   - `.claude/settings.json` registers no `scope_guard.py` hook and carries no
+     `permissions.deny`;
+   - `.claude/hooks/scope_guard.py` is not committed.
+
+A pack-contract failure is `{:pack_outdated, path, hint}`, `path` naming the
+offending file and the hint reading "pack is older than contract 6 — run
+TargetPack.install/2 in the target repo, commit the result, and re-run".
+Because worktrees come from the committed tree, no session can ever meet an old
+hook.
+
+### Installing the pack in a target repo
 
 ```
 # 1. Bootstrap Spec Kit (creates .specify/ and .claude/skills/)
 specify init . --integration claude --integration-options="--skills"
 
-# 2. Install the orchestrator enforcement pack (settings.json + hook; installs a
-#    template constitution only if none exists — never clobbers yours)
-#    from iex against the repo path:
+# 2. Install the orchestrator pack (settings.json + autonomous-pack.json;
+#    installs a template constitution only if none exists — never clobbers
+#    yours) from iex against the repo path:
 Autonomous.TargetPack.install("/path/to/target/repo")
 #    (returns {:error, {:invalid_settings, _}} if the target's settings.json
-#    is not valid JSON; an existing settings.json `env` is kept, pack keys added)
+#    is not valid JSON; an existing settings.json `env` is kept, every other
+#    key is the pack's)
 
 # 3. Write a real constitution with checkable MUSTs, then commit everything
-git add .specify .claude && git commit -m "spec kit + enforcement pack"
+git add .specify .claude && git commit -m "spec kit + autonomous pack"
 
-# 4. Preflight (fails while the template constitution marker is present, or if
-#    the constitution is uncommitted / scaffold missing)
+# 4. Preflight (fails while the template constitution marker is present, if
+#    the constitution is uncommitted / scaffold missing, or if the committed
+#    pack is older than contract 6)
 Autonomous.TargetPack.verify("/path/to/target/repo")  # => :ok
-
-# 4a. A run that will use `containment_profile: :permissive` additionally
-#     requires the committed pack to be at contract 4 or later (this hook + this
-#     settings.json, both committed) — verify explicitly:
-Autonomous.TargetPack.verify("/path/to/target/repo", profile: "permissive")  # => :ok
 ```
+
+### Reinstalling an outdated pack
+
+A target last installed before 039 (pack contracts 2–5) fails preflight with
+`{:pack_outdated, path, hint}`. To fix it:
+
+1. In iex: `Autonomous.TargetPack.install("/path/to/target/repo")`. It writes
+   `autonomous-pack.json`, merges `settings.json` (pack wins every key but
+   `env`, so the old `hooks.PreToolUse` scope-guard entry is dropped), deletes
+   `.claude/hooks/scope_guard.py` (and the empty `hooks/` directory), and
+   leaves the constitution alone. It is idempotent.
+2. Commit the result in the target:
+   `git add -A .claude && git commit -m "autonomous pack contract 6"`.
+3. Re-run (`run/1`, `resume/2` or `continue_run/1`); `TargetPack.verify/1`
+   now returns `:ok`.
 
 ## Upgrade procedure (reconcile with Spec Kit)
 
 Spec Kit ships weekly and its files also live under `.claude/`. To upgrade
-without losing enforcement:
+without losing the pack:
 
 1. **Back up the constitution** — `cp .specify/memory/constitution.md /tmp`.
    **Never** run `specify init --force` (it overwrites the constitution, §4.3).
 2. Run `specify self upgrade` (or re-init **without** `--force`).
-3. **Re-diff `.claude/`**: confirm `settings.json` and `hooks/scope_guard.py`
+3. **Re-diff `.claude/`**: confirm `settings.json` and `autonomous-pack.json`
    still exist and were not replaced by Spec Kit's defaults. Re-run
    `TargetPack.install/2` to restore them if needed (it does not touch the
-   constitution). Commit the result — a `permissive` run's preflight rejects
-   an uncommitted or pre-030 pack (`{:pack_outdated, path, hint}`).
-4. Re-run `TargetPack.verify/1` (and, if this repo runs `permissive` runs,
-   `TargetPack.verify/2` with `profile: "permissive"`) and diff
-   `constitution.md` against the backup.
+   constitution). Commit the result — preflight reads the committed tree and
+   rejects an outdated pack (`{:pack_outdated, path, hint}`).
+4. Re-run `TargetPack.verify/1` and diff `constitution.md` against the backup.
 5. `specify self check` to confirm the CLI version, and record the tag in
    `config.exs` (`:speckit_version`).
-
-## Container isolation (feature 031)
-
-The container layer is real: the orchestrator and the `claude` CLI run inside
-the image from `/Dockerfile`, started by `scripts/autonomous`. Only the target
-repo, its worktree root, and the instance state directory are mounted
-read-write. The process runs as the host user, never root, so `sudo` and system
-writes fail at the OS layer even if the hook is bypassed or its deny list is
-empty (`permissive`). See `docs/container.md` for operation.
-
-This bounds blast radius to the mounted paths regardless of hook coverage — the
-one layer `permissive` cannot remove.
-
-### Open gaps
-
-- **No egress restriction (FR-029).** The container has unrestricted outbound
-  network. An egress allowlist (Anthropic API host plus whatever a feature
-  needs) is not implemented; add one at the Docker/host firewall level if the
-  run needs it.
-- **Package-manager downloads are not denied by the hook.** `npm install`,
-  `pip install` and `mix deps.get` pass `scope_guard.py` under `strict`. They
-  write inside the worktree and the container, and are bounded by the container
-  layer, not the hook.
-- **`bash_curl` / `bash_wget` are anchored at command start (R12).** A download
-  that is not the first token of the command (for example after `cd x &&` or in
-  a pipeline) is not matched. Recorded gap, not fixed in 031.

@@ -12,7 +12,7 @@ defmodule Autonomous.Web.PipelineDagLive do
   backlog preview reads. The Ad-hoc chain is whatever live/last-known
   features aren't in that backlog (an ad-hoc feature has no breakdown file).
   Node status/phase/spend are merged in from `Coordinator.status/0` +
-  `Ledger.snapshot/1` + `ConsoleProjection.read/0`, the same read-model
+  `ConsoleProjection.read/0`, the same read-model
   `MissionControlLive` seeds from, and kept in step via the same PubSub
   broadcasts. An invalid backlog (`Backlog.load!/1` raises) or an empty one
   each render a coherent state, never a broken layout (SC-006).
@@ -96,7 +96,7 @@ defmodule Autonomous.Web.PipelineDagLive do
 
   defp seed(socket, run_detail) do
     status = coordinator_status()
-    view = ConsoleReadModel.merge(status, ledger_snapshot(), ConsoleProjection.read_safe())
+    view = ConsoleReadModel.merge(status, ConsoleProjection.read_safe())
 
     assign(socket, view: overlay_manifest(view, run_detail))
   end
@@ -166,8 +166,6 @@ defmodule Autonomous.Web.PipelineDagLive do
 
   defp coordinator_status, do: ConsoleProjection.coordinator_or_last_known()
 
-  defp ledger_snapshot, do: ConsoleProjection.ledger_or_last_known()
-
   # ---- live updates (mirrors MissionControlLive; reconcile is authoritative
   # on drift, FR-033/SC-005) -------------------------------------------------
 
@@ -184,13 +182,12 @@ defmodule Autonomous.Web.PipelineDagLive do
   def handle_info({:console, :feed, _entry}, socket), do: {:noreply, socket}
 
   def handle_info(
-        {:console, :reconciled, %{coordinator: coordinator_status, ledger: ledger_snapshot}},
+        {:console, :reconciled, %{coordinator: coordinator_status}},
         socket
       ) do
     run_detail = current_run_detail()
 
-    view =
-      ConsoleReadModel.merge(coordinator_status, ledger_snapshot, ConsoleProjection.read_safe())
+    view = ConsoleReadModel.merge(coordinator_status, ConsoleProjection.read_safe())
 
     current_run_id = Autonomous.current_run_id()
 

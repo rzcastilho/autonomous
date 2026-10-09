@@ -125,7 +125,7 @@ agent_root() {
   if command -v sudo >/dev/null 2>&1; then
     if sudo -n true >/dev/null 2>&1; then
       export AUTONOMOUS_AGENT_ROOT=1
-      say "agent root: available (strict allows sudo apt-get/apt install)"
+      say "agent root: available (sessions may sudo apt-get/apt install)"
     else
       warn "agent root built in but 'sudo -n true' failed for uid $(id -u); not advertised"
     fi
@@ -157,7 +157,7 @@ fi
 
 # ---- 0. Dev shape: prepare the build ---------------------------------------
 # Needs network (Hex, GitHub for the pinned jido_* SHAs). Runs before any
-# orchestrated session exists, so the strict hook is not involved.
+# orchestrated session exists.
 prepare_build() {
   cd /workspace
   lock_hash="$(sha256sum mix.lock | cut -d' ' -f1)"
@@ -308,8 +308,6 @@ fi
 if [ -z "${ANTHROPIC_DEFAULT_OPUS_MODEL:-}" ] || [ -z "${ANTHROPIC_DEFAULT_SONNET_MODEL:-}" ]; then
   warn "ANTHROPIC_DEFAULT_OPUS_MODEL / ANTHROPIC_DEFAULT_SONNET_MODEL are unset; model aliases will not be pinned"
 fi
-warn_budget="${AUTONOMOUS_BUDGET_USD:-config default}"
-say "budget is per instance (AUTONOMOUS_BUDGET_USD=$warn_budget); total spend is the sum across running instances"
 
 say "instance $AUTONOMOUS_NODE_NAME serving $AUTONOMOUS_REPO"
 

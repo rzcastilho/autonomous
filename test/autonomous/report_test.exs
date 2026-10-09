@@ -11,7 +11,6 @@ defmodule Autonomous.ReportTest do
       },
       totals: %{running: 1, done: 1},
       spend: 1.5,
-      breaker_tripped: false,
       finished?: false
     }
 
@@ -28,61 +27,33 @@ defmodule Autonomous.ReportTest do
     assert out =~ "state:  running"
   end
 
-  test "format_status/1 marks a tripped breaker and finished run" do
+  test "format_status/1 shows spend as a plain figure and marks a finished run (039)" do
     snapshot = %{
       per_feature: %{"001" => %{status: :halted, elapsed_ms: 200}},
       totals: %{halted: 1},
-      spend: 30.0,
-      breaker_tripped: true,
+      spend: 30_000.0,
       finished?: true
     }
 
     out = Report.format_status(snapshot)
-    assert out =~ "[BREAKER TRIPPED]"
+    assert out =~ "spend:  $30000.00"
+    refute out =~ ~r/breaker|budget/i
     assert out =~ "state:  finished"
     assert out =~ "200ms"
   end
 
-  test "format_status/1 shows the containment line after spend only when permissive" do
-    snapshot = %{
-      per_feature: %{},
-      totals: %{},
-      spend: 1.5,
-      breaker_tripped: false,
-      finished?: false,
-      containment_profile: "permissive"
-    }
+  test "format_status/1 never shows a containment line, even for a legacy snapshot (039)" do
+    for profile <- ["permissive", "strict", nil] do
+      snapshot = %{
+        per_feature: %{},
+        totals: %{},
+        spend: 1.5,
+        finished?: false,
+        containment_profile: profile
+      }
 
-    out = Report.format_status(snapshot)
-
-    spend_idx = :binary.match(out, "spend:  $1.50") |> elem(0)
-    containment_idx = :binary.match(out, "containment: permissive (no pack deny list)") |> elem(0)
-    assert containment_idx > spend_idx
-  end
-
-  test "format_status/1 omits the containment line when strict" do
-    snapshot = %{
-      per_feature: %{},
-      totals: %{},
-      spend: 0.0,
-      breaker_tripped: false,
-      finished?: false,
-      containment_profile: "strict"
-    }
-
-    refute Report.format_status(snapshot) =~ "containment:"
-  end
-
-  test "format_status/1 omits the containment line when absent (pre-030 byte-identity)" do
-    snapshot = %{
-      per_feature: %{},
-      totals: %{},
-      spend: 0.0,
-      breaker_tripped: false,
-      finished?: false
-    }
-
-    refute Report.format_status(snapshot) =~ "containment:"
+      refute Report.format_status(snapshot) =~ "containment"
+    end
   end
 
   test "format_status/1 shows number and spec_number under distinct labels" do
@@ -93,7 +64,6 @@ defmodule Autonomous.ReportTest do
       },
       totals: %{running: 1, done: 1},
       spend: 0.0,
-      breaker_tripped: false,
       finished?: false
     }
 
@@ -129,7 +99,6 @@ defmodule Autonomous.ReportTest do
         per_feature: %{},
         totals: %{},
         spend: 0.0,
-        breaker_tripped: false,
         finished?: false
       })
 
@@ -171,7 +140,6 @@ defmodule Autonomous.ReportTest do
         },
         totals: %{awaiting_answers: 1},
         spend: 0.0,
-        breaker_tripped: false,
         finished?: false,
         awaiting: %{
           "007" => %{
@@ -195,7 +163,6 @@ defmodule Autonomous.ReportTest do
           per_feature: %{"001" => %{status: :running, elapsed_ms: 100}},
           totals: %{running: 1},
           spend: 0.0,
-          breaker_tripped: false,
           finished?: false
         })
 
@@ -208,7 +175,6 @@ defmodule Autonomous.ReportTest do
           per_feature: %{},
           totals: %{},
           spend: 0.0,
-          breaker_tripped: false,
           finished?: false,
           awaiting: %{}
         })
@@ -226,7 +192,6 @@ defmodule Autonomous.ReportTest do
           per_feature: %{},
           totals: %{},
           spend: 0.0,
-          breaker_tripped: false,
           finished?: true,
           report: %{clarify_rounds: %{"007" => [%{round: 1}, %{round: 2}]}}
         })
@@ -240,7 +205,6 @@ defmodule Autonomous.ReportTest do
           per_feature: %{},
           totals: %{},
           spend: 0.0,
-          breaker_tripped: false,
           finished?: true,
           report: %{clarify_rounds: %{}}
         })
@@ -254,7 +218,6 @@ defmodule Autonomous.ReportTest do
           per_feature: %{},
           totals: %{},
           spend: 0.0,
-          breaker_tripped: false,
           finished?: false
         })
 

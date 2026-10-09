@@ -1,7 +1,7 @@
 # Autonomous workflow
 
 End-to-end flow of the `autonomous` autonomous, spec-driven build
-pipeline: operator → control plane (Coordinator + Ledger) → per-feature data
+pipeline: operator → control plane (Coordinator, with the Ledger as a cost accumulator) → per-feature data
 plane (the 7-phase Spec Kit pipeline) → terminals → human-resolve loop, or the
 park/continue/end loop when the chain itself breaks.
 
@@ -19,8 +19,8 @@ flowchart TB
 
   subgraph CTRL[Control plane]
     direction TB
-    CO -->|release next| REL[Release.next/3<br/>anything running or breaker tripped ⇒ none<br/>lowest-ordered pending ⇒ release<br/>any non-done terminal ⇒ stopped]
-    REL -->|breaker tripped?| LED[(Ledger · budget_usd<br/>reserve / record / trip)]
+    CO -->|release next| REL[Release.next/3<br/>anything running ⇒ none<br/>lowest-ordered pending ⇒ release<br/>any non-done terminal ⇒ stopped]
+    LED[(Ledger · cost accumulator<br/>record / spent · never gates)]
     REL -->|release one at a time| RUN[FeatureRunner<br/>Task under RunnerSup]
   end
 
@@ -64,8 +64,6 @@ flowchart TB
   DEC -->|:continue| CO
   DEC -->|:end| ENDR[[Run completed<br/>outcome: ended_by_operator<br/>remaining pending → never_started]]
 
-  LED -->|committed ≥ budget| BRK[Breaker trips<br/>release none · drain in-flight<br/>halt between phases]
-  BRK --> PARK
   DONE --> REP[[Final report<br/>done · escalated · halted · failed<br/>not_started · stopped_by · spend]]
   ESC --> REP
   HALT --> REP
@@ -86,9 +84,10 @@ flowchart TB
 
 - **Control plane** (`Coordinator` + `Ledger`) is pure orchestration:
   `Release.next/3` releases exactly one feature at a time, in ascending
-  numeric order, records cost per phase, and trips the **breaker** at
-  `budget_usd` (drain-don't-kill — the in-flight feature finishes its current
-  phase then halts). One-feature-at-a-time is a structural property of
+  numeric order. The `Ledger` only accumulates cost per phase (actual when the
+  CLI reports it, estimate otherwise); spend is shown as a plain figure and
+  never stops a run (the budget and circuit breaker were removed in 039).
+  One-feature-at-a-time is a structural property of
   `Release.next/3` (rule: anything `:running` ⇒ release nothing), not a
   configured cap — there is no concurrency setting anywhere.
 - **Data plane** is the Spec Kit loop run through the `claude` CLI, one phase
@@ -160,14 +159,17 @@ flowchart TB
 ## Retired settings are refused, not ignored
 
 There is no `pr_workflow` toggle and no `max_concurrency` setting — this
-*is* the only run shape. Both are refused loudly at three independent edges,
-because each is read at a different time:
+*is* the only run shape. Since 039 there is also no `budget_usd` (cost is
+informational; runs never stop on spend) and no `containment_profile` (one
+containment behaviour; run in the container). All four are refused loudly at
+three independent edges, because each is read at a different time:
 
-- `config/runtime.exs` raises at config load if `AUTONOMOUS_PR_WORKFLOW` or
-  `AUTONOMOUS_MAX_CONCURRENCY` is set at all.
-- `Application.start/2` aborts boot if either app-env key is present.
-- `run/1`, `run_spec/2`, `resume/2`, `resume_run/1` refuse either key as a
-  run-start option with `{:error, {:preflight, [{:retired_option, key}]}}`,
+- `config/runtime.exs` raises at config load if `AUTONOMOUS_PR_WORKFLOW`,
+  `AUTONOMOUS_MAX_CONCURRENCY`, `AUTONOMOUS_BUDGET_USD` or
+  `AUTONOMOUS_CONTAINMENT_PROFILE` is set at all.
+- `Application.start/2` aborts boot if any of the app-env keys is present.
+- `run/1`, `run_spec/2`, `resume/2`, `resume_run/1`, `continue_run/1` refuse
+  any of them as a run-start option with `{:error, {:preflight, [{:retired_option, key}]}}`,
   before any side effect.
 
 See `docs/runbook.md` → "Parked runs" for the operator step-by-step and

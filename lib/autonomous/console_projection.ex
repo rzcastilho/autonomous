@@ -24,7 +24,6 @@ defmodule Autonomous.ConsoleProjection do
     ConsoleReadModel,
     Coordinator,
     CoordinatorProbe,
-    Ledger,
     Store
   }
 
@@ -42,7 +41,6 @@ defmodule Autonomous.ConsoleProjection do
 
     * `:pubsub` — `Phoenix.PubSub` server name (default `Autonomous.PubSub`).
     * `:coordinator` — `Coordinator` server name consulted on reconcile (default `Coordinator`).
-    * `:ledger` — `Ledger` server name consulted on reconcile (default `Ledger`).
     * `:probe_timeout` — Coordinator wait limit for the reconcile probe (default `5000`).
     * `:history` — zero-arity loader of the run record to rebuild from
       (`{:ok, run_detail} | :none | {:error, term}`; default: the in-flight,
@@ -61,18 +59,17 @@ defmodule Autonomous.ConsoleProjection do
   def read(server \\ __MODULE__), do: GenServer.call(server, :read)
 
   @doc """
-  Last status the reconcile probe saw: `%{coordinator:, ledger:, delayed?:}`.
+  Last status the reconcile probe saw: `%{coordinator:, delayed?:}`.
   Never blocks on the Coordinator; an absent projection yields empty values.
   """
   @spec last_known(GenServer.server()) :: %{
           coordinator: map() | nil,
-          ledger: map() | nil,
           delayed?: boolean()
         }
   def last_known(server \\ __MODULE__) do
     GenServer.call(server, :last_known)
   catch
-    :exit, _ -> %{coordinator: nil, ledger: nil, delayed?: false}
+    :exit, _ -> %{coordinator: nil, delayed?: false}
   end
 
   @doc "Exit-safe `read/1`: an empty model when the projection is absent or unresponsive."
@@ -97,15 +94,6 @@ defmodule Autonomous.ConsoleProjection do
     end
   end
 
-  @doc "Ledger snapshot for console pages, falling back to the last-known one."
-  @spec ledger_or_last_known(timeout()) :: map() | nil
-  def ledger_or_last_known(timeout \\ @page_probe_ms) do
-    case Process.whereis(Ledger) do
-      nil -> nil
-      _pid -> CoordinatorProbe.ledger(Ledger, timeout) || last_known().ledger
-    end
-  end
-
   @doc "The PubSub topic every LiveView subscribes to on mount."
   @spec topic() :: String.t()
   def topic, do: @topic
@@ -116,7 +104,6 @@ defmodule Autonomous.ConsoleProjection do
   def init(opts) do
     pubsub = Keyword.get(opts, :pubsub, Autonomous.PubSub)
     coordinator = Keyword.get(opts, :coordinator, Coordinator)
-    ledger = Keyword.get(opts, :ledger, Ledger)
     reconcile_ms = Keyword.get(opts, :reconcile_ms, @reconcile_ms)
     probe_timeout = Keyword.get(opts, :probe_timeout, @probe_timeout)
     handler_id = {__MODULE__, self()}
@@ -134,9 +121,8 @@ defmodule Autonomous.ConsoleProjection do
       model: ConsoleReadModel.new(),
       pubsub: pubsub,
       coordinator: coordinator,
-      ledger: ledger,
       probe_timeout: probe_timeout,
-      last_known: %{coordinator: nil, ledger: nil},
+      last_known: %{coordinator: nil},
       probe: nil,
       misses: 0,
       warned_at: nil,
@@ -174,12 +160,9 @@ defmodule Autonomous.ConsoleProjection do
   # One probe in flight at a time; the Coordinator wait happens in the task,
   # so this process keeps answering `read/1` and folding telemetry.
   def handle_info(:reconcile, %{probe: nil} = state) do
-    %{coordinator: coordinator, ledger: ledger, probe_timeout: timeout} = state
+    %{coordinator: coordinator, probe_timeout: timeout} = state
 
-    task =
-      Task.async(fn ->
-        {CoordinatorProbe.status(coordinator, timeout), CoordinatorProbe.ledger(ledger, timeout)}
-      end)
+    task = Task.async(fn -> CoordinatorProbe.status(coordinator, timeout) end)
 
     {:noreply, %{state | probe: task.ref}}
   end
@@ -296,7 +279,7 @@ defmodule Autonomous.ConsoleProjection do
       ConsoleReadModel.new()
   end
 
-  defp apply_probe(state, {coordinator_result, ledger_snapshot}) do
+  defp apply_probe(state, coordinator_result) do
     misses = ConsoleDelay.step(state.misses, coordinator_result)
     now_ms = System.monotonic_time(:millisecond)
     state = log_probe(state, misses, now_ms)
@@ -308,7 +291,7 @@ defmodule Autonomous.ConsoleProjection do
       :delayed ->
         # Keep showing the last good status, flagged as delayed.
         last = state.last_known
-        broadcast(state, reconciled(last.coordinator, last.ledger, true))
+        broadcast(state, reconciled(last.coordinator, true))
         %{state | misses: misses}
 
       :reconciled ->
@@ -318,19 +301,19 @@ defmodule Autonomous.ConsoleProjection do
             :none -> nil
           end
 
-        broadcast(state, reconciled(coordinator_status, ledger_snapshot, false))
+        broadcast(state, reconciled(coordinator_status, false))
 
         %{
           state
           | misses: misses,
             model: ConsoleReadModel.clear_rebuilt(state.model),
-            last_known: %{coordinator: coordinator_status, ledger: ledger_snapshot}
+            last_known: %{coordinator: coordinator_status}
         }
     end
   end
 
-  defp reconciled(coordinator, ledger, delayed?),
-    do: {:console, :reconciled, %{coordinator: coordinator, ledger: ledger, delayed?: delayed?}}
+  defp reconciled(coordinator, delayed?),
+    do: {:console, :reconciled, %{coordinator: coordinator, delayed?: delayed?}}
 
   defp log_probe(state, misses, now_ms) do
     case ConsoleDelay.log?(state.misses, misses, state.warned_at, now_ms) do

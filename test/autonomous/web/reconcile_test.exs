@@ -2,8 +2,8 @@ defmodule Autonomous.Web.ReconcileTest do
   @moduledoc """
   Phase 9 cross-cutting fidelity (`specs/008-control-plane/tasks.md`
   T071-T073): the reconcile tick converges an outside state change (FR-033,
-  SC-005), a tripped breaker never depicts a mid-phase kill (SC-007,
-  Constitution IV), and every coherent-empty-state requirement (SC-006) holds
+  SC-005), large spend never depicts a stop (039: cost is informational),
+  and every coherent-empty-state requirement (SC-006) holds
   across views.
 
   025 Phase 6 (T019): no byte-identical checkpoint-first regression case is
@@ -16,8 +16,8 @@ defmodule Autonomous.Web.ReconcileTest do
   regress. The regression coverage lives in `recovery_quickpoll_test.exs`
   and `record_recovery_test.exs`, which do exercise `Reconcile.status/3`.
   """
-  # Starts the real named Coordinator and mutates the app-supervised default
-  # Ledger's budget / global repo+breakdown_dir app env — must not run
+  # Starts the real named Coordinator and mutates the global
+  # repo+breakdown_dir app env — must not run
   # concurrently with another test claiming those globals. StoreCase (018)
   # clears every store table before each test, so an earlier test's in-flight
   # run never leaks into this test's "no active run" assertions.
@@ -41,8 +41,7 @@ defmodule Autonomous.Web.ReconcileTest do
   setup do
     prior = %{
       repo: Application.get_env(:autonomous, :repo),
-      breakdown_dir: Application.get_env(:autonomous, :breakdown_dir),
-      budget_usd: Ledger.snapshot().budget
+      breakdown_dir: Application.get_env(:autonomous, :breakdown_dir)
     }
 
     on_exit(fn ->
@@ -51,7 +50,6 @@ defmodule Autonomous.Web.ReconcileTest do
         {k, v} -> Application.put_env(:autonomous, k, v)
       end)
 
-      Ledger.set_budget(prior.budget_usd)
       if pid = Process.whereis(Coordinator), do: GenServer.stop(pid)
     end)
 
@@ -125,9 +123,9 @@ defmodule Autonomous.Web.ReconcileTest do
     assert row =~ ~s(data-status="escalated")
   end
 
-  # ---- T072: drain, don't kill — never a depicted mid-phase kill ----------
+  # ---- T072 (039): spend is a plain figure — never a depicted stop ---------
 
-  test "a tripped breaker shows tripped in the status bar without forcing an in-flight feature to a diverted status" do
+  test "large spend shows as a plain topbar figure and never diverts an in-flight feature" do
     # "rc2" (the lower number) is the one the no-op runner actually releases
     # and never notifies. "rc2b" (the higher number) never releases at all
     # while "rc2" runs (Release.next/3 rule 3) — 019's one-at-a-time release
@@ -150,13 +148,12 @@ defmodule Autonomous.Web.ReconcileTest do
 
     assert %{status: :running} = Coordinator.status(pid).per_feature["rc2"]
 
-    # Trip the breaker directly on the Ledger (committed 0 >= budget 0).
-    Ledger.set_budget(0.0)
-    assert Ledger.breaker_tripped?()
+    Ledger.record(nil, 10_000.0)
 
     {:ok, view, html} = live(build_conn(), "/")
-    assert html =~ ~s(data-band="tripped")
-    assert html =~ "breaker tripped"
+    assert html =~ "data-spend"
+    refute html =~ "data-band"
+    refute html =~ ~r/breaker|budget/i
 
     # The console never flips an in-flight feature's displayed status on its
     # own account — only an explicit notify (the runner finishing its phase
@@ -164,11 +161,10 @@ defmodule Autonomous.Web.ReconcileTest do
     row = Regex.run(~r/<tr[^>]*data-feature-row="rc2".*?<\/tr>/s, html) |> hd()
     assert row =~ ~s(data-status="running")
 
-    # The runner drains: finishes the in-flight phase, then halts between
-    # phases — an explicit notify, never a display-layer kill. "rc2" was the
-    # only in-flight feature, so the run itself drains/finishes right here —
-    # never redisplayed as if it were still silently running.
-    Coordinator.notify(pid, "rc2", :halted, :breaker_tripped)
+    # A halt only ever comes from an explicit notify (here a supersession
+    # drain), never from the display layer. "rc2" was the only in-flight
+    # feature, so the run itself finishes right here.
+    Coordinator.notify(pid, "rc2", :halted, :superseded)
     force_reconcile(view)
 
     html = render(view)

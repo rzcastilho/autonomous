@@ -629,22 +629,18 @@ defmodule Autonomous.ChunkRunnerTest do
     assert_in_delta cost, 0.30, 0.001
   end
 
-  test "a breaker tripped between task-phases halts the run (drain, don't kill)",
+  test "039: large spend never halts between task-phases",
        %{feature: feature, worktree: worktree, pid: pid, prompts_agent: prompts_agent} do
     {:ok, ledger} =
-      Ledger.start_link(budget: 0.0, name: :"ledger_test_#{System.unique_integer([:positive])}")
+      Ledger.start_link(name: :"ledger_test_#{System.unique_integer([:positive])}")
 
-    Ledger.record(ledger, nil, 1.0)
-    assert Ledger.breaker_tripped?(ledger)
+    Ledger.record(ledger, nil, 10_000.0)
 
     agent =
       ChunkRunner.run(ctx(%{pid: pid, feature: feature, worktree: worktree, ledger: ledger}))
 
-    assert agent.state.terminal_reason == {:halted, :breaker}
-
-    # drain, don't kill: the first task-phase's session still ran to
-    # completion before the halt took effect at the next boundary.
-    assert length(captured_prompts(prompts_agent)) == 1
+    assert agent.state.terminal_reason == nil
+    assert length(captured_prompts(prompts_agent)) > 1
   end
 
   # The roll-up artifact gate used to anchor on the worktree's HEAD when the

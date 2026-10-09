@@ -107,12 +107,12 @@ defmodule Autonomous.ReleaseTest do
       assert Release.next(features, statuses, false) == {:stopped, "001", :halted}
     end
 
-    test "breaker tripped yields :none even with a releasable feature" do
+    test "blocked? (store unwritable) yields :none even with a releasable feature" do
       features = [feat("001", 1)]
       assert Release.next(features, %{}, true) == :none
     end
 
-    test "breaker tripped outranks a stopped feature: still :none (drain, don't kill)" do
+    test "blocked? outranks a stopped feature: still :none (drain, don't kill)" do
       features = [feat("001", 1), feat("002", 2)]
       statuses = %{"001" => :halted}
 

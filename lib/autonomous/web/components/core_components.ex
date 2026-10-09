@@ -1,8 +1,8 @@
 defmodule Autonomous.Web.CoreComponents do
   @moduledoc """
   Shared UI primitives reused across every console view (FR-034): the
-  lifecycle status label/class transport, the fixed seven-phase strip, the
-  cost-breaker gauge, badges, and toast primitives. One label map and one
+  lifecycle status label/class transport, the fixed seven-phase strip,
+  badges, and toast primitives. One label map and one
   phase order (`Pipeline.phases/0`) so status colors read identically in the
   status strip, backlog table, DAG, drawer, and escalations list — the color
   itself lives once, in `priv/static/assets/console.css`'s `[data-status]`
@@ -239,67 +239,6 @@ defmodule Autonomous.Web.CoreComponents do
 
   defp phase_cell_state(%{state: :active}, _status), do: "active"
   defp phase_cell_state(_cell, _status), do: "pending"
-
-  @doc """
-  Cost-breaker gauge (`Ledger.snapshot/1` shape): fill = `(committed +
-  reserved) / budget`, fill color signals proximity, `tripped?` shows the
-  band color (FR-004, SC-007). The label is `$committed + $reserved /
-  $budget` in mono, outside the bar, with no breaker word (the breaker chip
-  owns that). The bar clamps at 100% when committed exceeds budget.
-  """
-  attr(:committed, :float, default: 0.0)
-  attr(:reserved, :float, default: 0.0)
-  attr(:budget, :float, default: 0.0)
-  attr(:tripped?, :boolean, default: false)
-
-  def cost_gauge(assigns) do
-    fill = gauge_fill(assigns.committed, assigns.reserved, assigns.budget)
-    committed_fill = gauge_fill(assigns.committed, 0.0, assigns.budget)
-
-    assigns =
-      assign(assigns,
-        fill: fill,
-        committed_fill: committed_fill,
-        band: gauge_band(fill, assigns.tripped?),
-        committed_label: money(assigns.committed),
-        reserved_label: money(assigns.reserved),
-        budget_label: money(assigns.budget)
-      )
-
-    ~H"""
-    <div
-      class="cost-gauge"
-      data-band={@band}
-      role="meter"
-      aria-valuenow={@fill}
-      aria-valuemin="0"
-      aria-valuemax="100"
-    >
-      <div class="cost-gauge-reserved" style={"width: #{@fill}%;"}></div>
-      <div class="cost-gauge-fill" style={"width: #{@committed_fill}%;"}></div>
-      <span class="cost-gauge-label">
-        ${@committed_label} + ${@reserved_label} / ${@budget_label}
-      </span>
-    </div>
-    """
-  end
-
-  defp gauge_fill(_committed, _reserved, budget) when budget <= 0, do: 100.0
-
-  defp gauge_fill(committed, reserved, budget),
-    do: min(100.0, (committed + reserved) / budget * 100.0)
-
-  @doc """
-  Which visual band the gauge's fill renders in (docs/design-constitution.md
-  §VII.3): `tripped` from recorded `Ledger.tripped?` state or the 100%
-  ceiling, `warning` above the contract's 80% threshold, `safe` otherwise. The
-  color for each band lives once, in `console.css`'s `[data-band]` rules.
-  """
-  @spec gauge_band(float(), boolean()) :: :safe | :warning | :tripped
-  def gauge_band(_fill, true), do: :tripped
-  def gauge_band(fill, _tripped?) when fill >= 100.0, do: :tripped
-  def gauge_band(fill, _tripped?) when fill > 80.0, do: :warning
-  def gauge_band(_fill, _tripped?), do: :safe
 
   defp money(amount), do: :erlang.float_to_binary(amount * 1.0, decimals: 2)
 

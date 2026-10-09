@@ -1,8 +1,6 @@
 defmodule Autonomous.Web.CoreComponentsTest do
   use ExUnit.Case, async: true
 
-  import Phoenix.LiveViewTest
-
   alias Autonomous.Pipeline
   alias Autonomous.Web.CoreComponents
 
@@ -39,19 +37,9 @@ defmodule Autonomous.Web.CoreComponentsTest do
     end
   end
 
-  test "cost_gauge renders `$committed + $reserved / $budget` with no breaker word and clamps the bar" do
-    html =
-      render_component(&CoreComponents.cost_gauge/1,
-        committed: 12.5,
-        reserved: 2.0,
-        budget: 10.0,
-        tripped?: true
-      )
-
-    assert html =~ "$12.50 + $2.00 / $10.00"
-    refute html =~ "armed"
-    refute html =~ "tripped)"
-    assert html =~ ~s(data-band="tripped")
-    assert html =~ "width: 100.0%"
+  test "039: the cost gauge is gone" do
+    Code.ensure_loaded!(CoreComponents)
+    refute function_exported?(CoreComponents, :cost_gauge, 1)
+    refute function_exported?(CoreComponents, :gauge_band, 2)
   end
 end

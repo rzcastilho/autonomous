@@ -17,7 +17,7 @@ defmodule Autonomous.Web.RunDetailLive do
 
   use Autonomous.Web, :live_view
 
-  alias Autonomous.{Config, Containment, ConsoleProjection, PublishOutcome}
+  alias Autonomous.{Config, ConsoleProjection, PublishOutcome}
   alias Autonomous.Web.{RunSettingsView, RunStateView, TranscriptMarkup}
 
   @impl true
@@ -408,12 +408,6 @@ defmodule Autonomous.Web.RunDetailLive do
     """
   end
 
-  # Recorded settings carry string keys in production (`RunContext.to_map/1`)
-  # but existing tests seed this map with atom keys, so both are checked.
-  defp containment_profile(settings) do
-    Map.get(settings, "containment_profile") || Map.get(settings, :containment_profile)
-  end
-
   # 033 R1: these attrs belong to `run_header/1`. Declared above a different
   # function they made LiveView wrap `settings_chips/1` as a component, which
   # leaked its `__given__` bookkeeping key onto the page.
@@ -470,18 +464,6 @@ defmodule Autonomous.Web.RunDetailLive do
       </div>
 
       <.record_block label="run settings" fields={RunSettingsView.rows(@settings)} />
-
-      <div :if={Containment.permissive?(containment_profile(@settings))} data-containment>
-        <div class="run-context-label">Containment</div>
-        <div class="run-context">
-          <span class="run-context-chip">
-            containment_profile=<span>permissive</span>
-          </span>
-        </div>
-        <div class="escalations-sub">
-          See docs/enforcement.md for what the permissive profile relaxes.
-        </div>
-      </div>
 
       <div :if={@amendments != []} data-amendments>
         <div class="run-context-label">Amendments</div>

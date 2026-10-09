@@ -45,7 +45,7 @@ usage: scripts/autonomous <command> [options]
   test  [mix test args]                  run the test suite inside the dev image
 
 options:
-  --agent-root                           build passwordless sudo into the image so strict sessions may
+  --agent-root                           build passwordless sudo into the image so agent sessions may
                                          `sudo apt-get install` missing packages (build only)
   --apt <list>                           system packages to install into the image at build time
                                          (repeatable; space/comma separated; build only)
@@ -236,7 +236,6 @@ print_summary() {
   say "target   $target"
   say "instance $node_name"
   say "console  http://127.0.0.1:$port/"
-  say "budget   per instance (AUTONOMOUS_BUDGET_USD=${AUTONOMOUS_BUDGET_USD:-config default}); total spend is the sum across running instances"
 }
 
 console_responds() {

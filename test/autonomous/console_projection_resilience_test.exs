@@ -75,7 +75,9 @@ defmodule Autonomous.ConsoleProjectionResilienceTest do
         assert length(ConsoleProjection.read(pid).feed) == 4
         assert Process.alive?(pid)
 
-        refute_received {:console, :reconciled, %{delayed?: false}}
+        # Only this projection's reconciles (the stub's marker) — the app's own
+        # projection broadcasts `coordinator: nil` reconciles on the same topic.
+        refute_received {:console, :reconciled, %{coordinator: %{marker: _}, delayed?: false}}
 
         StubCoordinator.release(stub)
         assert_receive {:console, :reconciled, %{coordinator: %{marker: :fresh}}}, 1_000

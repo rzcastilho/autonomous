@@ -144,7 +144,7 @@ defmodule Autonomous.ChunkingTest do
                {:failed, {:branch_drift, :implement, d}, state1}
     end
 
-    test "drift wins even alongside a transient error, progress, and a tripped breaker" do
+    test "drift wins even alongside a transient error, progress, and a drain request" do
       state = Chunking.start(five_phase_plan())
       {:dispatch, _scope, state1} = Chunking.next(state, %{})
       d = %{expected: "feature/001-s", observed: {:detached, "abc1234"}}
@@ -153,7 +153,7 @@ defmodule Autonomous.ChunkingTest do
                outcome: :error,
                transient?: true,
                progress?: true,
-               breaker?: true,
+               drain?: true,
                branch_drift: d
              }) == {:failed, {:branch_drift, :implement, d}, state1}
     end
@@ -431,30 +431,9 @@ defmodule Autonomous.ChunkingTest do
     end
   end
 
-  # ---- row 7 — breaker -----------------------------------------------------------
+  # ---- row 7 (026) — drain requested (supersession) ------------------------
 
-  describe "row 7 — breaker" do
-    test "halts at a boundary (a scope's session just succeeded)" do
-      state = Chunking.start(five_phase_plan())
-      {:dispatch, {:task_phase, tp1}, state1} = Chunking.next(state, %{})
-      plan = complete_task_phase(state1.plan, tp1.ordinal)
-
-      assert Chunking.next(state1, %{outcome: :ok, plan: plan, breaker?: true}) ==
-               {:halted, :breaker, %{state1 | plan: plan, cursor: 2, attempt: 1, no_progress: 0}}
-    end
-
-    test "does not fire mid-scope (an exhaustion continuation ignores it)" do
-      state = Chunking.start(five_phase_plan())
-      {:dispatch, {:task_phase, tp1}, state1} = Chunking.next(state, %{})
-
-      assert {:dispatch, {:task_phase, ^tp1}, _state2} =
-               Chunking.next(state1, %{outcome: :exhausted, progress?: true, breaker?: true})
-    end
-  end
-
-  # ---- row 7b (026) — drain requested (supersession) -----------------------
-
-  describe "row 7b — drain requested (026)" do
+  describe "row 7 — drain requested (026)" do
     test "an absent drain? signal leaves today's rows unchanged" do
       state = Chunking.start(five_phase_plan())
       {:dispatch, {:task_phase, tp1}, state1} = Chunking.next(state, %{})
@@ -464,7 +443,7 @@ defmodule Autonomous.ChunkingTest do
                Chunking.next(state1, %{outcome: :ok, plan: plan})
     end
 
-    test "halts at the same boundary as the breaker (a scope's session just succeeded)" do
+    test "halts at a boundary (a scope's session just succeeded)" do
       state = Chunking.start(five_phase_plan())
       {:dispatch, {:task_phase, tp1}, state1} = Chunking.next(state, %{})
       plan = complete_task_phase(state1.plan, tp1.ordinal)
@@ -480,15 +459,6 @@ defmodule Autonomous.ChunkingTest do
 
       assert {:dispatch, {:task_phase, ^tp1}, _state2} =
                Chunking.next(state1, %{outcome: :exhausted, progress?: true, drain?: true})
-    end
-
-    test "a tripped breaker wins over a drain request at the same boundary (FR-011)" do
-      state = Chunking.start(five_phase_plan())
-      {:dispatch, {:task_phase, tp1}, state1} = Chunking.next(state, %{})
-      plan = complete_task_phase(state1.plan, tp1.ordinal)
-
-      assert {:halted, :breaker, _state2} =
-               Chunking.next(state1, %{outcome: :ok, plan: plan, breaker?: true, drain?: true})
     end
   end
 
@@ -767,16 +737,11 @@ defmodule Autonomous.ChunkingTest do
       assert ordinal == tp1.ordinal
     end
 
-    test "breaker or drain suppresses the retry" do
+    test "a drain suppresses the retry" do
       {_tp1, state1} = dispatched_first_d()
 
-      for flag <- [:breaker?, :drain?] do
-        assert {:failed, {:session_died, %TaskPhaseRef{}, @died}, _} =
-                 Chunking.next(
-                   state1,
-                   %{outcome: :error, session_died: @died} |> Map.put(flag, true)
-                 )
-      end
+      assert {:failed, {:session_died, %TaskPhaseRef{}, @died}, _} =
+               Chunking.next(state1, %{outcome: :error, session_died: @died, drain?: true})
     end
 
     test "ceiling reached fails as :session_ceiling" do
@@ -816,13 +781,13 @@ defmodule Autonomous.ChunkingTest do
     end
   end
 
-  describe "untrusted workspace (036)" do
-    test "fails the chunk by name and is never re-dispatched" do
+  describe "no untrusted-workspace row (039)" do
+    test "an untrusted_workspace signal is ignored — the outcome rows decide" do
       state = Chunking.start(five_phase_plan())
       obs = %{workspace: "/x/repo", kinds: ["permissions.allow"]}
 
-      assert {:failed, {:untrusted_workspace, %TaskPhaseRef{}, ^obs}, _} =
-               Chunking.next(state, %{outcome: :error, untrusted_workspace: obs})
+      assert Chunking.next(state, %{outcome: :ok, untrusted_workspace: obs}) ==
+               Chunking.next(state, %{outcome: :ok})
     end
   end
 end
