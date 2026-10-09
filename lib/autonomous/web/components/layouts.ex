@@ -14,7 +14,7 @@ defmodule Autonomous.Web.Layouts do
 
   use Autonomous.Web, :html
 
-  alias Autonomous.{Config, Coordinator, Ledger, RepoIdentity, Store}
+  alias Autonomous.{Config, ConsoleProjection, Ledger, RepoIdentity, Store}
 
   embed_templates("layouts/*")
 
@@ -85,7 +85,8 @@ defmodule Autonomous.Web.Layouts do
       reserved: ledger.reserved * 1.0,
       budget: ledger.budget * 1.0,
       tripped?: ledger.tripped?,
-      clock: DateTime.utc_now() |> DateTime.to_time() |> Time.truncate(:second) |> Time.to_string(),
+      clock:
+        DateTime.utc_now() |> DateTime.to_time() |> Time.truncate(:second) |> Time.to_string(),
       containment_profile: containment_profile(status)
     }
   end
@@ -100,11 +101,7 @@ defmodule Autonomous.Web.Layouts do
   defp title_for(_status, true), do: "Parked run"
   defp title_for(_status, false), do: "Active run"
 
-  defp coordinator_status do
-    if Process.whereis(Coordinator) do
-      Coordinator.status(Coordinator)
-    end
-  end
+  defp coordinator_status, do: ConsoleProjection.coordinator_or_last_known()
 
   # A parked run's Coordinator stays alive awaiting an operator decision
   # (`contracts/parked-run.md`) — without this check the topbar's "● live"

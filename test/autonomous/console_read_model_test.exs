@@ -264,7 +264,14 @@ defmodule Autonomous.ConsoleReadModelTest do
         |> ConsoleReadModel.apply_event(
           [:speckit, :phase, :exception],
           %{duration: 2_000_000},
-          %{feature_id: "001", phase: :analyze, model: "opus", step: 5, kind: :error, reason: :boom}
+          %{
+            feature_id: "001",
+            phase: :analyze,
+            model: "opus",
+            step: 5,
+            kind: :error,
+            reason: :boom
+          }
         )
 
       assert [%{key: {:phase, :analyze}, from: 0, to: to}] = model.features["001"].windows
@@ -1270,6 +1277,47 @@ defmodule Autonomous.ConsoleReadModelTest do
         )
 
       assert model.features["001"].remediation == nil
+    end
+  end
+
+  describe "rebuilt_keys dedupe (038)" do
+    @meta %{feature_id: "001", phase: :plan}
+
+    test "matching live event is dropped once and the key consumed" do
+      model = %{
+        ConsoleReadModel.new()
+        | rebuilt_keys: MapSet.new([{"001", :plan, "phase plan started"}])
+      }
+
+      seeded = %{
+        model
+        | feed: [
+            %{
+              feature_id: "001",
+              phase: :plan,
+              text: "phase plan started",
+              severity: :info,
+              at: DateTime.utc_now()
+            }
+          ]
+      }
+
+      out = ConsoleReadModel.apply_event(seeded, [:speckit, :phase, :start], %{}, @meta)
+      assert out.feed == seeded.feed
+      assert out.features == seeded.features
+      assert MapSet.size(out.rebuilt_keys) == 0
+    end
+
+    test "non-matching event folds normally and keeps keys" do
+      model = %{ConsoleReadModel.new() | rebuilt_keys: MapSet.new([{"009", :plan, "x"}])}
+      out = ConsoleReadModel.apply_event(model, [:speckit, :phase, :start], %{}, @meta)
+      assert [%{text: "phase plan started"}] = out.feed
+      assert MapSet.size(out.rebuilt_keys) == 1
+    end
+
+    test "clear_rebuilt/1 empties the set" do
+      model = %{ConsoleReadModel.new() | rebuilt_keys: MapSet.new([{"1", nil, "t"}])}
+      assert ConsoleReadModel.clear_rebuilt(model).rebuilt_keys == MapSet.new()
     end
   end
 end

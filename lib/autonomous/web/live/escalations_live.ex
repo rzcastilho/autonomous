@@ -27,13 +27,15 @@ defmodule Autonomous.Web.EscalationsLive do
 
   use Autonomous.Web, :live_view
 
+  # Bounded wait on the run controller (feature 038); past it the action reports
+  # "unreachable" instead of crashing the view.
+  @run_wait_ms 5_000
+
   alias Autonomous.{
     Config,
     ConsoleProjection,
     ConsoleReadModel,
-    Coordinator,
     Feature,
-    Ledger,
     NeedsHuman,
     Pipeline,
     RepoIdentity,
@@ -74,7 +76,11 @@ defmodule Autonomous.Web.EscalationsLive do
 
   defp refresh(socket) do
     view =
-      ConsoleReadModel.merge(coordinator_status(), ledger_snapshot(), ConsoleProjection.read())
+      ConsoleReadModel.merge(
+        coordinator_status(),
+        ledger_snapshot(),
+        ConsoleProjection.read_safe()
+      )
 
     run_id = current_run_id()
 
@@ -109,13 +115,9 @@ defmodule Autonomous.Web.EscalationsLive do
     end
   end
 
-  defp coordinator_status do
-    if Process.whereis(Coordinator), do: Coordinator.status(Coordinator)
-  end
+  defp coordinator_status, do: ConsoleProjection.coordinator_or_last_known()
 
-  defp ledger_snapshot do
-    if Process.whereis(Ledger), do: Ledger.snapshot(Ledger)
-  end
+  defp ledger_snapshot, do: ConsoleProjection.ledger_or_last_known()
 
   # ---- EscalationView assembly (data-model.md) -----------------------------
 
@@ -488,9 +490,20 @@ defmodule Autonomous.Web.EscalationsLive do
   # view's process outlives the call — an unlinked task decouples the
   # Coordinator's lifetime from this transient LiveView.
   defp run_unlinked(fun) do
-    Autonomous.RunnerSup
-    |> Task.Supervisor.async_nolink(fun)
-    |> Task.await()
+    task = Task.Supervisor.async_nolink(Autonomous.RunnerSup, fun)
+
+    case Task.yield(task, Application.get_env(:autonomous, :console_run_wait_ms, @run_wait_ms)) do
+      {:ok, result} ->
+        result
+
+      {:exit, reason} ->
+        {:error, {:controller_unreachable, reason}}
+
+      nil ->
+        # Left running; `ignore/1` drops its late reply so it can't reach this view.
+        Task.ignore(task)
+        {:error, :controller_unreachable}
+    end
   end
 
   # ---- render -------------------------------------------------------------

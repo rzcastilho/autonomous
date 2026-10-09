@@ -44,8 +44,7 @@ defmodule Autonomous.Web.CoreComponents do
   def status_class(:interrupted), do: "blocked"
 
   def status_class(status)
-      when status in
-             ~w(done running escalated halted failed pending blocked awaiting_answers)a,
+      when status in ~w(done running escalated halted failed pending blocked awaiting_answers)a,
       do: to_string(status)
 
   def status_class(_other), do: "pending"

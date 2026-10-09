@@ -1487,3 +1487,21 @@ OS package is missing (`pkg-config`, `libasound2-dev`, a `-dev` header…).
 Packages an agent installed are logged as `agent root: feature <n> (<phase>) installed
 system packages: …`; they vanish with the container, so add them to `--apt` to persist.
 See `docs/container.md` (System packages) and `docs/enforcement.md`.
+
+## Console shows "live status delayed" (038)
+
+Mission Control shows `live status delayed — Coordinator.status/1 not answering;
+showing last known state` when the console's refresh of the run controller has
+been missed **twice in a row**. A single missed refresh shows nothing.
+
+- The console keeps the last good status and the telemetry feed; nothing is
+  cleared and no page crashes. The notice clears itself on the first refresh
+  that succeeds.
+- The log carries one `warning` per stall (re-logged at most once a minute while
+  it lasts) and one `info` line on recovery — never an `error`.
+- If it persists, the run controller itself is stuck: check `Autonomous.status/0`
+  and the run's session deadlines (see "When a feature fails").
+- `ConsoleProjection` rebuilds its feed (newest 200) and feature slices from the
+  durable record of the in-flight, else parked, run on every start, so a restart
+  keeps history. What is **not** recovered: live-only messages with no durable
+  record (e.g. chunk boundaries, remediation attempts, publish failures).
