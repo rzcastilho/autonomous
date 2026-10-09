@@ -108,7 +108,7 @@
 - [X] T028 [P] Edit `docs/runbook.md`: short section — delayed-status line meaning, single rate-limited warning, history rebuild on projection start, what is not recovered (live-only messages)
 - [X] T029 [P] Update the `ConsoleProjection` moduledoc in `lib/autonomous/console_projection.ex` (no longer "rebuilds from `Coordinator.status/0` + telemetry" only; now record-rebuilt) and the telemetry/console notes in `CLAUDE.md` Observability section with a one-sentence feature-038 note
 - [X] T030 `mise exec -- mix format --check-formatted`, `mise exec -- mix compile --warnings-as-errors`, then full `mise exec -- mix test` (SC-005: existing console suite unchanged, coverage of new pure modules `mix test --cover` > 90%)
-- [ ] T031 Run quickstart.md §2 manual stall (`:sys.suspend/resume` on the Coordinator) and projection-kill rebuild check in the container; record outcome at the bottom of quickstart.md
+- [X] T031 Run quickstart.md §2 manual stall (`:sys.suspend/resume` on the Coordinator) and projection-kill rebuild check in the container; record outcome at the bottom of quickstart.md
 
 ---
 

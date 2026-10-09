@@ -74,3 +74,21 @@ Reload Mission Control: within 5 s the feed shows the run's recorded
 `run started` / `phase … started` / `phase … -> …` / `feature terminal …`
 entries instead of an empty panel (SC-003). Repeat after an instance restart
 (`scripts/autonomous stop` + start) with a parked run.
+
+## Run record (T031) — 2026-10-09
+
+Container instance on `../ledgerlite` (dev image, `--with-login`), driven over
+distributed-Erlang RPC. A stub `Coordinator` (no runner, no spend) stood in for a
+live run; `r000004` was the parked run in the store.
+
+- **Stall** (`:sys.suspend` on the Coordinator for 15 s): projection pid unchanged,
+  `read/1` answered in 0 ms mid-stall, feed (5 entries) kept, one
+  `delayed?: true` broadcast, `last_known().delayed?` true during the stall.
+  After `:sys.resume`: three `delayed?: false` reconciles, notice state cleared.
+  Log: exactly one `[warning] … not answering (1 consecutive missed refreshes)`,
+  one `[info] … answering again`; no crash report.
+- **Rebuild** (`Process.exit(ConsoleProjection, :kill)` on a parked run): fresh
+  start and post-kill restart both showed the recorded feed (4 entries, slice `004`,
+  `run_key` `r000004`).
+- Not exercised: browser view of the delayed line (covered by
+  `mission_control_live_test`), and a live in-flight run's feed.
