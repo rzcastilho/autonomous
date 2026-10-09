@@ -83,20 +83,12 @@ JSON object (startup stops, file untouched), and never touches the host's
 `~/.claude.json`. Login-seeded trust records are carried over untouched. No ancestor
 directory, `$HOME` or `/workspace` is ever trusted.
 
-Backstop: a session that still reports an untrusted workspace fails the phase under
-`strict` (`{:untrusted_workspace, phase, obs}`, never retried; see `docs/runbook.md`) and
-only warns under `permissive` — on host and container alike.
-
-**Hook under untrusted workspaces.** Whether `scope_guard.py` runs while the workspace is
-untrusted is checked by `SMOKE_AGENT=1 scripts/container-smoke.sh us-trust-hook`, which
-prints one greppable `us-trust-hook claude=<version> untrusted|trusted: …` line each.
-Finding (2026-10-08, pinned image, `claude` 2.1.286, authenticated run): with no trust
-record the CLI prints the untrusted warning and ignores `permissions.allow`, **but the
-PreToolUse hook still runs** — a strict orchestrated session asked to write `/tmp/outside`
-was denied by `scope_guard` (`write_outside_worktree`) and no file was written; with the
-trust record the outcome is the same minus the warning. So past strict runs ran
-*narrower* (allow-list ignored), not wider; hook containment held. Re-run
-`us-trust-hook` after CLI upgrades.
+Backstop: a session that still reports an untrusted workspace (the CLI's stderr line,
+parsed by `WorkspaceTrust`) logs a warning and the phase continues — on host and
+container alike. Since 039 this is warn-only for every run; the
+`{:untrusted_workspace, phase, obs}` failure gate and the `us-trust-hook` smoke check
+(which exercised the hook removed in 039) are gone. Check the trust step itself with
+`scripts/container-smoke.sh trust`.
 
 ## System packages (037)
 
@@ -137,13 +129,11 @@ scripts/autonomous build --agent-root
   `no-new-privileges` or the uid has no passwd entry — it warns with the uid and the
   capability is **not** advertised.
 - When advertised, implement/converge sessions are told they may run
-  `sudo apt-get update && sudo apt-get install -y --no-install-recommends <pkgs>`.
-  Under `strict` the committed hook allows exactly that (see `docs/enforcement.md`);
-  everything else under `sudo` stays denied.
-- The committed target pack must be **contract 5**. Re-run `TargetPack.install/2` in the
-  target and commit; otherwise `run/1` logs a warning and strict sessions keep denying
-  `sudo`. The Configuration page shows an "agent root" row (and the same warning) only
-  when it is advertised.
+  `sudo apt-get update && sudo apt-get install -y --no-install-recommends <pkgs>`, and
+  never to remove, purge or upgrade. That is guidance in the prompt, not an enforced
+  grammar (the hook that enforced one was removed in 039); the container is the
+  boundary — see `docs/enforcement.md`.
+- The Configuration page shows an "agent root" row only when it is advertised.
 - Installs last only for this container. Every allowed install is logged as
   `agent root: feature <n> (<phase>) installed system packages: <pkgs> — add them to
   scripts/autonomous build --apt to persist`; promote those packages to `--apt`.
@@ -217,8 +207,7 @@ Set `AUTONOMOUS_DISPLAY=1` in `.env` to have the entrypoint start Xvfb on `:99` 
 `DISPLAY=:99`) without the viewer. `--viewer` implies it and publishes noVNC on
 `127.0.0.1` only (`AUTONOMOUS_VIEWER_PORT` picks the port; empty = Docker picks one).
 
-All three run from a `strict` session: the hook allows redirects to `/dev/null`,
-`/dev/stdout` and `/dev/stderr` (exact match) and nothing else changed.
+All three run from an ordinary orchestrated session; nothing extra is needed.
 
 ### Web
 
@@ -241,7 +230,7 @@ is reachable only from the operator's machine.
 
 ### Pre-fetching dependencies (FR-027a)
 
-A `strict` session does not stop package-manager downloads (`npm install`, `pip install`,
+An orchestrated session may run package-manager downloads (`npm install`, `pip install`,
 `mix deps.get`, Gradle), but the build should not depend on them mid-run. Fetch before the
 run, outside the orchestrated session: run `npm ci`, `mix deps.get` or
 `./gradlew --refresh-dependencies` in the target (or in `scripts/autonomous shell`) so the

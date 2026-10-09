@@ -27,8 +27,16 @@ scripts/autonomous shell --target /path/to/target-repo
 
 `shell` opens `iex` inside the container with the operator API
 (`Autonomous.run/1`, `status/0`, …) and prints the target, the instance node,
-the console address and the budget note. Use `Autonomous.*` exactly as in the
-sections below.
+and the console address. Use `Autonomous.*` exactly as in the sections below.
+
+**The container is the boundary (039).** Every orchestrator session runs with
+full tool access (`bypass_permissions`) and no in-tree deny list — there is no
+containment profile and no scope-guard hook. If a run is started where the boot
+guard was deliberately disabled (host development, test), `run/1`,
+`run_spec/2`, `resume/2` and `continue_run/1` log a multi-line warning that the
+run is starting **outside** the container, naming `scripts/autonomous` as the
+supported runtime — and the run proceeds. The console's Trigger start-confirm
+shows the same warning line.
 
 - **One target per instance.** The container serves the repository named by
   `--target`; a facade call naming another repository raises
@@ -57,8 +65,8 @@ sections below.
 - **State.** Each target gets its own store under
   `~/.autonomous/instances/<segment>/`. The pre-031 `~/.autonomous/mnesia` is
   neither read nor deleted; worktrees and exports stay where they were.
-- **Budget is per instance.** `AUTONOMOUS_BUDGET_USD` caps each instance's own
-  breaker; total spend is the sum across running instances.
+- **Spend is per instance.** Each instance reports its own spend; total spend
+  is the sum across running instances.
 - `scripts/autonomous stop --target <repo>` removes the containers (state root
   untouched); `--purge` also removes that target's build volumes.
 - `scripts/autonomous test [args]` runs `mix test` inside the image.
@@ -181,11 +189,14 @@ mise exec -- mix run --no-start -e \
 
 `specify init` provides `.specify/` (templates + `.specify/scripts/*.sh`) and the
 Spec Kit skills under `.claude/skills/`. `TargetPack.install` adds
-`.claude/settings.json` (least-privilege — but it **must allow `Bash`**, because
-the Spec Kit phase scripts run under Bash) and the `scope_guard.py` PreToolUse
-hook. If the target already has a `.claude/settings.json`, install merges
+`.claude/settings.json` (it **must allow `Bash`**, because the Spec Kit phase
+scripts run under Bash; no hooks, no `permissions.deny`) and the contract
+marker `.claude/autonomous-pack.json` (`{"contract": 6}`, feature 039). If the
+target already has a `.claude/settings.json`, install merges
 it: the pack's `env` shell timeouts (feature 032) are added only where the
-target has no value of its own, and every other key is replaced by the pack's.
+target has no value of its own, and every other key is replaced by the pack's —
+so an old scope-guard hook entry is dropped, and a leftover
+`.claude/hooks/scope_guard.py` is deleted.
 A `settings.json` that is not a JSON object returns
 `{:error, {:invalid_settings, ".claude/settings.json"}}` and writes nothing —
 fix or remove the file, then re-run.
@@ -214,8 +225,10 @@ cd /path/to/my-target && git add -A && git commit -m "spec kit + enforcement pac
 # preflight must be :ok before a run
 Autonomous.TargetPack.verify("/path/to/my-target")   # => :ok
 ```
-`verify` fails while the template constitution marker is present, or if the
-constitution is uncommitted.
+`verify` fails while the template constitution marker is present, if the
+constitution is uncommitted, or if the committed pack is older than contract 6
+(see "Outdated target pack" below). It runs on every `run/1`, `run_spec/2`,
+`resume/2` and `continue_run/1`.
 
 ### 5. Point the orchestrator at the target + decide the tech stack
 
@@ -257,8 +270,22 @@ except `:test`, so they steer a plain `iex -S mix` as well as a release:
 | `AUTONOMOUS_PR_WORKFLOW` | `true` → stacked sequential PR run: cap 1, remote preflight, one stacked PR per feature on `:done`. |
 | `AUTONOMOUS_PR_BASE` / `AUTONOMOUS_PR_REMOTE` | Root base branch / remote for the PR stack (default `main` / `origin`). |
 | `AUTONOMOUS_MAX_CONCURRENCY` | Wave cap. Ignored under the PR workflow, which pins 1. |
-| `AUTONOMOUS_BUDGET_USD` | Cost breaker budget. |
 | `AUTONOMOUS_PLAN_STACK` | Preferred stack handed to `plan` (see step 5). |
+
+`AUTONOMOUS_BUDGET_USD` and `AUTONOMOUS_CONTAINMENT_PROFILE` are retired (039):
+setting either, to any value, makes boot raise naming the variable. Unset them.
+Likewise `config :autonomous, budget_usd:`/`containment_profile:` raise at
+start, and passing `budget_usd:` or `containment_profile:` to `run/1`,
+`run_spec/2`, `resume/2`, `resume_run/1` or `continue_run/1` is refused before
+any side effect:
+
+```elixir
+iex> Autonomous.run(budget_usd: 50.0)
+{:error, {:preflight, [{:retired_option, :budget_usd}]}}
+```
+
+A Configuration-page (`LiveConfig`) change to the budget is refused the same
+way, naming `budget_usd`; nothing is applied.
 
 **More than one breakdown package.** With 2+ packages under
 `specs/autonomous/breakdown/`, a bare `run/0` refuses rather than guessing:
@@ -274,65 +301,38 @@ The console's Trigger Run page supplies this from its package picker.
 
 ---
 
-## Containment profile (030)
+## Outdated target pack (039)
 
-Every run picks a containment profile, `strict` (default) or `permissive`,
-recorded once at run start and locked for the run's lifetime.
-
-```elixir
-iex> Autonomous.run(containment_profile: :permissive)
-```
-
-Or leave it unset to take `Config.containment_profile/0` (`config
-:autonomous, containment_profile: :permissive` to change the
-default). The Trigger Run console page exposes the same two-option control,
-with a one-line consequence note when `permissive` is selected.
-
-**`permissive` requires an upgraded, committed pack.** Preflight rejects the
-run otherwise:
+**Symptom.** `run/1`, `run_spec/2`, `resume/2` or `continue_run/1` refuses to
+start:
 
 ```elixir
-iex> Autonomous.run(containment_profile: :permissive)
-{:error, {:preflight, [{:pack_outdated, "/path/to/target", "re-run TargetPack.install/2 and commit"}]}}
+iex> Autonomous.run()
+{:error, {:preflight, [{:pack_outdated, ".claude/autonomous-pack.json",
+  "pack is older than contract 6 — run TargetPack.install/2 in the target repo, commit the result, and re-run"}]}}
 ```
 
-(Pack contract 4, feature 032, adds the `env` shell timeouts; a contract 3 pack
-is refused the same way.) Fix by re-running `TargetPack.install/2` against the
-target and committing the result (`git add .claude && git commit`), then re-run.
+**Cause.** The target's **committed** pack predates contract 6: the
+`.claude/autonomous-pack.json` marker is missing or below 6, `settings.json`
+still registers the `scope_guard.py` hook or carries a `permissions.deny`, or
+`.claude/hooks/scope_guard.py` is still committed. The path in the tuple names
+the offending file. An uncommitted upgrade does not count — worktrees are built
+from the committed tree.
 
-**The profile never renegotiates.** `resume/2`, `continue_run/1`, and
-`resume_run/1` all read the profile from the recorded run; an explicit
-`:containment_profile` opt that disagrees with it is refused before any side
-effect:
+**Fix.**
 
-```elixir
-iex> Autonomous.resume("r000012", containment_profile: :strict)
-{:error, {:preflight, [{:containment_profile_locked, "permissive"}]}}
-```
-
-Omit the opt (or pass the same value) to resume normally — it silently
-inherits the recorded profile.
-
-**Visibility.** A `permissive` run shows `containment: permissive` on the
-final report, `iex> Autonomous.print_status/0`, the console topbar
-(every view), Run Detail's CONTAINMENT block, the Configuration page, and the
-PR body. A `strict` run's surfaces are byte-identical to before this feature —
-no marker anywhere. See `docs/enforcement.md` for what `permissive` actually
-relaxes, and `specs/030-permissive-containment/contracts/operator-surfaces.md`
-for the exact surface list.
-
-**Human sessions are never blocked, under either profile.** The pack's hook
-tells an operator's own interactive `claude` session (run directly in a target
-repo, outside the orchestrator) apart from an orchestrator-driven one via
-`AUTONOMOUS_ORCHESTRATED`/`AUTONOMOUS_CONTAINMENT_PROFILE` env markers the
-orchestrator sets on every session it starts, falling back to
-`CLAUDE_CODE_ENTRYPOINT=cli` to detect a human shell with neither marker set.
-**Known limitation:** this detection has not been verified against every
-`claude` CLI version/invocation shape — if a future CLI version stops setting
-`CLAUDE_CODE_ENTRYPOINT=cli` for an interactive session, that session would
-fall through to `strict`'s rule set (fail closed, the safe direction) rather
-than silently going unenforced. Re-verify after a CLI upgrade if operator
-sessions start seeing unexpected denials.
+1. From the orchestrator, reinstall the pack into the target:
+   ```elixir
+   Autonomous.TargetPack.install("/path/to/target")
+   ```
+   It writes the contract 6 marker, drops the old hook entry and deny list from
+   `settings.json` (keeping the target's own `env` values), deletes
+   `scope_guard.py`, and never touches the constitution. A second install is a
+   no-op.
+2. Commit the result in the target:
+   `git -C /path/to/target add -A .claude && git -C /path/to/target commit -m "autonomous pack contract 6"`.
+3. Retry the call that was refused. A refused `continue_run/1` left the run
+   `:parked`, unchanged (035) — just call it again.
 
 ## Single-spec run (no backlog required)
 
@@ -354,8 +354,8 @@ breakdown id or `feature/NNN-*` branch) and derives a kebab-case slug from the
 description, materializes it as a one-off breakdown seed inside the feature's
 own worktree so the existing `specify` phase reads it unchanged, and runs the
 feature as a wave of one through the same `Coordinator` a backlog run uses — so
-every guarantee (clarify escalation, analyze halt, cost-breaker drain-not-kill,
-least-privilege containment, durable transcripts, worktree retention on a
+every guarantee (clarify escalation, analyze halt, supersession drain-not-kill,
+the pack preflight, durable transcripts, worktree retention on a
 non-`:done` outcome) applies identically. An empty or whitespace-only
 description is rejected immediately with `{:error, :empty_description}` and
 starts nothing.
@@ -411,7 +411,7 @@ Notes:
 - A PR is opened **only on `:done`**. Escalated/halted/failed features keep their
   worktree/branch for you to resolve (see "Respond to an escalation"); the PR
   opens after you resolve and the feature reaches `:done` on a re-run.
-- Only the facade path changes; the DAG, breaker, gates, and transcripts behave
+- Only the facade path changes; the DAG, gates, and transcripts behave
   exactly as documented elsewhere.
 
 ---
@@ -442,7 +442,7 @@ state:  running
   or browse them in the console's run detail view (`/runs/:run_id`) or the
   Transcripts view (`/transcripts`) — never by reading a file.
 - Rough cost: a full 7-phase feature build runs **~$10–12** (`clarify` and
-  `implement` dominate). `config :budget_usd` (default 74.0) is the breaker cap.
+  `implement` dominate). Spend is informational — see "Cost reporting".
 - **Two numbers, not one (022).** `print_status`, the console, and a feature's
   PR body all show `number` (the wave-local id — record key, operator label,
   breakdown filename) *and* `spec_number` (repo-monotonic — governs only the
@@ -606,9 +606,11 @@ differing only in the recorded reason:
 |---|---|---|
 | Timeout | Answer timeout elapses with no submission | answer window expired |
 | Rounds exhausted | Round limit reached and `## NEEDS HUMAN` still present | rounds exhausted |
-| Breaker | Cost breaker trips while awaiting answers | breaker (no new session started) |
 | Drain | A superseding run asks this repository's worker to drain | drained (never waits the full answer timeout — same drain-don't-kill bound as any other in-flight session) |
 | Restart | The orchestrator process restarts while a feature awaits answers | the wait does not survive a restart; on recovery the feature is treated as escalated at clarify, pending questions preserved, the existing resume path applies |
+
+(A pre-039 record may still show a round ended by `breaker`, from the retired
+cost breaker; it loads and renders as recorded.)
 
 Every round — questions asked, answers given (or the fallback outcome), and
 timestamps — is recorded in the feature's run history and visible in the
@@ -711,7 +713,7 @@ injected resume runner/executor.
 
 The checkpoint also records the run-shaping settings in effect when the
 feature was originally started — `pr_workflow`, `max_concurrency`,
-`budget_usd`, `plan_stack`, `pr_base`, `pr_remote` — and `resume/2` reapplies
+`plan_stack`, `pr_base`, `pr_remote` — and `resume/2` reapplies
 them, so a resumed run re-executes under its original shape even if the live
 environment/Config has since changed (e.g. `pr_workflow` was on for the
 original run but is off by default now). Precedence, fixed:
@@ -733,8 +735,11 @@ feature, or a partial record) falls back to live `Config` and logs which
 settings fell back:
 
 ```text
-feature 003 resume: no recorded context for [:max_concurrency, :budget_usd, :plan_stack, :pr_base, :pr_remote] — falling back to live Config
+feature 003 resume: no recorded context for [:max_concurrency, :plan_stack, :pr_base, :pr_remote] — falling back to live Config
 ```
+
+A pre-039 record's `budget_usd`/`containment_profile` settings still load;
+they are ignored on resume and hidden from the Run Detail settings view.
 
 No crash either way — a resume never fails because context is missing, only
 because identity/checkpoint/phase is invalid (see the table below).
@@ -816,12 +821,10 @@ trail.
    attributable across the resume.
 3. **Cost continuity.** Before any wave releases, `resume_run/1` restores the
    `Ledger`'s committed spend from the run's recorded cost-entry roll-up
-   (FR-012) — never from zero. If the restored figure is already at/above
-   budget, the breaker is treated as tripped and the resumed run releases
-   **zero** new features (drain, not kill — same invariant as a live breaker
-   trip).
+   (FR-012) — never from zero — so the reported spend covers the whole run.
+   The figure is informational; it never stops the resumed run.
 4. **Run-shaping context.** The resumed run re-executes under the store's
-   recorded `pr_workflow`/`max_concurrency`/`budget_usd`/`plan_stack`/
+   recorded `pr_workflow`/`max_concurrency`/`plan_stack`/
    `pr_base`/`pr_remote` (captured once at `open_run`, in `speckit_run_settings`
    — not re-recorded on every checkpoint), not live `Config` defaults — same
    explicit-opt > recorded > live-Config precedence as `resume/2` (FR-007).
@@ -909,8 +912,8 @@ whole run to fix one feature is unnecessary churn.
 If the store itself becomes unwritable mid-run (disk full, permissions
 changed), the run **drains, never kills mid-phase**: the in-flight phase
 finishes, its result is attempted-written, and only then does the feature halt
-with a persistence-failure reason — the same drain-don't-kill invariant the
-cost breaker uses. Check `Store.Health.status/0` to see a failure the moment
+with a persistence-failure reason — the same drain-don't-kill invariant
+supersession uses. Check `Store.Health.status/0` to see a failure the moment
 it's recorded:
 
 ```elixir
@@ -932,8 +935,8 @@ ascending numeric order. When a feature reaches a non-done terminal state
 (`:escalated`/`:halted`/`:failed`) and nothing else is in flight, the chain
 **stops** and the run is **parked**: `:in_flight -> :parked`, recording which
 feature stopped it and why (`stopped_by`/`stopped_reason`). This is distinct
-from a cost-breaker drain (which still leaves the run `:in_flight` for
-`resume_run/1`, unchanged from before) — parking is specifically the
+from a crash or supersession drain (which leaves the run `:in_flight` for
+`resume_run/1`) — parking is specifically the
 stop-on-first-broken-link outcome, and it is never automatic to resolve:
 the system never decides on the operator's behalf.
 
@@ -1253,12 +1256,27 @@ certain the old store is truly abandoned — move `store_dir` aside by hand.
 
 ---
 
-## Cost breaker
+## Cost reporting
 
-If spend reaches `config :budget_usd`, the breaker trips: no new features are
-released and in-flight features **drain** (finish the current phase, then halt) —
-never killed mid-phase. The report shows `breaker_tripped: true` and lists
-drained features under `not_started`. Raise the budget and re-run to continue.
+Cost is **informational** (039). There is no budget and no circuit breaker: a
+run never stops, drains, or refuses to start because of spend. The `Ledger`
+only accumulates each phase's cost for the run.
+
+- **Where it shows.** The console topbar shows the run's spend as a plain USD
+  figure; `Autonomous.print_status/0` prints a `spend:` line; the final report
+  carries `spend`, and the closed run record stores it (`spend_usd`), which Run
+  History and Run Detail show.
+- **Actual vs estimate.** A phase's cost is the CLI's reported
+  `total_cost_usd` when the session surfaced one; otherwise it falls back to the
+  per-phase estimate in `config :autonomous, cost_estimates:` (`Cost.for_phase/2`
+  returns `{amount, :actual | :estimate}`). A session that failed to start costs
+  $0. Treat the figure as approximate when estimates were used.
+- **Resume.** `resume_run/1` restores the run's recorded spend before releasing
+  anything, so the figure stays cumulative across a crash.
+- **Legacy records.** Runs recorded before 039 may carry a
+  `{:needs_human, :breaker}` reason (rendered "breaker tripped while awaiting
+  answers"), a clarify round ended by `breaker`, or a `budget_usd` setting; they
+  still load and render.
 
 ---
 
@@ -1366,7 +1384,7 @@ variants name the chunk or attempt) instead of hanging to the phase deadline.
 **Cause.** The `claude` CLI exited before or during the session; the excerpt is
 its `stderr` (bounded to 2,000 characters). The usual trigger is an unreadable
 `~/.claude.json` (torn by a host write), a bad login, or a crashed CLI. The
-orchestrator retries once (not under a tripped breaker or drain), then fails
+orchestrator retries once (not while a supersession drain is requested), then fails
 with `{:session_died, phase, detail}`. A start failure costs $0.
 
 **Fix.**
@@ -1393,9 +1411,9 @@ note, and then fails with `{:backgrounded_command, where, commands}`.
 1. Read the named command in the transcript. If it is a long verification gate,
    check the session's shell timeouts were derived from its deadline
    (`ShellTimeouts`, max = min(45, deadline − 5) min).
-2. Upgrade the target's enforcement pack to contract 4 (adds `env` shell
-   timeouts) and **commit** it: `Autonomous.TargetPack.install(repo)`, then
-   `git add .claude && git commit`. A `permissive` run refuses a contract 3 pack.
+2. Make sure the target's committed pack carries the `env` shell timeouts —
+   any contract 6 pack does; an older one is refused at preflight anyway (see
+   "Outdated target pack").
 3. `Autonomous.resume/2` the failed feature.
 
 ---
@@ -1454,19 +1472,22 @@ resume) — is never failed by this check.
 
 ## Untrusted workspace (036)
 
-**Symptom.** A feature fails with
-`untrusted_workspace in <phase> — CLI ignored <kinds> from the committed pack; workspace <path> is not trusted (projects["<path>"].hasTrustDialogAccepted). Trust it, then resume/2.`
+**Symptom.** The log shows
+`untrusted workspace <path>: CLI ignored <kinds> from the committed pack; continuing`.
+Since 039 this is a warning only — the phase is never failed for it.
 
 **Cause.** The `claude` CLI ignored the committed `.claude/settings.json` pack because the
 repo has no trust record. Containers get one automatically at startup (see
 `docs/container.md`); on the host it is missing until you accept the trust dialog.
-Only `strict` runs fail; `permissive` logs a warning and continues. Not retried.
 
 **Fix.**
 
 1. On the host, run `claude` interactively once in the target repo and accept the trust
-   dialog (one record covers all its worktrees).
-2. `Autonomous.resume/2` from the failed phase.
+   dialog (one record covers all its worktrees). Later sessions pick it up.
+
+A pre-039 record may show a feature failed with `{:untrusted_workspace, phase, obs}`;
+it still renders (`untrusted_workspace in <phase> — … Trust it, then resume/2.`) and
+`Autonomous.resume/2` from that phase works as before.
 
 ## Tests not run: missing system package (037)
 
@@ -1479,10 +1500,11 @@ OS package is missing (`pkg-config`, `libasound2-dev`, a `-dev` header…).
    (add `--release` for the release image). Or build once with `--agent-root` so sessions
    can install what they need themselves.
 2. Restart the instance (`scripts/autonomous stop`, then start again).
-3. With `--agent-root`, if `run/1` logged *committed pack is contract N*, run
-   `TargetPack.install/2` in the target and commit it (contract 5), otherwise strict sessions
-   keep denying `sudo`.
-4. `Autonomous.resume/2` the feature from the phase that gave up.
+3. `Autonomous.resume/2` the feature from the phase that gave up.
+
+With `--agent-root`, sessions get passwordless `sudo`; since 039 no hook restricts which
+commands they run (the prompt asks them only to install, never remove, purge, or upgrade —
+guidance, not enforcement). The container remains the boundary.
 
 Packages an agent installed are logged as `agent root: feature <n> (<phase>) installed
 system packages: …`; they vanish with the container, so add them to `--apt` to persist.

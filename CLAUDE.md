@@ -10,7 +10,8 @@ analyze → implement → converge`) feature-by-feature through the Claude Code 
 Control plane = Jido/OTP; data plane = the `claude` CLI wrapped by the
 `jido_harness` `:claude` provider. Per-phase model routing, an Opus reviewer
 standing in for the human at `clarify`, a deterministic `analyze` gate, a
-stacked sequential run over one feature at a time, and a cost circuit breaker.
+stacked sequential run over one feature at a time, and informational cost
+accounting (no budget — feature 039).
 
 Build follows a phased plan: **`docs/autonomous-implementation-plan.md`**
 is the source of truth for scope, sequencing, and exit criteria. As of now
@@ -30,9 +31,9 @@ orchestrator drove the whole 7-feature backlog end-to-end:
   001's `data-model.md`) and natural (002's forced money path) — §7.2 trap 2.
 - **wave shape** validated live: 001 solo → 002+005 parallel → 003/004/006
   three-vs-cap-2 contention.
-- **breaker drain-not-kill** validated live: budget tripped, an in-flight feature
-  finished its phase then halted between phases; report tallied correctly and
-  spend stayed within budget + one reservation — §7.2 trap 3.
+- **breaker drain-not-kill** validated live (§7.2 trap 3) — the cost breaker
+  itself was later removed (feature 039); drain-don't-kill survives for
+  supersession.
 
 Driving these runs surfaced **seven orchestrator fixes** (all on `origin`): action
 timeout (since superseded — see below); clarify materiality test; clarify gate marker line-anchored; clarify
@@ -68,7 +69,7 @@ torn `~/.claude.json`) can no longer take the caller down or hang to the deadlin
 excerpt}` within seconds (`SessionExit.classify/2` pulls the CLI's `stderr`);
 `Pipeline` fails it as `{:session_died, phase, d}` (after branch-drift, ahead of
 backgrounded/incomplete-session), `PhaseStep`/`Chunking`/`SessionRetry.once/2`
-retry it once (never under breaker/drain), and `Report.format_reason/1` renders it.
+retry it once (never under supersession drain), and `Report.format_reason/1` renders it.
 
 ## Container workspace trust (feature 036)
 
@@ -76,12 +77,11 @@ The container entrypoint's `trust_workspaces` step (`trust-config` smoke hook) m
 `hasTrustDialogAccepted` records for exactly two paths — the target repo and the
 worktree root (`AUTONOMOUS_WORKTREE_ROOT`, the sixth `Instance.env_lines/1` line, from
 `Layout.worktree_root/2`) — into the container-private `~/.claude.json`: atomic,
-idempotent, all other keys preserved, host config never written. Backstop gate: stderr
-lines parsed by `WorkspaceTrust` (the only module that knows the CLI wording) are
-collected per session; under `strict` an untrusted-workspace observation fails the phase
-as `{:untrusted_workspace, phase, obs}` (checked after `session_died`, before
-backgrounded/incomplete-session; never retried), under `permissive` it only warns.
-Absent the stderr line, behaviour is byte-identical to pre-036. See `docs/container.md`,
+idempotent, all other keys preserved, host config never written. Stderr lines parsed by
+`WorkspaceTrust` (the only module that knows the CLI wording) are collected per session;
+an untrusted-workspace observation only warns (`WorkspaceTrust.settle/2`) — since 039
+there is no gate. `Report.format_reason({:untrusted_workspace, …})` stays as a renderer
+for pre-039 records. See `docs/container.md`,
 `docs/runbook.md`.
 
 ## Containerized runtime (feature 031)
@@ -89,7 +89,7 @@ Absent the stderr line, behaviour is byte-identical to pre-036. See `docs/contai
 Operate the orchestrator through the container: `scripts/autonomous` (build,
 shell, console, release, stop) — see `docs/container.md`. The host remains
 valid for `mise exec -- mix compile|test` and development. Smoke checks:
-`scripts/container-smoke.sh [us1..us6|secrets]` (by hand, not in the suite).
+`scripts/container-smoke.sh [us1..us6|secrets|trust|sysdeps]` (by hand, not in the suite).
 `--with-login` (feature 034) mounts the host `~/.claude.json` read-only at
 `/home/autonomous/.claude.host.json`; the entrypoint validates it and atomically
 seeds a container-private `~/.claude.json`, so a host CLI mid-write never tears
@@ -103,12 +103,11 @@ OS packages into the shared `base` stage and records them in `/etc/autonomous/ap
 entrypoint `agent_root` step (`agent-root` smoke subcommand) unsets then exports
 `AUTONOMOUS_AGENT_ROOT=1` only after `sudo -n true` succeeds. `AgentRoot` (pure except
 `advertised?/1`) feeds `PhaseRequest` (`:agent_root` option → launch-env markers + a prompt
-note on `:implement`/`:converge`) and `log_installs/3` (after every session site). Pack
-contract 5: `scope_guard.py` lets `strict` run `sudo apt-get|apt update|install` and
-`dpkg`/`apt` queries only when both in-container markers are present (`sudo_allowed/1`
-closed grammar; everything else still `bash_sudo`). `TargetPack` uses thresholds (permissive
-≥ 4) and `agent_root_warning/1`, which `run/1` preflight logs (never fails). Console
-Configuration shows an "agent root" row via `AgentRootView`. Constitution 6.1.0. Smoke:
+note on `:implement`/`:converge`) and `log_installs/3` (after every session site). The
+prompt note is guidance only (apt install, never remove/purge/upgrade) — the closed sudo
+grammar that lived in `scope_guard.py` went with it in 039; the container is the boundary.
+Console Configuration shows an "agent root" row via `AgentRootView` (`:hidden |
+:available`). Smoke:
 `scripts/container-smoke.sh sysdeps`. See `docs/container.md`, `docs/enforcement.md`,
 `docs/runbook.md`.
 
@@ -179,7 +178,7 @@ dependency, fully unit-testable:
   feature waits in a new non-terminal `:awaiting_answers` state instead of
   escalating outright, bounded by an answer timeout and a max-round count,
   and falls back to today's unconditional escalate-and-park on timeout,
-  exhausted rounds, breaker trip, or supersession drain — off, the gate is
+  exhausted rounds, or supersession drain — off, the gate is
   byte-identical to before 029. The analyze gate is threshold-governed as of
   constitution 2.0.0: one knob (`auto_remediation_threshold`, signalled as
   `gate_threshold`, default `:high`) decides both when auto-remediation runs
@@ -230,13 +229,13 @@ dependency, fully unit-testable:
   individually recorded — see `docs/autonomous-implementation-plan.md`,
   `specs/017-analyze-auto-remediation/` (the loop), and
   `specs/021-analyze-exhaustion-policy/` (the policy).
-- `Ledger` — cost circuit-breaker `GenServer`. `reserve` is rejected once
-  `committed + reserved >= budget`; invariant: `committed < budget + max single
-  reservation`. Breaker trips at `committed >= budget`.
+- `Ledger` — cost accumulator `GenServer` (feature 039): `record/3`,
+  `spent/1`, `restore/2`, `snapshot/1 → %{committed: float}`. No budget, no
+  reservation, no breaker — cost is informational and never stops a run.
 - `Release` — pure single-run policy: `next/3` takes features, statuses, and a
-  breaker flag and returns `{:release, feature} | :none | {:stopped, id,
-  status}`. One-feature-at-a-time is structural, not a configured cap: any
-  `:running` feature ⇒ `:none`; a tripped breaker ⇒ `:none`
+  `blocked?` flag (persistence unwritable) and returns `{:release, feature} |
+  :none | {:stopped, id, status}`. One-feature-at-a-time is structural, not a
+  configured cap: any `:running` feature ⇒ `:none`; `blocked?` ⇒ `:none`
   (drain-don't-kill lives in the Coordinator); any non-`:done` terminal
   feature ⇒ `{:stopped, id, status}`, which is what lets the Coordinator tell
   "the chain broke here" from "nothing left to release" — both used to be an
@@ -263,9 +262,9 @@ future code:
   emit a `:usage` event with `cost_usd` when the CLI reports `total_cost_usd`.
   Cost is opportunistic — `Cost.for_phase/2` prefers actual, falls back to the
   per-phase config estimate.
-- The adapter's runtime template uses `--dangerously-skip-permissions`, so
-  in-tree write containment relies on the committed `.claude/settings.json` +
-  PreToolUse hook (Phase 5), not the CLI's own permission prompts.
+- The adapter's runtime template uses `--dangerously-skip-permissions`; since
+  039 there is no in-tree write containment at all — the container is the
+  boundary (see Enforcement below).
 
 `jido_harness` and `jido_claude` are **not on Hex** — pinned to GitHub HEAD SHAs
 in `mix.exs` with `override: true` on the harness. Re-check Hex monthly; bump
@@ -318,36 +317,29 @@ single-phase-fix case; `resolve/1` remains the tool when upstream artifacts must
 be regenerated or the checkpoint is missing/corrupt. Operator flow:
 `docs/runbook.md`.
 
-**Enforcement (Phase 5; two containment profiles, feature 030).** The real SDK
-path passes `--permission-mode` per phase, not `--dangerously-skip-permissions`
-(a superseded Phase 0 finding, `docs/harness-contract.md`), so containment is a
-committed **target-repo pack** (`priv/target_pack/.claude/`) working alongside
-genuine per-phase permissions, not a substitute for CLI prompts the CLI never
-actually skips. Every run picks a containment profile — `strict` (default,
-byte-identical to pre-030) or `permissive` (opt-in, per run, locked at start,
-never renegotiated by resume/continue). `scope_guard.py` is a PreToolUse hook
-that resolves session origin (`AUTONOMOUS_ORCHESTRATED`/
-`AUTONOMOUS_CONTAINMENT_PROFILE` env markers the orchestrator sets on every
-session it starts, vs. an interactive human session detected by their
-absence plus `CLAUDE_CODE_ENTRYPOINT=cli`) and denies out-of-tree writes and
-dangerous Bash only for an orchestrator-driven `strict` session — a human's own
-interactive session is never denied, under either profile; `permissive`
-applies no deny list at all. Fails closed (denies) on bad input or undecided
-origin. `settings.json` carries no `permissions.deny` of its own any more
-(feature 030) — every denial lives in the hook, since a `permissions.deny`
-entry used to block human sessions too. `TargetPack.install/2` lays the pack
-into a target repo without clobbering the constitution; `TargetPack.verify/2`
-is the preflight (fails while the template constitution marker is present, if
-it's uncommitted, or — for a `permissive` run — if the committed pack isn't at
-contract 3). `PhaseRequest`'s per-phase permissions follow the same profile
-(full access under `permissive`, scoped under `strict`) and are the second
-layer; a container recipe (`docs/enforcement.md`) is the third, recommended
-alongside any `permissive` run since that profile leaves the hook as the only
-in-tree layer. `Containment` (pure) renders the profile on every operator
-surface only when `permissive` — final report, `print_status/0`, console
-topbar/Run Detail/Configuration, and the PR body — so a `strict` run's output
-stays byte-identical (`contracts/operator-surfaces.md`). Red-teamed by
-`scope_guard_test` running the real hook across the origin × profile matrix.
+**Enforcement (feature 039: one behaviour, container-bounded).** Containment
+profiles (`strict`/`permissive`, feature 030) and the `scope_guard.py`
+PreToolUse hook are gone. Every phase, remediation and describe session gets
+`permission_mode: :bypass_permissions`, the full `PhaseRequest` `@allowed_tools`
+set, and only the headless exclusions (`Agent Task ScheduleWakeup Monitor`)
+disallowed; the launch env carries shell timeouts (+ agent-root markers when
+advertised) and no `AUTONOMOUS_ORCHESTRATED`/`AUTONOMOUS_CONTAINMENT_PROFILE`.
+The container (`scripts/autonomous`, `docs/container.md`) is the boundary;
+a start outside it logs `RuntimeNotice.container_warning/1` and proceeds.
+The committed **target-repo pack** (`priv/target_pack/.claude/`) is contract
+6: marker `.claude/autonomous-pack.json` `{"contract": 6}`, `settings.json`
+with no `hooks` key and no `permissions.deny`. `TargetPack.install/2` writes
+the marker, drops a stale scope-guard hook registration and file, never
+clobbers the constitution; `TargetPack.verify/2` (no `:profile` option) runs
+on every run, resume, continue and `run_spec/2` and, besides the template
+constitution / uncommitted checks, reads the committed tree and refuses an
+older pack with `{:pack_outdated, path, hint}` — reinstall, commit in the
+target, retry. `budget_usd`/`containment_profile` (start/continue options, app
+env, `AUTONOMOUS_BUDGET_USD`/`AUTONOMOUS_CONTAINMENT_PROFILE`, `LiveConfig`)
+are refused naming the key. Pre-039 records (settings with those keys,
+`{:needs_human, :breaker}`, clarify `:breaker` rounds, `{:untrusted_workspace,
+…}`) still load and render; nothing reinstates the old behaviour.
+Constitution 7.0.0. See `docs/enforcement.md`, `specs/039-remove-budget-strict-profile/`.
 
 **Control plane (Phase 4).** `Autonomous.run/1` (facade) loads the
 backlog and starts a per-run `Coordinator`; `status/0` reports it. The
@@ -362,10 +354,9 @@ property, not a live-tunable one. When `Release.next/3` returns
 `{:stopped, id, status}` with nothing in flight, the Coordinator parks the run
 (`Store.Writer.park_run/2`) instead of draining silently, recording
 `stopped_by`. Runner spawning is an **injected seam** (`:runner`) so the
-release/breaker logic is unit-tested without CLI/worktrees; the facade supplies
-the real runner. A tripped `Ledger` breaker releases nothing new and
-`FeatureRunner` halts the in-flight feature between phases (drain, not kill).
-App tree: `Ledger` + `{Task.Supervisor, RunnerSup}`; the Coordinator is
+release logic is unit-tested without CLI/worktrees; the facade supplies
+the real runner. Spend never blocks a release (039); the only `blocked?`
+input is an unwritable store. App tree: `Ledger` + `{Task.Supervisor, RunnerSup}`; the Coordinator is
 per-run. A parked run refuses new work for that repository until an operator
 resolves it with an explicit `:continue` or `:end` decision
 (`Autonomous.continue_run/1` / `end_run/1`) — see `docs/runbook.md`.
@@ -392,9 +383,8 @@ writing (incident `r000002`). Every `RunnerSup` child now registers itself
 supervisor before `RunnerSup` alongside `Autonomous.Workers` (the
 process-layer module owning that registration plus a public ETS
 drain-request table). `Workers.drain_requested?/0` is the boundary predicate
-every session-driving site (phase, chunk, remediation) consults immediately
-after the existing `Ledger.breaker_tripped?/1` check — same drain-don't-kill
-discipline, never `Process.exit/2`. A fresh `run/1` stops the prior
+every session-driving site (phase, chunk, remediation) consults at its
+boundary — drain-don't-kill discipline, never `Process.exit/2`. A fresh `run/1` stops the prior
 Coordinator, then `Workers.drain/1`s the repository's registered workers
 (bounded by each worker's own session deadline + grace, `Workers.Bound`), and
 only then supersedes the prior record — a drain timeout starts nothing
