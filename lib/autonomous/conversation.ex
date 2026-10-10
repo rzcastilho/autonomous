@@ -166,6 +166,12 @@ defmodule Autonomous.Conversation do
     :ok
   end
 
+  @spec unsubscribe(String.t()) :: :ok
+  def unsubscribe(id) do
+    _ = Phoenix.PubSub.unsubscribe(@pubsub, ConversationRecorder.topic(id))
+    :ok
+  end
+
   @spec catch_up(String.t()) :: {:ok, [map()], non_neg_integer() | nil, boolean()} | :not_live
   def catch_up(id) do
     case call(id, :catch_up) do

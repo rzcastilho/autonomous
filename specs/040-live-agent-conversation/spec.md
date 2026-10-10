@@ -32,6 +32,7 @@ for every agent session the orchestrator starts — not just one phase.
 - Q: Where does the saved conversation live? → A: A file under `Layout.transcript_root`; Mnesia records its location and captured / not-captured status (constitution amendment ships with the feature).
 - Q: The PR describe session records no phase-attempt row today; where does its conversation attach? → A: Record each describe session as a `:describe` phase-attempt row; it stays non-blocking.
 - Q: How are secrets in agent output handled? → A: Mask exact values of known credential env vars (Claude auth, `GH_TOKEN`, …) in live and saved output; saved files readable by owner only.
+- Q (operator review, after the container quickstart): Should the live view keep following the run into its next sessions, and where does it live on Mission Control? → A: A `follow next sessions` toggle on the live view (off by default on `/live`, `?follow=1` turns it on; on by default in Mission Control). On, the end of the shown session moves the view to the next in-flight session. Mission Control embeds the live view below the running feature's table.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -75,6 +76,13 @@ finishes — with no other part of this feature present.
 5. **Given** a run moves from one session to the next (e.g. implement chunk 3
    ends and chunk 4 starts), **When** the operator is on Mission Control,
    **Then** the entry point leads to the session that is in flight now.
+7. **Given** the operator has turned `follow next sessions` on, **When** the
+   shown session ends and the run opens its next session, **Then** the view
+   moves to that session on its own; with the toggle off it stays on the end
+   marker and offers a `next session` link instead.
+8. **Given** a run is in flight, **When** the operator is on Mission Control,
+   **Then** the live session is shown below the running feature without
+   navigating away, following the run's sessions by default.
 6. **Given** no session is in flight, **When** the operator looks for the live
    view, **Then** the console says so plainly rather than showing an empty or
    stale stream.
@@ -303,6 +311,14 @@ duplicates.
   design-contract guard MUST stay green.
 - **FR-023**: Turning conversation entries into display rows MUST be a pure,
   unit-testable transformation shared by the live view and the review view.
+- **FR-027**: The live view MUST offer a `follow next sessions` toggle. On,
+  when the shown session ends it MUST move to the next in-flight session (at
+  once if one is open, else when one opens); off, it MUST stay on the end
+  marker and only offer a link. Default off on the full-page view (`?follow=1`
+  turns it on and is kept in the URL); default on in Mission Control.
+- **FR-028**: Mission Control MUST embed the live session view below the
+  running feature's table while a run is in flight; the embedded view MUST
+  switch sessions in place and never navigate the Mission Control page.
 
 ### Key Entities
 

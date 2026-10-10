@@ -1667,5 +1667,19 @@ defmodule Autonomous.Web.MissionControlLiveTest do
       {:ok, view, _html} = live(conn, "/")
       refute has_element?(view, "[data-live-session]")
     end
+
+    test "the live session panel sits below the running feature's table", %{conn: conn} do
+      pid = start_coordinator([feat("lv3")])
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+      {:ok, view, html} = live(conn, "/")
+      assert has_element?(view, ".mission-main table.backlog-table + section[data-live-panel]")
+      [_, after_table] = String.split(html, "backlog-table", parts: 2)
+      assert after_table =~ "data-live-panel"
+
+      panel = find_live_child(view, "mc-conversation")
+      assert has_element?(panel, ~s(.conv-follow input[data-follow="true"]))
+      assert render(panel) =~ "No agent session in flight"
+    end
   end
 end

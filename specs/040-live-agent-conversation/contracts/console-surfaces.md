@@ -33,8 +33,15 @@ All surfaces obey `docs/design-constitution.md`; new files are added to
   → failed, error → failed). Live dot stops.
 - **Unfinished tool call** (no result at `:end`): row tagged `unfinished`.
 - **Follow mode** (`/live`): on `:ended`, if `in_flight/1` now returns
-  another session, show `next session: <conversation_id>` link; never
-  auto-navigate away from an end marker the operator is reading.
+  another session, show `next session: <conversation_id>` link; with the
+  toggle below off, never auto-navigate away from an end marker the operator
+  is reading.
+- **`follow next sessions` toggle** (FR-027, `.conv-follow` switch,
+  `phx-click="toggle_follow"`): off by default; `?follow=1` turns it on and
+  every move keeps the flag in the URL. On: `:ended` with another session in
+  flight ⇒ `push_patch` to `/live/<next>?follow=1`; ended (or nothing shown)
+  and `{:console, :conversation_opened, …}` ⇒ same. Turning it on while an
+  end marker offers a next session jumps there. Applies to pinned views too.
 - **Empty states** (status reports, no call to action):
   - nothing in flight: `No agent session in flight`;
   - pinned id not live and no saved ref found: `Conversation <id> is not
@@ -48,7 +55,16 @@ All surfaces obey `docs/design-constitution.md`; new files are added to
 The in-flight feature card gains `live session` (mono link to
 `/live/<conversation_id>`) while a conversation is open for it; updated on
 `{:console, :conversation_opened | :conversation_closed, …}`. Otherwise no
-link (SC-001: ≤ 2 clicks).
+link (SC-001: ≤ 2 clicks). The link is a `--running` pill carrying the shared
+live dot (`.live-session-link`).
+
+Below the feature table, while a run is in flight, Mission Control embeds the
+live view (FR-028): `section[data-live-panel]` holding
+`live_render(ConversationPanelLive, id: "mc-conversation")`, a child LiveView
+delegating to `ConversationLive` in embedded mode — follow toggle **on** by
+default, sessions switched in place (no URL patch, never navigates the page),
+an `open full view` link to `/live/<id>`, its own scroll
+(`.mc-live-panel`).
 
 ## Run Detail
 

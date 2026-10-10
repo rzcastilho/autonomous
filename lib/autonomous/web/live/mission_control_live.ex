@@ -311,9 +311,10 @@ defmodule Autonomous.Web.MissionControlLive do
                     <a
                       :if={Map.get(@live_sessions, id)}
                       href={"/live/" <> Map.get(@live_sessions, id)}
-                      class="btn-link live-session-link"
+                      class="live-session-link"
                       data-live-session={Map.get(@live_sessions, id)}
                     >
+                      <span class="transcript-live" data-live="true"></span>
                       live session
                     </a>
                   </td>
@@ -331,6 +332,12 @@ defmodule Autonomous.Web.MissionControlLive do
                 </tr>
               </tbody>
             </table>
+
+            <section class="mc-live-panel" data-live-panel aria-label="Live session">
+              {live_render(@socket, Autonomous.Web.ConversationPanelLive,
+                id: "mc-conversation"
+              )}
+            </section>
           </div>
 
           <div class="mission-feed">

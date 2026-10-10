@@ -2783,6 +2783,33 @@ textarea {
   text-decoration: underline;
 }
 
+/* Follow toggle row (040): the "follow next sessions" switch, and in the
+   embedded panel a link to the full-page view. */
+.conv-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-12);
+  margin-bottom: var(--sp-12);
+}
+
+.conv-open-full {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+}
+
+/* Mission Control's embedded live session (040): sits below the running
+   feature, scrolls on its own so the table and feed stay in view. */
+.mc-live-panel {
+  margin-top: var(--sp-14);
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--r-panel);
+  padding: var(--sp-14);
+  max-height: calc(100vh - 190px);
+  overflow-y: auto;
+}
+
 .conv-notice,
 .conv-next {
   font-size: var(--fs-meta);
@@ -2790,8 +2817,29 @@ textarea {
   margin: 0;
 }
 
+/* "live session" entry point (040): a running-colour pill carrying the shared
+   live dot, so an open session reads at a glance on Mission Control/Run Detail. */
 .live-session-link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-6);
   margin-left: var(--sp-8);
+  padding: var(--sp-4) var(--sp-8);
+  border: 1px solid var(--running);
+  border-radius: var(--r-chip);
+  background: color-mix(in srgb, var(--running) 10%, transparent);
+  color: var(--running);
   font-family: var(--font-mono);
-  font-size: var(--fs-meta);
+  font-size: var(--fs-eyebrow);
+  letter-spacing: 0.5px;
+  text-decoration: none;
+  vertical-align: middle;
+}
+
+.live-session-link:hover {
+  background: color-mix(in srgb, var(--running) 25%, transparent);
+}
+
+.live-session-link .transcript-live {
+  margin-left: 0;
 }

@@ -1533,9 +1533,13 @@ been missed **twice in a row**. A single missed refresh shows nothing.
 Every agent session — phase, implement chunk, auto-remediation, remediation and
 the PR describe session — is recorded as it runs.
 
-- **Live.** Mission Control and Run Detail show a `live session` link on the
-  in-flight feature while a session is open; `/live` follows the newest
-  in-flight session, `/live/:conversation_id` pins one. Joining late shows the
+- **Live.** Mission Control shows the live session below the running feature
+  (and a `live session` pill on its row; Run Detail has the same pill); `/live`
+  follows the newest in-flight session, `/live/:conversation_id` pins one.
+  The `follow next sessions` toggle moves the view on to the run's next
+  session when the shown one ends — on by default in Mission Control, off on
+  `/live` (`/live?follow=1` turns it on); off, the view stays on the end marker
+  and offers a `next session` link. Joining late shows the
   most recent 500 entries then the live tail (reconnects resume without
   duplicates). At the end the view shows an end marker with the outcome.
 - **Saved.** Transcripts (and the `conversation` column in Run Detail) open the

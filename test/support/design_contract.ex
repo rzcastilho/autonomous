@@ -48,6 +48,7 @@ defmodule Autonomous.Web.DesignContract do
     "lib/autonomous/web/conversation_rows.ex",
     "lib/autonomous/web/components/conversation_components.ex",
     "lib/autonomous/web/live/conversation_live.ex",
+    "lib/autonomous/web/live/conversation_panel_live.ex",
     "lib/autonomous/web/live/mission_control_live.ex",
     "lib/autonomous/web/live/pipeline_dag_live.ex",
     "lib/autonomous/web/live/trigger_live.ex",

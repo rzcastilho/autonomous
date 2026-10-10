@@ -271,5 +271,115 @@ defmodule Autonomous.Web.ConversationLiveTest do
     assert html =~ "Conversation #{id} is not live and has no saved record"
   end
 
+  describe "follow next sessions toggle" do
+    test "is off by default on /live and on with ?follow=1", %{conn: conn} do
+      {:ok, view, _} = live(conn, "/live")
+      assert has_element?(view, ~s(.conv-follow input[data-follow="false"]))
+
+      {:ok, view, _} = live(build_conn(), "/live?follow=1")
+      assert has_element?(view, ~s(.conv-follow input[data-follow="true"]))
+    end
+
+    test "on: the end of the session moves to the next one already open", %{
+      conn: conn,
+      root: root,
+      request: req
+    } do
+      first = open_session(root, req)
+      {:ok, view, _} = live(conn, "/live/#{first.conversation_id}?follow=1")
+
+      second = open_session(root, req, feature_id: "002")
+      # still reading the first, live: no move
+      assert render(view) =~ first.conversation_id
+
+      Conversation.close(first, %PhaseResult{status: :ok, final_text: "x"})
+      assert_patch(view, "/live/#{second.conversation_id}?follow=1")
+      assert render(view) =~ second.conversation_id
+    end
+
+    test "on: a session opening after the end moves the view", %{
+      conn: conn,
+      root: root,
+      request: req
+    } do
+      first = open_session(root, req)
+      {:ok, view, _} = live(conn, "/live?follow=1")
+      Conversation.close(first, %PhaseResult{status: :ok, final_text: "x"})
+      render(view)
+
+      second = open_session(root, req, feature_id: "002")
+      assert_patch(view, "/live/#{second.conversation_id}?follow=1")
+    end
+
+    test "turning it on after the end jumps to the offered next session", %{
+      conn: conn,
+      root: root,
+      request: req
+    } do
+      first = open_session(root, req)
+      {:ok, view, _} = live(conn, "/live")
+      Conversation.close(first, %PhaseResult{status: :ok, final_text: "x"})
+      second = open_session(root, req, feature_id: "002")
+      assert has_element?(view, "[data-next-session] a", second.conversation_id)
+
+      view |> element(".conv-follow input") |> render_click()
+      assert_patch(view, "/live/#{second.conversation_id}?follow=1")
+    end
+
+    test "turning it off keeps the session and drops the URL flag", %{
+      conn: conn,
+      root: root,
+      request: req
+    } do
+      first = open_session(root, req)
+      {:ok, view, _} = live(conn, "/live/#{first.conversation_id}?follow=1")
+
+      view |> element(".conv-follow input") |> render_click()
+      assert_patch(view, "/live/#{first.conversation_id}")
+      assert has_element?(view, ~s(.conv-follow input[data-follow="false"]))
+    end
+  end
+
+  describe "embedded panel (Mission Control)" do
+    test "follows by default and switches sessions in place", %{
+      conn: conn,
+      root: root,
+      request: req
+    } do
+      first = open_session(root, req)
+      feed(first, [text_frame("first session words")])
+
+      {:ok, view, html} = live_isolated(conn, Autonomous.Web.ConversationPanelLive)
+      assert html =~ "first session words"
+      assert has_element?(view, ~s(.conv-follow input[data-follow="true"]))
+      assert has_element?(view, ~s(a.conv-open-full[href="/live/#{first.conversation_id}"]))
+
+      Conversation.close(first, %PhaseResult{status: :ok, final_text: "x"})
+      second = open_session(root, req, feature_id: "002")
+      feed(second, [text_frame("second session words", 2)])
+
+      html = render(view)
+      assert html =~ second.conversation_id
+      assert html =~ "second session words"
+      refute html =~ "first session words"
+    end
+
+    test "with follow off it keeps the ended session and offers the link", %{
+      conn: conn,
+      root: root,
+      request: req
+    } do
+      first = open_session(root, req)
+      {:ok, view, _} = live_isolated(conn, Autonomous.Web.ConversationPanelLive)
+      view |> element(".conv-follow input") |> render_click()
+
+      Conversation.close(first, %PhaseResult{status: :ok, final_text: "x"})
+      second = open_session(root, req, feature_id: "002")
+
+      assert render(view) =~ first.conversation_id
+      assert has_element?(view, "[data-next-session] a", second.conversation_id)
+    end
+  end
+
   defp count(html, needle), do: length(String.split(html, needle)) - 1
 end

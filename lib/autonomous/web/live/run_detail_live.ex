@@ -271,9 +271,10 @@ defmodule Autonomous.Web.RunDetailLive do
             <a
               :if={Map.get(@live_sessions, f.feature_id)}
               href={"/live/" <> Map.get(@live_sessions, f.feature_id)}
-              class="btn-link live-session-link"
+              class="live-session-link"
               data-live-session={Map.get(@live_sessions, f.feature_id)}
             >
+              <span class="transcript-live" data-live="true"></span>
               live session
             </a>
             <span :if={f.terminal_reason} class="escalation-reason">
