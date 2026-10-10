@@ -162,6 +162,33 @@ defmodule Autonomous.Store.Records do
           }
   end
 
+  defmodule ConversationRef do
+    @moduledoc false
+    # Feature 040: where one session's saved conversation lives and how it
+    # ended. `path` is relative to the run's transcript root.
+    defstruct [
+      :conversation_id,
+      :path,
+      :status,
+      :reason,
+      :session_id,
+      entries: 0,
+      bytes: 0,
+      outcome: nil
+    ]
+
+    @type t :: %__MODULE__{
+            conversation_id: binary(),
+            path: binary() | nil,
+            status: :captured | :partial | :not_captured,
+            reason: term() | nil,
+            session_id: binary() | nil,
+            entries: non_neg_integer(),
+            bytes: non_neg_integer(),
+            outcome: term()
+          }
+  end
+
   defmodule PhaseAttempt do
     @moduledoc false
     defstruct [
@@ -181,7 +208,8 @@ defmodule Autonomous.Store.Records do
       :cost_kind,
       :substep,
       :session_id,
-      :error
+      :error,
+      :conversations
     ]
 
     @type t :: %__MODULE__{
@@ -201,7 +229,8 @@ defmodule Autonomous.Store.Records do
             cost_kind: :actual | :estimate,
             substep: map() | nil,
             session_id: binary() | nil,
-            error: term() | nil
+            error: term() | nil,
+            conversations: nil | [Autonomous.Store.Records.ConversationRef.t()]
           }
   end
 

@@ -388,6 +388,79 @@ defmodule Autonomous.Store.WriterTest do
     end
   end
 
+  describe "conversations (040)" do
+    @tag :tmp_dir
+    test "refs persist on the attempt (default [] when omitted); prune removes their files after commit",
+         %{tmp_dir: root} do
+      {:ok, run_id} =
+        Writer.open_run("o:writer-conv", %{
+          features: features(["001"]),
+          settings: %{},
+          scope: :ad_hoc,
+          layout: %{transcript_root: root}
+        })
+
+      run_key = {"o:writer-conv", run_id}
+      rel = "conversations/#{run_id}/001/c-1.jsonl"
+      file = Path.join(root, rel)
+      File.mkdir_p!(Path.dirname(file))
+      File.write!(file, "x")
+
+      ref = %Records.ConversationRef{
+        conversation_id: "c-1",
+        path: rel,
+        status: :captured,
+        entries: 1,
+        bytes: 1,
+        outcome: :completed
+      }
+
+      attempt = fn phase, extra ->
+        Map.merge(
+          %{
+            feature_id: "001",
+            phase: phase,
+            ordinal: 1,
+            step: 1,
+            label: Atom.to_string(phase),
+            started_at: DateTime.utc_now(),
+            ended_at: DateTime.utc_now(),
+            duration_ms: 1,
+            outcome: :ok,
+            model: "m",
+            cost_usd: 0.0,
+            cost_kind: :actual
+          },
+          extra
+        )
+      end
+
+      :ok =
+        Writer.record_phase_attempt(run_key, %{
+          attempt: attempt.(:specify, %{conversations: [ref]})
+        })
+
+      :ok = Writer.record_phase_attempt(run_key, %{attempt: attempt.(:plan, %{})})
+
+      read = fn phase ->
+        {:ok, [t]} =
+          Mnesia.transaction(fn ->
+            Mnesia.read(:speckit_phase_attempt, {"o:writer-conv", run_id, "001", phase, 1})
+          end)
+
+        {:ok, a} = Records.decode(:speckit_phase_attempt, t)
+        a
+      end
+
+      assert read.(:specify).conversations == [ref]
+      assert read.(:plan).conversations == []
+
+      assert File.exists?(file)
+      assert :ok = Writer.prune_run(run_key)
+      refute File.exists?(file)
+    end
+  end
+
   describe "record_remediation_attempt/2" do
     test "writes the corrective phase_attempt, remediation_attempt, cost_entry, and transcript" do
       {repo, run_id} = open()

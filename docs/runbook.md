@@ -1527,3 +1527,37 @@ been missed **twice in a row**. A single missed refresh shows nothing.
   durable record of the in-flight, else parked, run on every start, so a restart
   keeps history. What is **not** recovered: live-only messages with no durable
   record (e.g. chunk boundaries, remediation attempts, publish failures).
+
+## Live and saved agent conversations (040)
+
+Every agent session — phase, implement chunk, auto-remediation, remediation and
+the PR describe session — is recorded as it runs.
+
+- **Live.** Mission Control and Run Detail show a `live session` link on the
+  in-flight feature while a session is open; `/live` follows the newest
+  in-flight session, `/live/:conversation_id` pins one. Joining late shows the
+  most recent 500 entries then the live tail (reconnects resume without
+  duplicates). At the end the view shows an end marker with the outcome.
+- **Saved.** Transcripts (and the `conversation` column in Run Detail) open the
+  full conversation of any ended attempt, 500 entries at a time. A retried phase
+  lists `session 1` / `session 2`. A deadline-cut session ends with
+  `deadline_exceeded` and its last tool call tagged `unfinished`.
+- **Where the files live.** `<transcript_root>/conversations/<run_id>/<feature_id>/<conversation_id>.jsonl`
+  under the machine-global transcript root (survives container rebuilds; never
+  inside a target repo). Directories are `0700`, files `0600`. Mnesia records
+  only a reference (status, reason, entry count, bytes); the pruner deletes the
+  files of the attempts it prunes.
+- **Masking.** Exact values of `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`,
+  `ANTHROPIC_AUTH_TOKEN`, `GH_TOKEN` and `GITHUB_TOKEN` (8+ chars) are replaced
+  by `[masked:NAME]` before anything is broadcast or written. Other secrets are
+  not detected.
+- **Capture status.** `captured` = complete; `partial` = rows then
+  `ended without an end marker — <reason>` (`recorder_down`, `close_timeout`,
+  `{write_failed, posix}`); `not_captured` = the final text transcript is shown
+  under `No full conversation captured: <reason>` (`{open_failed, posix}`).
+  Capture never changes a session's outcome or duration. Attempts recorded
+  before 040 show `No full conversation was recorded for this attempt`; a
+  missing or unreadable file shows `Saved conversation missing at <path>` plus
+  the final text.
+- Export carries status/reason/entry count/bytes per attempt only — no path, no
+  content.

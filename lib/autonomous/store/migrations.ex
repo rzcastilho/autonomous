@@ -39,6 +39,12 @@ defmodule Autonomous.Store.Migrations do
   `speckit_run.continue_restore_failure` — the durable note left when a
   refused `continue_run/1` could not re-park the run. A plain **transform**:
   every v6 row gets `nil` (the fact did not exist when it was written).
+
+  Version 8 (feature 040, data-model.md) appends
+  `speckit_phase_attempt.conversations` — the list of conversation refs, one per
+  session the attempt drove. A plain **transform**: every v7 row gets `nil`,
+  which means "written before 040, no conversation recorded" and stays distinct
+  from `[]` ("recorded, no session"). No row is dropped or rewritten lossily.
   """
 
   alias Autonomous.Store.{Mnesia, Schema}
@@ -110,12 +116,33 @@ defmodule Autonomous.Store.Migrations do
     :continue_restore_failure
   ]
 
+  @phase_attempt_v8_attributes [
+    :attempt_id,
+    :run_key,
+    :feature_key,
+    :phase,
+    :ordinal,
+    :step,
+    :label,
+    :started_at,
+    :ended_at,
+    :duration_ms,
+    :outcome,
+    :model,
+    :cost_usd,
+    :cost_kind,
+    :substep,
+    :session_id,
+    :error,
+    :conversations
+  ]
+
   # Position of :number in a v4 tuple: +1 for the record tag at element 0.
   @number_index Enum.find_index(@feature_run_v4_attributes, &(&1 == :number)) + 1
 
   @doc "The schema version this build of the orchestrator understands."
   @spec current_version() :: pos_integer()
-  def current_version, do: 7
+  def current_version, do: 8
 
   @doc "Every migration, ascending by version."
   @spec all() :: [migration()]
@@ -127,7 +154,8 @@ defmodule Autonomous.Store.Migrations do
       {4, "append feature_run.advanced_with_findings", &add_advanced_with_findings/0},
       {5, "append feature_run.spec_number (backfilled from :number)", &add_spec_number/0},
       {6, "create speckit_clarify_round", &create_clarify_round/0},
-      {7, "append speckit_run.continue_restore_failure", &add_continue_restore_failure/0}
+      {7, "append speckit_run.continue_restore_failure", &add_continue_restore_failure/0},
+      {8, "append speckit_phase_attempt.conversations", &add_conversations/0}
     ]
   end
 
@@ -169,6 +197,15 @@ defmodule Autonomous.Store.Migrations do
       :speckit_run,
       &Tuple.insert_at(&1, tuple_size(&1), nil),
       @run_v7_attributes
+    )
+  end
+
+  # `:conversations` is the last attribute in the v8 table shape: a plain append.
+  defp add_conversations do
+    transform_table(
+      :speckit_phase_attempt,
+      &Tuple.insert_at(&1, tuple_size(&1), nil),
+      @phase_attempt_v8_attributes
     )
   end
 

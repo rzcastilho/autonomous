@@ -24,6 +24,10 @@ defmodule Autonomous.FeatureAgent do
       patched onto the agent snapshot `AnalyzeRunner` returns and read by
       `FeatureRunner` for the checkpoint's optional `analyze_remediation` key.
       `nil` whenever the loop made no attempt (017).
+    * `run_key` / `conversations` — (040) the store `{repo_id, run_id}` used to
+      build each session's `ConversationIdentity`, and the refs the last
+      session-driving call produced (overwritten per call; accumulated across
+      retries by the caller).
     * `history` — reverse-chronological per-phase entries.
     * `cost_total` — accumulated recorded spend for this feature.
   """
@@ -36,6 +40,8 @@ defmodule Autonomous.FeatureAgent do
       worktree: [type: :any, default: nil],
       ledger: [type: :any, default: nil],
       layout: [type: :any, default: nil],
+      run_key: [type: :any, default: nil],
+      conversations: [type: {:list, :any}, default: []],
       phase: [type: :atom, default: nil],
       resume_phase: [type: :atom, default: nil],
       resume_prompt: [type: :string, default: nil],

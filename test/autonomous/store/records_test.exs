@@ -95,7 +95,17 @@ defmodule Autonomous.Store.RecordsTest do
       cost_kind: :actual,
       substep: nil,
       session_id: "sess-1",
-      error: nil
+      error: nil,
+      conversations: [
+        %Autonomous.Store.Records.ConversationRef{
+          conversation_id: "analyze-1-x",
+          path: "conversations/r000001/003/analyze-1-x.jsonl",
+          status: :captured,
+          entries: 4,
+          bytes: 100,
+          outcome: :completed
+        }
+      ]
     },
     speckit_checkpoint: %Checkpoint{
       key: {"o:repo-abc", "r000001", "003"},

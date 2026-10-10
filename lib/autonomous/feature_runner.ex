@@ -24,6 +24,7 @@ defmodule Autonomous.FeatureRunner do
     Checkpoint,
     ChunkRunner,
     Config,
+    ConversationSite,
     Cost,
     Describe,
     FeatureAgent,
@@ -155,6 +156,7 @@ defmodule Autonomous.FeatureRunner do
               worktree: worktree,
               ledger: ledger,
               layout: layout,
+              run_key: run_key,
               phase: start_phase,
               resume_prompt: resume_prompt,
               remediation_prompt: remediation_prompt,
@@ -186,7 +188,7 @@ defmodule Autonomous.FeatureRunner do
           end
 
         call(pid, "feature.finalize", %{status: status, reason: reason}, timeout)
-        {message, pr} = commit_message_and_pr(feature, status, worktree, layout)
+        {message, pr} = commit_message_and_pr(feature, status, worktree, layout, run_key)
         handle_worktree(feature, status, reason, worktree, message, stack_base)
 
         if drained?(status, reason) do
@@ -248,9 +250,18 @@ defmodule Autonomous.FeatureRunner do
   # 034: a session that *died* (CLI exited before or without a result) earns
   # one fresh session through `SessionRetry.once/2` — its own budget, so it
   # never double-counts with the transient one; a drain suppresses it.
-  defp remediation_with_retry(pid, feature, timeout, retries, run_key, died_retried?) do
-    agent = run_remediation(pid, feature, timeout, run_key)
+  defp remediation_with_retry(
+         pid,
+         feature,
+         timeout,
+         retries,
+         run_key,
+         died_retried?,
+         carried \\ []
+       ) do
+    agent = run_remediation(pid, feature, timeout, run_key, carried)
     st = agent.state
+    refs = st.conversations || []
 
     died_verdict =
       SessionRetry.once(st.last_signals, %{
@@ -266,14 +277,14 @@ defmodule Autonomous.FeatureRunner do
             "#{get_in(st.last_signals, [:session_died, :excerpt])} — retrying once"
         )
 
-        remediation_with_retry(pid, feature, timeout, retries, run_key, true)
+        remediation_with_retry(pid, feature, timeout, retries, run_key, true, refs)
 
       retries > 0 and st.last_outcome == :error and PhaseResult.transient?(st.last_result) ->
         Logger.warning(
           "feature #{feature.id} remediation failed transiently — retrying (#{retries} left)"
         )
 
-        remediation_with_retry(pid, feature, timeout, retries - 1, run_key, died_retried?)
+        remediation_with_retry(pid, feature, timeout, retries - 1, run_key, died_retried?, refs)
 
       true ->
         agent
@@ -285,7 +296,7 @@ defmodule Autonomous.FeatureRunner do
   # (ordinal 1 — this step runs at most once, before the phase loop starts),
   # so it precedes the target phase's own attempt in any store-sourced
   # listing.
-  defp run_remediation(pid, feature, timeout, run_key) do
+  defp run_remediation(pid, feature, timeout, run_key, carried) do
     meta = %{feature_id: feature.id, phase: :remediation, step: 0}
     started_at = DateTime.utc_now()
 
@@ -293,6 +304,13 @@ defmodule Autonomous.FeatureRunner do
       {:ok, %{agent: before}} = AgentServer.state(pid)
       Workers.session_started(timeout)
       {:ok, agent} = call(pid, "remediation.run", %{}, PhaseSession.call_timeout(timeout))
+      # 040 (FR-020): keep one ref per session across a retry.
+      agent = %{
+        agent
+        | state:
+            Map.put(agent.state, :conversations, carried ++ (agent.state.conversations || []))
+      }
+
       agent = PhaseStep.ensure_recorded(before, agent, :remediation)
       entry = List.first(agent.state.history) || %{}
       record_attempt(run_key, feature, :remediation, 0, 1, started_at, agent, nil, nil)
@@ -1097,10 +1115,21 @@ defmodule Autonomous.FeatureRunner do
   # and the git history it describes always agree. Claude-authored via
   # `Describe.run/3` (019: every run publishes a PR, unconditionally). A
   # describe failure logs and falls back — never blocks.
-  defp commit_message_and_pr(feature, :done, %Worktree{} = wt, layout) do
+  defp commit_message_and_pr(feature, :done, %Worktree{} = wt, layout, run_key) do
     fallback = "speckit: feature #{feature.id} pipeline artifacts (done)"
+    started_at = DateTime.utc_now()
 
-    case Describe.run(feature, wt, layout) do
+    identity =
+      ConversationSite.identity(
+        %{run_key: run_key, layout: layout, feature: feature},
+        :describe,
+        kind: :describe
+      )
+
+    {described, capture} = Describe.run_captured(feature, wt, layout, identity)
+    record_describe_attempt(run_key, feature, started_at, described, capture)
+
+    case described do
       {:ok, d} ->
         message = if d.commit_message == "", do: fallback, else: d.commit_message
         {message, %{pr_title: d.pr_title, pr_body: d.pr_body}}
@@ -1111,9 +1140,60 @@ defmodule Autonomous.FeatureRunner do
     end
   end
 
-  defp commit_message_and_pr(feature, status, _wt, _layout) do
+  defp commit_message_and_pr(feature, status, _wt, _layout, _run_key) do
     {"speckit: feature #{feature.id} pipeline artifacts (#{status})", nil}
   end
+
+  # 040 (FR-002a): the PR-describe session is a recorded `:describe` attempt
+  # (ordinal 1) carrying its conversation ref(s) — but no cost entry, so run
+  # spend is unchanged. Best-effort like the step itself: it never alters the
+  # feature's status or the describe fallback.
+  defp record_describe_attempt(nil, _feature, _started_at, _described, _capture), do: :ok
+
+  defp record_describe_attempt(_run_key, _feature, _started_at, _described, %{
+         session: nil,
+         refs: []
+       }),
+       do: :ok
+
+  defp record_describe_attempt(run_key, feature, started_at, described, %{
+         session: session,
+         refs: refs
+       }) do
+    ended_at = DateTime.utc_now()
+    result = session || %PhaseResult{status: :error}
+    {cost_amount, cost_kind} = describe_cost(result)
+
+    _ =
+      Writer.record_phase_attempt(run_key, %{
+        attempt: %{
+          feature_id: feature.id,
+          phase: :describe,
+          ordinal: 1,
+          step: Pipeline.step_of(:converge) + 1,
+          label: "describe",
+          started_at: started_at,
+          ended_at: ended_at,
+          duration_ms: DateTime.diff(ended_at, started_at, :millisecond),
+          outcome: if(match?({:ok, _}, described), do: :ok, else: :error),
+          model: Config.model_for(:describe),
+          cost_usd: cost_amount,
+          cost_kind: cost_kind,
+          session_id: result.session_id,
+          error: result.error,
+          conversations: refs
+        }
+      })
+
+    :ok
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
+
+  defp describe_cost(%PhaseResult{cost_usd: c}) when is_number(c) and c > 0, do: {c, :actual}
+  defp describe_cost(_result), do: {0.0, :estimate}
 
   defp start_agent(feature, opts) do
     id =
@@ -1194,7 +1274,8 @@ defmodule Autonomous.FeatureRunner do
       cost_usd: cost_amount,
       cost_kind: cost_kind,
       session_id: st.session_id,
-      error: result && result.error
+      error: result && result.error,
+      conversations: conversations_for(phase, st)
     }
 
     _ =
@@ -1208,6 +1289,11 @@ defmodule Autonomous.FeatureRunner do
 
     :ok
   end
+
+  # 040: the refs of the session(s) behind this attempt. The chunked `:implement`
+  # roll-up is not a session of its own — each chunk row carries its refs.
+  defp conversations_for(:implement, _st), do: []
+  defp conversations_for(_phase, st), do: Map.get(st, :conversations) || []
 
   # The analyze gate is governed by the run's severity threshold — the same
   # single knob that decides when auto-remediation runs (017 FR-001a, amended

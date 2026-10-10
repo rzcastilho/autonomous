@@ -9,7 +9,7 @@ defmodule Autonomous.Describe do
   mechanical templates, so a describe hiccup never blocks a commit or PR.
   """
 
-  alias Autonomous.{Layout, PhaseRequest, PhaseResult}
+  alias Autonomous.{ConversationSite, Layout, PhaseRequest, PhaseResult}
 
   @type description :: %{commit_message: String.t(), pr_title: String.t(), pr_body: String.t()}
 
@@ -21,18 +21,39 @@ defmodule Autonomous.Describe do
   """
   @spec run(Autonomous.Feature.t(), map(), Layout.t() | nil) ::
           {:ok, description()} | {:error, term()}
-  def run(feature, worktree, layout \\ nil)
+  def run(feature, worktree, layout \\ nil) do
+    {result, _capture} = run_captured(feature, worktree, layout, nil)
+    result
+  end
 
-  def run(feature, %{path: path}, layout) do
+  @doc """
+  `run/3` with conversation capture (feature 040). `identity` is a
+  `ConversationIdentity` (or `nil` for no capture). Returns the same result
+  plus `%{refs: [ConversationRef], session: PhaseResult | nil}` — `session` is
+  the folded session (for the caller's attempt record), `nil` when no session
+  ran. Capture never changes the result.
+  """
+  @spec run_captured(Autonomous.Feature.t(), map(), Layout.t() | nil, struct() | nil) ::
+          {{:ok, description()} | {:error, term()},
+           %{refs: [struct()], session: PhaseResult.t() | nil}}
+  def run_captured(feature, %{path: path}, layout, identity) do
     request = PhaseRequest.build(feature, :describe, cwd: path, layout: layout)
+    {capture, request} = ConversationSite.open(identity, request)
 
     case Jido.Harness.run_request(:claude, request, []) do
-      {:ok, stream} -> parse(PhaseResult.reduce(stream).final_text)
-      {:error, reason} -> {:error, reason}
+      {:ok, stream} ->
+        {session, refs} =
+          ConversationSite.reduce(capture, fn -> PhaseResult.reduce(stream) end)
+
+        {parse(session.final_text), %{refs: refs, session: session}}
+
+      {:error, reason} ->
+        {{:error, reason}, %{refs: ConversationSite.close_error(capture, reason), session: nil}}
     end
   end
 
-  def run(_feature, _no_worktree, _layout), do: {:error, :no_worktree}
+  def run_captured(_feature, _no_worktree, _layout, _identity),
+    do: {{:error, :no_worktree}, %{refs: [], session: nil}}
 
   @doc """
   Recover the description JSON from a transcript. Prefers the last fenced ```json

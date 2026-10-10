@@ -1628,4 +1628,44 @@ defmodule Autonomous.Web.MissionControlLiveTest do
 
     refute render(view) =~ "data-console-delayed"
   end
+
+  describe "live session link (040, SC-001)" do
+    test "appears on a conversation_opened event and disappears on conversation_closed", %{
+      conn: conn
+    } do
+      pid = start_coordinator([feat("lv1")])
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+      {:ok, view, html} = live(conn, "/")
+      refute html =~ "data-live-session"
+
+      send(
+        view.pid,
+        {:console, :conversation_opened,
+         %{conversation_id: "specify-1-abc", feature_id: "lv1", phase: :specify}}
+      )
+
+      assert has_element?(
+               view,
+               ~s(a[data-live-session="specify-1-abc"][href="/live/specify-1-abc"]),
+               "live session"
+             )
+
+      send(
+        view.pid,
+        {:console, :conversation_closed, %{conversation_id: "specify-1-abc", status: :captured}}
+      )
+
+      render(view)
+      refute has_element?(view, "[data-live-session]")
+    end
+
+    test "no link when nothing is open", %{conn: conn} do
+      pid = start_coordinator([feat("lv2")])
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+      {:ok, view, _html} = live(conn, "/")
+      refute has_element?(view, "[data-live-session]")
+    end
+  end
 end

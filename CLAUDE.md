@@ -308,6 +308,19 @@ consecutive miss (`ConsoleDelay`) Mission Control shows a delayed-status line.
 On every start the projection rebuilds feed and slices from the durable run
 record (`ConsoleHistory`, deduped against queued live events via `rebuilt_keys`).
 See `docs/runbook.md`.
+**Live agent conversation (feature 040).** Every session — phase, implement chunk,
+auto-remediation, remediation, PR describe — is recorded in full. `Conversation.open/2`
+(from `ConversationSite` wrappers at each `Jido.Harness.run_request` site; guarded by
+`conversation_coverage_test`) starts a `ConversationRecorder` under `ConversationSup` and
+marks the request with `AUTONOMOUS_CONVERSATION`; `SdkProxy` pops the marker and taps
+frames with a bare `send/2` (never awaits, so the session is unaffected). The recorder
+masks credentials (`CredentialMask`), keeps a 500-entry `ConversationWindow`, appends to
+the owner-only `speckit.conversation` file (`ConversationFile`, under `transcript_root`)
+and broadcasts to `/live`. `close/2` returns a `ConversationRef` stored on the attempt
+(`conversations`, store schema v8; capture status `captured | partial | not_captured`).
+Transcripts/Run Detail read the file back via `ConversationRows`; pre-040 attempts fall
+back to the final-text transcript. Constitution 7.1.0. See `docs/runbook.md`,
+`specs/040-live-agent-conversation/`.
 `Autonomous.resolve/1` frees a kept worktree so a human-resolved feature
 re-runs on its existing branch (`Worktree.create` reuses an existing branch).
 `Autonomous.resume/2` is the shipped checkpoint-driven restart path —

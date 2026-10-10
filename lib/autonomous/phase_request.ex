@@ -177,6 +177,21 @@ defmodule Autonomous.PhaseRequest do
   defp put_collector(env, nil), do: env
   defp put_collector(env, pid), do: Map.put(env, SdkProxy.env_key(), SdkProxy.encode(pid))
 
+  @doc """
+  Add the 040 conversation marker (the recorder pid) to the request's launch
+  env. `Autonomous.SdkProxy` strips it before the CLI starts.
+  """
+  @spec put_conversation(RunRequest.t(), pid()) :: RunRequest.t()
+  def put_conversation(%RunRequest{} = request, pid) when is_pid(pid) do
+    claude = Map.get(request.metadata || %{}, "claude", %{})
+    env = Map.put(Map.get(claude, :env, %{}), SdkProxy.conversation_key(), SdkProxy.encode(pid))
+
+    %{
+      request
+      | metadata: Map.put(request.metadata || %{}, "claude", Map.put(claude, :env, env))
+    }
+  end
+
   defp remediation_prompt(feature, layout, prompt) do
     "Remediation for feature #{feature.id} (#{feature.slug}), " <>
       "#{breakdown_ref(feature, layout)}.\n\n---\n" <> (prompt || "")

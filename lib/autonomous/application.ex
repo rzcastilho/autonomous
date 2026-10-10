@@ -34,6 +34,11 @@ defmodule Autonomous.Application do
         # no worker can ever spawn unregistered.
         {Registry, keys: :duplicate, name: Autonomous.WorkerRegistry},
         Autonomous.Workers,
+        # 040: one temporary `ConversationRecorder` per agent session, found by
+        # conversation id. Both start before `RunnerSup`/`SessionSup` so no
+        # session can open a conversation before they exist.
+        {Registry, keys: :unique, name: Autonomous.ConversationRegistry},
+        {DynamicSupervisor, name: Autonomous.ConversationSup, strategy: :one_for_one},
         # Supervises the per-feature FeatureRunner tasks.
         {Task.Supervisor, name: Autonomous.RunnerSup},
         # 034: supervises the per-session fold Task of `PhaseSession.reduce/2`

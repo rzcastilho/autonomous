@@ -468,6 +468,26 @@ defmodule Autonomous.PhaseRequestTest do
     end
   end
 
+  describe "conversation marker (040)" do
+    alias Autonomous.SdkProxy
+
+    test "no marker by default" do
+      r = PhaseRequest.build(feature(), :plan)
+      refute Map.has_key?(r.metadata["claude"][:env], SdkProxy.conversation_key())
+    end
+
+    test "put_conversation/2 adds only the marker and keeps the rest of the env" do
+      r = PhaseRequest.build(feature(), :plan)
+      r2 = PhaseRequest.put_conversation(r, self())
+      env = r2.metadata["claude"][:env]
+
+      assert env[SdkProxy.conversation_key()] == SdkProxy.encode(self())
+      assert Map.delete(env, SdkProxy.conversation_key()) == r.metadata["claude"][:env]
+      assert r2.metadata["claude"][:settings] == r.metadata["claude"][:settings]
+      assert %{r2 | metadata: r.metadata} == r
+    end
+  end
+
   describe "stderr collector (036)" do
     alias Autonomous.SdkProxy
     alias Autonomous.WorkspaceTrust.Collector

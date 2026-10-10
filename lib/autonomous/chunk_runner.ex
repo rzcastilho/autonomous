@@ -211,7 +211,13 @@ defmodule Autonomous.ChunkRunner do
             phase: :implement,
             scope: scope,
             first_chunk: first_chunk?,
-            deadline_ms: deadline_ms
+            deadline_ms: deadline_ms,
+            conversation: [
+              kind: :implement_chunk,
+              ordinal: state1.sessions_used,
+              chunk: scope,
+              attempt: state1.attempt
+            ]
           }
           |> put_background_retry(background_retry),
           source: "/chunk_runner"
@@ -360,7 +366,8 @@ defmodule Autonomous.ChunkRunner do
           cost_usd: cost_amount,
           cost_kind: cost_kind,
           session_id: agent.state.session_id,
-          error: result && result.error
+          error: result && result.error,
+          conversations: agent.state.conversations || []
         },
         transcript: result && result.final_text,
         checkpoint:

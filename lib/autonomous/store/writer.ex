@@ -199,7 +199,8 @@ defmodule Autonomous.Store.Writer do
           cost_kind: attempt.cost_kind,
           substep: Map.get(attempt, :substep),
           session_id: Map.get(attempt, :session_id),
-          error: Map.get(attempt, :error)
+          error: Map.get(attempt, :error),
+          conversations: Map.get(attempt, :conversations, [])
         })
       )
 
@@ -252,7 +253,8 @@ defmodule Autonomous.Store.Writer do
           cost_kind: pa.cost_kind,
           substep: Map.get(pa, :substep),
           session_id: Map.get(pa, :session_id),
-          error: Map.get(pa, :error)
+          error: Map.get(pa, :error),
+          conversations: Map.get(pa, :conversations, [])
         })
       )
 
@@ -1048,25 +1050,59 @@ defmodule Autonomous.Store.Writer do
   """
   @spec prune_run(run_key()) :: :ok | {:error, term()}
   def prune_run(run_key) do
-    run_transaction(fn ->
-      attempt_ids =
-        :speckit_phase_attempt
-        |> Mnesia.index_read(run_key, :run_key)
-        |> Enum.map(&elem(&1, 1))
+    result =
+      run_transaction(fn ->
+        attempts = Mnesia.index_read(:speckit_phase_attempt, run_key, :run_key)
+        attempt_ids = Enum.map(attempts, &elem(&1, 1))
+        files = conversation_files(run_key, attempts)
 
-      delete_by_index(:speckit_settings_amendment, run_key)
-      delete_by_index(:speckit_feature_run, run_key)
-      delete_by_index(:speckit_phase_attempt, run_key)
-      delete_by_index(:speckit_checkpoint, run_key)
-      delete_by_index(:speckit_escalation, run_key)
-      delete_by_index(:speckit_remediation_attempt, run_key)
-      delete_by_index(:speckit_cost_entry, run_key)
-      Enum.each(attempt_ids, &Mnesia.delete(:speckit_transcript, &1))
-      Mnesia.delete(:speckit_run_settings, run_key)
-      Mnesia.delete(:speckit_run, run_key)
+        delete_by_index(:speckit_settings_amendment, run_key)
+        delete_by_index(:speckit_feature_run, run_key)
+        delete_by_index(:speckit_phase_attempt, run_key)
+        delete_by_index(:speckit_checkpoint, run_key)
+        delete_by_index(:speckit_escalation, run_key)
+        delete_by_index(:speckit_remediation_attempt, run_key)
+        delete_by_index(:speckit_cost_entry, run_key)
+        Enum.each(attempt_ids, &Mnesia.delete(:speckit_transcript, &1))
+        Mnesia.delete(:speckit_run_settings, run_key)
+        Mnesia.delete(:speckit_run, run_key)
 
-      :ok
-    end)
+        {:pruned, files}
+      end)
+
+    case result do
+      {:pruned, files} ->
+        # Feature 040: conversation files go only after the commit, so a failed
+        # transaction never leaves attempts pointing at deleted files.
+        Enum.each(files, &File.rm/1)
+        :ok
+
+      other ->
+        other
+    end
+  end
+
+  # Absolute paths of every conversation file the run's attempts reference.
+  defp conversation_files(run_key, attempts) do
+    root =
+      with [tuple] <- Mnesia.read(:speckit_run, run_key, :read),
+           {:ok, run} <- Records.decode(:speckit_run, tuple),
+           %{transcript_root: root} when is_binary(root) <- run.layout do
+        root
+      else
+        _ -> nil
+      end
+
+    if root do
+      for tuple <- attempts,
+          {:ok, %Records.PhaseAttempt{conversations: refs}} <-
+            [Records.decode(:speckit_phase_attempt, tuple)],
+          is_list(refs),
+          %{path: path} when is_binary(path) <- refs,
+          do: Path.join(root, path)
+    else
+      []
+    end
   end
 
   @doc """

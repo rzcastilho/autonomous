@@ -38,6 +38,8 @@ defmodule Autonomous.PhaseStep do
     retries = Keyword.get(opts, :retries, Config.phase_max_retries())
     span_meta = Keyword.get(opts, :span_meta, %{})
     operator_answers = Keyword.get(opts, :operator_answers)
+    # 040: ordinal of the attempt row this call becomes (analyze run `k`).
+    ordinal = Keyword.get(opts, :ordinal, 1)
 
     run_with_retry(
       pid,
@@ -48,7 +50,9 @@ defmodule Autonomous.PhaseStep do
       span_meta,
       retries,
       operator_answers,
-      nil
+      nil,
+      ordinal,
+      []
     )
   end
 
@@ -69,11 +73,26 @@ defmodule Autonomous.PhaseStep do
          span_meta,
          retries,
          operator_answers,
-         background_retry
+         background_retry,
+         ordinal,
+         carried
        ) do
     agent =
-      run_once(pid, feature, phase, step, timeout, span_meta, operator_answers, background_retry)
+      run_once(
+        pid,
+        feature,
+        phase,
+        step,
+        timeout,
+        span_meta,
+        operator_answers,
+        background_retry,
+        ordinal
+      )
 
+    # 040 (FR-020): a retried phase keeps one ref per session, in order.
+    refs = carried ++ (agent.state.conversations || [])
+    agent = %{agent | state: Map.put(agent.state, :conversations, refs)}
     st = agent.state
 
     case retries > 0 and retry_reason(st) do
@@ -97,7 +116,9 @@ defmodule Autonomous.PhaseStep do
           span_meta,
           retries - 1,
           operator_answers,
-          background_cmds(st)
+          background_cmds(st),
+          ordinal,
+          refs
         )
     end
   end
@@ -185,7 +206,17 @@ defmodule Autonomous.PhaseStep do
     end
   end
 
-  defp run_once(pid, feature, phase, step, timeout, span_meta, operator_answers, background_retry) do
+  defp run_once(
+         pid,
+         feature,
+         phase,
+         step,
+         timeout,
+         span_meta,
+         operator_answers,
+         background_retry,
+         ordinal
+       ) do
     meta =
       %{feature_id: feature.id, phase: phase, model: Config.model_for(phase), step: step}
       |> Map.merge(span_meta)
@@ -195,7 +226,7 @@ defmodule Autonomous.PhaseStep do
 
       Workers.session_started(timeout)
 
-      signal_data = %{phase: phase, deadline_ms: timeout}
+      signal_data = %{phase: phase, deadline_ms: timeout, conversation: [ordinal: ordinal]}
 
       signal_data =
         if operator_answers,
@@ -259,6 +290,7 @@ defmodule Autonomous.PhaseStep do
               last_outcome: :error,
               last_signals: %{},
               last_result: result,
+              conversations: [],
               history: [
                 %{phase: phase, outcome: :error, error: result.error} | after_state.history || []
               ]

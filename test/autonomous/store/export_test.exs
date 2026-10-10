@@ -13,6 +13,8 @@ defmodule Autonomous.Store.ExportTest do
     Transcript
   }
 
+  alias Autonomous.Store.Records.ConversationRef
+
   @now DateTime.utc_now()
   @attempt_id {"o:repo-abc", "r000001", "003", :analyze, 1}
 
@@ -35,7 +37,8 @@ defmodule Autonomous.Store.ExportTest do
         cost_kind: :actual,
         substep: nil,
         session_id: "sess-1",
-        error: nil
+        error: nil,
+        conversations: nil
       },
       overrides
     )
@@ -224,6 +227,54 @@ defmodule Autonomous.Store.ExportTest do
       assert doc["run"]["features"]
              |> List.first()
              |> get_in(["phase_attempts", Access.at(0), "transcript"]) == nil
+    end
+  end
+
+  describe "conversations (040)" do
+    defp feature_with(attempt) do
+      %{
+        feature_id: "003",
+        slug: "x",
+        path: "specs/003",
+        number: 3,
+        group: :backlog,
+        created_at: nil,
+        status: :running,
+        terminal_reason: nil,
+        branch: nil,
+        worktree_path: nil,
+        pr_description: nil,
+        checkpoint: nil,
+        escalations: [],
+        remediation_attempts: [],
+        phase_attempts: [%{attempt: attempt, transcript: nil}]
+      }
+    end
+
+    test "per-attempt status/reason/entries/bytes only — no path, no content; nil stays nil" do
+      ref = %ConversationRef{
+        conversation_id: "analyze-1-abc",
+        path: "conversations/r000001/003/analyze-1-abc.jsonl",
+        status: :partial,
+        reason: :recorder_down,
+        entries: 7,
+        bytes: 1234,
+        outcome: :completed
+      }
+
+      doc = decode(base_input([feature_with(attempt(%{conversations: [ref]}))]))
+      [pa] = doc["run"]["features"] |> List.first() |> Map.get("phase_attempts")
+
+      assert [c] = pa["conversations"]
+      assert c["status"] == "partial"
+      assert c["entries"] == 7 and c["bytes"] == 1234
+      assert c["reason"] != nil
+      refute Jason.encode!(c) =~ "conversations/r000001"
+      refute Map.has_key?(c, "path")
+
+      doc = decode(base_input([feature_with(attempt())]))
+      [pa] = doc["run"]["features"] |> List.first() |> Map.get("phase_attempts")
+      assert pa["conversations"] == nil
     end
   end
 

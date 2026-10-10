@@ -4,7 +4,7 @@
 # FAIL. Sections are added per user story — see
 # specs/031-containerized-runtime/quickstart.md.
 #
-#   scripts/container-smoke.sh [us1|us2|us3|us4|us5|us6|secrets|trust|sysdeps]
+#   scripts/container-smoke.sh [us1|us2|us3|us4|us5|us6|secrets|trust|sysdeps|conversation]
 #
 # Needs: Docker Engine + Compose v2, the image built (scripts/autonomous build).
 # Agent-auth checks (SC-011) spend a few cents and run only with SMOKE_AGENT=1.
@@ -702,6 +702,32 @@ sysdeps() {
   fi
 }
 
+# Feature 040: conversation masking and permissions. Pure check (host mise) of the
+# credential mask against throwaway values (no spend); quickstart 2 step 6 covers a
+# real session that echoes $GH_TOKEN / $CLAUDE_CODE_OAUTH_TOKEN.
+conversation() {
+  echo "== Conversation: credential values are masked, files are owner-only (feature 040)"
+  out="$(GH_TOKEN=smoke-gh-token-123456 CLAUDE_CODE_OAUTH_TOKEN=smoke-oauth-token-654321 \
+    mise exec -- mix run --no-start -e '
+      pairs = Autonomous.CredentialMask.pairs()
+      IO.puts(Autonomous.CredentialMask.mask("echo smoke-gh-token-123456 smoke-oauth-token-654321", pairs))' 2>&1)"
+  case "$out" in
+    *"[masked:GH_TOKEN]"*"[masked:CLAUDE_CODE_OAUTH_TOKEN]"*) pass "GH_TOKEN and CLAUDE_CODE_OAUTH_TOKEN values are masked" ;;
+    *) fail "mask did not replace both credential values: $out" ;;
+  esac
+  case "$out" in
+    *smoke-gh-token-123456*|*smoke-oauth-token-654321*) fail "a raw credential value survived masking" ;;
+    *) pass "no raw credential value survives" ;;
+  esac
+  root="${AUTONOMOUS_TRANSCRIPT_ROOT:-$HOME/.autonomous/transcripts}"
+  if [ -d "$root" ]; then
+    bad="$(find "$root" -path '*/conversations/*' \( -type f ! -perm 600 -o -type d ! -perm 700 \) 2>/dev/null | head -1)"
+    if [ -n "$bad" ]; then fail "conversation path is not owner-only: $bad"; else pass "saved conversations are owner-only (0600/0700)"; fi
+  else
+    skip "permission scan (no transcript root at $root)"
+  fi
+}
+
 section="${1:-all}"
 case "$section" in
   us1) us1 ;;
@@ -713,8 +739,9 @@ case "$section" in
   secrets) secrets ;;
   trust) trust ;;
   sysdeps) sysdeps ;;
-  all) us1; us2; us3; us4; us5; us6; secrets; trust; sysdeps ;;
-  *) echo "usage: scripts/container-smoke.sh [us1|us2|us3|us4|us5|us6|secrets|trust|sysdeps]" >&2; exit 2 ;;
+  conversation) conversation ;;
+  all) us1; us2; us3; us4; us5; us6; secrets; trust; sysdeps; conversation ;;
+  *) echo "usage: scripts/container-smoke.sh [us1|us2|us3|us4|us5|us6|secrets|trust|sysdeps|conversation]" >&2; exit 2 ;;
 esac
 
 echo

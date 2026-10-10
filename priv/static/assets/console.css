@@ -2690,3 +2690,108 @@ textarea {
     width: min(460px, 100vw);
   }
 }
+
+/* Agent conversation (feature 040): live view + saved review. Tokens only; the
+   only animation is the shared `.transcript-live` dot already listed under
+   prefers-reduced-motion. */
+.view-conversation {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-12);
+}
+
+.conv-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+  max-width: var(--measure-transcript);
+}
+
+.conv-row {
+  background: var(--card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-control);
+  padding: var(--sp-8) var(--sp-12);
+}
+
+.conv-row[data-kind="thinking"] {
+  background: var(--panel);
+  color: var(--text-muted);
+}
+
+.conv-row[data-error="true"] {
+  border-color: var(--border-strong);
+}
+
+.conv-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-8);
+  align-items: baseline;
+  font-family: var(--font-mono);
+  font-size: var(--fs-eyebrow);
+  color: var(--text-faint);
+  margin-bottom: var(--sp-4);
+}
+
+.conv-tool {
+  color: var(--text-secondary);
+}
+
+.conv-flag {
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: var(--r-pip);
+  padding: 0 var(--sp-4);
+}
+
+.conv-text {
+  font-family: var(--font-mono);
+  font-size: var(--fs-transcript);
+  line-height: 1.6;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 0;
+}
+
+.conv-prose {
+  font-family: var(--font-sans);
+}
+
+.conv-thinking summary {
+  cursor: pointer;
+  font-size: var(--fs-meta);
+}
+
+.conv-omitted {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--text-faint);
+  margin: var(--sp-4) 0 0;
+}
+
+.conv-expand {
+  background: none;
+  border: 0;
+  padding: 0;
+  margin-left: var(--sp-8);
+  color: var(--accent-light);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.conv-notice,
+.conv-next {
+  font-size: var(--fs-meta);
+  color: var(--text-muted);
+  margin: 0;
+}
+
+.live-session-link {
+  margin-left: var(--sp-8);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+}

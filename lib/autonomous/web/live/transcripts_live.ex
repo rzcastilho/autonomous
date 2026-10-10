@@ -13,20 +13,36 @@ defmodule Autonomous.Web.TranscriptsLive do
   feature drawer's and Escalations' links) preselect a feature and, via
   `?phase=` (latest matching attempt) or `?attempt=` (an explicit index into
   that feature's `phase_attempts`), an attempt.
+
+  Feature 040: an attempt whose session was recorded shows its full saved
+  conversation (`ConversationRows`, the same rows the live view renders), read
+  from `ConversationFile.page/3` 500 entries at a time. `?session=` picks one
+  of a retried phase's sessions (default: the last). Every fallback is stated:
+  a partial file, a session that was not captured, an attempt recorded before
+  040, and a file that is missing or unreadable all say so above the final text
+  the store still has. Listings and tabs read refs only — the file is opened
+  for the selected attempt alone (FR-021).
   """
 
   use Autonomous.Web, :live_view
 
-  alias Autonomous.Pipeline
-  alias Autonomous.Web.TranscriptMarkup
+  alias Autonomous.{ConversationFile, Pipeline, Report}
+  alias Autonomous.Web.{ConversationComponents, ConversationRows, TranscriptMarkup}
+
+  @page 500
 
   @impl true
   def mount(_params, _session, socket) do
     {:ok,
      assign(socket,
        page_title: "Transcripts",
-       current_path: "/transcripts"
-     )}
+       current_path: "/transcripts",
+       transcript_root: nil,
+       selected_session: nil,
+       conv: nil
+     )
+     |> stream_configure(:conv_rows, dom_id: & &1.key)
+     |> stream(:conv_rows, [])}
   end
 
   # The run selector `push_patch`es `?run_id=`, so the URL stays the receipt and
@@ -34,7 +50,7 @@ defmodule Autonomous.Web.TranscriptsLive do
   @impl true
   def handle_params(params, _uri, socket) do
     run_id = params["run_id"] || Autonomous.current_run_id() || latest_run_id()
-    features = run_features(run_id)
+    {features, root} = run_features(run_id)
 
     selected_feature_id = params["feature"] || feature_id(List.first(features))
     selected_feature = find_feature(features, selected_feature_id)
@@ -47,9 +63,11 @@ defmodule Autonomous.Web.TranscriptsLive do
        run_options: run_options(run_id),
        features: features,
        selected_feature_id: selected_feature_id,
-       selected_index: selected_index
+       selected_index: selected_index,
+       transcript_root: root,
+       selected_session: parse_index(params["session"])
      )
-     |> assign(doc: transcript_doc(selected_feature, selected_index))}
+     |> assign_doc(selected_feature, selected_index)}
   end
 
   @impl true
@@ -63,35 +81,83 @@ defmodule Autonomous.Web.TranscriptsLive do
 
     {:noreply,
      socket
-     |> assign(selected_feature_id: id, selected_index: index)
-     |> assign(doc: transcript_doc(feature, index))}
+     |> assign(selected_feature_id: id, selected_index: index, selected_session: nil)
+     |> assign_doc(feature, index)}
   end
 
   def handle_event("select_attempt", %{"index" => index_str}, socket) do
     feature = find_feature(socket.assigns.features, socket.assigns.selected_feature_id)
 
-    index =
-      case Integer.parse(index_str) do
-        {n, _rest} -> n
-        :error -> nil
-      end
+    index = parse_index(index_str)
 
     {:noreply,
      socket
-     |> assign(selected_index: index)
-     |> assign(doc: transcript_doc(feature, index))}
+     |> assign(selected_index: index, selected_session: nil)
+     |> assign_doc(feature, index)}
+  end
+
+  def handle_event("select_session", %{"index" => index_str}, socket) do
+    feature = find_feature(socket.assigns.features, socket.assigns.selected_feature_id)
+
+    {:noreply,
+     socket
+     |> assign(selected_session: parse_index(index_str))
+     |> assign_doc(feature, socket.assigns.selected_index)}
+  end
+
+  # Next page of the saved conversation; the context threads through so a tool
+  # result on page two still pairs with its call on page one.
+  def handle_event("load_next", _params, %{assigns: %{conv: %{state: :rows} = conv}} = socket) do
+    case conv.next_seq do
+      :eof ->
+        {:noreply, socket}
+
+      from ->
+        {:noreply, append_page(socket, conv, ConversationFile.page(conv.path, from, @page))}
+    end
+  end
+
+  def handle_event("load_next", _params, socket), do: {:noreply, socket}
+
+  def handle_event(
+        "expand",
+        %{"seq" => seq},
+        %{assigns: %{conv: %{state: :rows} = conv}} = socket
+      ) do
+    with {n, ""} <- Integer.parse(seq),
+         {:ok, entry} <- ConversationFile.entry(conv.path, n) do
+      row = ConversationRows.row(entry, conv.ctx, expand: true)
+      {:noreply, stream_insert(socket, :conv_rows, row)}
+    else
+      _ -> {:noreply, socket}
+    end
+  end
+
+  def handle_event("expand", _params, socket), do: {:noreply, socket}
+
+  defp parse_index(nil), do: nil
+
+  defp parse_index(str) when is_binary(str) do
+    case Integer.parse(str) do
+      {n, _rest} when n >= 0 -> n
+      _ -> nil
+    end
   end
 
   # ---- store lookups ----------------------------------------------------
 
-  defp run_features(nil), do: []
+  defp run_features(nil), do: {[], nil}
 
   defp run_features(run_id) do
     case Autonomous.run_detail(run_id) do
-      {:ok, %{features: features}} -> features
-      _ -> []
+      {:ok, %{features: features} = detail} -> {features, transcript_root(detail)}
+      _ -> {[], nil}
     end
   end
+
+  # Where this run's conversation files live (the layout the run was opened with).
+  defp transcript_root(%{run: %{layout: %{transcript_root: root}}}) when is_binary(root), do: root
+  defp transcript_root(_detail), do: nil
 
   # The 20 most recent runs; the current selection is kept in the list even when
   # it is older, so the select always shows what the page is on.
@@ -133,6 +199,137 @@ defmodule Autonomous.Web.TranscriptsLive do
         end
     end
   end
+
+  # ---- saved conversation (040) -------------------------------------------
+
+  defp assign_doc(socket, feature, index) do
+    doc = transcript_doc(feature, index)
+
+    socket
+    |> assign(doc: doc)
+    |> load_conversation(doc && doc.attempt)
+  end
+
+  defp load_conversation(socket, nil), do: put_conv(socket, nil)
+
+  defp load_conversation(socket, attempt) do
+    case Map.get(attempt, :conversations) do
+      nil ->
+        put_conv(
+          socket,
+          note(
+            [],
+            0,
+            "No full conversation was recorded for this attempt (recorded before feature 040)."
+          )
+        )
+
+      [] ->
+        put_conv(socket, nil)
+
+      refs ->
+        session = min(socket.assigns.selected_session || length(refs) - 1, length(refs) - 1)
+        load_ref(socket, refs, session, Enum.at(refs, session))
+    end
+  end
+
+  defp load_ref(socket, refs, session, %{status: :not_captured} = ref),
+    do:
+      put_conv(
+        socket,
+        note(refs, session, "No full conversation captured: " <> reason_text(ref.reason))
+      )
+
+  defp load_ref(socket, refs, session, ref) do
+    path = saved_path(socket.assigns.transcript_root, ref)
+
+    case path && ConversationFile.page(path, 0, @page) do
+      {:ok, entries, next} ->
+        show_rows(socket, refs, session, ref, path, entries, next, nil)
+
+      {:error, {:malformed, line}, entries} ->
+        show_rows(socket, refs, session, ref, path, entries, :eof, {:malformed, line})
+
+      {:error, :missing} ->
+        put_conv(socket, note(refs, session, "Saved conversation missing at #{ref.path}"))
+
+      {:error, {:unreadable, posix}} ->
+        put_conv(
+          socket,
+          note(refs, session, "Saved conversation unreadable: #{posix_text(posix)}")
+        )
+
+      {:error, {:unsupported_version, v}} ->
+        put_conv(
+          socket,
+          note(refs, session, "Saved conversation uses unsupported format version #{v}")
+        )
+
+      {:error, {:malformed, line}} ->
+        put_conv(socket, note(refs, session, "Saved conversation is damaged at line #{line}"))
+
+      nil ->
+        put_conv(socket, note(refs, session, "Saved conversation missing — no path recorded"))
+    end
+  end
+
+  defp show_rows(socket, refs, session, ref, path, entries, next, damaged) do
+    {rows, ctx} = ConversationRows.rows(entries)
+
+    conv = %{
+      state: :rows,
+      refs: refs,
+      session: session,
+      ref: ref,
+      path: path,
+      next_seq: next,
+      ctx: ctx,
+      damaged: damaged
+    }
+
+    socket |> assign(conv: conv) |> stream(:conv_rows, rows, reset: true)
+  end
+
+  defp append_page(socket, conv, {:ok, entries, next}),
+    do: insert_page(socket, conv, entries, next, nil)
+
+  defp append_page(socket, conv, {:error, {:malformed, line}, entries}),
+    do: insert_page(socket, conv, entries, :eof, {:malformed, line})
+
+  defp append_page(socket, conv, {:error, _reason}),
+    do: assign(socket, conv: %{conv | next_seq: :eof, damaged: :unreadable})
+
+  defp insert_page(socket, conv, entries, next, damaged) do
+    {rows, ctx} = ConversationRows.rows(entries, conv.ctx)
+
+    socket =
+      Enum.reduce(rows ++ ctx.stale, socket, fn row, acc ->
+        stream_insert(acc, :conv_rows, row)
+      end)
+
+    assign(socket, conv: %{conv | next_seq: next, ctx: ctx, damaged: damaged})
+  end
+
+  defp put_conv(socket, nil),
+    do: socket |> assign(conv: nil) |> stream(:conv_rows, [], reset: true)
+
+  defp put_conv(socket, conv),
+    do: socket |> assign(conv: conv) |> stream(:conv_rows, [], reset: true)
+
+  defp note(refs, session, text), do: %{state: :note, refs: refs, session: session, note: text}
+
+  defp saved_path(nil, _ref), do: nil
+  defp saved_path(_root, %{path: nil}), do: nil
+  defp saved_path(root, %{path: rel}), do: ConversationFile.resolve(root, rel)
+
+  defp reason_text(nil), do: "no reason recorded"
+  defp reason_text(reason), do: Report.format_reason(reason)
+
+  defp posix_text(posix) when is_atom(posix), do: posix |> :file.format_error() |> to_string()
+  defp posix_text(other), do: to_string(other)
+
+  defp rows?(%{state: :rows}), do: true
+  defp rows?(_conv), do: false
 
   # ---- attempt resolution (deep links: feature drawer, Escalations) -------
 
@@ -241,7 +438,7 @@ defmodule Autonomous.Web.TranscriptsLive do
           </div>
 
           <div class="transcripts-body">
-            <div :if={@doc && @doc.exists?} class="transcript-doc" data-state="found">
+            <div :if={@doc && (@doc.exists? or rows?(@conv))} class="transcript-doc" data-state="found">
               <p class="transcript-path" data-transcript-path>
                 {@selected_feature_id} &middot; {@doc.attempt.phase}#{pad_ordinal(@doc.attempt.ordinal)}
                 <span
@@ -250,10 +447,59 @@ defmodule Autonomous.Web.TranscriptsLive do
                   title={if is_nil(@doc.attempt.ended_at), do: "live — no finish record yet", else: "finished"}
                 ></span>
               </p>
-              <div class="transcript-body">{TranscriptMarkup.render(@doc.body)}</div>
+
+              <div :if={@conv && length(@conv.refs) > 1} class="transcript-tabs" data-sessions>
+                <button
+                  :for={i <- 0..(length(@conv.refs) - 1)}
+                  type="button"
+                  phx-click="select_session"
+                  phx-value-index={i}
+                  data-session-select={i}
+                  class={["transcript-tab", i == @conv.session && "transcript-tab-active"]}
+                >
+                  session {i + 1}
+                </button>
+              </div>
+
+              <%= if rows?(@conv) do %>
+                <div id="saved-conversation-rows" phx-update="stream" class="conv-rows" data-saved-conversation>
+                  <ConversationComponents.conversation_row
+                    :for={{dom_id, row} <- @streams.conv_rows}
+                    id={dom_id}
+                    row={row}
+                  />
+                </div>
+
+                <p :if={match?({:malformed, _}, @conv.damaged)} class="conv-notice" data-notice="damaged">
+                  Saved conversation is damaged at line {elem(@conv.damaged, 1)}; showing the entries before it.
+                </p>
+                <p :if={@conv.damaged == :unreadable} class="conv-notice" data-notice="unreadable">
+                  Saved conversation became unreadable; showing the entries loaded so far.
+                </p>
+                <p
+                  :if={@conv.ref.status == :partial and @conv.next_seq == :eof}
+                  class="conv-notice"
+                  data-notice="partial"
+                >
+                  ended without an end marker — {reason_text(@conv.ref.reason)}
+                </p>
+                <button
+                  :if={@conv.next_seq != :eof}
+                  type="button"
+                  phx-click="load_next"
+                  class="btn-secondary"
+                  data-load-next
+                >
+                  load next 500
+                </button>
+              <% else %>
+                <p :if={@conv} class="conv-notice" data-notice="conversation">{@conv.note}</p>
+                <div class="transcript-body">{TranscriptMarkup.render(@doc.body)}</div>
+              <% end %>
             </div>
 
-            <div :if={@doc && not @doc.exists?} class="empty-state" data-state="not-yet-written">
+            <div :if={@doc && not @doc.exists? && not rows?(@conv)} class="empty-state" data-state="not-yet-written">
+              <p :if={@conv} class="conv-notice" data-notice="conversation">{@conv.note}</p>
               <p>No transcript recorded for this attempt.</p>
             </div>
 
