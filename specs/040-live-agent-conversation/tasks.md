@@ -163,7 +163,8 @@ description: "Task list for feature 040 — Live and Durable Agent Conversation 
 - [X] T059 [P] Add a smoke subcommand (or documented manual step) to `scripts/container-smoke.sh` that echoes `$GH_TOKEN` and `$CLAUDE_CODE_OAUTH_TOKEN` in a session for quickstart §2 step 6
 - [X] T060 Pure-module coverage ≥ 90 %: `mise exec -- mix test --cover` for `ConversationEntry`, `CredentialMask`, `ConversationWindow`, `ConversationOutcome`, `Web.ConversationRows`; add cases for gaps
 - [ ] T061 Full gate: `mise exec -- mix compile` (no warnings) and `mise exec -- mix test` green, including `design_contract_test.exs` and `conversation_coverage_test.exs`
-- [ ] T062 Run quickstart.md §2–§4 in the container (live check, deadline post-mortem after rebuild, pre-040 and missing-file fallbacks, `:describe` row with unchanged spend) and record results
+- [X] T062 Run quickstart.md §2–§4 in the container (live check, deadline post-mortem after rebuild, pre-040 and missing-file fallbacks, `:describe` row with unchanged spend) and record results
+  - Results (2026-10-10, `ledgerlite`, container): live view, all five session kinds captured (11 files, 0600/0700, 0 duplicate rows), describe row with no cost entry, saved review, missing-file and pre-040 fallbacks, deadline cut (`plan` → `deadline_exceeded`) readable after image rebuild + console restart. Not exercised: `unfinished` tag on a real cut (cut landed after the last tool result), `next session:` chunk-boundary link, >500-entry late join, real `[masked:…]` echo (would send live tokens to the model).
 
 ---
 
