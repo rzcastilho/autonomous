@@ -42,6 +42,10 @@ All surfaces obey `docs/design-constitution.md`; new files are added to
   flight ⇒ `push_patch` to `/live/<next>?follow=1`; ended (or nothing shown)
   and `{:console, :conversation_opened, …}` ⇒ same. Turning it on while an
   end marker offers a next session jumps there. Applies to pinned views too.
+  While on, the view also keeps its scroll container (the page, or the
+  Mission Control panel) at the newest entry — `phx-hook="FollowTail"` on
+  `#conversation-rows`, reading `data-follow`; scrolling up pauses it until
+  the reader is back at the bottom; turning the toggle on jumps to the bottom.
 - **Empty states** (status reports, no call to action):
   - nothing in flight: `No agent session in flight`;
   - pinned id not live and no saved ref found: `Conversation <id> is not

@@ -1539,7 +1539,9 @@ the PR describe session — is recorded as it runs.
   The `follow next sessions` toggle moves the view on to the run's next
   session when the shown one ends — on by default in Mission Control, off on
   `/live` (`/live?follow=1` turns it on); off, the view stays on the end marker
-  and offers a `next session` link. Joining late shows the
+  and offers a `next session` link. While on, the view also scrolls with the
+  conversation to its newest entry; scroll up to read and it waits until you
+  are back at the bottom. Joining late shows the
   most recent 500 entries then the live tail (reconnects resume without
   duplicates). At the end the view shows an end marker with the outcome.
 - **Saved.** Transcripts (and the `conversation` column in Run Detail) open the

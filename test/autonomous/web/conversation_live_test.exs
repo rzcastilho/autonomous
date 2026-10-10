@@ -272,6 +272,23 @@ defmodule Autonomous.Web.ConversationLiveTest do
   end
 
   describe "follow next sessions toggle" do
+    test "the rows carry the scroll-follow hook and the follow flag", %{
+      conn: conn,
+      root: root,
+      request: req
+    } do
+      first = open_session(root, req)
+      {:ok, view, _} = live(conn, "/live/#{first.conversation_id}")
+
+      assert has_element?(
+               view,
+               ~s(#conversation-rows[phx-hook="FollowTail"][data-follow="false"])
+             )
+
+      view |> element(".conv-follow input") |> render_click()
+      assert has_element?(view, ~s(#conversation-rows[data-follow="true"]))
+    end
+
     test "is off by default on /live and on with ?follow=1", %{conn: conn} do
       {:ok, view, _} = live(conn, "/live")
       assert has_element?(view, ~s(.conv-follow input[data-follow="false"]))

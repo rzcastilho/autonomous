@@ -1677,9 +1677,11 @@ defmodule Autonomous.Web.MissionControlLiveTest do
       [_, after_table] = String.split(html, "backlog-table", parts: 2)
       assert after_table =~ "data-live-panel"
 
+      assert page_title(view) =~ "Mission Control"
       panel = find_live_child(view, "mc-conversation")
       assert has_element?(panel, ~s(.conv-follow input[data-follow="true"]))
       assert render(panel) =~ "No agent session in flight"
+      assert page_title(view) =~ "Mission Control"
     end
   end
 end

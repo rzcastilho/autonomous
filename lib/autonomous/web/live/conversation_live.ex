@@ -34,9 +34,8 @@ defmodule Autonomous.Web.ConversationLive do
 
     socket =
       socket
+      |> page_chrome(embedded?)
       |> assign(
-        page_title: "Live session",
-        current_path: "/live",
         embedded?: embedded?,
         follow?: embedded?,
         pinned?: is_map(params) and is_binary(params["conversation_id"]),
@@ -63,6 +62,13 @@ defmodule Autonomous.Web.ConversationLive do
       {:ok, socket}
     end
   end
+
+  # Title and nav highlight belong to the page: the embedded panel must not
+  # retitle Mission Control (a child's `page_title` replaces the document's).
+  defp page_chrome(socket, true), do: socket
+
+  defp page_chrome(socket, false),
+    do: assign(socket, page_title: "Live session", current_path: "/live")
 
   defp embedded?(%{"embedded" => true}), do: true
   defp embedded?(_session), do: false
@@ -363,7 +369,13 @@ defmodule Autonomous.Web.ConversationLive do
           <a href={saved_path(@conversation_id) || "/transcripts"} class="btn-link">Transcripts</a>.
         </p>
 
-        <div id="conversation-rows" phx-update="stream" class="conv-rows">
+        <div
+          id="conversation-rows"
+          phx-update="stream"
+          phx-hook="FollowTail"
+          data-follow={to_string(@follow?)}
+          class="conv-rows"
+        >
           <ConversationComponents.conversation_row
             :for={{dom_id, row} <- @streams.rows}
             id={dom_id}

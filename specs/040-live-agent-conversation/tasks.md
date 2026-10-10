@@ -177,6 +177,7 @@ description: "Task list for feature 040 — Live and Durable Agent Conversation 
 - [X] T063 [P] `priv/static/assets/console.css` + `mission_control_live.ex` / `run_detail_live.ex`: `live session` link becomes a `--running` pill with the shared live dot (tokens only; guard green)
 - [X] T064 Test then implement the `follow next sessions` toggle in `lib/autonomous/web/live/conversation_live.ex` (`toggle_follow`, `?follow=1`, `push_patch` to the next session on `:ended` / `:conversation_opened`; `Conversation.unsubscribe/1` when moving) — `test/autonomous/web/conversation_live_test.exs`
 - [X] T065 Test then implement the embedded panel: `lib/autonomous/web/live/conversation_panel_live.ex` (child LiveView delegating to `ConversationLive`, follow on by default, switches in place), `section[data-live-panel]` below the table in `mission_control_live.ex`, `.conv-toolbar`/`.mc-live-panel` CSS, surface added to `test/support/design_contract.ex` — `conversation_live_test.exs`, `mission_control_live_test.exs`
+- [X] T067 `priv/static/assets/app.js` `FollowTail` hook on `#conversation-rows` (`data-follow`): with follow on, keep the scroll container at the newest entry, pause while scrolled up; embedded panel must not retitle Mission Control (`page_chrome/2`) — `conversation_live_test.exs`, `mission_control_live_test.exs`
 - [X] T066 Amend `spec.md` (clarification, US1 scenarios 7–8, FR-027/FR-028), `contracts/console-surfaces.md`, `docs/runbook.md`
 
 ## Dependencies & Execution Order
