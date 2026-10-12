@@ -321,22 +321,48 @@ defmodule Autonomous.Web.ConversationLive do
   def render(assigns) do
     ~H"""
     <div class="view-conversation" data-view="conversation" data-embedded={to_string(@embedded?)}>
-      <div class="conv-toolbar">
-        <label class="pr-toggle conv-follow">
-          <input
-            type="checkbox"
-            class="switch-input"
-            checked={@follow?}
-            phx-click="toggle_follow"
-            data-follow={to_string(@follow?)}
-            aria-label="follow next sessions"
-          />
-          <span class="switch-track"><span class="switch-knob"></span></span>
-          <span class="option-name">follow next sessions</span>
-        </label>
-        <a :if={@embedded? and @conversation_id} href={"/live/" <> @conversation_id} class="btn-link conv-open-full">
-          open full view
-        </a>
+      <div class="conv-toolbar" data-conv-toolbar>
+        <div class="conv-toolbar-row">
+          <span
+            :if={is_nil(@empty) and @conversation_id}
+            class="live-session-link live-session-badge"
+            data-live-badge
+            data-live={to_string(@live?)}
+          >
+            <span class="transcript-live" data-live={to_string(@live?)}></span>
+            {if @live?, do: "live session", else: "session ended"}
+          </span>
+          <label class="pr-toggle conv-follow">
+            <input
+              type="checkbox"
+              class="switch-input"
+              checked={@follow?}
+              phx-click="toggle_follow"
+              data-follow={to_string(@follow?)}
+              aria-label="follow next sessions"
+            />
+            <span class="switch-track"><span class="switch-knob"></span></span>
+            <span class="option-name">follow next sessions</span>
+          </label>
+          <a
+            :if={@embedded? and @conversation_id}
+            href={"/live/" <> @conversation_id}
+            class="btn-link conv-open-full"
+          >
+            open full view
+          </a>
+        </div>
+        <p
+          :if={is_nil(@empty) and @conversation_id}
+          class="conv-header transcript-path"
+          data-conversation-header
+        >
+          <span :if={@header}>
+            {@header.run_id} &middot; {@header.feature_id} &middot; {@header.phase} &middot; {@header.ordinal}<span :if={@header.chunk}> &middot; chunk</span><span :if={@header.attempt}> &middot; attempt {@header.attempt}</span>
+            &middot;
+          </span>
+          {@conversation_id}<span :if={@session_id}> &middot; {@session_id}</span>
+        </p>
       </div>
 
       <div :if={@empty == :nothing_in_flight} class="empty-state" data-state="nothing-in-flight">
@@ -348,18 +374,6 @@ defmodule Autonomous.Web.ConversationLive do
       </div>
 
       <div :if={is_nil(@empty) and @conversation_id} class="conv-view">
-        <p class="conv-header transcript-path" data-conversation-header>
-          <span :if={@header}>
-            {@header.run_id} &middot; {@header.feature_id} &middot; {@header.phase} &middot; {@header.ordinal}<span :if={@header.chunk}> &middot; chunk</span><span :if={@header.attempt}> &middot; attempt {@header.attempt}</span>
-          </span>
-          &middot; {@conversation_id}<span :if={@session_id}> &middot; {@session_id}</span>
-          <span
-            class="transcript-live"
-            data-live={to_string(@live?)}
-            title={if @live?, do: "live", else: "ended"}
-          ></span>
-        </p>
-
         <p :if={@truncated?} class="conv-notice" data-notice="truncated">
           Showing the most recent 500 entries; earlier entries are in the full conversation once the session ends.
         </p>

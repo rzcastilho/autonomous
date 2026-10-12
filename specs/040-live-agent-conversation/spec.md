@@ -311,13 +311,17 @@ duplicates.
   design-contract guard MUST stay green.
 - **FR-023**: Turning conversation entries into display rows MUST be a pure,
   unit-testable transformation shared by the live view and the review view.
-- **FR-027**: The live view MUST offer a `follow next sessions` toggle. On,
-  when the shown session ends it MUST move to the next in-flight session (at
-  once if one is open, else when one opens); off, it MUST stay on the end
-  marker and only offer a link. Default off on the full-page view (`?follow=1`
-  turns it on and is kept in the URL); default on in Mission Control. While
-  on, the view MUST also keep scrolled to the newest entry as entries arrive
-  and across session switches, pausing while the operator has scrolled up.
+- **FR-027**: The live view MUST offer a follow mode, labelled `follow next
+  sessions`. Follow means following the conversation: on, the view MUST keep
+  scrolled to the newest entry of the current session as entries arrive
+  (pausing while the operator has scrolled up), and when that session ends it
+  MUST move to the next in-flight session (at once if one is open, else when
+  one opens) and keep following it the same way. Off, the view MUST neither
+  auto-scroll nor move: it stays on the end marker and only offers a link.
+  Default off on the full-page view (`?follow=1` turns it on and is kept in
+  the URL); default on in Mission Control. The toggle and a live-session
+  badge MUST stay visible at the top of the view while its conversation
+  scrolls.
 - **FR-028**: Mission Control MUST embed the live session view below the
   running feature's table while a run is in flight; the embedded view MUST
   switch sessions in place and never navigate the Mission Control page.

@@ -289,6 +289,32 @@ defmodule Autonomous.Web.ConversationLiveTest do
       assert has_element?(view, ~s(#conversation-rows[data-follow="true"]))
     end
 
+    test "the toolbar holds the live badge, the toggle and the ids; the badge shows the end", %{
+      conn: conn,
+      root: root,
+      request: req
+    } do
+      first = open_session(root, req)
+      {:ok, view, _} = live(conn, "/live/#{first.conversation_id}")
+
+      assert has_element?(
+               view,
+               ~s([data-conv-toolbar] [data-live-badge][data-live="true"]),
+               "live session"
+             )
+
+      assert has_element?(view, "[data-conv-toolbar] .conv-follow input")
+
+      assert has_element?(
+               view,
+               "[data-conv-toolbar] [data-conversation-header]",
+               first.conversation_id
+             )
+
+      Conversation.close(first, %PhaseResult{status: :ok, final_text: "x"})
+      assert has_element?(view, ~s([data-live-badge][data-live="false"]), "session ended")
+    end
+
     test "is off by default on /live and on with ?follow=1", %{conn: conn} do
       {:ok, view, _} = live(conn, "/live")
       assert has_element?(view, ~s(.conv-follow input[data-follow="false"]))

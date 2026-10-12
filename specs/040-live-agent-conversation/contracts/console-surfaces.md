@@ -37,7 +37,8 @@ All surfaces obey `docs/design-constitution.md`; new files are added to
   toggle below off, never auto-navigate away from an end marker the operator
   is reading.
 - **`follow next sessions` toggle** (FR-027, `.conv-follow` switch,
-  `phx-click="toggle_follow"`): off by default; `?follow=1` turns it on and
+  `phx-click="toggle_follow"`): one follow mode covering the current
+  conversation (tail scroll) and the next sessions (moving on); off by default; `?follow=1` turns it on and
   every move keeps the flag in the URL. On: `:ended` with another session in
   flight ⇒ `push_patch` to `/live/<next>?follow=1`; ended (or nothing shown)
   and `{:console, :conversation_opened, …}` ⇒ same. Turning it on while an
@@ -46,6 +47,11 @@ All surfaces obey `docs/design-constitution.md`; new files are added to
   Mission Control panel) at the newest entry — `phx-hook="FollowTail"` on
   `#conversation-rows`, reading `data-follow`; scrolling up pauses it until
   the reader is back at the bottom; turning the toggle on jumps to the bottom.
+- **Sticky toolbar** (`[data-conv-toolbar]`): always visible at the top of the
+  view's scroll container (page or Mission Control panel) — the live badge
+  (`[data-live-badge]`, `live session` with the live dot, `session ended`
+  muted once the session ends), the follow toggle, the session ids line, and
+  `open full view` when embedded.
 - **Empty states** (status reports, no call to action):
   - nothing in flight: `No agent session in flight`;
   - pinned id not live and no saved ref found: `Conversation <id> is not
