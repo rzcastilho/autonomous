@@ -51,6 +51,29 @@ defmodule Autonomous.DescribeTest do
     end
   end
 
+  describe "run_captured/4 (040)" do
+    setup do
+      original = Application.get_env(:jido_claude, :sdk_module)
+      Application.put_env(:jido_claude, :sdk_module, EnvCapturingSDK)
+      on_exit(fn -> restore_sdk(original) end)
+      :ok
+    end
+
+    test "no identity ⇒ same result as run/3, no refs, session returned" do
+      assert {{:ok, %{pr_body: "b"}},
+              %{refs: [], session: %Autonomous.PhaseResult{session_id: "sess-describe-env"}}} =
+               Describe.run_captured(feature(), %{path: "."}, nil, nil)
+
+      assert_received {:captured_env, env}
+      refute Map.has_key?(env, "AUTONOMOUS_CONVERSATION")
+    end
+
+    test "no worktree ⇒ error, nothing recorded" do
+      assert {{:error, :no_worktree}, %{refs: [], session: nil}} =
+               Describe.run_captured(feature(), nil, nil, nil)
+    end
+  end
+
   describe "parse/1" do
     test "recovers a fenced json description" do
       text = """

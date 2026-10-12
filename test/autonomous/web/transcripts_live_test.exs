@@ -7,7 +7,8 @@ defmodule Autonomous.Web.TranscriptsLiveTest do
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
 
-  alias Autonomous.{Layout, RepoIdentity}
+  alias Autonomous.{Conversation, ConversationIdentity, Layout, PhaseResult, RepoIdentity}
+  alias Jido.Harness.RunRequest
 
   @endpoint Autonomous.Web.Endpoint
 
@@ -92,10 +93,16 @@ defmodule Autonomous.Web.TranscriptsLiveTest do
         layout: layout
       })
 
-    Enum.each(entries, fn {feature_id, phase, body} ->
+    Enum.each(entries, fn entry ->
+      {feature_id, phase, body, extra} =
+        case entry do
+          {f, p, b} -> {f, p, b, %{}}
+          {f, p, b, x} -> {f, p, b, x}
+        end
+
       :ok =
         Writer.record_phase_attempt({repo_id, run_id}, %{
-          attempt: minimal_attempt(feature_id, phase),
+          attempt: Map.merge(minimal_attempt(feature_id, phase), extra),
           transcript: body
         })
     end)
@@ -321,5 +328,203 @@ defmodule Autonomous.Web.TranscriptsLiveTest do
     assert html =~ "&lt;script&gt;alert(1)&lt;/script&gt;"
     refute html =~ "<script>alert(1)"
     refute html =~ "<pre class=\"transcript-body\">"
+  end
+
+  # ---- 040: saved conversation pane -----------------------------------------
+
+  defp transcript_root(repo) do
+    {:ok, segment} = RepoIdentity.resolve(repo)
+    {:ok, layout} = Layout.build(repo, segment, :ad_hoc)
+    layout.transcript_root
+  end
+
+  # Records a real conversation file under the run's transcript root and
+  # returns its ref; `n` assistant entries, closed with `result`.
+  defp record_conversation(repo, feature_id, n, result) do
+    identity = %ConversationIdentity{
+      repo_id: "o:repo",
+      run_id: "r000001",
+      feature_id: feature_id,
+      phase: :plan,
+      ordinal: 1,
+      kind: :phase,
+      transcript_root: transcript_root(repo)
+    }
+
+    {:ok, handle, _req} =
+      Conversation.open(identity, RunRequest.new!(%{prompt: "do it", model: "opus"}))
+
+    for i <- 1..n//1 do
+      frame =
+        Autonomous.FakeSdk.frame(:assistant, %{
+          "message" => %{
+            "id" => "m#{i}",
+            "content" => [%{"type" => "text", "text" => "saved line #{i}"}]
+          }
+        })
+
+      send(handle.pid, {:frame, frame})
+    end
+
+    Conversation.close(handle, result)
+  end
+
+  @ok %PhaseResult{status: :ok, session_id: "s1", final_text: "x"}
+
+  test "a captured conversation renders from its saved file, 500 entries at a time (040)", %{
+    conn: conn,
+    repo: repo
+  } do
+    ref = record_conversation(repo, "c1", 520, @ok)
+    assert ref.status == :captured
+
+    run_id = seed_run(repo, [{"c1", :plan, "final text body", %{conversations: [ref]}}])
+    {:ok, view, html} = live(conn, "/transcripts?run_id=#{run_id}&feature=c1&attempt=0")
+
+    assert html =~ "saved line 1"
+    refute html =~ "saved line 520"
+    assert has_element?(view, "[data-load-next]", "load next 500")
+
+    html = view |> element("[data-load-next]") |> render_click()
+    assert html =~ "saved line 520"
+    assert html =~ ~s(data-kind="end")
+    refute has_element?(view, "[data-load-next]")
+  end
+
+  test "the session param selects a ref; retried phases list both sessions (040)", %{
+    conn: conn,
+    repo: repo
+  } do
+    first =
+      record_conversation(repo, "c2", 1, %PhaseResult{
+        status: :error,
+        subtype: "orchestrator_deadline"
+      })
+
+    second = record_conversation(repo, "c2", 2, @ok)
+    run_id = seed_run(repo, [{"c2", :plan, "body", %{conversations: [first, second]}}])
+
+    {:ok, view, html} = live(conn, "/transcripts?run_id=#{run_id}&feature=c2&attempt=0")
+    assert html =~ "session 1"
+    assert html =~ "session 2"
+    assert html =~ "saved line 2"
+
+    html = view |> element(~s([data-session-select="0"])) |> render_click()
+    refute html =~ "saved line 2"
+    assert html =~ "saved line 1"
+    assert html =~ "deadline exceeded"
+
+    {:ok, _view, html} =
+      live(conn, "/transcripts?run_id=#{run_id}&feature=c2&attempt=0&session=0")
+
+    refute html =~ "saved line 2"
+  end
+
+  test "a partial conversation shows its rows then says it ended without an end marker", %{
+    conn: conn,
+    repo: repo
+  } do
+    ref = record_conversation(repo, "c3", 1, @ok)
+    partial = %{ref | status: :partial, reason: :recorder_down}
+    run_id = seed_run(repo, [{"c3", :plan, "body", %{conversations: [partial]}}])
+
+    {:ok, _view, html} = live(conn, "/transcripts?run_id=#{run_id}&feature=c3&attempt=0")
+    assert html =~ "saved line 1"
+    assert html =~ "ended without an end marker"
+    assert html =~ "the recorder stopped before the session ended"
+  end
+
+  test "a not-captured ref shows the reason above the final text", %{conn: conn, repo: repo} do
+    ref = %Autonomous.Store.Records.ConversationRef{
+      conversation_id: "plan-1-x",
+      status: :not_captured,
+      reason: {:open_failed, :eacces}
+    }
+
+    run_id = seed_run(repo, [{"c4", :plan, "the final text", %{conversations: [ref]}}])
+    {:ok, _view, html} = live(conn, "/transcripts?run_id=#{run_id}&feature=c4&attempt=0")
+    assert html =~ "No full conversation captured: could not open the conversation file"
+    assert html =~ "the final text"
+  end
+
+  test "a pre-040 attempt (conversations nil) shows the final text with a note", %{
+    conn: conn,
+    repo: repo
+  } do
+    run_id = seed_run(repo, [{"c5", :plan, "old final text", %{conversations: nil}}])
+    {:ok, _view, html} = live(conn, "/transcripts?run_id=#{run_id}&feature=c5&attempt=0")
+
+    assert html =~
+             "No full conversation was recorded for this attempt (recorded before feature 040)."
+
+    assert html =~ "old final text"
+  end
+
+  test "a recorded but missing file says where it should be and keeps the final text", %{
+    conn: conn,
+    repo: repo
+  } do
+    ref = record_conversation(repo, "c6", 1, @ok)
+    File.rm!(Path.join(transcript_root(repo), ref.path))
+    run_id = seed_run(repo, [{"c6", :plan, "fallback text", %{conversations: [ref]}}])
+
+    {:ok, _view, html} = live(conn, "/transcripts?run_id=#{run_id}&feature=c6&attempt=0")
+    assert html =~ "Saved conversation missing at #{ref.path}"
+    assert html =~ "fallback text"
+  end
+
+  test "a deadline-cut file shows the unfinished call and the deadline end marker", %{
+    conn: conn,
+    repo: repo
+  } do
+    identity = %ConversationIdentity{
+      repo_id: "o:repo",
+      run_id: "r000001",
+      feature_id: "c7",
+      phase: :plan,
+      ordinal: 1,
+      kind: :phase,
+      transcript_root: transcript_root(repo)
+    }
+
+    {:ok, handle, _} = Conversation.open(identity, RunRequest.new!(%{prompt: "p", model: "opus"}))
+
+    send(
+      handle.pid,
+      {:frame,
+       Autonomous.FakeSdk.frame(:assistant, %{
+         "message" => %{
+           "id" => "mc",
+           "content" => [
+             %{
+               "type" => "tool_use",
+               "id" => "t1",
+               "name" => "Bash",
+               "input" => %{"command" => "sleep"}
+             }
+           ]
+         }
+       })}
+    )
+
+    ref =
+      Conversation.close(handle, %PhaseResult{status: :error, subtype: "orchestrator_deadline"})
+
+    run_id = seed_run(repo, [{"c7", :plan, nil, %{conversations: [ref]}}])
+
+    {:ok, view, html} = live(conn, "/transcripts?run_id=#{run_id}&feature=c7&attempt=0")
+    assert has_element?(view, ~s([data-kind="tool_call"][data-unfinished="true"]))
+    assert html =~ "deadline exceeded"
+  end
+
+  test "listings do no conversation file I/O (FR-021)", %{conn: conn, repo: repo} do
+    ref = record_conversation(repo, "c8", 1, @ok)
+    run_id = seed_run(repo, [{"c8", :plan, "b", %{conversations: [ref]}}])
+    File.rm!(Path.join(transcript_root(repo), ref.path))
+
+    # The picker and tabs render from refs alone; only the selected attempt's
+    # pane touches the file (and reports it missing).
+    {:ok, _view, html} = live(conn, "/transcripts?run_id=#{run_id}&feature=c8")
+    assert html =~ "plan#01"
   end
 end

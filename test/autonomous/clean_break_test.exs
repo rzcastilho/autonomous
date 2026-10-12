@@ -156,14 +156,17 @@ defmodule Autonomous.CleanBreakTest do
     # <autonomous_root>/transcripts/<segment>/run.json and
     # <transcript_root>/<feature_id>/{checkpoint.json,NN-<phase>.md,pr.json}
     # all lived somewhere under <autonomous_root>/transcripts/<segment> —
-    # nothing writes there anymore, so the whole subtree is either absent or
-    # empty.
+    # nothing writes there anymore. The one permitted file is a saved agent
+    # conversation under `conversations/` (feature 040, FR-015).
     transcripts_dir = Path.join([root, "transcripts", segment])
 
     assert transcripts_dir
            |> Path.join("**")
            |> Path.wildcard()
-           |> Enum.reject(&File.dir?/1) == [],
+           |> Enum.reject(&File.dir?/1)
+           |> Enum.reject(
+             &("conversations" in (&1 |> Path.relative_to(transcripts_dir) |> Path.split()))
+           ) == [],
            "expected no files under #{transcripts_dir}"
   end
 end

@@ -51,7 +51,12 @@ defmodule Autonomous.Web.MissionControlLive do
 
     {:ok,
      socket
-     |> assign(page_title: "Mission Control", current_path: "/", selected_feature_id: nil)
+     |> assign(
+       page_title: "Mission Control",
+       current_path: "/",
+       selected_feature_id: nil,
+       live_sessions: Autonomous.Conversation.live_by_feature()
+     )
      |> seed()
      |> refresh_run_state()}
   end
@@ -117,6 +122,16 @@ defmodule Autonomous.Web.MissionControlLive do
       ConsoleHydration.apply_update(Map.get(view.per_feature, id), feature, DateTime.utc_now())
 
     {:noreply, assign(socket, view: %{view | per_feature: Map.put(view.per_feature, id, merged)})}
+  end
+
+  def handle_info({:console, event, payload}, socket)
+      when event in [:conversation_opened, :conversation_closed] do
+    {:noreply,
+     update(
+       socket,
+       :live_sessions,
+       &Autonomous.Conversation.apply_console_event(&1, event, payload)
+     )}
   end
 
   def handle_info({:console, :feed, entry}, socket) do
@@ -293,6 +308,15 @@ defmodule Autonomous.Web.MissionControlLive do
                     >
                       {awaiting_meta(Map.get(@awaiting_by_feature, id))}
                     </span>
+                    <a
+                      :if={Map.get(@live_sessions, id)}
+                      href={"/live/" <> Map.get(@live_sessions, id)}
+                      class="live-session-link"
+                      data-live-session={Map.get(@live_sessions, id)}
+                    >
+                      <span class="transcript-live" data-live="true"></span>
+                      live session
+                    </a>
                   </td>
                   <td class="cell-progress">
                     <.phase_strip
@@ -308,6 +332,12 @@ defmodule Autonomous.Web.MissionControlLive do
                 </tr>
               </tbody>
             </table>
+
+            <section class="mc-live-panel" data-live-panel aria-label="Live session">
+              {live_render(@socket, Autonomous.Web.ConversationPanelLive,
+                id: "mc-conversation"
+              )}
+            </section>
           </div>
 
           <div class="mission-feed">

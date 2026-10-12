@@ -208,8 +208,23 @@ defmodule Autonomous.Store.Export do
       "substep" => safe_term(a.substep),
       "session_id" => a.session_id,
       "error" => safe_term(a.error),
+      "conversations" => conversations_document(a.conversations),
       "transcript" => transcript_document(export[:transcript])
     }
+  end
+
+  # Feature 040: status/reason/size only — never a path, never content.
+  defp conversations_document(nil), do: nil
+
+  defp conversations_document(refs) when is_list(refs) do
+    Enum.map(refs, fn ref ->
+      %{
+        "status" => to_string(ref.status),
+        "reason" => safe_term(ref.reason),
+        "entries" => ref.entries,
+        "bytes" => ref.bytes
+      }
+    end)
   end
 
   defp transcript_document(nil), do: nil

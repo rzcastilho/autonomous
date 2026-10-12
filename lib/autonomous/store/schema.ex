@@ -125,7 +125,8 @@ defmodule Autonomous.Store.Schema do
           :cost_kind,
           :substep,
           :session_id,
-          :error
+          :error,
+          :conversations
         ],
         type: :set,
         storage: :disc_copies,

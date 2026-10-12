@@ -168,6 +168,7 @@ defmodule Autonomous.AnalyzeRunner do
       PhaseStep.run(ctx.pid, ctx.feature, :analyze,
         step: ctx.step,
         timeout: ctx.timeout,
+        ordinal: k,
         span_meta: %{attempt: k, limit: state.settings.attempt_limit}
       )
 
@@ -196,7 +197,8 @@ defmodule Autonomous.AnalyzeRunner do
       cost_usd: cost_amount,
       cost_kind: cost_kind,
       session_id: agent.state.session_id,
-      error: result && result.error
+      error: result && result.error,
+      conversations: agent.state.conversations || []
     }
 
     _ =
@@ -254,7 +256,7 @@ defmodule Autonomous.AnalyzeRunner do
       # `ctx.timeout` is the session deadline `RunAutoRemediation` enforces
       # through `PhaseSession` (as `Config.phase_timeout/0`); the call waits
       # strictly longer so that deadline, not this call, ends a runaway session.
-      agent = call_remediation(ctx, signal, attempt, false)
+      agent = call_remediation(ctx, signal, attempt, false, [])
       entry = List.first(agent.state.history) || %{}
       outcome = Map.get(entry, :outcome, agent.state.last_outcome)
       cost = Map.get(entry, :cost, 0.0)
@@ -273,9 +275,13 @@ defmodule Autonomous.AnalyzeRunner do
   # 034: one fresh session when the first one died; a requested drain
   # suppresses it (`SessionRetry.once/2`). Every dead attempt
   # still has its own history entry (the action appends one per call).
-  defp call_remediation(ctx, signal, attempt, retried?) do
+  defp call_remediation(ctx, signal, attempt, retried?, carried) do
     Workers.session_started(ctx.timeout)
     {:ok, agent} = AgentServer.call(ctx.pid, signal, PhaseSession.call_timeout(ctx.timeout))
+
+    # 040 (FR-020): one ref per session across the died-retry.
+    refs = carried ++ (agent.state.conversations || [])
+    agent = %{agent | state: Map.put(agent.state, :conversations, refs)}
 
     verdict =
       SessionRetry.once(agent.state.last_signals, %{
@@ -292,7 +298,7 @@ defmodule Autonomous.AnalyzeRunner do
             "(#{died.kind}): #{died.excerpt} — retrying once"
         )
 
-        call_remediation(ctx, signal, attempt, true)
+        call_remediation(ctx, signal, attempt, true, refs)
 
       :accept ->
         agent
@@ -364,7 +370,8 @@ defmodule Autonomous.AnalyzeRunner do
       cost_usd: cost_amount,
       cost_kind: cost_kind,
       session_id: agent.state.session_id,
-      error: result && result.error
+      error: result && result.error,
+      conversations: agent.state.conversations || []
     }
 
     remediation = %{

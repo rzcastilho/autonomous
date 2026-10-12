@@ -32,12 +32,21 @@ defmodule Autonomous.Web.RunDetailLive do
        page_title: "Run #{run_id}",
        current_path: "/runs",
        run_id: run_id,
-       transcript: nil
+       transcript: nil,
+       live_sessions: Autonomous.Conversation.live_by_feature()
      )
      |> refresh()}
   end
 
   @impl true
+  def handle_info({:console, event, payload}, socket)
+      when event in [:conversation_opened, :conversation_closed] do
+    {:noreply,
+     socket
+     |> update(:live_sessions, &Autonomous.Conversation.apply_console_event(&1, event, payload))
+     |> refresh()}
+  end
+
   def handle_info({:console, _kind, _payload}, socket), do: {:noreply, refresh(socket)}
 
   defp refresh(socket) do
@@ -103,6 +112,57 @@ defmodule Autonomous.Web.RunDetailLive do
   # `attempt_id`/escalation `id` are repo-scoped tuples; the page already
   # knows `repo_id`/`run_id` (they're this page's own scope), so the wire
   # format carries only the parts a click can't already supply.
+
+  # 040: one cell per attempt, from the recorded refs only (no file I/O). `nil`
+  # is an attempt recorded before the feature; several refs are the sessions of
+  # a retried phase, one link each.
+  attr(:refs, :any, required: true)
+  attr(:link, :any, required: true, doc: "fn session_index -> href")
+
+  defp conversation_cell(%{refs: nil} = assigns) do
+    ~H"""
+    <span data-conversation-status="pre_040">not recorded (pre-040)</span>
+    """
+  end
+
+  defp conversation_cell(%{refs: []} = assigns) do
+    ~H"""
+    <span data-conversation-status="none">&mdash;</span>
+    """
+  end
+
+  defp conversation_cell(assigns) do
+    ~H"""
+    <span :for={{ref, i} <- Enum.with_index(@refs)} class="conversation-ref" data-conversation-status={ref.status}>
+      <a
+        :if={ref.status in [:captured, :partial]}
+        href={@link.(i)}
+        class="btn-link"
+        data-conversation-link
+      >
+        <%= if length(@refs) > 1 do %>session {i + 1} &middot; {ref.status}<% else %>{ref.status}<% end %>
+      </a>
+      <span :if={ref.status == :not_captured}>
+        <%= if length(@refs) > 1 do %>session {i + 1} &middot; <% end %>not_captured
+      </span>
+      <span :if={ref.status != :captured and ref.reason}>
+        &mdash; {Autonomous.Report.format_reason(ref.reason)}
+      </span>
+    </span>
+    """
+  end
+
+  defp conversation_link(run_id, feature_id, attempt_index) do
+    fn session ->
+      "/transcripts?" <>
+        URI.encode_query(%{
+          "run_id" => run_id,
+          "feature" => feature_id,
+          "attempt" => attempt_index,
+          "session" => session
+        })
+    end
+  end
 
   defp attempt_ref(attempt),
     do: "#{attempt.feature_key |> elem(2)}::#{attempt.phase}::#{attempt.ordinal}"
@@ -208,6 +268,15 @@ defmodule Autonomous.Web.RunDetailLive do
               {f.feature_id} · {f.slug} · spec {spec_label(f.spec_number)}
             </span>
             <.status_pill status={f.status} />
+            <a
+              :if={Map.get(@live_sessions, f.feature_id)}
+              href={"/live/" <> Map.get(@live_sessions, f.feature_id)}
+              class="live-session-link"
+              data-live-session={Map.get(@live_sessions, f.feature_id)}
+            >
+              <span class="transcript-live" data-live="true"></span>
+              live session
+            </a>
             <span :if={f.terminal_reason} class="escalation-reason">
               reason: {format_reason(f.terminal_reason)}
             </span>
@@ -223,11 +292,12 @@ defmodule Autonomous.Web.RunDetailLive do
                   <th>Cost</th>
                   <th>Duration</th>
                   <th>Started</th>
+                  <th>Conversation</th>
                   <th></th>
                 </tr>
               </thead>
               <tbody>
-                <%= for a <- f.phase_attempts do %>
+                <%= for {a, attempt_index} <- Enum.with_index(f.phase_attempts) do %>
                   <tr data-attempt={attempt_ref(a)}>
                     <td>{a.phase} #{pad_ordinal(a.ordinal)}</td>
                     <td>{a.outcome}</td>
@@ -235,6 +305,12 @@ defmodule Autonomous.Web.RunDetailLive do
                     <td>${format_money(a.cost_usd)}</td>
                     <td>{format_elapsed(a.duration_ms)}</td>
                     <td>{format_datetime(a.started_at)}</td>
+                    <td data-conversation-cell>
+                      <.conversation_cell
+                        refs={Map.get(a, :conversations)}
+                        link={conversation_link(@run_id, f.feature_id, attempt_index)}
+                      />
+                    </td>
                     <td>
                       <button
                         type="button"
@@ -253,7 +329,7 @@ defmodule Autonomous.Web.RunDetailLive do
                     class="transcript-row"
                     data-transcript-row={attempt_ref(a)}
                   >
-                    <td colspan="7">
+                    <td colspan="8">
                       <div class="transcript-panel" data-transcript={@transcript.ref}>
                         <div class="checkpoint-box-label">Transcript</div>
                         <p :if={@transcript[:error]} class="field-error">

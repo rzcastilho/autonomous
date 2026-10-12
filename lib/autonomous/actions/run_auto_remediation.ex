@@ -34,6 +34,7 @@ defmodule Autonomous.Actions.RunAutoRemediation do
     AgentRoot,
     BranchGuard,
     Config,
+    ConversationSite,
     Cost,
     Ledger,
     PhaseRequest,
@@ -58,9 +59,23 @@ defmodule Autonomous.Actions.RunAutoRemediation do
         deadline_ms: Config.phase_timeout()
       )
 
+    {capture, request} =
+      ConversationSite.open(
+        ConversationSite.identity(state, :auto_remediation,
+          kind: :auto_remediation,
+          ordinal: attempt,
+          attempt: attempt
+        ),
+        request
+      )
+
     case Jido.Harness.run_request(:claude, request, []) do
       {:ok, stream} ->
-        result = PhaseSession.reduce(stream, Config.phase_timeout())
+        {result, refs} =
+          ConversationSite.reduce(capture, fn ->
+            PhaseSession.reduce(stream, Config.phase_timeout())
+          end)
+
         AgentRoot.log_installs(state.feature, :auto_remediation, result)
         result = WorkspaceTrust.settle(result, collector)
 
@@ -78,15 +93,18 @@ defmodule Autonomous.Actions.RunAutoRemediation do
              |> PhaseResult.reset_background(Map.get(state, :last_signals))
              |> PhaseResult.reset_session_died(Map.get(state, :last_signals)),
            session_id: result.session_id || state.session_id,
+           conversations: refs,
            cost_total: (state.cost_total || 0.0) + amount,
            history: [entry(attempt, outcome, amount, result) | state.history]
          }}
 
       {:error, reason} ->
         WorkspaceTrust.Collector.stop(collector)
+        refs = ConversationSite.close_error(capture, reason)
 
         {:ok,
          %{
+           conversations: refs,
            last_outcome: :error,
            last_signals: %{},
            last_result: nil,

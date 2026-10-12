@@ -47,7 +47,9 @@ defmodule Autonomous.Actions.RunFeaturePhase do
       operator_answers: [type: {:or, [nil, :string]}, required: false, default: nil],
       # 032: commands the previous attempt left backgrounded; folded into the
       # prompt as a corrective note. `nil` everywhere but a backgrounding retry.
-      background_retry: [type: :any, required: false, default: nil]
+      background_retry: [type: :any, required: false, default: nil],
+      # 040: identity facets of this session for its conversation capture.
+      conversation: [type: :any, required: false, default: nil]
     ]
 
   require Logger
@@ -58,6 +60,7 @@ defmodule Autonomous.Actions.RunFeaturePhase do
     ArtifactSubstance,
     BranchGuard,
     Config,
+    ConversationSite,
     Cost,
     Ledger,
     NeedsHuman,
@@ -107,9 +110,17 @@ defmodule Autonomous.Actions.RunFeaturePhase do
         deadline_ms: deadline_ms
       )
 
+    {capture, request} =
+      ConversationSite.open(
+        ConversationSite.identity(state, phase, conversation_opts(params)),
+        request
+      )
+
     case Jido.Harness.run_request(:claude, request, []) do
       {:ok, stream} ->
-        result = PhaseSession.reduce(stream, deadline_ms)
+        {result, refs} =
+          ConversationSite.reduce(capture, fn -> PhaseSession.reduce(stream, deadline_ms) end)
+
         AgentRoot.log_installs(state.feature, phase, result)
         result = WorkspaceTrust.settle(result, collector)
 
@@ -131,16 +142,19 @@ defmodule Autonomous.Actions.RunFeaturePhase do
            last_outcome: outcome,
            last_signals: signals,
            session_id: result.session_id || state.session_id,
+           conversations: refs,
            cost_total: (state.cost_total || 0.0) + amount,
            history: [entry(phase, outcome, amount, result) | state.history]
          }}
 
       {:error, reason} ->
         WorkspaceTrust.Collector.stop(collector)
+        refs = ConversationSite.close_error(capture, reason)
 
         {:ok,
          %{
            phase: phase,
+           conversations: refs,
            last_outcome: :error,
            last_signals:
              %{}
@@ -149,6 +163,13 @@ defmodule Autonomous.Actions.RunFeaturePhase do
            last_result: nil,
            history: [%{phase: phase, outcome: :error, error: reason} | state.history]
          }}
+    end
+  end
+
+  defp conversation_opts(params) do
+    case Map.get(params, :conversation) do
+      opts when is_list(opts) -> opts
+      _ -> []
     end
   end
 

@@ -33,11 +33,11 @@ defmodule Autonomous.PhaseRequest do
   alias Autonomous.TaskPlan.TaskPhase
 
   @slash %{
-    specify: "/speckit.specify",
-    plan: "/speckit.plan",
-    tasks: "/speckit.tasks",
-    analyze: "/speckit.analyze",
-    implement: "/speckit.implement"
+    specify: "/speckit-specify",
+    plan: "/speckit-plan",
+    tasks: "/speckit-tasks",
+    analyze: "/speckit-analyze",
+    implement: "/speckit-implement"
   }
 
   # Tools every headless phase must never reach, regardless of `allowed_tools`
@@ -73,7 +73,7 @@ defmodule Autonomous.PhaseRequest do
       `Config.breakdown_dir/0`, the pre-012 flat layout.
     * `:scope` — a `ChunkScope.t()` (015), honoured **only** at `phase ==
       :implement`: appends a task-phase or sweep scoping block to the bare
-      `/speckit.implement` prompt (contracts/chunk_session.md §1). `nil`/absent,
+      `/speckit-implement` prompt (contracts/chunk_session.md §1). `nil`/absent,
       or any non-`:implement` phase leaves the prompt byte-identical to
       today (SC-005); `:whole_list` and the scoped blocks gain the 032 headless rule.
     * `:clarify_answers` — (029) the rendered "Operator answers" block for a
@@ -177,6 +177,21 @@ defmodule Autonomous.PhaseRequest do
   defp put_collector(env, nil), do: env
   defp put_collector(env, pid), do: Map.put(env, SdkProxy.env_key(), SdkProxy.encode(pid))
 
+  @doc """
+  Add the 040 conversation marker (the recorder pid) to the request's launch
+  env. `Autonomous.SdkProxy` strips it before the CLI starts.
+  """
+  @spec put_conversation(RunRequest.t(), pid()) :: RunRequest.t()
+  def put_conversation(%RunRequest{} = request, pid) when is_pid(pid) do
+    claude = Map.get(request.metadata || %{}, "claude", %{})
+    env = Map.put(Map.get(claude, :env, %{}), SdkProxy.conversation_key(), SdkProxy.encode(pid))
+
+    %{
+      request
+      | metadata: Map.put(request.metadata || %{}, "claude", Map.put(claude, :env, env))
+    }
+  end
+
   defp remediation_prompt(feature, layout, prompt) do
     "Remediation for feature #{feature.id} (#{feature.slug}), " <>
       "#{breakdown_ref(feature, layout)}.\n\n---\n" <> (prompt || "")
@@ -246,7 +261,7 @@ defmodule Autonomous.PhaseRequest do
   # `:scope` is honoured only for `:implement` — every other phase's prompt is
   # untouched regardless of what (if anything) a caller passes. `:whole_list`
   # and `nil` (the FR-004 fallback / absent-option case) are also no-ops, so
-  # the built prompt stays byte-identical to today's bare `/speckit.implement`
+  # the built prompt stays byte-identical to today's bare `/speckit-implement`
   # (SC-005).
   defp apply_scope(prompt, :implement, {:task_phase, %TaskPhase{} = tp}),
     do: prompt <> task_phase_block(tp) <> headless_rule()

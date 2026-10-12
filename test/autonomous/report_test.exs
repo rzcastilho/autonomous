@@ -74,6 +74,29 @@ defmodule Autonomous.ReportTest do
     assert out =~ "not allocated"
   end
 
+  describe "conversation capture (040)" do
+    test "capture reasons" do
+      assert Report.format_reason({:open_failed, :eacces}) =~
+               "could not open the conversation file"
+
+      assert Report.format_reason({:open_failed, :eacces}) =~ "permission denied"
+      assert Report.format_reason({:open_failed, {:bad_identity, :run_id}}) =~ "invalid run_id"
+      assert Report.format_reason({:write_failed, :enospc}) =~ "no space left"
+      assert Report.format_reason(:recorder_down) =~ "recorder stopped"
+      assert Report.format_reason(:close_timeout) =~ "timed out"
+      assert Report.format_reason({:frame_failed, "boom"}) =~ "boom"
+    end
+
+    test "outcomes" do
+      assert Report.format_outcome(:completed) == "completed"
+      assert Report.format_outcome(:deadline_exceeded) == "deadline exceeded"
+      assert Report.format_outcome(:exhausted) =~ "turn budget"
+      assert Report.format_outcome(:incomplete_session) =~ "outstanding"
+      assert Report.format_outcome({:session_died, :start_failed}) =~ "failed to start"
+      assert Report.format_outcome({:error, :recorder_down}) =~ "error: the recorder stopped"
+    end
+  end
+
   describe "format_reason/1 (029)" do
     test "renders every {:needs_human, sub} variant distinctly" do
       assert Report.format_reason({:needs_human, :rounds_exhausted}) =~ "rounds exhausted"

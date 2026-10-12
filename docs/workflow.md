@@ -45,6 +45,7 @@ flowchart TB
 
   PIPE -.each phase records cost.-> LED
   PIPE -.transcript per phase.-> TR[(Durable transcripts<br/>transcript_root NNN NN-phase)]
+  PIPE -.every session: tap, mask, record.-> CV40[(Conversation file<br/>transcript_root conversations)]
 
   DONE -->|Worktree.commit → REMOVE| BR[Reviewable branch<br/>plan/tasks/contracts + src + tests<br/>pushed · PR opened against previous base]
   BR -->|next feature stacks here| RUN
@@ -138,7 +139,11 @@ flowchart TB
   pushes it, and opens a PR against the previous feature's branch (or
   `pr_base` for the first), then removes the worktree; `escalated`/`halted`/
   `failed` commit then **keep** the worktree. Transcripts are written to a
-  **durable** root that survives teardown.
+  **durable** root that survives teardown. Every agent session (phase, implement
+  chunk, remediation, describe) is also recorded in full — tool calls and
+  results included — to a per-session conversation file there (feature 040),
+  tapped from the SDK stream without ever touching the session's outcome, and
+  watchable live from the console.
 - **A broken link stops the chain.** As soon as a feature reaches a
   non-`:done` terminal state and nothing else is in flight, `Release.next/3`
   reports `{:stopped, id, status}` instead of an empty wave that looks the

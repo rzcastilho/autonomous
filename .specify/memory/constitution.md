@@ -1,5 +1,23 @@
 <!--
 Sync Impact Report
+Version change: 7.0.0 → 7.1.0
+Bump rationale: MINOR. Feature 040 (live and durable agent conversation view,
+  research R13). Technology Stack → Persistence materially expanded: the
+  full-conversation file under the repository's transcript root is the one
+  permitted durable artifact outside Mnesia. Mnesia stays authoritative for
+  whether a conversation was captured and where; the file is owner-only
+  (directories 0700, file 0600), never inside a target working tree, never
+  loaded by a listing, and a recorded-but-missing file is reported as missing
+  (Principle II). No MUST is removed, so not MAJOR.
+Modified principles: none.
+Modified sections:
+  - Technology Stack → Persistence (run state): new "conversation file" bullet.
+Templates requiring updates: none (checked .specify/templates/*; principle-agnostic).
+  ✅ docs/runbook.md, docs/container.md, docs/workflow.md and CLAUDE.md updated
+     by feature 040's own implementation (T058), in the same change.
+Follow-up TODOs: none.
+
+Prior report (7.0.0):
 Version change: 6.1.0 → 7.0.0
 Bump rationale: MAJOR. Feature 039 (remove cost budget breaker and strict
   containment profile, research R12). Two MUST-level guarantees are removed,
@@ -812,6 +830,12 @@ is held in **Mnesia**, which ships with Erlang/OTP.
 - Mnesia MUST NOT be supplemented by an external database service, a Hex
   persistence dependency, or an ORM. It is chosen because it is already in the
   runtime: no new operational surface, no separate process to install or babysit.
+- The **conversation file** (`<transcript_root>/conversations/<run>/<feature>/<id>.jsonl`,
+  feature 040) is the one permitted durable artifact outside Mnesia. Mnesia
+  remains authoritative for whether a conversation was captured and where; the
+  file MUST be owner-only (directories `0700`, file `0600`), MUST NOT live inside
+  a target repository's working tree, MUST NOT be loaded by any listing, and a
+  recorded-but-missing file MUST be reported as missing, never papered over.
 - Deployment is **single-node and machine-local**. Distributed Mnesia,
   replication, and multi-node clustering are out of scope; run state does not
   cross machines.
@@ -956,4 +980,4 @@ deviation already is. Reviews and PRs MUST verify compliance with these
 principles; the constitution and the implementation plan together are the
 runtime guidance for autonomous and human contributors alike.
 
-**Version**: 7.0.0 | **Ratified**: 2026-07-11 | **Last Amended**: 2026-10-09
+**Version**: 7.1.0 | **Ratified**: 2026-07-11 | **Last Amended**: 2026-10-10

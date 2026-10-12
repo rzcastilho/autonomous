@@ -30,7 +30,7 @@ defmodule Autonomous.ResumeBacklogE2ETest do
       text =
         cond do
           String.contains?(prompt, "clarify reviewer") -> "Clarified."
-          String.contains?(prompt, "/speckit.analyze") -> analyze_result()
+          String.contains?(prompt, "/speckit-analyze") -> analyze_result()
           true -> "done"
         end
 

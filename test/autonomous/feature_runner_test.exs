@@ -173,7 +173,7 @@ defmodule Autonomous.FeatureRunnerTest do
         String.contains?(prompt, "pull-request description") ->
           ~s|{"commit_message":"feat(001): built core ledger","pr_title":"Add core ledger","pr_body":"## Summary\\n- built the ledger"}|
 
-        String.contains?(prompt, "/speckit.analyze") ->
+        String.contains?(prompt, "/speckit-analyze") ->
           case scenario do
             :halt ->
               ~s({"summary":"violation","findings":[{"severity":"critical","title":"float money"}]})
@@ -441,6 +441,48 @@ defmodule Autonomous.FeatureRunnerTest do
     assert body =~ "Summary"
   end
 
+  test "the PR describe session is a recorded :describe attempt with its conversation and no cost entry (040)" do
+    wt = scaffolded_worktree()
+    File.write!(Path.join(wt.path, "note.txt"), "generated\n")
+    run_key = open_store_run()
+    root = Path.join(System.tmp_dir!(), "fr_conv_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(root)
+    on_exit(fn -> File.rm_rf(root) end)
+
+    layout = %Autonomous.Layout{
+      worktree_root: root,
+      transcript_root: root,
+      in_repo_rel: "docs/breakdown"
+    }
+
+    result =
+      FeatureRunner.run(feature(), worktree: wt, notify: self(), run_key: run_key, layout: layout)
+
+    assert result.status == :done
+
+    {:ok, detail} = Autonomous.Store.run(run_key)
+    feature_record = Enum.find(detail.features, &(&1.feature_id == "001"))
+    attempts = feature_record.phase_attempts
+
+    assert %{
+             ordinal: 1,
+             label: "describe",
+             outcome: :ok,
+             conversations: [%{status: :captured, path: path}]
+           } =
+             Enum.find(attempts, &(&1.phase == :describe))
+
+    assert File.regular?(Path.join(root, path))
+
+    # Every pipeline session recorded a ref too (the :implement roll-up carries none).
+    for a <- attempts, a.phase not in [:describe, :implement] do
+      assert [%{status: :captured}] = a.conversations, "#{a.phase} has no conversation"
+    end
+
+    # Cost entries never include the describe attempt: run spend is unchanged.
+    refute Enum.any?(detail.cost_entries || [], fn c -> match?({_, _, _, :describe, _}, c.id) end)
+  end
+
   test "analyze critical: stops at :halted and keeps the worktree" do
     Application.put_env(:autonomous, :test_fake_scenario, :halt)
     wt = scaffolded_worktree()
@@ -455,7 +497,7 @@ defmodule Autonomous.FeatureRunnerTest do
   # --- artifact + converge gates: the false-green class ---------------------
   #
   # Regression for a live run against quickpoll: a stale `plan_stack` contradicted
-  # the target, so `/speckit.plan` REFUSED and asked which stack to use. In a
+  # the target, so `/speckit-plan` REFUSED and asked which stack to use. In a
   # headless run nobody answers, so plan wrote no plan.md — yet its transcript was
   # a perfectly successful response. tasks/implement then no-opped ("No plan.md
   # yet"), analyze reported the gap as `high`, converge said "Not ready for PR
@@ -1244,7 +1286,7 @@ defmodule Autonomous.FeatureRunnerTest do
       # The stubbed harness session's own effect — exactly what the mod-player
       # incident's target-side hook did mid-`specify`: it moved HEAD off the
       # branch the orchestrator expects.
-      if String.contains?(prompt, "/speckit.specify") do
+      if String.contains?(prompt, "/speckit-specify") do
         System.cmd("git", ["checkout", "-b", "other"], cd: Map.get(options, :cwd))
       end
 

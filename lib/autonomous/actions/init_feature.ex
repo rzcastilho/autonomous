@@ -12,6 +12,7 @@ defmodule Autonomous.Actions.InitFeature do
       worktree: [type: :any, default: nil],
       ledger: [type: :any, default: nil],
       layout: [type: :any, default: nil],
+      run_key: [type: :any, default: nil],
       phase: [type: :atom, default: nil],
       # `type: :string, default: nil` fails Jido's schema validation on an
       # omitted key — it fills the default in and then validates it against
@@ -34,6 +35,8 @@ defmodule Autonomous.Actions.InitFeature do
        worktree: params.worktree,
        ledger: Map.get(params, :ledger),
        layout: Map.get(params, :layout),
+       run_key: Map.get(params, :run_key),
+       conversations: [],
        phase: phase,
        resume_phase: phase,
        resume_prompt: params.resume_prompt,

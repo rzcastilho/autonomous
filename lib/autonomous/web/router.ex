@@ -26,6 +26,8 @@ defmodule Autonomous.Web.Router do
     live("/escalations", EscalationsLive)
     live("/runs", RunsLive)
     live("/runs/:run_id", RunDetailLive)
+    live("/live", ConversationLive)
+    live("/live/:conversation_id", ConversationLive)
     live("/transcripts", TranscriptsLive)
     live("/config", ConfigLive)
   end

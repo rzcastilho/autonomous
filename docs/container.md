@@ -34,7 +34,9 @@ The per-target store is new: `~/.autonomous/instances/<segment>/mnesia`. The pre
 store `~/.autonomous/mnesia` is **neither read nor deleted**. History written before 031 is
 not visible to the containerized instance; delete the old directory yourself when you no
 longer need it. Worktrees (`worktrees/<segment>/`), transcripts and exports keep their
-locations and stay valid.
+locations and stay valid. Full agent conversations (feature 040) live under
+`<transcript_root>/conversations/…` (owner-only), so they survive a container
+rebuild and can be read from Transcripts afterwards.
 
 ### Working-directory audit (R6)
 

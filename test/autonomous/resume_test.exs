@@ -43,7 +43,7 @@ defmodule Autonomous.ResumeTest do
           String.contains?(prompt, "Remediation for feature") ->
             "Remediation ran with model=#{model}. prompt=#{prompt}"
 
-          String.contains?(prompt, "/speckit.analyze") ->
+          String.contains?(prompt, "/speckit-analyze") ->
             # Mirror whether the built prompt carries the appended resume-guidance
             # line (PhaseRequest.append_resume_prompt/2) into the JSON `summary`
             # so tests can assert on it via the durable transcript, without a

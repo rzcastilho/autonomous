@@ -162,7 +162,41 @@ defmodule Autonomous.Report do
   def format_reason({:preflight, problems}) when is_list(problems),
     do: "preflight failed: " <> Enum.map_join(problems, "; ", &format_reason/1)
 
+  # 040: why a session's conversation was not (fully) captured. Capture never
+  # changes a session's outcome; these only explain the saved record.
+  def format_reason({:open_failed, {:bad_identity, field}}),
+    do: "capture not started — missing or invalid #{field}"
+
+  def format_reason({:open_failed, posix}),
+    do: "could not open the conversation file — #{posix_text(posix)}"
+
+  def format_reason({:write_failed, posix}),
+    do: "writing the conversation failed — #{posix_text(posix)}"
+
+  def format_reason({:frame_failed, message}),
+    do: "a frame could not be recorded — #{message}"
+
+  def format_reason(:recorder_down), do: "the recorder stopped before the session ended"
+  def format_reason(:close_timeout), do: "closing the conversation timed out"
+
+  # 040: a recorded session's outcome (`ConversationOutcome`).
+  def format_reason(:completed), do: "completed"
+  def format_reason(:deadline_exceeded), do: "deadline exceeded"
+  def format_reason(:exhausted), do: "turn budget exhausted"
+  def format_reason(:incomplete_session), do: "session ended with work outstanding"
+
+  def format_reason({:session_died, kind}) when kind in [:start_failed, :ended_early],
+    do: "session #{died_phrase(kind)}"
+
   def format_reason(reason), do: PublishOutcome.describe(reason) || inspect(reason)
+
+  @doc "Render a recorded session's outcome term (`ConversationOutcome`)."
+  @spec format_outcome(term()) :: String.t()
+  def format_outcome({:error, reason}), do: "error: " <> format_reason(reason)
+  def format_outcome(other), do: format_reason(other)
+
+  defp posix_text(posix) when is_atom(posix), do: posix |> :file.format_error() |> to_string()
+  defp posix_text(other), do: inspect(other)
 
   defp died_where({:remediation, n}), do: "remediation attempt #{n}"
   defp died_where(where), do: background_where(where)

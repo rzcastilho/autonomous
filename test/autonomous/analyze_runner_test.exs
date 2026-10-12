@@ -17,7 +17,7 @@ defmodule Autonomous.AnalyzeRunnerTest do
 
     # Checked *before* the analyze branch and matched on a phrase unique to the
     # pack: `priv/prompts/analyze_remediation.md` deliberately mentions
-    # `/speckit.analyze` (telling the step not to re-run it), so a naive
+    # `/speckit-analyze` (telling the step not to re-run it), so a naive
     # analyze-first match would classify a corrective step as an analyze run.
     @remediation_marker "analyze auto-remediation loop"
 
@@ -27,7 +27,7 @@ defmodule Autonomous.AnalyzeRunnerTest do
           record(:remediation, prompt)
           if remediation_fails?(), do: error_messages(), else: success_messages("Fixed.")
 
-        String.contains?(prompt, "/speckit.analyze") ->
+        String.contains?(prompt, "/speckit-analyze") ->
           record(:analyze, prompt)
           success_messages(next_pass())
 

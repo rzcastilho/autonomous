@@ -595,4 +595,125 @@ defmodule Autonomous.Web.RunDetailLiveTest do
     assert html =~ "&lt;script&gt;alert(1)&lt;/script&gt;"
     refute html =~ "<script>alert(1)"
   end
+
+  test "the in-flight feature carries a live session link, re-pointed by console events (040)", %{
+    conn: conn,
+    repo_id: repo_id
+  } do
+    run_id = open(repo_id, ["001"])
+    {:ok, view, html} = live(conn, "/runs/#{run_id}")
+    refute html =~ "data-live-session"
+
+    send(
+      view.pid,
+      {:console, :conversation_opened,
+       %{conversation_id: "plan-1-xyz", feature_id: "001", phase: :plan}}
+    )
+
+    assert has_element?(
+             view,
+             ~s(a[data-live-session="plan-1-xyz"][href="/live/plan-1-xyz"]),
+             "live session"
+           )
+
+    send(
+      view.pid,
+      {:console, :conversation_closed, %{conversation_id: "plan-1-xyz", status: :captured}}
+    )
+
+    render(view)
+    refute has_element?(view, "[data-live-session]")
+  end
+
+  # ---- 040: conversation column ----------------------------------------------
+
+  defp record_with_conversations(repo_id, run_id, phase, ordinal, conversations) do
+    :ok =
+      Writer.record_phase_attempt({repo_id, run_id}, %{
+        attempt: %{
+          feature_id: "001",
+          phase: phase,
+          ordinal: ordinal,
+          step: ordinal,
+          label: "#{phase}",
+          started_at: DateTime.utc_now(),
+          ended_at: DateTime.utc_now(),
+          duration_ms: 10,
+          outcome: :ok,
+          model: "sonnet",
+          cost_usd: 0.0,
+          cost_kind: :actual,
+          conversations: conversations
+        }
+      })
+  end
+
+  defp ref(id, status, reason \\ nil) do
+    %Autonomous.Store.Records.ConversationRef{
+      conversation_id: id,
+      path: "conversations/r/001/#{id}.jsonl",
+      status: status,
+      reason: reason
+    }
+  end
+
+  test "each attempt row has a conversation cell by capture status (040)", %{
+    conn: conn,
+    repo_id: repo_id
+  } do
+    run_id = open(repo_id, ["001"])
+    record_with_conversations(repo_id, run_id, :specify, 1, [ref("specify-1-a", :captured)])
+
+    record_with_conversations(repo_id, run_id, :clarify, 1, [
+      ref("clarify-1-a", :partial, :recorder_down)
+    ])
+
+    record_with_conversations(repo_id, run_id, :plan, 1, [
+      %{ref("plan-1-a", :not_captured, {:open_failed, :eacces}) | path: nil}
+    ])
+
+    record_with_conversations(repo_id, run_id, :tasks, 1, nil)
+
+    {:ok, view, _html} = live(conn, "/runs/#{run_id}")
+
+    assert has_element?(
+             view,
+             ~s(tr[data-attempt$="::specify::1"] a[data-conversation-link] ),
+             "captured"
+           )
+
+    assert has_element?(
+             view,
+             ~s(tr[data-attempt$="::clarify::1"] a[data-conversation-link]),
+             "partial"
+           )
+
+    assert render(view) =~ "the recorder stopped before the session ended"
+
+    assert has_element?(
+             view,
+             ~s(tr[data-attempt$="::plan::1"] [data-conversation-status="not_captured"])
+           )
+
+    refute has_element?(view, ~s(tr[data-attempt$="::plan::1"] a[data-conversation-link]))
+    assert render(view) =~ "could not open the conversation file"
+
+    assert has_element?(view, ~s(tr[data-attempt$="::tasks::1"]), "not recorded (pre-040)")
+  end
+
+  test "a retried phase lists one link per session (040, FR-020)", %{conn: conn, repo_id: repo_id} do
+    run_id = open(repo_id, ["001"])
+
+    record_with_conversations(repo_id, run_id, :plan, 1, [
+      ref("plan-1-a", :captured),
+      ref("plan-1-b", :captured)
+    ])
+
+    {:ok, view, _html} = live(conn, "/runs/#{run_id}")
+    html = render(view)
+    assert html =~ "session 1"
+    assert html =~ "session 2"
+    assert html =~ "session=0"
+    assert html =~ "session=1"
+  end
 end

@@ -38,7 +38,9 @@ defmodule Autonomous.Web.DesignContractTest do
             "lib/autonomous/web/components/layouts.ex",
             "lib/autonomous/web/components/layouts/app.html.heex",
             "lib/autonomous/web/components/layouts/root.html.heex",
-            "lib/autonomous/web/transcript_markup.ex"
+            "lib/autonomous/web/transcript_markup.ex",
+            "lib/autonomous/web/conversation_rows.ex",
+            "lib/autonomous/web/components/conversation_components.ex"
           ] ++
             ("lib/autonomous/web/live/*.ex"
              |> then(&Path.wildcard(Path.join(@root, &1)))
