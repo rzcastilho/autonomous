@@ -259,7 +259,7 @@ defmodule Autonomous.Web.ConversationLive do
     end
   end
 
-  # A session opened. With "follow next sessions" on, a view whose session has
+  # A session opened. With "follow conversations" on, a view whose session has
   # ended (or that shows nothing) moves to it. Off: follow mode with nothing
   # being read switches to it; one still being read keeps its end marker on
   # screen and offers the link; a pinned view stays put.
@@ -339,10 +339,10 @@ defmodule Autonomous.Web.ConversationLive do
               checked={@follow?}
               phx-click="toggle_follow"
               data-follow={to_string(@follow?)}
-              aria-label="follow next sessions"
+              aria-label="follow conversations"
             />
             <span class="switch-track"><span class="switch-knob"></span></span>
-            <span class="option-name">follow next sessions</span>
+            <span class="option-name">follow conversations</span>
           </label>
           <a
             :if={@embedded? and @conversation_id}

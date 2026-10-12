@@ -2783,7 +2783,7 @@ textarea {
   text-decoration: underline;
 }
 
-/* Follow toggle row (040): the "follow next sessions" switch, and in the
+/* Follow toggle row (040): the "follow conversations" switch, and in the
    embedded panel a link to the full-page view. */
 .conv-toolbar {
   position: sticky;

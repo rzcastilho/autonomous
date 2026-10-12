@@ -1536,7 +1536,7 @@ the PR describe session — is recorded as it runs.
 - **Live.** Mission Control shows the live session below the running feature
   (and a `live session` pill on its row; Run Detail has the same pill); `/live`
   follows the newest in-flight session, `/live/:conversation_id` pins one.
-  The `follow next sessions` toggle follows the conversation: it keeps the
+  The `follow conversations` toggle follows the conversation: it keeps the
   view scrolled to the newest entry of the current session (scroll up to read
   and it waits until you are back at the bottom) and, when that session ends,
   moves on to the run's next session and keeps following it — on by default in

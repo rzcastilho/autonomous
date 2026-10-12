@@ -1,5 +1,5 @@
 let csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content");
-// Feature 040: while "follow next sessions" is on, keep the live conversation
+// Feature 040: while "follow conversations" is on, keep the live conversation
 // scrolled to its newest entry — on every appended row and on every switch to
 // the next session. Scrolling up to read pauses it until the reader returns to
 // the bottom; turning the toggle on jumps to the bottom at once.

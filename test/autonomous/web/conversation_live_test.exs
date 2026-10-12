@@ -271,7 +271,7 @@ defmodule Autonomous.Web.ConversationLiveTest do
     assert html =~ "Conversation #{id} is not live and has no saved record"
   end
 
-  describe "follow next sessions toggle" do
+  describe "follow conversations toggle" do
     test "the rows carry the scroll-follow hook and the follow flag", %{
       conn: conn,
       root: root,
@@ -303,7 +303,16 @@ defmodule Autonomous.Web.ConversationLiveTest do
                "live session"
              )
 
-      assert has_element?(view, "[data-conv-toolbar] .conv-follow input")
+      assert has_element?(
+               view,
+               ~s([data-conv-toolbar] .conv-follow input[aria-label="follow conversations"])
+             )
+
+      assert has_element?(
+               view,
+               "[data-conv-toolbar] .conv-follow .option-name",
+               "follow conversations"
+             )
 
       assert has_element?(
                view,

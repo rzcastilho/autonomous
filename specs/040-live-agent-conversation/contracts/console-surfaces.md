@@ -36,7 +36,7 @@ All surfaces obey `docs/design-constitution.md`; new files are added to
   another session, show `next session: <conversation_id>` link; with the
   toggle below off, never auto-navigate away from an end marker the operator
   is reading.
-- **`follow next sessions` toggle** (FR-027, `.conv-follow` switch,
+- **`follow conversations` toggle** (FR-027, `.conv-follow` switch,
   `phx-click="toggle_follow"`): one follow mode covering the current
   conversation (tail scroll) and the next sessions (moving on); off by default; `?follow=1` turns it on and
   every move keeps the flag in the URL. On: `:ended` with another session in

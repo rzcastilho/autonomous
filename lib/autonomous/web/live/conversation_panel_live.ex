@@ -3,7 +3,7 @@ defmodule Autonomous.Web.ConversationPanelLive do
   Mission Control's embedded live session (feature 040): `ConversationLive`
   mounted as a child LiveView. A child may not define `handle_params/3`, so this
   module only delegates mount, events, messages and render, forcing the
-  embedded mode (follow next sessions on by default, switching in place, never
+  embedded mode (follow conversations on by default, switching in place, never
   navigating the page it sits in).
   """
 
