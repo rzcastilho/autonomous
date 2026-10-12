@@ -2,7 +2,7 @@ defmodule Autonomous.ChunkScope do
   @moduledoc """
   The unit dispatched to one chunk session (data-model.md §4): a single
   task-phase, the end-of-run sweep of leftover tasks, or the unstructured-plan
-  fallback that hands the whole list to one bare `/speckit.implement` session.
+  fallback that hands the whole list to one bare `/speckit-implement` session.
   """
 
   alias Autonomous.TaskPlan.{Task, TaskPhase}

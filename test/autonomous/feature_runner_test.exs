@@ -173,7 +173,7 @@ defmodule Autonomous.FeatureRunnerTest do
         String.contains?(prompt, "pull-request description") ->
           ~s|{"commit_message":"feat(001): built core ledger","pr_title":"Add core ledger","pr_body":"## Summary\\n- built the ledger"}|
 
-        String.contains?(prompt, "/speckit.analyze") ->
+        String.contains?(prompt, "/speckit-analyze") ->
           case scenario do
             :halt ->
               ~s({"summary":"violation","findings":[{"severity":"critical","title":"float money"}]})
@@ -497,7 +497,7 @@ defmodule Autonomous.FeatureRunnerTest do
   # --- artifact + converge gates: the false-green class ---------------------
   #
   # Regression for a live run against quickpoll: a stale `plan_stack` contradicted
-  # the target, so `/speckit.plan` REFUSED and asked which stack to use. In a
+  # the target, so `/speckit-plan` REFUSED and asked which stack to use. In a
   # headless run nobody answers, so plan wrote no plan.md — yet its transcript was
   # a perfectly successful response. tasks/implement then no-opped ("No plan.md
   # yet"), analyze reported the gap as `high`, converge said "Not ready for PR
@@ -1286,7 +1286,7 @@ defmodule Autonomous.FeatureRunnerTest do
       # The stubbed harness session's own effect — exactly what the mod-player
       # incident's target-side hook did mid-`specify`: it moved HEAD off the
       # branch the orchestrator expects.
-      if String.contains?(prompt, "/speckit.specify") do
+      if String.contains?(prompt, "/speckit-specify") do
         System.cmd("git", ["checkout", "-b", "other"], cd: Map.get(options, :cwd))
       end
 

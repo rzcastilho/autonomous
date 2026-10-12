@@ -437,7 +437,7 @@ defmodule Autonomous.ResumeRunTest do
 
   # ---- 025 US1: whole-run resume dispatches at the checkpoint, not the trail
 
-  # Reports a critical finding for `/speckit.analyze` (so an illegitimate
+  # Reports a critical finding for `/speckit-analyze` (so an illegitimate
   # rewind to `:analyze` is loudly distinguishable from the correct resume at
   # `:implement` — `:escalated` vs `:done`), and otherwise drives the chunked
   # `:implement` loop like `chunk_runner_test.exs`'s FakeSDK: checks off the
@@ -450,7 +450,7 @@ defmodule Autonomous.ResumeRunTest do
 
     def query(prompt, options) do
       cond do
-        String.contains?(prompt, "/speckit.analyze") ->
+        String.contains?(prompt, "/speckit-analyze") ->
           critical_finding()
 
         true ->

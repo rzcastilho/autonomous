@@ -24,7 +24,7 @@ defmodule Autonomous.PhaseRequestTest do
 
   test "specify: slash command + breakdown ref, sonnet model" do
     r = PhaseRequest.build(feature(), :specify)
-    assert String.starts_with?(r.prompt, "/speckit.specify")
+    assert String.starts_with?(r.prompt, "/speckit-specify")
     assert r.prompt =~ "docs/breakdown/001-core-ledger.md"
     assert r.prompt =~ "001"
     assert r.prompt =~ "core-ledger"
@@ -78,19 +78,19 @@ defmodule Autonomous.PhaseRequestTest do
 
   test "analyze: slash command + JSON schema pack" do
     r = PhaseRequest.build(feature(), :analyze)
-    assert String.starts_with?(r.prompt, "/speckit.analyze")
+    assert String.starts_with?(r.prompt, "/speckit-analyze")
     assert r.prompt =~ "findings"
     assert r.model == "opus"
   end
 
   test "implement: max_turns" do
     r = PhaseRequest.build(feature(), :implement)
-    assert r.prompt == "/speckit.implement"
+    assert r.prompt == "/speckit-implement"
     assert r.max_turns == 200
   end
 
   test "tasks and plan use their slash commands" do
-    assert PhaseRequest.build(feature(), :tasks).prompt == "/speckit.tasks"
+    assert PhaseRequest.build(feature(), :tasks).prompt == "/speckit-tasks"
 
     # Config ships a default plan_stack, so clear it for the no-stack assertion —
     # restoring the original so we don't pollute other tests' view of :plan_stack.
@@ -99,11 +99,11 @@ defmodule Autonomous.PhaseRequestTest do
     on_exit(fn -> Application.put_env(:autonomous, :plan_stack, original) end)
 
     bare = PhaseRequest.build(feature(), :plan).prompt
-    assert String.starts_with?(bare, "/speckit.plan\n\n")
+    assert String.starts_with?(bare, "/speckit-plan\n\n")
 
     Application.put_env(:autonomous, :plan_stack, ["Elixir", "Phoenix"])
     stacked = PhaseRequest.build(feature(), :plan).prompt
-    assert String.starts_with?(stacked, "/speckit.plan Preferred stack: Elixir, Phoenix. ")
+    assert String.starts_with?(stacked, "/speckit-plan Preferred stack: Elixir, Phoenix. ")
     assert stacked =~ "Feature 001 (core-ledger)"
 
     # Both carry the completion contract the plan gates check for.
@@ -115,9 +115,9 @@ defmodule Autonomous.PhaseRequestTest do
       # `FakeArtifacts` routes offline e2e fixtures by slash-command substring,
       # testing `specify` before `plan` — any other phase's token in this prompt
       # would silently misroute every one of them.
-      refute prompt =~ "/speckit.specify"
-      refute prompt =~ "/speckit.tasks"
-      refute prompt =~ "/speckit.implement"
+      refute prompt =~ "/speckit-specify"
+      refute prompt =~ "/speckit-tasks"
+      refute prompt =~ "/speckit-implement"
     end
   end
 
@@ -244,7 +244,7 @@ defmodule Autonomous.PhaseRequestTest do
 
       r = PhaseRequest.build(feature(), :implement, scope: {:task_phase, tp})
 
-      assert String.starts_with?(r.prompt, "/speckit.implement")
+      assert String.starts_with?(r.prompt, "/speckit-implement")
 
       assert r.prompt =~
                ~s(Implement ONLY the tasks in "Phase 3: User Story 1 - Long task lists finish" of tasks.md.)
@@ -266,7 +266,7 @@ defmodule Autonomous.PhaseRequestTest do
 
       r = PhaseRequest.build(feature(), :implement, scope: {:sweep, tasks})
 
-      assert String.starts_with?(r.prompt, "/speckit.implement")
+      assert String.starts_with?(r.prompt, "/speckit-implement")
 
       assert r.prompt =~
                "Complete ONLY these remaining unchecked tasks from tasks.md, in this order:"
@@ -445,7 +445,7 @@ defmodule Autonomous.PhaseRequestTest do
     end
 
     test "absent for scope nil and every other phase" do
-      assert PhaseRequest.build(feature(), :implement).prompt == "/speckit.implement"
+      assert PhaseRequest.build(feature(), :implement).prompt == "/speckit-implement"
 
       for phase <- [:specify, :clarify, :plan, :tasks, :analyze, :describe] do
         refute PhaseRequest.build(feature(), phase).prompt =~ @rule_marker, "#{phase}"

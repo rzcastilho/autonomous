@@ -15,7 +15,7 @@ defmodule Autonomous.FacadeE2ETest do
       text =
         cond do
           String.contains?(prompt, "clarify reviewer") -> "Clarified."
-          String.contains?(prompt, "/speckit.analyze") -> ~s({"summary":"ok","findings":[]})
+          String.contains?(prompt, "/speckit-analyze") -> ~s({"summary":"ok","findings":[]})
           true -> "done"
         end
 

@@ -43,7 +43,7 @@ defmodule Autonomous.FeatureRunnerClarifyWaitTest do
         String.contains?(prompt, "pull-request description") ->
           pr_json()
 
-        String.contains?(prompt, "/speckit.analyze") ->
+        String.contains?(prompt, "/speckit-analyze") ->
           ~s({"summary":"clean","findings":[]})
 
         String.contains?(prompt, "ready for human PR review") ->

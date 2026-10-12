@@ -46,7 +46,7 @@ defmodule Autonomous.RunSpecTest do
             _ -> "Clarified: no ambiguity remains."
           end
 
-        String.contains?(prompt, "/speckit.analyze") ->
+        String.contains?(prompt, "/speckit-analyze") ->
           case scenario do
             :halt ->
               ~s({"summary":"violation","findings":[{"severity":"critical","title":"bad"}]})

@@ -15,7 +15,7 @@ defmodule Autonomous.ResumeCrashTest do
       Autonomous.FakeArtifacts.write(prompt, options)
 
       text =
-        if String.contains?(prompt, "/speckit.analyze") do
+        if String.contains?(prompt, "/speckit-analyze") do
           ~s({"summary":"crash resume","findings":[{"severity":"critical","title":"bad"}]})
         else
           "Phase completed."

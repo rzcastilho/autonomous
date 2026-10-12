@@ -987,7 +987,7 @@ defmodule Autonomous.ChunkRunnerTest do
     repo =
       System.get_env("AUTONOMOUS_FIXTURE_REPO") ||
         flunk(
-          "set AUTONOMOUS_FIXTURE_REPO to a repo path with a structured tasks.md ready for /speckit.implement"
+          "set AUTONOMOUS_FIXTURE_REPO to a repo path with a structured tasks.md ready for /speckit-implement"
         )
 
     # This test exercises the real `claude` CLI, not the file's FakeSDK — undo

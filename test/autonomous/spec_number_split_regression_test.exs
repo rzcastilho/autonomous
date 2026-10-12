@@ -33,8 +33,8 @@ defmodule Autonomous.SpecNumberSplitRegressionTest do
       cwd = cwd_of(options)
 
       cond do
-        String.contains?(prompt, "/speckit.specify") -> write_specify(prompt, cwd)
-        String.contains?(prompt, "/speckit.plan") -> write_plan(cwd)
+        String.contains?(prompt, "/speckit-specify") -> write_specify(prompt, cwd)
+        String.contains?(prompt, "/speckit-plan") -> write_plan(cwd)
         true -> :ok
       end
 

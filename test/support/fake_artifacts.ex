@@ -65,10 +65,10 @@ defmodule Autonomous.FakeArtifacts do
   # Spec Kit phases, prompt-pack text for clarify/converge/describe.
   defp phase_of(prompt) do
     cond do
-      String.contains?(prompt, "/speckit.specify") -> :specify
-      String.contains?(prompt, "/speckit.plan") -> :plan
-      String.contains?(prompt, "/speckit.tasks") -> :tasks
-      String.contains?(prompt, "/speckit.implement") -> :implement
+      String.contains?(prompt, "/speckit-specify") -> :specify
+      String.contains?(prompt, "/speckit-plan") -> :plan
+      String.contains?(prompt, "/speckit-tasks") -> :tasks
+      String.contains?(prompt, "/speckit-implement") -> :implement
       true -> nil
     end
   end
