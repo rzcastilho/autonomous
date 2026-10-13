@@ -127,18 +127,18 @@ Single project, existing layout: host scripts in `scripts/`, Elixir in `lib/auto
 
 ### Tests for User Story 4
 
-- [ ] T033 [P] [US4] `test/autonomous/applied_volumes_test.exs`: `parse/1` — `nil`/`""` ⇒ `{:ok, [], nil}`; valid v1 JSON ⇒ ordered `Volume` structs with env pairs; unknown `version`, bad JSON, bad shape ⇒ `{:error, reason}`
-- [ ] T034 [P] [US4] `test/autonomous/volume_usage_test.exs`: temp dir sizes via `du -sk -x`, missing path ⇒ `{:unknown, "not mounted"}`, injected slow command ⇒ `{:unknown, "timed out"}`, `du` failure ⇒ `{:unknown, "du failed: …"}`; never `{:ok, 0}` for unknown
-- [ ] T035 [P] [US4] `test/autonomous/web/volumes_view_test.exs`: state `:hidden` / `{:refused, reason}` / `{:rows, declaration, rows}`; usage text for `:measuring`, `{:ok, bytes}` (human size + exact KiB), `{:unknown, r}` ⇒ `unknown (<r>)`
-- [ ] T036 [P] [US4] `test/autonomous/web/config_live_volumes_test.exs`: render with `AUTONOMOUS_VOLUMES` set (group, `data-volume=<name>`, "as applied at start" note, mono identifiers, `data-volume-usage` transitions `measuring → known|unknown`), without it (page byte-identical, no `data-volumes`), malformed value ⇒ `form_refusal` "AUTONOMOUS_VOLUMES unreadable"; reload re-measures
+- [X] T033 [P] [US4] `test/autonomous/applied_volumes_test.exs`: `parse/1` — `nil`/`""` ⇒ `{:ok, [], nil}`; valid v1 JSON ⇒ ordered `Volume` structs with env pairs; unknown `version`, bad JSON, bad shape ⇒ `{:error, reason}`
+- [X] T034 [P] [US4] `test/autonomous/volume_usage_test.exs`: temp dir sizes via `du -sk -x`, missing path ⇒ `{:unknown, "not mounted"}`, injected slow command ⇒ `{:unknown, "timed out"}`, `du` failure ⇒ `{:unknown, "du failed: …"}`; never `{:ok, 0}` for unknown
+- [X] T035 [P] [US4] `test/autonomous/web/volumes_view_test.exs`: state `:hidden` / `{:refused, reason}` / `{:rows, declaration, rows}`; usage text for `:measuring`, `{:ok, bytes}` (human size + exact KiB), `{:unknown, r}` ⇒ `unknown (<r>)`
+- [X] T036 [P] [US4] `test/autonomous/web/config_live_volumes_test.exs`: render with `AUTONOMOUS_VOLUMES` set (group, `data-volume=<name>`, "as applied at start" note, mono identifiers, `data-volume-usage` transitions `measuring → known|unknown`), without it (page byte-identical, no `data-volumes`), malformed value ⇒ `form_refusal` "AUTONOMOUS_VOLUMES unreadable"; reload re-measures
 
 ### Implementation for User Story 4
 
-- [ ] T037 [P] [US4] Create `lib/autonomous/applied_volumes.ex`: `Autonomous.AppliedVolumes` with nested `Volume` struct (`name`, `path`, `env`, `path_dirs`), `@type`s, `@spec` on every public function (constitution VI), pure `parse/1` (decode with `Jason`, already used in `lib/autonomous/describe.ex`) and the single env read `current/0`
-- [ ] T038 [P] [US4] Create `lib/autonomous/volume_usage.ex`: `Autonomous.VolumeUsage.measure(path, timeout_ms \\ 30_000)` running `du -sk -x` under a `Task` with timeout ⇒ `{:ok, bytes} | {:unknown, reason}`, with `@spec`
-- [ ] T039 [P] [US4] Create `lib/autonomous/web/volumes_view.ex`: pure `Autonomous.Web.VolumesView.state/2` and size/label formatting per data-model.md "Configuration view state", `@spec` on every public function
-- [ ] T040 [US4] Edit `lib/autonomous/web/live/config_live.ex`: load `AppliedVolumes.current/0` on mount, assign view state, `start_async(:volume_usage, …)` per volume on connected mount, `handle_async` updates rows; render the `<fieldset class="config-volumes form-panel" data-volumes>` group per contracts/configuration-surface.md (shared `form-panel`/`data-table` classes, tokens only, no animation, no raw `inspect/1`); render nothing when `:hidden`
-- [ ] T041 [US4] Add CSS to `priv/static/assets/console.css` only if a new class is needed (tokens only, no literals); run `test/autonomous/design_contract_test.exs` and fix any guard hit
+- [X] T037 [P] [US4] Create `lib/autonomous/applied_volumes.ex`: `Autonomous.AppliedVolumes` with nested `Volume` struct (`name`, `path`, `env`, `path_dirs`), `@type`s, `@spec` on every public function (constitution VI), pure `parse/1` (decode with `Jason`, already used in `lib/autonomous/describe.ex`) and the single env read `current/0`
+- [X] T038 [P] [US4] Create `lib/autonomous/volume_usage.ex`: `Autonomous.VolumeUsage.measure(path, timeout_ms \\ 30_000)` running `du -sk -x` under a `Task` with timeout ⇒ `{:ok, bytes} | {:unknown, reason}`, with `@spec`
+- [X] T039 [P] [US4] Create `lib/autonomous/web/volumes_view.ex`: pure `Autonomous.Web.VolumesView.state/2` and size/label formatting per data-model.md "Configuration view state", `@spec` on every public function
+- [X] T040 [US4] Edit `lib/autonomous/web/live/config_live.ex`: load `AppliedVolumes.current/0` on mount, assign view state, `start_async(:volume_usage, …)` per volume on connected mount, `handle_async` updates rows; render the `<fieldset class="config-volumes form-panel" data-volumes>` group per contracts/configuration-surface.md (shared `form-panel`/`data-table` classes, tokens only, no animation, no raw `inspect/1`); render nothing when `:hidden`
+- [X] T041 [US4] Add CSS to `priv/static/assets/console.css` only if a new class is needed (tokens only, no literals); run `test/autonomous/design_contract_test.exs` and fix any guard hit
 
 **Checkpoint**: all four stories complete
 
@@ -146,11 +146,11 @@ Single project, existing layout: host scripts in `scripts/`, Elixir in `lib/auto
 
 ## Phase 7: Polish & Cross-Cutting Concerns
 
-- [ ] T042 [P] Update `docs/container.md`: declaration location/format, validation rules, reserved variable list, `PATH` prepending, image-variable override consequence (e.g. `MISE_DATA_DIR` reinstall on first start), worktrees unchanged (FR-025a), reset, purge, removing a no-longer-declared volume, three worked examples + Python snippet (FR-027)
-- [ ] T043 [P] Update `docs/runbook.md`: operator flow and the three-target quickstart (copy/condense `specs/041-user-defined-volumes/quickstart.md`, FR-028)
-- [ ] T044 [P] Add a "User-defined volumes (feature 041)" paragraph to `CLAUDE.md` (host-only `volumes.toml`, `scripts/volumes.py`, overlay, `reset-cache`, `AUTONOMOUS_VOLUMES`, Configuration group)
-- [ ] T045 [P] Update `docs/enforcement.md` only where the container boundary text mentions mounts (declared volumes are container-engine storage, no host path; FR-015/FR-025)
-- [ ] T046 Run the full hermetic suite: `mise exec -- mix test` (all pre-existing tests unchanged and green — SC-005; the existing `PhaseRequest`, `AgentRoot`, `ShellTimeouts`, `WorkspaceTrust` and `RuntimeNotice` tests are the FR-025 "unchanged" guard — none may be edited by this feature) and `mise exec -- mix compile --warnings-as-errors`
+- [X] T042 [P] Update `docs/container.md`: declaration location/format, validation rules, reserved variable list, `PATH` prepending, image-variable override consequence (e.g. `MISE_DATA_DIR` reinstall on first start), worktrees unchanged (FR-025a), reset, purge, removing a no-longer-declared volume, three worked examples + Python snippet (FR-027)
+- [X] T043 [P] Update `docs/runbook.md`: operator flow and the three-target quickstart (copy/condense `specs/041-user-defined-volumes/quickstart.md`, FR-028)
+- [X] T044 [P] Add a "User-defined volumes (feature 041)" paragraph to `CLAUDE.md` (host-only `volumes.toml`, `scripts/volumes.py`, overlay, `reset-cache`, `AUTONOMOUS_VOLUMES`, Configuration group)
+- [X] T045 [P] Update `docs/enforcement.md` only where the container boundary text mentions mounts (declared volumes are container-engine storage, no host path; FR-015/FR-025)
+- [X] T046 Run the full hermetic suite: `mise exec -- mix test` (all pre-existing tests unchanged and green — SC-005; the existing `PhaseRequest`, `AgentRoot`, `ShellTimeouts`, `WorkspaceTrust` and `RuntimeNotice` tests are the FR-025 "unchanged" guard — none may be edited by this feature) and `mise exec -- mix compile --warnings-as-errors`
 - [ ] T047 Walk `specs/041-user-defined-volumes/quickstart.md` sections A–C and "Rejections" by hand with `scripts/container-smoke.sh volumes` (GNU-tool PATH shim per the macOS smoke recipe) and record the result in `specs/041-user-defined-volumes/checklists/requirements.md` notes
 
 ---

@@ -22,14 +22,16 @@ defmodule Autonomous.Web.ConfigLive do
 
   use Autonomous.Web, :live_view
 
-  alias Autonomous.Web.{AgentRootView, ConfigDiff}
+  alias Autonomous.Web.{AgentRootView, ConfigDiff, VolumesView}
 
   alias Autonomous.{
     AgentRoot,
+    AppliedVolumes,
     Config,
     ConsoleProjection,
     LiveConfig,
-    Pipeline
+    Pipeline,
+    VolumeUsage
   }
 
   @impl true
@@ -37,7 +39,34 @@ defmodule Autonomous.Web.ConfigLive do
     {:ok,
      socket
      |> assign(page_title: "Configuration", current_path: "/config", errors: %{})
-     |> refresh()}
+     |> refresh()
+     |> load_volumes()}
+  end
+
+  # 041: the applied volume set is fixed at start, so it is read once per mount;
+  # a reload re-measures. Sizes are measured off the render path.
+  defp load_volumes(socket) do
+    applied = AppliedVolumes.current()
+
+    socket = assign(socket, volumes_applied: applied, volume_usage: %{})
+
+    with true <- connected?(socket), {:ok, volumes, _declaration} <- applied do
+      Enum.reduce(volumes, socket, fn volume, acc ->
+        start_async(acc, {:volume_usage, volume.name}, fn -> VolumeUsage.measure(volume.path) end)
+      end)
+    else
+      _ -> socket
+    end
+  end
+
+  @impl true
+  def handle_async({:volume_usage, name}, {:ok, usage}, socket) do
+    {:noreply, update(socket, :volume_usage, &Map.put(&1, name, usage))}
+  end
+
+  def handle_async({:volume_usage, name}, {:exit, _reason}, socket) do
+    usage = {:unknown, "du failed: measurement crashed"}
+    {:noreply, update(socket, :volume_usage, &Map.put(&1, name, usage))}
   end
 
   # Re-reads the applied configuration; the form starts (and, after a
@@ -232,6 +261,8 @@ defmodule Autonomous.Web.ConfigLive do
           </.record_block>
         </fieldset>
 
+        <.volumes_group state={VolumesView.state(@volumes_applied, @volume_usage)} />
+
         <div class="config-actionbar" data-actionbar>
           <span :if={@dirty} class="config-unsaved" data-unsaved>{map_size(@changes)} unsaved</span>
           <button
@@ -247,6 +278,64 @@ defmodule Autonomous.Web.ConfigLive do
         </div>
       </form>
     </div>
+    """
+  end
+
+  # ---- 041: declared volumes group ----------------------------------------
+
+  attr(:state, :any, required: true)
+
+  defp volumes_group(%{state: :hidden} = assigns), do: ~H""
+
+  defp volumes_group(%{state: {:refused, _reason}} = assigns) do
+    ~H"""
+    <fieldset class="config-volumes form-panel" data-volumes>
+      <legend class="sr-only">Declared volumes</legend>
+      <.form_refusal label="AUTONOMOUS_VOLUMES unreadable" data-error="volumes">
+        {elem(@state, 1)}
+      </.form_refusal>
+    </fieldset>
+    """
+  end
+
+  defp volumes_group(%{state: {:rows, declaration, rows}} = assigns) do
+    assigns = assign(assigns, declaration: declaration, rows: rows)
+
+    ~H"""
+    <fieldset class="config-volumes form-panel" data-volumes>
+      <legend>declared volumes</legend>
+      <p class="config-toggle-sub">
+        as applied at start — edits to <span class="config-instance-id">volumes.toml</span>
+        since then are not shown
+      </p>
+      <p :if={@declaration} class="config-instance-id" data-volumes-declaration>{@declaration}</p>
+      <table class="backlog-table">
+        <thead>
+          <tr>
+            <th>name</th>
+            <th>mount path</th>
+            <th>variables</th>
+            <th>path dirs</th>
+            <th>space used</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr :for={row <- @rows} data-volume={row.name}>
+            <td class="config-instance-id">{row.name}</td>
+            <td class="config-instance-id">{row.path}</td>
+            <td class="config-instance-id">
+              <div :for={label <- VolumesView.env_labels(row.env)}>{label}</div>
+            </td>
+            <td class="config-instance-id">
+              <div :for={dir <- row.path_dirs}>{dir}</div>
+            </td>
+            <td data-volume-usage={VolumesView.usage_state(row.usage)}>
+              {VolumesView.usage_text(row.usage)}
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </fieldset>
     """
   end
 end

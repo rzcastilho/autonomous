@@ -53,7 +53,9 @@ started by `scripts/autonomous`. Only the target repo, its worktree root, and
 the instance state directory are mounted read-write. The process runs as the
 host user, never root; without `--agent-root` the image carries no `sudo`, so
 system writes fail at the OS layer. This bounds blast radius to the mounted
-paths. See `docs/container.md` for operation.
+paths. Operator-declared volumes (feature 041) are container-engine storage with no host path and
+sit inside the same boundary; their declaration file stays host-only and is never mounted. See
+`docs/container.md` for operation.
 
 **Starting outside the container.** `ContainerGuard.check!/0` refuses a boot
 outside the image whenever `require_container` is true, so a host start only
