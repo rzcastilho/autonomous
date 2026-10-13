@@ -4,7 +4,7 @@
 # FAIL. Sections are added per user story — see
 # specs/031-containerized-runtime/quickstart.md.
 #
-#   scripts/container-smoke.sh [us1|us2|us3|us4|us5|us6|secrets|trust|sysdeps|conversation]
+#   scripts/container-smoke.sh [us1|us2|us3|us4|us5|us6|secrets|trust|sysdeps|conversation|volumes]
 #
 # Needs: Docker Engine + Compose v2, the image built (scripts/autonomous build).
 # Agent-auth checks (SC-011) spend a few cents and run only with SMOKE_AGENT=1.
@@ -728,6 +728,203 @@ conversation() {
   fi
 }
 
+# Feature 041: user-defined persistent volumes. Hand-run; the declaration lives in
+# a temp XDG_CONFIG_HOME so the operator's real one is never touched. Needs `make`
+# in the image for the build-persistence check. SMOKE_AGENT=1 adds one real `claude`
+# session; SMOKE_SKIP_REBUILD=1 skips the image rebuild check.
+volumes() {
+  echo "== User-defined volumes (feature 041) =="
+  XDG_CONFIG_HOME="$(mktemp -d)"
+  export XDG_CONFIG_HOME
+  printf '%s\n' "$XDG_CONFIG_HOME" >>"$smoke_list"
+  parent=/var/lib/autonomous/volumes
+
+  vol_segment() { basename "$(instance_dir_of "$1")"; }
+  vol_file() { printf '%s/autonomous/targets/%s/volumes.toml' "$XDG_CONFIG_HOME" "$(vol_segment "$1")"; }
+  vol_write() { # vol_write <target> <toml>
+    mkdir -p "$(dirname "$(vol_file "$1")")"
+    printf '%s\n' "$2" >"$(vol_file "$1")"
+  }
+  vol_count() { # vol_count <segment>: user volumes of the segment
+    docker volume ls -q --filter label=dev.autonomous.kind=user-volume \
+      --filter "label=dev.autonomous.segment=$1" | wc -l | tr -d ' '
+  }
+  vol_eval() { iex_eval "$1" "$(free_port)" "$2"; }
+
+  t="$(make_target vol-a)"
+  seg="$(vol_segment "$t")"
+  vol_write "$t" "[[volume]]
+name = \"smoke-build\"
+path = \"$parent/smoke-build\"
+path_dirs = [\"$parent/smoke-build/bin\"]
+[volume.env]
+BUILD_DIR = \"$parent/smoke-build/obj\""
+
+  # --- persistence across stop/start ---------------------------------------------
+  out="$(vol_eval "$t" '
+    b = System.fetch_env!("BUILD_DIR")
+    File.mkdir_p!(b)
+    File.mkdir_p!(Path.dirname(b) <> "/bin")
+    File.write!(Path.dirname(b) <> "/bin/smoke-tool", "#!/bin/sh\necho smoke-tool-ok\n")
+    File.chmod!(Path.dirname(b) <> "/bin/smoke-tool", 0o755)
+    File.write!(b <> "/marker", "kept")
+    IO.puts("VOL_BUILD_DIR=" <> b)
+    IO.puts("VOL_PATH=" <> System.get_env("PATH"))
+    d = Path.join(System.fetch_env!("AUTONOMOUS_WORKTREE_ROOT"), "smoke-make")
+    File.mkdir_p!(d)
+    File.write!(Path.join(d, "main.c"), "x")
+    File.write!(Path.join(d, "Makefile"), "$(BUILD_DIR)/out.o: main.c\n\tcp main.c $@\n")
+    {o, s} = System.cmd("make", [], cd: d, stderr_to_stdout: true)
+    IO.puts("VOL_MAKE1 status=#{s} " <> String.replace(o, "\n", "|"))')"
+  case "$out" in *"VOL_BUILD_DIR=$parent/smoke-build/obj"*) pass "declared variable visible in the session" ;; *) fail "BUILD_DIR not visible: $out" ;; esac
+  # erlexec prepends its own erts bin to PATH when the VM starts, so "first" means first
+  # ahead of every image entry: only erts-*/bin entries may precede the volume's path dir.
+  vol_path="$(printf '%s\n' "$out" | sed -n 's/^VOL_PATH=//p' | tr -d '\r' | head -1)"
+  vol_lead="$(printf '%s\n' "$vol_path" | tr ':' '\n' | awk -v want="$parent/smoke-build/bin" '
+    $0 == want { found = 1; exit }
+    $0 !~ /\/erts-[^\/]*\/bin$/ { bad = 1 }
+    END { print (found && !bad) ? "ok" : "no" }')"
+  case "$vol_lead" in ok) pass "path dir is first on PATH (ahead of image entries)" ;; *) fail "PATH not prefixed: $vol_path" ;; esac
+  case "$out" in *"VOL_MAKE1 status=0"*"cp "*) pass "first build compiled into the volume" ;; *) skip "make not available in the image: $out" ;; esac
+
+  out="$(vol_eval "$t" '
+    b = System.fetch_env!("BUILD_DIR")
+    IO.puts("VOL_MARKER=" <> File.read!(b <> "/marker"))
+    d = Path.join(System.fetch_env!("AUTONOMOUS_WORKTREE_ROOT"), "smoke-make")
+    {_, q} = System.cmd("make", ["-q"], cd: d, stderr_to_stdout: true)
+    {o, _} = System.cmd("make", [], cd: d, stderr_to_stdout: true)
+    IO.puts("VOL_MAKEQ status=#{q} " <> String.replace(o, "\n", "|"))')"
+  case "$out" in *"VOL_MARKER=kept"*) pass "marker survived stop/start (SC-001)" ;; *) fail "marker lost across restart: $out" ;; esac
+  case "$out" in
+    *"VOL_MAKEQ status=0"*"cp "*) fail "second build redid work" ;;
+    *"VOL_MAKEQ status=0"*) pass "second build is up to date (SC-001)" ;;
+    *) skip "make check not conclusive: $out" ;;
+  esac
+
+  # --- nothing leaked into the worktree or host repo (SC-002) ---------------------
+  if [ -z "$(git -C "$t" status --porcelain --ignored)" ] && [ -z "$(find "$t" -name '*.o' 2>/dev/null)" ]; then
+    pass "host repo shows no new or ignored files and no object files"
+  else
+    fail "build data leaked into the host repo: $(git -C "$t" status --porcelain --ignored)"
+  fi
+
+  # --- survives an image rebuild (FR-012) -----------------------------------------
+  if [ -z "${SMOKE_SKIP_REBUILD:-}" ]; then
+    scripts/autonomous build >/dev/null 2>&1 || fail "image rebuild failed"
+    out="$(vol_eval "$t" 'IO.puts("VOL_AFTER_REBUILD=" <> File.read!(System.fetch_env!("BUILD_DIR") <> "/marker"))')"
+    case "$out" in *"VOL_AFTER_REBUILD=kept"*) pass "volume survived an image rebuild" ;; *) fail "volume lost across rebuild: $out" ;; esac
+  else
+    skip "image rebuild check (SMOKE_SKIP_REBUILD set)"
+  fi
+
+  # --- a real agent session sees the variable and the PATH dir (FR-014) -----------
+  if [ -n "${SMOKE_AGENT:-}" ]; then
+    out="$(vol_eval "$t" '
+      {o, _} = System.cmd("claude", ["-p", "--dangerously-skip-permissions",
+        "Run in Bash: printenv BUILD_DIR; smoke-tool. Reply with exactly their output."], stderr_to_stdout: true)
+      IO.puts("VOL_AGENT=" <> String.replace(o, "\n", "|"))')"
+    case "$out" in *"$parent/smoke-build/obj"*"smoke-tool-ok"*) pass "agent session sees the variable and the path dir" ;; *) fail "agent session does not: $out" ;; esac
+  else
+    skip "agent session check (set SMOKE_AGENT=1)"
+  fi
+
+  # --- 1, 5 and 20 entries --------------------------------------------------------
+  for n in 1 5 20; do
+    t_n="$(make_target "vol-n$n")"
+    toml=""
+    i=1
+    while [ "$i" -le "$n" ]; do
+      toml="$toml[[volume]]
+name = \"v$i\"
+path = \"$parent/v$i\"
+"
+      i=$((i + 1))
+    done
+    vol_write "$t_n" "$toml"
+    vol_eval "$t_n" 'IO.puts("up")' >/dev/null
+    [ "$(vol_count "$(vol_segment "$t_n")")" = "$n" ] && pass "$n declared volume(s) created" || fail "expected $n volumes"
+    purge_target "$t_n"
+  done
+
+  # --- isolation: same volume name, two targets (FR-011) --------------------------
+  t2="$(make_target vol-b)"
+  vol_write "$t2" "[[volume]]
+name = \"smoke-build\"
+path = \"$parent/smoke-build\"
+env = { BUILD_DIR = \"$parent/smoke-build\" }"
+  out="$(vol_eval "$t2" 'IO.puts("VOL_B_HAS=#{File.exists?("/var/lib/autonomous/volumes/smoke-build/obj/marker")}")')"
+  case "$out" in *"VOL_B_HAS=false"*) pass "same-named volume of another target is separate" ;; *) fail "volumes leaked across targets: $out" ;; esac
+
+  # --- rejected declarations never half-start an instance (SC-003) ----------------
+  t3="$(make_target vol-bad)"
+  seg3="$(vol_segment "$t3")"
+  vol_reject() { # vol_reject <label> <toml>
+    vol_write "$t3" "$2"
+    rc=0
+    scripts/autonomous shell --target "$t3" </dev/null >/dev/null 2>&1 || rc=$?
+    if [ "$rc" = 2 ] && [ "$(vol_count "$seg3")" = 0 ] \
+      && [ -z "$(docker ps -aq --filter "label=com.docker.compose.project=autonomous-$seg3")" ]; then
+      pass "rejected ($1): exit 2, no container, no volume"
+    else
+      fail "rejection ($1) exit=$rc volumes=$(vol_count "$seg3")"
+    fi
+  }
+  vol_reject "name" "[[volume]]
+name = \"Bad Name\"
+path = \"$parent/x\""
+  vol_reject "path" "[[volume]]
+name = \"x\"
+path = \"/workspace/x\""
+  vol_reject "variable" "[[volume]]
+name = \"x\"
+path = \"$parent/x\"
+env = { PATH = \"/x\" }"
+  vol_reject "path dir" "[[volume]]
+name = \"x\"
+path = \"$parent/x\"
+path_dirs = [\"/usr/bin\"]"
+  vol_reject "malformed" "[[volume]
+name ="
+  purge_target "$t3"
+
+  # --- reset-cache and purge (US3, FR-016..FR-018) ---------------------------------
+  t4="$(make_target vol-reset)"
+  seg4="$(vol_segment "$t4")"
+  vol_write "$t4" "[[volume]]
+name = \"keep\"
+path = \"$parent/keep\"
+env = { KEEP_DIR = \"$parent/keep\" }
+
+[[volume]]
+name = \"wipe\"
+path = \"$parent/wipe\"
+env = { WIPE_DIR = \"$parent/wipe\" }"
+  vol_eval "$t4" 'File.write!(System.fetch_env!("KEEP_DIR") <> "/m", "1"); File.write!(System.fetch_env!("WIPE_DIR") <> "/m", "1")' >/dev/null
+  out="$(scripts/autonomous reset-cache --target "$t4" --volume wipe 2>&1)"
+  case "$out" in *"wipe removed"*) pass "reset-cache removed the named volume" ;; *) fail "reset by name: $out" ;; esac
+  out="$(vol_eval "$t4" 'IO.puts("KEEP=#{File.exists?(System.fetch_env!("KEEP_DIR") <> "/m")} WIPE=#{File.exists?(System.fetch_env!("WIPE_DIR") <> "/m")}")')"
+  case "$out" in *"KEEP=true WIPE=false"*) pass "only the named volume was emptied" ;; *) fail "reset scope: $out" ;; esac
+  out="$(scripts/autonomous reset-cache --target "$t4" --volume wipe 2>&1)"
+  scripts/autonomous reset-cache --target "$t4" --volume wipe >/dev/null 2>&1 \
+    && pass "reset-cache is idempotent" || fail "second reset failed: $out"
+  out="$(scripts/autonomous reset-cache --target "$t4" --volume nope 2>&1)" && rc=0 || rc=$?
+  [ "$rc" = 2 ] && pass "unknown volume refused" || fail "unknown volume exit=$rc: $out"
+  scripts/autonomous console --target "$t4" >/dev/null 2>&1 || true
+  out="$(scripts/autonomous reset-cache --target "$t4" 2>&1)" && rc=0 || rc=$?
+  [ "$rc" = 75 ] && pass "reset-cache refused while the instance is up" || fail "running reset exit=$rc: $out"
+  scripts/autonomous stop --target "$t4" >/dev/null 2>&1
+  out="$(scripts/autonomous reset-cache --target "$t4" 2>&1)"
+  case "$out" in *"keep removed"*) pass "reset-cache with no names removes every declared volume" ;; *) fail "reset all: $out" ;; esac
+  vol_eval "$t4" 'IO.puts("up")' >/dev/null
+  scripts/autonomous stop --target "$t4" --purge >/dev/null 2>&1
+  [ "$(vol_count "$seg4")" = 0 ] && pass "stop --purge removed the segment's user volumes" || fail "volumes remain after purge"
+  purge_target "$t4"
+
+  purge_target "$t"
+  purge_target "$t2"
+  [ "$(vol_count "$seg")" = 0 ] && pass "stop --purge removed the declared volumes" || fail "volumes remain after purge"
+}
+
 section="${1:-all}"
 case "$section" in
   us1) us1 ;;
@@ -740,8 +937,9 @@ case "$section" in
   trust) trust ;;
   sysdeps) sysdeps ;;
   conversation) conversation ;;
-  all) us1; us2; us3; us4; us5; us6; secrets; trust; sysdeps; conversation ;;
-  *) echo "usage: scripts/container-smoke.sh [us1|us2|us3|us4|us5|us6|secrets|trust|sysdeps|conversation]" >&2; exit 2 ;;
+  volumes) volumes ;;
+  all) us1; us2; us3; us4; us5; us6; secrets; trust; sysdeps; conversation; volumes ;;
+  *) echo "usage: scripts/container-smoke.sh [us1|us2|us3|us4|us5|us6|secrets|trust|sysdeps|conversation|volumes]" >&2; exit 2 ;;
 esac
 
 echo

@@ -1568,3 +1568,29 @@ the PR describe session — is recorded as it runs.
   the final text.
 - Export carries status/reason/entry count/bytes per attempt only — no path, no
   content.
+
+## Persistent volumes for a target (041)
+
+Use when a target re-downloads toolchains or rebuilds from scratch every restart
+(incident `r000003`). Reference: `docs/container.md` "User-defined volumes".
+
+1. `scripts/autonomous volumes --target ../repo --init` — writes the commented starter
+   (refuses if it exists). Edit it (one `[[volume]]` per cache; see the worked examples).
+2. `scripts/autonomous volumes --target ../repo` — dry check: entries, `absent`/`present`,
+   `declaration valid (N volumes)` or every violation (exit 2).
+3. Start as usual (`console`/`shell`/`release`). The start prints `autonomous: volumes <file>`,
+   one line per volume and a notice per overridden image variable. A bad declaration starts
+   nothing (exit 2, `nothing was started; fix the declaration and retry`).
+4. Configuration (`/config`) shows the "declared volumes" group *as applied at start* with
+   space used (measured in the background; `unknown (reason)`, never `0`, when it cannot be
+   measured). Editing `volumes.toml` needs a restart to take effect.
+5. Verify persistence: write under a declared variable's path, `stop`, start, the data is
+   there; `git status` in the worktree/target shows no new build output.
+6. Reset: `stop`, then `reset-cache --target ../repo [--volume name]...` (exit 75 while the
+   instance runs; idempotent). `stop --purge` removes every declared volume of the target.
+   A volume removed from the declaration stays until `docker volume rm <name>` (listed by
+   `volumes` as `kept, not declared`).
+
+Three-target walkthrough (Rust `mod-player`, Node+pnpm `fretboard-master`, Elixir
+`autonomous`), rejection table and smoke: `specs/041-user-defined-volumes/quickstart.md`,
+`scripts/container-smoke.sh volumes`.

@@ -111,6 +111,22 @@ Console Configuration shows an "agent root" row via `AgentRootView` (`:hidden |
 `scripts/container-smoke.sh sysdeps`. See `docs/container.md`, `docs/enforcement.md`,
 `docs/runbook.md`.
 
+## User-defined volumes (feature 041)
+
+Operator-declared Docker named volumes keep a target's toolchains/caches/build output across
+restarts. Host-only `volumes.toml` at `${XDG_CONFIG_HOME:-~/.config}/autonomous/targets/<segment>/`,
+parsed/validated/planned by stdlib `scripts/volumes.py` (`parse|validate|plan|starter|select`; python
+>= 3.11, only required once a declaration exists). `scripts/autonomous` validates before creating anything
+(exit 2, all violations), creates labelled volumes (`dev.autonomous.kind|segment|volume`), chowns mount
+roots in one provisioning container, writes the `applied.compose.json` overlay (variables, `PATH` prefix,
+`AUTONOMOUS_VOLUMES` JSON v1, `AUTONOMOUS_VOLUME_PATH`); the entrypoint re-prepends the path inside
+`mise exec`. New commands: `volumes --target <repo> [--init]`, `reset-cache --target <repo> [--volume n]...`,
+`stop --purge` also removes declared volumes. Sessions inherit the container env untouched (`PhaseRequest`
+unchanged, guarded by `session_env_inheritance_test`). Configuration shows a "declared volumes" group via
+`AppliedVolumes` (parse), `VolumeUsage` (async `du -sk -x`) and `VolumesView`; no declaration ⇒ page and start
+path byte-identical. Smoke: `scripts/container-smoke.sh volumes`. See `docs/container.md`, `docs/runbook.md`,
+`specs/041-user-defined-volumes/`.
+
 ## Toolchain — read first
 
 Run every Elixir command through mise; the plain shell PATH is a stale global

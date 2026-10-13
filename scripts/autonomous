@@ -9,6 +9,8 @@
 #   scripts/autonomous remote  --target <repo>
 #   scripts/autonomous port    --target <repo>
 #   scripts/autonomous stop    --target <repo> [--purge]
+#   scripts/autonomous volumes --target <repo> [--init]
+#   scripts/autonomous reset-cache --target <repo> [--volume <name>]...
 #   scripts/autonomous viewer  --target <repo>
 #   scripts/autonomous test  [mix test args]
 #
@@ -41,7 +43,13 @@ usage: scripts/autonomous <command> [options]
   remote  --target <repo>                remote console into a running release
   port  --target <repo>                  print the console address of a running instance
   viewer --target <repo>                 print the desktop viewer address of a running --viewer instance
-  stop  --target <repo> [--purge]        stop the instance; --purge also removes build volumes
+  stop  --target <repo> [--purge]        stop the instance; --purge also removes build volumes and
+                                         declared volumes
+  volumes --target <repo> [--init]       print the target's volume declaration path, entries and
+                                         validation result; --init writes a commented starter file
+  reset-cache --target <repo> [--volume <name>]...
+                                         remove declared volumes of a stopped instance (all when no
+                                         --volume)
   test  [mix test args]                  run the test suite inside the dev image
 
 options:
@@ -66,6 +74,8 @@ target=""
 port=""
 with_login=0
 purge=0
+init=0
+volume_names=""
 build_release=0
 with_web=0
 with_desktop=0
@@ -88,7 +98,7 @@ add_apt() {
 }
 
 case "$cmd" in
-  build | shell | console | release | remote | port | viewer | stop | test) ;;
+  build | shell | console | release | remote | port | viewer | stop | volumes | reset-cache | test) ;;
   -h | --help | help) usage ;;
   *) err "unknown command '$cmd'"; usage ;;
 esac
@@ -105,6 +115,16 @@ else
       --port=*) port="${1#--port=}"; shift ;;
       --with-login) with_login=1; shift ;;
       --purge) purge=1; shift ;;
+      --volume)
+        [ "$cmd" = reset-cache ] || { err "unknown option '$1'"; usage; }
+        [ "$#" -ge 2 ] || usage
+        volume_names="${volume_names:+$volume_names }$2"; shift 2 ;;
+      --volume=*)
+        [ "$cmd" = reset-cache ] || { err "unknown option '$1'"; usage; }
+        volume_names="${volume_names:+$volume_names }${1#--volume=}"; shift ;;
+      --init)
+        [ "$cmd" = volumes ] || { err "unknown option '$1'"; usage; }
+        init=1; shift ;;
       --release) build_release=1; shift ;;
       --web) with_web=1; shift ;;
       --desktop) with_desktop=1; shift ;;
@@ -214,6 +234,103 @@ lookup_identity() { # lookup_identity [dev|release]
 
 env_value() { printf '%s\n' "$1" | sed -n "s/^$2=//p"; }
 
+# Feature 041: the host-only volume declaration for one instance (research.md R1).
+# Sets $volumes_file to ${XDG_CONFIG_HOME:-$HOME/.config}/autonomous/targets/<segment>/volumes.toml.
+# Refuses (2) when the resolved parent is inside the state root, the target repo,
+# or the orchestrator source tree: a session must never be able to read or edit it.
+volumes_declaration_path() { # volumes_declaration_path <segment>
+  vd_dir="${XDG_CONFIG_HOME:-$HOME/.config}/autonomous/targets/$1"
+  vd_real="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$vd_dir")" \
+    || die 1 "could not resolve $vd_dir"
+  vd_state="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$HOME/.autonomous")"
+  for vd_guard in "$vd_state" "${AUTONOMOUS_REPO:-}" "$root"; do
+    [ -n "$vd_guard" ] || continue
+    case "$vd_real/" in
+      "$vd_guard"/*)
+        die 2 "$vd_real/volumes.toml is inside $vd_guard; set XDG_CONFIG_HOME outside the state root, the target repo and the orchestrator source" ;;
+    esac
+  done
+  volumes_file="$vd_real/volumes.toml"
+}
+
+# Feature 041: instance context handed to volumes.py (container-side paths; the
+# repo path is the same inside and outside). $1 = image whose environment feeds
+# the PATH composition and the override notices.
+volumes_context() { # volumes_context <image> <worktree_root> <segment>
+  vc_env="$(docker image inspect -f '{{json .Config.Env}}' "$1" 2>/dev/null || true)"
+  python3 -c '
+import json, sys
+a = sys.argv
+print(json.dumps({
+    "repo": a[1], "worktree_root": a[2], "segment": a[3],
+    "uid": int(a[4]), "gid": int(a[5]),
+    "image_env": json.loads(a[6]) if a[6].strip() else [],
+}))
+' "$AUTONOMOUS_REPO" "$2" "$3" "$AUTONOMOUS_UID" "$AUTONOMOUS_GID" "$vc_env"
+}
+
+# Step 2* of the start sequence (wrapper-cli.md): validate the declaration before
+# anything exists. Sets $volumes_records (empty when there is nothing to apply).
+# Absent file: no volumes.py call, no output (FR-004).
+volumes_records=""
+volumes_ctx=""
+volumes_prepare() { # volumes_prepare <image>
+  volumes_declaration_path "$segment"
+  [ -f "$volumes_file" ] || return 0
+  volumes_ctx="$(volumes_context "$1" "$(env_value "$identity" AUTONOMOUS_WORKTREE_ROOT)" "$segment")"
+  vp_rc=0
+  volumes_records="$(python3 "$root/scripts/volumes.py" plan --declaration "$volumes_file" \
+    --context "$volumes_ctx" --records)" || vp_rc=$?
+  [ "$vp_rc" = 0 ] || exit "$vp_rc"
+}
+
+# Step 4*: create the labelled volumes, make their roots writable by the
+# container user, write the overlay, report what was applied. No-op without
+# volumes (zero docker calls, no output, no overlay).
+volumes_apply() { # volumes_apply <image>
+  [ -n "$volumes_records" ] || return 0
+  tab="$(printf '\t')"
+  va_mounts=""
+  va_dirs=""
+  va_notices=""
+  va_lines=""
+  nl="
+"
+  while IFS="$tab" read -r kind a b c d e; do
+    case "$kind" in
+      volume)
+        docker volume create \
+          --label "dev.autonomous.kind=user-volume" \
+          --label "dev.autonomous.segment=$segment" \
+          --label "dev.autonomous.volume=$a" "$b" >/dev/null \
+          || die 1 "could not create volume $b"
+        va_mounts="$va_mounts -v $b:/v/$a"
+        va_dirs="$va_dirs /v/$a"
+        va_lines="$va_lines$(printf 'volume %s -> %s (%s, %s)' "$a" "$c" "$d" "$e")$nl"
+        ;;
+      notice) va_notices="$va_notices$a$nl" ;;
+    esac
+  done <<VOLUMES_EOF
+$volumes_records
+VOLUMES_EOF
+  # One provisioning container, non-recursive, every start (research.md R5).
+  # shellcheck disable=SC2086
+  docker run --rm --user 0:0 --entrypoint /bin/sh $va_mounts "$1" -c \
+    'uid="$1"; gid="$2"; shift 2
+     for d in "$@"; do
+       [ "$(stat -c %u:%g "$d")" = "$uid:$gid" ] || chown "$uid:$gid" "$d"
+     done' sh "$AUTONOMOUS_UID" "$AUTONOMOUS_GID" $va_dirs >/dev/null \
+    || die 1 "could not prepare the declared volumes"
+  volumes_overlay="$(dirname "$volumes_file")/applied.compose.json"
+  python3 "$root/scripts/volumes.py" plan --declaration "$volumes_file" \
+    --context "$volumes_ctx" --write-overlay "$volumes_overlay" >/dev/null \
+    || die 1 "could not write $volumes_overlay"
+  compose_files="$compose_files -f $volumes_overlay"
+  say "volumes  $volumes_file"
+  printf '%s' "$va_lines" | while IFS= read -r line; do [ -z "$line" ] || say "$line"; done
+  printf '%s' "$va_notices" | while IFS= read -r line; do [ -z "$line" ] || say "$line"; done
+}
+
 # Sets $port: validates --port (76 when busy, FR-021) or picks a free loopback
 # port, so the address can be printed before a foreground session takes the
 # terminal.
@@ -314,7 +431,91 @@ case "$cmd" in
     down_flags=""
     [ "$purge" = 1 ] && down_flags="-v"
     # shellcheck disable=SC2086
-    exec docker compose -p "autonomous-$segment" $compose_files down $down_flags
+    docker compose -p "autonomous-$segment" $compose_files down $down_flags \
+      || die 1 "could not stop the instance for $target"
+    if [ "$purge" = 1 ]; then
+      # Feature 041 (research.md R12): every labelled user volume of this segment,
+      # declared or not. Plain `stop` touches none.
+      for pv in $(docker volume ls -q \
+        --filter "label=dev.autonomous.kind=user-volume" \
+        --filter "label=dev.autonomous.segment=$segment" 2>/dev/null); do
+        docker volume rm "$pv" >/dev/null || die 1 "could not remove volume $pv"
+        say "$pv removed"
+      done
+    fi
+    ;;
+
+  reset-cache)
+    resolve_target
+    require_image "$DEV_IMAGE"
+
+    identity="$(lookup_identity)" || die 1 "could not derive the instance identity for $target"
+    segment="$(env_value "$identity" AUTONOMOUS_INSTANCE_SEGMENT)"
+    [ -n "$segment" ] || die 1 "could not derive the instance identity for $target"
+    project="autonomous-$segment"
+
+    # Any container of the project, running or exited, still pins its volumes.
+    pinned="$(docker ps -a --filter "label=com.docker.compose.project=$project" --format '{{.Names}}' | head -n1)"
+    [ -z "$pinned" ] \
+      || die 75 "target $target is served by $pinned; stop it first: scripts/autonomous stop --target $target"
+
+    volumes_declaration_path "$segment"
+    if [ ! -f "$volumes_file" ]; then
+      say "no declared volumes"
+      exit 0
+    fi
+    select_args=""
+    for vn in $volume_names; do select_args="$select_args --volume $vn"; done
+    sel_rc=0
+    # shellcheck disable=SC2086
+    selected="$(python3 "$root/scripts/volumes.py" select --declaration "$volumes_file" $select_args)" || sel_rc=$?
+    [ "$sel_rc" = 0 ] || exit "$sel_rc"
+    if [ -z "$selected" ]; then
+      say "no declared volumes"
+      exit 0
+    fi
+
+    rc=0
+    for vn in $selected; do
+      dn="autonomous-${segment}_vol-$vn"
+      if ! docker volume inspect "$dn" >/dev/null 2>&1; then
+        say "$vn not present"
+        continue
+      fi
+      labels="$(docker volume inspect --format \
+        '{{index .Labels "dev.autonomous.kind"}} {{index .Labels "dev.autonomous.segment"}} {{index .Labels "dev.autonomous.volume"}}' \
+        "$dn" 2>/dev/null || true)"
+      if [ "$labels" != "user-volume $segment $vn" ]; then
+        err "volume $dn exists but is not labelled as a declared volume of this target; not removed"
+        rc=1
+        continue
+      fi
+      docker volume rm "$dn" >/dev/null || { err "could not remove volume $dn"; rc=1; continue; }
+      say "$vn removed"
+    done
+    exit "$rc"
+    ;;
+
+  volumes)
+    resolve_target
+    require_image "$DEV_IMAGE"
+
+    identity="$(lookup_identity)" || die 1 "could not derive the instance identity for $target"
+    segment="$(env_value "$identity" AUTONOMOUS_INSTANCE_SEGMENT)"
+    [ -n "$segment" ] || die 1 "could not derive the instance identity for $target"
+    volumes_declaration_path "$segment"
+
+    if [ "$init" = 1 ]; then
+      exec python3 "$root/scripts/volumes.py" init --declaration "$volumes_file"
+    fi
+
+    present="$(docker volume ls -q \
+      --filter "label=dev.autonomous.kind=user-volume" \
+      --filter "label=dev.autonomous.segment=$segment" 2>/dev/null \
+      | python3 -c 'import json, sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))')"
+    ctx="$(volumes_context "$DEV_IMAGE" "$(env_value "$identity" AUTONOMOUS_WORKTREE_ROOT)" "$segment")"
+    exec python3 "$root/scripts/volumes.py" show --declaration "$volumes_file" \
+      --context "$ctx" --present "${present:-[]}"
     ;;
 
   shell)
@@ -326,8 +527,10 @@ case "$cmd" in
     node_name="$(env_value "$identity" AUTONOMOUS_NODE_NAME)"
     [ -n "$segment" ] || die 1 "could not derive the instance identity for $target"
 
+    volumes_prepare "$DEV_IMAGE"
     choose_port
     print_summary
+    volumes_apply "$DEV_IMAGE"
 
     tty_flag=""
     [ -t 0 ] || tty_flag="-T"
@@ -350,6 +553,7 @@ case "$cmd" in
     [ -n "$segment" ] || die 1 "could not derive the instance identity for $target"
 
     project="autonomous-$segment"
+    volumes_prepare "$image"
     # `up -d` would recreate a running instance of this project with the new port
     # and silently replace it; refuse instead (the entrypoint lock covers the
     # other-project case, FR-018a).
@@ -366,6 +570,7 @@ PY
 
     choose_port
     print_summary
+    volumes_apply "$image"
 
     # A port taken between the check above and the bind is translated too (76).
     # shellcheck disable=SC2086

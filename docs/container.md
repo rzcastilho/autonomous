@@ -143,6 +143,114 @@ scripts/autonomous build --agent-root
 Check an image with `scripts/container-smoke.sh sysdeps` (`SMOKE_IMAGE=autonomous-release:local`
 for the release image; `SMOKE_SYSDEPS_PROBE` overrides the probe package, default `pkg-config`).
 
+## User-defined volumes (041)
+
+A target can keep toolchains, package caches and build output across stop/start and image
+rebuilds in operator-declared **Docker named volumes**. Nothing is declared by default; with
+no declaration the start path is byte-identical to before (no docker call, no output, no
+overlay).
+
+- **Where.** `${XDG_CONFIG_HOME:-$HOME/.config}/autonomous/targets/<segment>/volumes.toml` —
+  host-only, one per target. Sessions never see the file, and it is refused when its parent
+  resolves inside the state root, the target repo or the orchestrator source tree.
+  `scripts/autonomous volumes --target <repo> --init` writes a commented starter (`0600`,
+  directory `0700`, never overwrites); without `--init` it prints the path, entries,
+  present/absent per volume, `kept, not declared` leftovers and the validation result.
+- **Format.** Any number of `[[volume]]` entries (order matters): `name` (lowercase slug,
+  unique), `path` (absolute container path; recommended parent
+  `/var/lib/autonomous/volumes/<name>`), optional `env` (literal strings, no `$VAR`
+  expansion) and `path_dirs` (directories inside the entry's own `path`). Needs host
+  `python3 >= 3.11` (`tomllib`) once a declaration exists.
+- **Validation.** Every violation is reported (entry + reason) before any container, volume or
+  overlay exists; exit 2. Refused: duplicate or non-slug names; relative, non-normalized or
+  `:`/`,`/control-character paths; a path equal to, inside or enclosing the target repo, the
+  worktree root, the state root, `/workspace` (incl. `_build`, `deps`), `/app`, the agent
+  config (`/home/autonomous/.claude`, `.claude.json`) or `/`, `/home`, `/home/autonomous`;
+  two entries equal or nested; a variable set by two entries.
+- **Reserved variables.** `AUTONOMOUS_*`, `RELEASE_*`, `PATH`, `HOME`, `SHELL`, `USER`,
+  `MIX_ENV`, `PHX_SERVER`, `COMPOSE_PROJECT_NAME`, `DISPLAY`, `GH_TOKEN`, `ANTHROPIC_API_KEY`,
+  `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_DEFAULT_OPUS_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MODEL`,
+  `CLAUDE_CONFIG_DIR`, `MISE_TRUSTED_CONFIG_PATHS`, `MISE_YES`. A suite test fails when the
+  entrypoint or `compose.yaml` starts setting a variable that is in neither this list nor the
+  overridable set (`MISE_DATA_DIR`, `MIX_HOME`, `HEX_HOME`, `PLAYWRIGHT_BROWSERS_PATH`, …).
+- **`PATH`.** `path_dirs` are prepended (entry order, then listed order) to the image `PATH`
+  for the container, every session and the operator shell (the dev-shape entrypoint
+  re-prepends them inside `mise exec`).
+- **Overriding an image variable** (e.g. `MISE_DATA_DIR`) is allowed and prints a notice at
+  start. Consequence: the volume starts empty, so the first dev-shape start reinstalls the
+  orchestrator's own Erlang/Elixir into it (long, once); the release shape has no mise.
+- **Mechanics.** Each start: `docker volume create` with labels `dev.autonomous.kind=user-volume`,
+  `dev.autonomous.segment`, `dev.autonomous.volume`; one provisioning container
+  (`--user 0:0`, non-recursive `chown` of mount roots) so the container user can write; a
+  regenerated `applied.compose.json` overlay (`0600`) appended with `-f`. The applied set is
+  exported as `AUTONOMOUS_VOLUMES` (JSON, `version: 1`) and shown in Configuration.
+- **Worktrees are unchanged** (FR-025a): they stay host directories under the state root.
+  Declare volumes only for data that should live *outside* the worktree.
+- **Isolation.** Volume names are `autonomous-<segment>_vol-<name>`: two targets using the same
+  `name` never share data.
+- **Reset.** `scripts/autonomous reset-cache --target <repo> [--volume <name>]...` (all when no
+  `--volume`) removes declared volumes of a **stopped** instance (exit 75 while any container of
+  the project exists); idempotent (`not present`); a volume lacking our labels is never
+  removed (exit 1). `stop --purge` additionally removes every `user-volume` of the segment.
+- **No longer declared.** Removing an entry does not delete its volume: `volumes` lists it as
+  `kept, not declared — remove with: docker volume rm <name>`.
+- **Security.** Volumes are container-engine storage with no host path; the declaration's
+  contents never reach a container or log beyond the applied set.
+
+Worked examples (more in `specs/041-user-defined-volumes/quickstart.md`):
+
+```toml
+# Rust — toolchains + build output
+[[volume]]
+name = "rust-toolchains"
+path = "/var/lib/autonomous/volumes/rust-toolchains"
+path_dirs = ["/var/lib/autonomous/volumes/rust-toolchains/cargo/bin"]
+[volume.env]
+RUSTUP_HOME = "/var/lib/autonomous/volumes/rust-toolchains/rustup"
+CARGO_HOME  = "/var/lib/autonomous/volumes/rust-toolchains/cargo"
+
+[[volume]]
+name = "cargo-target"
+path = "/var/lib/autonomous/volumes/cargo-target"
+env = { CARGO_TARGET_DIR = "/var/lib/autonomous/volumes/cargo-target" }
+```
+
+```toml
+# Node + pnpm — package store (adding MISE_DATA_DIR keeps mise-managed node; see override note)
+[[volume]]
+name = "pnpm-store"
+path = "/var/lib/autonomous/volumes/pnpm-store"
+env = { npm_config_store_dir = "/var/lib/autonomous/volumes/pnpm-store" }
+```
+
+```toml
+# Elixir — Mix/Hex caches, deps and build output
+[[volume]]
+name = "mix-hex"
+path = "/var/lib/autonomous/volumes/mix-hex"
+[volume.env]
+MIX_HOME = "/var/lib/autonomous/volumes/mix-hex/mix"
+HEX_HOME = "/var/lib/autonomous/volumes/mix-hex/hex"
+
+[[volume]]
+name = "mix-build"
+path = "/var/lib/autonomous/volumes/mix-build"
+[volume.env]
+MIX_DEPS_PATH  = "/var/lib/autonomous/volumes/mix-build/deps"
+MIX_BUILD_ROOT = "/var/lib/autonomous/volumes/mix-build/_build"
+```
+
+```toml
+# Python — venv + pip cache
+[[volume]]
+name = "python"
+path = "/var/lib/autonomous/volumes/python"
+path_dirs = ["/var/lib/autonomous/volumes/python/venv/bin"]
+[volume.env]
+VIRTUAL_ENV = "/var/lib/autonomous/volumes/python/venv"
+PIP_CACHE_DIR = "/var/lib/autonomous/volumes/python/pip-cache"
+```
+
 ## Release shape
 
 `scripts/autonomous build --release` builds `autonomous-release:local`: a `mix release` on
