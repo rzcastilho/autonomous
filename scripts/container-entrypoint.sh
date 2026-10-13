@@ -132,6 +132,22 @@ agent_root() {
   fi
 }
 
+# VM handover for the dev shape (feature 041). `mise exec` puts the mise tool
+# directories ahead of PATH, so declared volume path directories are re-prepended
+# inside it (the inner `sh` expands PATH after mise has set it). Unset/empty
+# AUTONOMOUS_VOLUME_PATH: today's exact command.
+vm_exec() {
+  if [ -n "${AUTONOMOUS_VOLUME_PATH:-}" ]; then
+    exec mise exec -- sh -c 'PATH="$AUTONOMOUS_VOLUME_PATH:$PATH"; exec "$@"' sh "$@"
+  fi
+  exec mise exec -- "$@"
+}
+
+# Smoke hook: run only the VM handover command line (stubbed `mise` in tests).
+if [ "$cmd" = "vm-handover" ]; then
+  vm_exec "$@"
+fi
+
 # Smoke hook: seed and stop, before any build or identity work.
 if [ "$cmd" = "seed-config" ]; then
   seed_cli_config
@@ -338,10 +354,10 @@ cookie="$(cat "$AUTONOMOUS_COOKIE_PATH")"
 
 case "$cmd" in
   shell)
-    exec mise exec -- iex --sname "$AUTONOMOUS_NODE_NAME" --cookie "$cookie" -S mix
+    vm_exec iex --sname "$AUTONOMOUS_NODE_NAME" --cookie "$cookie" -S mix
     ;;
   console)
-    exec mise exec -- elixir --sname "$AUTONOMOUS_NODE_NAME" --cookie "$cookie" -S mix phx.server
+    vm_exec elixir --sname "$AUTONOMOUS_NODE_NAME" --cookie "$cookie" -S mix phx.server
     ;;
   release)
     # rel/env.sh.eex turns AUTONOMOUS_NODE_NAME / AUTONOMOUS_COOKIE_PATH into
