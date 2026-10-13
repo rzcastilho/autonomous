@@ -36,3 +36,13 @@
   names such as `CARGO_TARGET_DIR`) are kept on purpose: constitution Principle VII
   requires surfaces and docs to use the identifiers the operator types. No
   internal module, library or storage design is specified.
+
+## Notes — T047 hand-run (2026-10-13)
+
+`scripts/container-smoke.sh volumes` on macOS (uutils `timeout` + BSD-`script` shim), real docker:
+all checks passed — persistence across stop/start and image rebuild (SC-001), clean host repo (SC-002),
+1/5/20 volumes, cross-target isolation, five rejection classes with no container/volume (SC-003), reset
+by name/all/idempotent/running-refusal/unknown name, `stop --purge`. Skipped: the end-to-end agent session
+check (needs `SMOKE_AGENT=1`, spends cents). The "path dir is first on PATH" check was relaxed: `erlexec`
+prepends its own `erts-*/bin` when the VM starts, so only `erts` entries may precede the volume's path dir.
+

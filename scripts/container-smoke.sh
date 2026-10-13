@@ -769,7 +769,7 @@ BUILD_DIR = \"$parent/smoke-build/obj\""
     File.chmod!(Path.dirname(b) <> "/bin/smoke-tool", 0o755)
     File.write!(b <> "/marker", "kept")
     IO.puts("VOL_BUILD_DIR=" <> b)
-    IO.puts("VOL_PATH_HEAD=" <> hd(String.split(System.get_env("PATH"), ":")))
+    IO.puts("VOL_PATH=" <> System.get_env("PATH"))
     d = Path.join(System.fetch_env!("AUTONOMOUS_WORKTREE_ROOT"), "smoke-make")
     File.mkdir_p!(d)
     File.write!(Path.join(d, "main.c"), "x")
@@ -777,7 +777,14 @@ BUILD_DIR = \"$parent/smoke-build/obj\""
     {o, s} = System.cmd("make", [], cd: d, stderr_to_stdout: true)
     IO.puts("VOL_MAKE1 status=#{s} " <> String.replace(o, "\n", "|"))')"
   case "$out" in *"VOL_BUILD_DIR=$parent/smoke-build/obj"*) pass "declared variable visible in the session" ;; *) fail "BUILD_DIR not visible: $out" ;; esac
-  case "$out" in *"VOL_PATH_HEAD=$parent/smoke-build/bin"*) pass "path dir is first on PATH" ;; *) fail "PATH not prefixed: $out" ;; esac
+  # erlexec prepends its own erts bin to PATH when the VM starts, so "first" means first
+  # ahead of every image entry: only erts-*/bin entries may precede the volume's path dir.
+  vol_path="$(printf '%s\n' "$out" | sed -n 's/^VOL_PATH=//p' | tr -d '\r' | head -1)"
+  vol_lead="$(printf '%s\n' "$vol_path" | tr ':' '\n' | awk -v want="$parent/smoke-build/bin" '
+    $0 == want { found = 1; exit }
+    $0 !~ /\/erts-[^\/]*\/bin$/ { bad = 1 }
+    END { print (found && !bad) ? "ok" : "no" }')"
+  case "$vol_lead" in ok) pass "path dir is first on PATH (ahead of image entries)" ;; *) fail "PATH not prefixed: $vol_path" ;; esac
   case "$out" in *"VOL_MAKE1 status=0"*"cp "*) pass "first build compiled into the volume" ;; *) skip "make not available in the image: $out" ;; esac
 
   out="$(vol_eval "$t" '

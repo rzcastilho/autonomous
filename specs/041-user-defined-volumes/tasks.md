@@ -151,7 +151,7 @@ Single project, existing layout: host scripts in `scripts/`, Elixir in `lib/auto
 - [X] T044 [P] Add a "User-defined volumes (feature 041)" paragraph to `CLAUDE.md` (host-only `volumes.toml`, `scripts/volumes.py`, overlay, `reset-cache`, `AUTONOMOUS_VOLUMES`, Configuration group)
 - [X] T045 [P] Update `docs/enforcement.md` only where the container boundary text mentions mounts (declared volumes are container-engine storage, no host path; FR-015/FR-025)
 - [X] T046 Run the full hermetic suite: `mise exec -- mix test` (all pre-existing tests unchanged and green — SC-005; the existing `PhaseRequest`, `AgentRoot`, `ShellTimeouts`, `WorkspaceTrust` and `RuntimeNotice` tests are the FR-025 "unchanged" guard — none may be edited by this feature) and `mise exec -- mix compile --warnings-as-errors`
-- [ ] T047 Walk `specs/041-user-defined-volumes/quickstart.md` sections A–C and "Rejections" by hand with `scripts/container-smoke.sh volumes` (GNU-tool PATH shim per the macOS smoke recipe) and record the result in `specs/041-user-defined-volumes/checklists/requirements.md` notes
+- [X] T047 Walk `specs/041-user-defined-volumes/quickstart.md` sections A–C and "Rejections" by hand with `scripts/container-smoke.sh volumes` (GNU-tool PATH shim per the macOS smoke recipe) and record the result in `specs/041-user-defined-volumes/checklists/requirements.md` notes
 
 ---
 
