@@ -33,3 +33,6 @@ autonomous-*.tar
 
 # Container runtime credentials (031, FR-015): .env.example stays tracked.
 /.env
+
+# Python bytecode from scripts/*.py (volumes.py tests).
+__pycache__/
