@@ -12,7 +12,8 @@ defmodule Autonomous.SessionEnvInheritanceTest do
   alias CliSubprocessCore.Command, as: CoreCommand
 
   @declared "CARGO_TARGET_DIR"
-  @prefixed_path "/var/lib/autonomous/volumes/rust/cargo/bin:" <> (System.get_env("PATH") || "/usr/bin")
+  @prefixed_path "/var/lib/autonomous/volumes/rust/cargo/bin:" <>
+                   (System.get_env("PATH") || "/usr/bin")
 
   setup do
     previous = %{@declared => System.get_env(@declared), "PATH" => System.get_env("PATH")}
@@ -27,7 +28,12 @@ defmodule Autonomous.SessionEnvInheritanceTest do
   end
 
   defp feature do
-    %Feature{id: "001", number: 1, slug: "core-ledger", path: "/abs/docs/breakdown/001-core-ledger.md"}
+    %Feature{
+      id: "001",
+      number: 1,
+      slug: "core-ledger",
+      path: "/abs/docs/breakdown/001-core-ledger.md"
+    }
   end
 
   # Every request builder a session goes through: phase, implement chunk,
@@ -67,7 +73,9 @@ defmodule Autonomous.SessionEnvInheritanceTest do
 
   test "the subprocess command does not clear the inherited environment" do
     for request <- requests() do
-      command = CoreCommand.new("claude", ["--version"], cwd: request.cwd, env: launch_env(request))
+      command =
+        CoreCommand.new("claude", ["--version"], cwd: request.cwd, env: launch_env(request))
+
       assert command.clear_env? == false
     end
   end

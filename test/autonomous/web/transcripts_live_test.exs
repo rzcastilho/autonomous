@@ -419,6 +419,83 @@ defmodule Autonomous.Web.TranscriptsLiveTest do
     assert status.turns == 3
   end
 
+  test "a synthetic error result renders the same as live: error text, never a clean finish (043)",
+       %{conn: conn, repo: repo} do
+    {:ok, handle, _req} =
+      Conversation.open(
+        %ConversationIdentity{
+          repo_id: "o:repo",
+          run_id: "r000001",
+          feature_id: "c5",
+          phase: :plan,
+          ordinal: 1,
+          kind: :phase,
+          transcript_root: transcript_root(repo)
+        },
+        RunRequest.new!(%{prompt: "do it", model: "opus"})
+      )
+
+    send(handle.pid, {:frame, ClaudeAgentSDK.Message.error_result("CLI exited 1")})
+    ref = Conversation.close(handle, @ok)
+
+    run_id = seed_run(repo, [{"c5", :plan, "body", %{conversations: [ref]}}])
+    {:ok, view, _html} = live(conn, "/transcripts?run_id=#{run_id}&feature=c5&attempt=0")
+
+    assert has_element?(view, ".conv-marker", "result · error_during_execution — CLI exited 1")
+    refute has_element?(view, ~s([data-activity] [data-status="done"]))
+    assert has_element?(view, ~s([data-activity] [data-status="failed"]))
+    assert has_element?(view, "[data-activity]", "completed · result error")
+  end
+
+  test "stderr rows and the final token figure match the live end state (043)", %{
+    conn: conn,
+    repo: repo
+  } do
+    {:ok, handle, _req} =
+      Conversation.open(
+        %ConversationIdentity{
+          repo_id: "o:repo",
+          run_id: "r000001",
+          feature_id: "c6",
+          phase: :plan,
+          ordinal: 1,
+          kind: :phase,
+          transcript_root: transcript_root(repo)
+        },
+        RunRequest.new!(%{prompt: "do it", model: "opus"})
+      )
+
+    for l <- ["warn", "warn", "warn"], do: send(handle.pid, {:stderr, l})
+
+    for ev <- [
+          %{
+            "type" => "message_start",
+            "message" => %{
+              "id" => "m1",
+              "usage" => %{"input_tokens" => 1200, "output_tokens" => 1}
+            }
+          },
+          %{"type" => "message_delta", "usage" => %{"output_tokens" => 300}},
+          %{"type" => "message_delta", "usage" => %{"output_tokens" => 450}}
+        ] do
+      send(handle.pid, {:frame, Autonomous.FakeSdk.frame(:stream_event, %{"event" => ev})})
+    end
+
+    ref = Conversation.close(handle, @ok)
+    run_id = seed_run(repo, [{"c6", :plan, "body", %{conversations: [ref]}}])
+    {:ok, view, _html} = live(conn, "/transcripts?run_id=#{run_id}&feature=c6&attempt=0")
+
+    assert has_element?(view, ".conv-stderr", "warn")
+    assert has_element?(view, "[data-repeat]", "×3")
+    assert has_element?(view, "[data-tokens]", "in 1.2k · out 450")
+
+    {:ok, entries, :eof} =
+      Autonomous.ConversationFile.page(Path.join(transcript_root(repo), ref.path), 0, 500)
+
+    status = Autonomous.Web.SessionStatus.apply_all(Autonomous.Web.SessionStatus.new(), entries)
+    assert Autonomous.Web.SessionStatus.tokens_text(status) == "in 1.2k · out 450"
+  end
+
   test "load-next folds the next page into the static status line (042)", %{
     conn: conn,
     repo: repo

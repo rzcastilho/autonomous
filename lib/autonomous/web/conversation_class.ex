@@ -16,7 +16,16 @@ defmodule Autonomous.Web.ConversationClass do
 
   @type placement :: :row | :signal | :row_signal | :header_signal
   @type row_class ::
-          :prose | :context | :thinking | :call | :result | :marker | :divider | :end | :raw
+          :prose
+          | :context
+          | :thinking
+          | :call
+          | :result
+          | :marker
+          | :divider
+          | :end
+          | :stderr
+          | :raw
   @type fold :: :open | :line | :preview5
   @type t :: %{
           placement: placement(),
@@ -41,6 +50,14 @@ defmodule Autonomous.Web.ConversationClass do
 
   def classify(%ConversationEntry{kind: :tool_result}),
     do: put(:row_signal, :result, :preview5, "tool result")
+
+  def classify(%ConversationEntry{kind: :usage, body: body}),
+    do: put(:signal, :raw, :line, "usage" <> opt_sub(body["event"]))
+
+  def classify(%ConversationEntry{kind: :stderr, body: %{"notice" => _}}),
+    do: put(:row, :marker, :line, "stderr")
+
+  def classify(%ConversationEntry{kind: :stderr}), do: put(:row, :stderr, :line, "stderr")
 
   def classify(%ConversationEntry{kind: :end}), do: put(:row_signal, :end, :open, "end")
 
@@ -102,6 +119,9 @@ defmodule Autonomous.Web.ConversationClass do
     data = body["data"] || %{}
     data["outcome"] not in [nil, "success"] or data["exit_code"] not in [nil, 0]
   end
+
+  defp opt_sub(event) when is_binary(event), do: " · " <> event
+  defp opt_sub(_), do: ""
 
   defp put(placement, row_class, fold, label, flag \\ nil),
     do: %{placement: placement, row_class: row_class, fold: fold, label: label, flag: flag}

@@ -71,7 +71,10 @@ defmodule Autonomous.VolumesPyTest do
 
   defp plan!(ctx, text, extra \\ %{}) do
     path = write_declaration(ctx, text)
-    {out, status} = run_volumes(["plan", "--declaration", path, "--context", ctx_json(ctx, extra)], ctx)
+
+    {out, status} =
+      run_volumes(["plan", "--declaration", path, "--context", ctx_json(ctx, extra)], ctx)
+
     {path, status, out}
   end
 
@@ -101,7 +104,12 @@ defmodule Autonomous.VolumesPyTest do
       assert [first, second] = plan["volumes"]
       assert first["name"] == "rust-toolchains"
       assert first["docker_name"] == "autonomous-t-1a2b_vol-rust-toolchains"
-      assert first["env"] == [["RUSTUP_HOME", "#{@parent}/rust-toolchains/rustup"], ["CARGO_HOME", "#{@parent}/rust-toolchains/cargo"]]
+
+      assert first["env"] == [
+               ["RUSTUP_HOME", "#{@parent}/rust-toolchains/rustup"],
+               ["CARGO_HOME", "#{@parent}/rust-toolchains/cargo"]
+             ]
+
       assert first["path_dirs"] == ["#{@parent}/rust-toolchains/cargo/bin"]
       assert second["env"] == [["CARGO_TARGET_DIR", "#{@parent}/cargo-target"]]
       assert second["path_dirs"] == []
@@ -123,14 +131,21 @@ defmodule Autonomous.VolumesPyTest do
 
       for {_svc, spec} <- overlay["services"] do
         assert spec["volumes"] == [
-                 %{"type" => "volume", "source" => "vol-cargo-target", "target" => "#{@parent}/cargo-target"}
+                 %{
+                   "type" => "volume",
+                   "source" => "vol-cargo-target",
+                   "target" => "#{@parent}/cargo-target"
+                 }
                ]
 
         assert spec["environment"]["CARGO_TARGET_DIR"] == "#{@parent}/cargo-target"
       end
 
       assert overlay["volumes"] == %{
-               "vol-cargo-target" => %{"external" => true, "name" => "autonomous-t-1a2b_vol-cargo-target"}
+               "vol-cargo-target" => %{
+                 "external" => true,
+                 "name" => "autonomous-t-1a2b_vol-cargo-target"
+               }
              }
     end
 
@@ -167,14 +182,21 @@ defmodule Autonomous.VolumesPyTest do
         path_dirs = ["#{@parent}/a/bin"]
         """)
 
-      raw = decode_plan(out)["overlay"]["services"]["console"]["environment"]["AUTONOMOUS_VOLUMES"]
+      raw =
+        decode_plan(out)["overlay"]["services"]["console"]["environment"]["AUTONOMOUS_VOLUMES"]
+
       refute raw =~ " "
 
       assert Jason.decode!(raw) == %{
                "version" => 1,
                "declaration" => path,
                "volumes" => [
-                 %{"name" => "a", "path" => "#{@parent}/a", "env" => [["X", "1"]], "path_dirs" => ["#{@parent}/a/bin"]}
+                 %{
+                   "name" => "a",
+                   "path" => "#{@parent}/a",
+                   "env" => [["X", "1"]],
+                   "path_dirs" => ["#{@parent}/a/bin"]
+                 }
                ]
              }
     end
@@ -217,7 +239,15 @@ defmodule Autonomous.VolumesPyTest do
 
       assert {_, 0} =
                run_volumes(
-                 ["plan", "--declaration", path, "--context", ctx_json(ctx), "--write-overlay", target],
+                 [
+                   "plan",
+                   "--declaration",
+                   path,
+                   "--context",
+                   ctx_json(ctx),
+                   "--write-overlay",
+                   target
+                 ],
                  ctx
                )
 
@@ -263,7 +293,15 @@ defmodule Autonomous.VolumesPyTest do
       path = if text, do: write_declaration(ctx, text), else: declaration_path(ctx)
 
       run_volumes(
-        ["show", "--declaration", path, "--context", ctx_json(ctx), "--present", Jason.encode!(present)],
+        [
+          "show",
+          "--declaration",
+          path,
+          "--context",
+          ctx_json(ctx),
+          "--present",
+          Jason.encode!(present)
+        ],
         ctx
       )
     end
@@ -340,7 +378,11 @@ defmodule Autonomous.VolumesPyTest do
     end
 
     test "relative and non-normalized paths", ctx do
-      refused(ctx, entry([{"name", ~s("a")}, {"path", ~s("cache")}]), "entry a: path cache is not absolute")
+      refused(
+        ctx,
+        entry([{"name", ~s("a")}, {"path", ~s("cache")}]),
+        "entry a: path cache is not absolute"
+      )
 
       for bad <- ["#{@parent}/../x", "#{@parent}//x", "#{@parent}/x/", "#{@parent}/./x"] do
         refused(ctx, entry([{"name", ~s("a")}, {"path", ~s("#{bad}")}]), "is not normalized")
@@ -368,11 +410,19 @@ defmodule Autonomous.VolumesPyTest do
       ]
 
       for p <- protected, bad <- [p, p <> "/inner"] do
-        refused(ctx, entry([{"name", ~s("a")}, {"path", ~s("#{bad}")}]), "entry a: path #{bad} is inside #{p}")
+        refused(
+          ctx,
+          entry([{"name", ~s("a")}, {"path", ~s("#{bad}")}]),
+          "entry a: path #{bad} is inside #{p}"
+        )
       end
 
       for parent <- ["/", "/home", "/home/autonomous", "/workspace" |> Path.dirname()] do
-        refused(ctx, entry([{"name", ~s("a")}, {"path", ~s("#{parent}")}]), "entry a: path #{parent} contains")
+        refused(
+          ctx,
+          entry([{"name", ~s("a")}, {"path", ~s("#{parent}")}]),
+          "entry a: path #{parent} contains"
+        )
       end
     end
 
@@ -382,12 +432,32 @@ defmodule Autonomous.VolumesPyTest do
           entry([{"name", ~s("b")}, {"path", ~s("#{@parent}/a/inner")}])
 
       refused(ctx, text, "entries a, b: nested paths")
-      refused(ctx, ok_entry("a") <> entry([{"name", ~s("b")}, {"path", ~s("#{@parent}/a")}]), "entries a, b: the same path")
+
+      refused(
+        ctx,
+        ok_entry("a") <> entry([{"name", ~s("b")}, {"path", ~s("#{@parent}/a")}]),
+        "entries a, b: the same path"
+      )
     end
 
     test "reserved variables, every class", ctx do
-      for var <- ["AUTONOMOUS_X", "RELEASE_COOKIE", "PATH", "HOME", "SHELL", "USER", "MIX_ENV", "GH_TOKEN", "CLAUDE_CONFIG_DIR", "MISE_YES"] do
-        refused(ctx, ok_entry("a", [{"env", ~s({ #{var} = "x" })}]), "entry a: #{var} is reserved")
+      for var <- [
+            "AUTONOMOUS_X",
+            "RELEASE_COOKIE",
+            "PATH",
+            "HOME",
+            "SHELL",
+            "USER",
+            "MIX_ENV",
+            "GH_TOKEN",
+            "CLAUDE_CONFIG_DIR",
+            "MISE_YES"
+          ] do
+        refused(
+          ctx,
+          ok_entry("a", [{"env", ~s({ #{var} = "x" })}]),
+          "entry a: #{var} is reserved"
+        )
       end
     end
 
@@ -398,13 +468,22 @@ defmodule Autonomous.VolumesPyTest do
     end
 
     test "two entries setting one variable", ctx do
-      text = ok_entry("a", [{"env", ~s({ CARGO_HOME = "x" })}]) <> ok_entry("b", [{"env", ~s({ CARGO_HOME = "y" })}])
+      text =
+        ok_entry("a", [{"env", ~s({ CARGO_HOME = "x" })}]) <>
+          ok_entry("b", [{"env", ~s({ CARGO_HOME = "y" })}])
+
       refused(ctx, text, "entries a, b: both set CARGO_HOME")
     end
 
     test "path dirs must be absolute and inside the entry's own path", ctx do
       refused(ctx, ok_entry("a", [{"path_dirs", ~s(["bin"])}]), "path_dirs entry")
-      refused(ctx, ok_entry("a", [{"path_dirs", ~s(["#{@parent}/b/bin"])}]), "is outside the entry's own path")
+
+      refused(
+        ctx,
+        ok_entry("a", [{"path_dirs", ~s(["#{@parent}/b/bin"])}]),
+        "is outside the entry's own path"
+      )
+
       assert {0, _} = violations(ctx, ok_entry("a", [{"path_dirs", ~s(["#{@parent}/a/bin"])}]))
     end
 
@@ -434,7 +513,8 @@ defmodule Autonomous.VolumesPyTest do
       entrypoint = File.read!(Path.join(root, "scripts/container-entrypoint.sh"))
       compose = File.read!(Path.join(root, "compose.yaml"))
 
-      exported = Regex.scan(~r/^\s*export\s+([A-Z][A-Z0-9_]*)\b/m, entrypoint, capture: :all_but_first)
+      exported =
+        Regex.scan(~r/^\s*export\s+([A-Z][A-Z0-9_]*)\b/m, entrypoint, capture: :all_but_first)
 
       # `environment:` blocks only (build args are not container variables).
       env_keys =
@@ -444,7 +524,8 @@ defmodule Autonomous.VolumesPyTest do
           lead = byte_size(line) - byte_size(String.trim_leading(line))
 
           cond do
-            String.trim(line) == "environment: &instance-env" or String.trim(line) == "environment:" ->
+            String.trim(line) == "environment: &instance-env" or
+                String.trim(line) == "environment:" ->
               {lead, acc}
 
             indent != nil and String.trim(line) != "" and lead <= indent ->

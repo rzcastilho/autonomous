@@ -1586,6 +1586,25 @@ The live and saved views classify what a session records instead of listing ever
   arrives; nothing is shown for a value that is not known.
 - Re-measure on your own transcripts: `AUTONOMOUS_CENSUS_DIR=<dir> mise exec -- mix test --only census test/autonomous/web/census_test.exs`.
 
+### Recorder gaps closed: errors, stderr, tokens, attribution (043)
+
+- **Failed sessions read as failed.** An SDK-synthetic or error result is stored with
+  `is_error: true` and its text; the marker reads `result · error_during_execution — <reason>`
+  (`no reason given` when the CLI sent none) and the status-line chip turns `done` → `failed`
+  (`<outcome> · result error`). A genuine success is unchanged.
+- **CLI stderr** is recorded in arrival order as quiet `stderr` rows (consecutive identical
+  lines collapse to `×N`; not hidden by `frames`). Capture is bounded: the first and last
+  1,000 lines are kept, the middle becomes one `stderr · <n> lines dropped` row. Tune with
+  `config :autonomous, :conversation_stderr_head` / `:conversation_stderr_tail` (positive
+  integers; anything else raises at read). Credential values are masked like all other text.
+- **Tokens.** The status line shows `in 12.1k · out 3.1k` from streamed per-message usage
+  (cache tokens excluded; `≥` when only the window is known), after turns and before cost.
+  Cost still appears only once the result reports it. Files without usage show no figure.
+- **Attribution.** Entries from subagent frames store `parent_tool_use_id`; views are unchanged.
+- **File format v2.** New files carry header `version: 2`; v1 files still open and render
+  identically; a version above 2 is refused by name (`{:unsupported_version, v}`). Store schema
+  stays v8.
+
 ## Persistent volumes for a target (041)
 
 Use when a target re-downloads toolchains or rebuilds from scratch every restart

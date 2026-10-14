@@ -13,7 +13,7 @@ defmodule Autonomous.ConversationFile do
   alias Autonomous.{ConversationEntry, ConversationIdentity}
 
   @format "speckit.conversation"
-  @version 1
+  @version 2
 
   @type handle :: %{io: File.io_device(), path: Path.t(), rel: String.t()}
 

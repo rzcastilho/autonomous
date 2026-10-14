@@ -20,8 +20,11 @@ defmodule Autonomous.ConversationRecorder do
     ConversationIdentity,
     ConversationOutcome,
     ConversationWindow,
-    CredentialMask
+    CredentialMask,
+    StderrBound
   }
+
+  alias Autonomous.Config
 
   alias Autonomous.Store.Records.ConversationRef
 
@@ -66,7 +69,9 @@ defmodule Autonomous.ConversationRecorder do
           bytes: header_bytes,
           entries: 0,
           error: nil,
-          session_id: nil
+          session_id: nil,
+          stderr:
+            StderrBound.new(Config.conversation_stderr_head(), Config.conversation_stderr_tail())
         }
 
         state =
@@ -98,6 +103,23 @@ defmodule Autonomous.ConversationRecorder do
     e -> {:noreply, %{state | error: state.error || {:frame_failed, Exception.message(e)}}}
   end
 
+  # CLI stderr (feature 043): the head is recorded as it arrives, the rest is
+  # held in a bounded tail and flushed at close.
+  def handle_info({:stderr, line}, state) when is_binary(line) do
+    case StderrBound.push(state.stderr, line) do
+      {:emit, line, bound} ->
+        {:noreply, emit(%{state | stderr: bound}, ConversationEntry.stderr(line))}
+
+      {:held, bound} ->
+        {:noreply, %{state | stderr: bound}}
+    end
+  rescue
+    e -> {:noreply, %{state | error: state.error || {:stderr_failed, Exception.message(e)}}}
+  end
+
+  def handle_info({:stderr, _other}, state),
+    do: {:noreply, %{state | error: state.error || {:stderr_failed, "non-binary stderr line"}}}
+
   def handle_info(_other, state), do: {:noreply, state}
 
   @impl true
@@ -111,8 +133,9 @@ defmodule Autonomous.ConversationRecorder do
 
   def handle_call({:close, outcome, session_id, drain?}, _from, state) do
     state =
-      emit(
-        state,
+      state
+      |> flush_stderr()
+      |> emit(
         ConversationEntry.new(:end, %{
           "outcome" => ConversationOutcome.encode(outcome),
           "session_id" => session_id || state.session_id,
@@ -136,6 +159,18 @@ defmodule Autonomous.ConversationRecorder do
     }
 
     {:stop, :normal, {:ok, ref}, state}
+  end
+
+  # The held tail, preceded by the dropped-count receipt, lands before `:end`.
+  defp flush_stderr(state) do
+    {dropped, held} = StderrBound.flush(state.stderr)
+
+    state =
+      if dropped > 0, do: emit(state, ConversationEntry.stderr_dropped(dropped)), else: state
+
+    Enum.reduce(held, state, &emit(&2, ConversationEntry.stderr(&1)))
+  rescue
+    e -> %{state | error: state.error || {:stderr_failed, Exception.message(e)}}
   end
 
   defp unwrap({:ok, entry}), do: {:ok, entry}

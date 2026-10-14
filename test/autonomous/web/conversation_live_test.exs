@@ -189,6 +189,43 @@ defmodule Autonomous.Web.ConversationLiveTest do
     assert count(render(view), "data-kind=\"tool_call\"") == 1
   end
 
+  describe "synthetic error result (043)" do
+    test "the marker carries the error text and the status line reads result error", %{
+      conn: conn,
+      root: root,
+      request: req
+    } do
+      handle = open_session(root, req)
+      feed(handle, [text_frame("working"), ClaudeAgentSDK.Message.error_result("CLI exited 1")])
+      {:ok, view, _} = live(conn, "/live/#{handle.conversation_id}")
+
+      assert has_element?(
+               view,
+               ".conv-marker",
+               "result · error_during_execution — CLI exited 1"
+             )
+
+      assert has_element?(view, "[data-activity]", "result error — CLI exited 1")
+    end
+
+    test "no message reads no reason given, and the footer is never a clean finish", %{
+      conn: conn,
+      root: root,
+      request: req
+    } do
+      handle = open_session(root, req)
+      feed(handle, [ClaudeAgentSDK.Message.error_result("")])
+      {:ok, view, _} = live(conn, "/live/#{handle.conversation_id}")
+      Conversation.close(handle, %PhaseResult{status: :ok, session_id: "s1", final_text: "x"})
+      render(view)
+
+      assert has_element?(view, ".conv-marker", "no reason given")
+      refute has_element?(view, ~s([data-activity] [data-status="done"]))
+      assert has_element?(view, ~s([data-activity] [data-status="failed"]))
+      assert has_element?(view, "[data-activity]", "completed · result error")
+    end
+  end
+
   test "ending shows the outcome chip, stops the live dot, and does not navigate", %{
     conn: conn,
     root: root,
@@ -748,6 +785,89 @@ defmodule Autonomous.Web.ConversationLiveTest do
       render(view)
       assert has_element?(view, "[data-header-resolved]", "claude-opus-4-8")
       assert has_element?(view, "[data-header-cli]", "cli 2.1.100")
+    end
+  end
+
+  describe "stderr rows and token figure (043)" do
+    defp usage_frame(event),
+      do: FakeSdk.frame(:stream_event, %{"event" => event})
+
+    defp start_event(id, input),
+      do:
+        usage_frame(%{
+          "type" => "message_start",
+          "message" => %{
+            "id" => id,
+            "usage" => %{"input_tokens" => input, "output_tokens" => 1}
+          }
+        })
+
+    defp delta_event(out),
+      do: usage_frame(%{"type" => "message_delta", "usage" => %{"output_tokens" => out}})
+
+    defp stderr!(handle, lines) do
+      for l <- lines, do: send(handle.pid, {:stderr, l})
+      Conversation.catch_up(handle.conversation_id)
+    end
+
+    test "stderr is a quiet row by default, repeats collapse, the tail follows the last frame",
+         %{conn: conn, root: root, request: req} do
+      handle = open_session(root, req)
+      stderr!(handle, ["warn", "warn", "warn", "error: retrying"])
+      feed(handle, [text_frame("working")])
+      {:ok, view, _} = live(conn, "/live/#{handle.conversation_id}")
+
+      assert has_element?(view, ".conv-stderr", "warn")
+      assert has_element?(view, "[data-repeat]", "×3")
+      assert has_element?(view, ".conv-stderr", "error: retrying")
+      assert count(render(view), ~s(data-class="stderr")) == 2
+
+      stderr!(handle, ["late line"])
+      assert has_element?(view, ".conv-stderr", "late line")
+
+      # frames=all leaves stderr rows as they were
+      view |> element("[data-frames]") |> render_click()
+      assert count(render(view), ~s(data-class="stderr")) == 3
+    end
+
+    test "a dropped-count notice reads as a row between head and tail",
+         %{conn: conn, root: root, request: req} do
+      prev = Application.fetch_env(:autonomous, :conversation_stderr_head)
+      Application.put_env(:autonomous, :conversation_stderr_head, 1)
+      Application.put_env(:autonomous, :conversation_stderr_tail, 1)
+
+      on_exit(fn ->
+        Application.delete_env(:autonomous, :conversation_stderr_tail)
+
+        case prev do
+          {:ok, v} -> Application.put_env(:autonomous, :conversation_stderr_head, v)
+          :error -> Application.delete_env(:autonomous, :conversation_stderr_head)
+        end
+      end)
+
+      handle = open_session(root, req)
+      {:ok, view, _} = live(conn, "/live/#{handle.conversation_id}")
+      stderr!(handle, ["a", "b", "c", "d"])
+      Conversation.close(handle, %PhaseResult{status: :ok, session_id: "s1", final_text: "x"})
+      render(view)
+
+      assert has_element?(view, ".conv-marker", "stderr · 2 lines dropped")
+      assert has_element?(view, ".conv-stderr", "d")
+    end
+
+    test "the status line shows tokens as usage arrives, absent before any",
+         %{conn: conn, root: root, request: req} do
+      handle = open_session(root, req)
+      feed(handle, [text_frame("hi")])
+      {:ok, view, _} = live(conn, "/live/#{handle.conversation_id}")
+      refute has_element?(view, "[data-tokens]")
+
+      feed(handle, [start_event("m1", 12_000), delta_event(3_000)])
+      assert has_element?(view, "[data-tokens]", "in 12.0k · out 3.0k")
+
+      feed(handle, [delta_event(3_100), start_event("m2", 100), delta_event(50)])
+      assert has_element?(view, "[data-tokens]", "in 12.1k · out 3.1k")
+      refute has_element?(view, "[data-cost]")
     end
   end
 end

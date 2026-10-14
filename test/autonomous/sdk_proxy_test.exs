@@ -74,4 +74,47 @@ defmodule Autonomous.SdkProxyTest do
     env = %{SdkProxy.conversation_key() => "not a pid"}
     assert length(Enum.to_list(SdkProxy.query("p", options(env)))) == 5
   end
+
+  describe "callback/2 (feature 043)" do
+    import ExUnit.CaptureLog
+
+    test "logs the line and sends {:stderr, line} to the recorder" do
+      cb = SdkProxy.callback(nil, self())
+      log = capture_log(fn -> assert cb.("boom") == :ok end)
+      assert log =~ "CLI stderr: boom"
+      assert_received {:stderr, "boom"}
+    end
+
+    test "still forwards untrusted-workspace lines to the collector" do
+      collector = Autonomous.WorkspaceTrust.Collector.start()
+      cb = SdkProxy.callback(collector, self())
+
+      line = "Error: this workspace has not been trusted: /work/tree"
+      capture_log(fn -> cb.(line) end)
+      assert_received {:stderr, ^line}
+      assert Autonomous.WorkspaceTrust.Collector.collect(collector) == [line]
+    end
+
+    test "nil or dead recorder is a no-op" do
+      cb = SdkProxy.callback(nil, nil)
+      capture_log(fn -> assert cb.("a") == :ok end)
+
+      pid = spawn(fn -> :ok end)
+      ref = Process.monitor(pid)
+      assert_receive {:DOWN, ^ref, _, _, _}
+      cb = SdkProxy.callback(nil, pid)
+      capture_log(fn -> assert cb.("a") == :ok end)
+    end
+
+    test "callback/1 is unchanged and prepare/1 wires the recorder from the marker" do
+      capture_log(fn -> assert SdkProxy.callback(nil).("x") == :ok end)
+      refute_received {:stderr, _}
+
+      env = %{SdkProxy.conversation_key() => SdkProxy.encode(self()), "KEEP" => "1"}
+      %{env: e, stderr: cb} = SdkProxy.prepare(%ClaudeAgentSDK.Options{env: env})
+      assert e == %{"KEEP" => "1"}
+      capture_log(fn -> cb.("via prepare") end)
+      assert_received {:stderr, "via prepare"}
+    end
+  end
 end

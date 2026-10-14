@@ -45,7 +45,7 @@ defmodule Autonomous.ConversationFileTest do
 
     header = h.path |> File.read!() |> String.split("\n") |> hd() |> Jason.decode!()
 
-    assert %{"format" => "speckit.conversation", "version" => 1, "conversation_id" => "c-1"} =
+    assert %{"format" => "speckit.conversation", "version" => 2, "conversation_id" => "c-1"} =
              header
 
     assert {:ok, ^header} = ConversationFile.header_of(h.path)
@@ -101,10 +101,23 @@ defmodule Autonomous.ConversationFileTest do
 
     File.write!(
       path,
-      Jason.encode!(%{"format" => "speckit.conversation", "version" => 2}) <> "\n"
+      Jason.encode!(%{"format" => "speckit.conversation", "version" => 3}) <> "\n"
     )
 
-    assert {:error, {:unsupported_version, 2}} = ConversationFile.page(path, 0, 5)
+    assert {:error, {:unsupported_version, 3}} = ConversationFile.page(path, 0, 5)
+  end
+
+  test "v1 and v2 headers are both accepted", %{tmp_dir: root} do
+    for v <- [1, 2] do
+      path = Path.join(root, "v#{v}.jsonl")
+
+      File.write!(
+        path,
+        Jason.encode!(%{"format" => "speckit.conversation", "version" => v}) <> "\n"
+      )
+
+      assert {:ok, []} = ConversationFile.fold(path, [], fn e, acc -> [e | acc] end)
+    end
   end
 
   test "a garbage header is malformed line 1", %{tmp_dir: root} do
@@ -140,10 +153,10 @@ defmodule Autonomous.ConversationFileTest do
 
       File.write!(
         v2,
-        Jason.encode!(%{"format" => "speckit.conversation", "version" => 2}) <> "\n"
+        Jason.encode!(%{"format" => "speckit.conversation", "version" => 3}) <> "\n"
       )
 
-      assert {:error, {:unsupported_version, 2}} = seqs(v2)
+      assert {:error, {:unsupported_version, 3}} = seqs(v2)
 
       bad = write!(Path.join(root, "x") |> tap(&File.mkdir_p!/1), 3)
       File.write!(bad, "{not json\n", [:append])

@@ -311,4 +311,110 @@ defmodule Autonomous.Web.ConversationRowsTest do
       assert Enum.all?(Enum.filter(blocks, &(&1.class == :call)), & &1.result)
     end
   end
+
+  describe "result marker error text (043)" do
+    defp res_entry(seq, body),
+      do:
+        entry(
+          seq,
+          :result,
+          Map.merge(%{"subtype" => "error_during_execution", "is_error" => true}, body)
+        )
+
+    test "an error result appends its error text" do
+      {[b], _} = ConversationRows.rows([res_entry(1, %{"error" => "CLI exited 1"})])
+      assert b.summary == "result · error_during_execution — CLI exited 1"
+      assert b.flag == :result_error
+    end
+
+    test "a nil error reads no reason given" do
+      {[b], _} = ConversationRows.rows([res_entry(1, %{"error" => nil})])
+      assert b.summary == "result · error_during_execution — no reason given"
+    end
+
+    test "a success marker is unchanged" do
+      {rows, _} =
+        ConversationRows.rows([
+          entry(1, :result, %{"subtype" => "error_max_turns", "is_error" => false})
+        ])
+
+      assert [%{summary: "result · error_max_turns"}] = rows
+    end
+  end
+
+  describe "stderr rows (043)" do
+    defp err(seq, line), do: entry(seq, :stderr, %{"line" => line})
+
+    test "consecutive identical lines collapse into one block with a repeat count" do
+      {rows, _} = ConversationRows.rows([err(1, "warn"), err(2, "warn"), err(3, "warn")])
+      assert [b] = rows
+
+      assert {b.class, b.repeat, b.seqs, b.body, b.label} ==
+               {:stderr, 3, [1, 2, 3], "warn", "stderr"}
+
+      assert b.key == "entry-1"
+    end
+
+    test "a different visible entry in between ends the run" do
+      {rows, _} =
+        ConversationRows.rows([
+          err(1, "warn"),
+          err(2, "other"),
+          err(3, "warn"),
+          entry(4, :assistant_text, %{"text" => "hi"}),
+          err(5, "warn")
+        ])
+
+      assert Enum.map(rows, &{&1.class, &1.repeat}) ==
+               [stderr: 1, stderr: 1, stderr: 1, prose: 1, stderr: 1]
+    end
+
+    test "hidden signal entries do not break a run" do
+      {rows, _} =
+        ConversationRows.rows([
+          err(1, "warn"),
+          entry(2, :usage, %{"event" => "message_delta", "output_tokens" => 5}),
+          err(3, "warn")
+        ])
+
+      assert [%{repeat: 2, seqs: [1, 3]}] = rows
+    end
+
+    test "streaming one entry at a time collapses under the same key" do
+      blocks = stream_blocks([err(1, "warn"), err(2, "warn"), err(3, "warn")], [])
+
+      assert [%{key: "entry-1", repeat: 3, seqs: [1, 2, 3]}] =
+               Enum.uniq_by(Enum.reverse(blocks), & &1.key)
+    end
+
+    test "the dropped notice renders its count" do
+      {[b], _} =
+        ConversationRows.rows([entry(1, :stderr, %{"notice" => "dropped", "dropped" => 98_000})])
+
+      assert b.class == :marker
+      assert b.summary == "stderr · 98000 lines dropped"
+    end
+
+    test "show-all-frames leaves stderr rows unchanged" do
+      entries = [err(1, "warn"), err(2, "warn")]
+      {default, _} = ConversationRows.rows(entries)
+      {all, _} = ConversationRows.rows(entries, ConversationRows.new(all_frames: true))
+      assert default == all
+    end
+  end
+
+  describe "parent_tool_use_id (043)" do
+    test "renders identically with or without the recorded id" do
+      plain = [
+        entry(1, :assistant_text, %{"text" => "a", "message_id" => "m"}),
+        call(2, "t1"),
+        result(3, "t1", "ok")
+      ]
+
+      tagged =
+        Enum.map(plain, &%{&1 | body: Map.put(&1.body, "parent_tool_use_id", "toolu_sub1")})
+
+      assert ConversationRows.rows(plain) == ConversationRows.rows(tagged)
+    end
+  end
 end

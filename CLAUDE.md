@@ -343,6 +343,13 @@ folded prompt/thinking, markers, divider); `ToolSummary` renders `Tool(summary)`
 signals into the sticky status line and header fields (seeded on join via `ConversationFile.fold/4` and
 `Conversation.file_path/1`, `≥` when only the window is available). `frames=all` / `toggle_frames`
 restores every frame. `specs/042-classify-conversation-output/`.
+**Recorder gaps closed (feature 043).** Conversation file format v2 (v1 still read, ≥3 refused):
+`ConversationEntry` stores error-result text (`is_error`/`error`), new `:usage` entries from
+`message_start`/`message_delta` stream events, `:stderr` entries and `parent_tool_use_id`. `SdkProxy.callback/2`
+forwards CLI stderr to the recorder (bare `send/2`); `StderrBound` (pure) keeps head/tail
+(`Config.conversation_stderr_head/tail`, 1,000 each) and the recorder emits a dropped-count notice before `:end`.
+`SessionStatus` folds usage into the `in/out` token figure and turns a `done` chip `failed` on an error result.
+No store change. `specs/043-close-recorder-gaps/`.
 `Autonomous.resolve/1` frees a kept worktree so a human-resolved feature
 re-runs on its existing branch (`Worktree.create` reuses an existing branch).
 `Autonomous.resume/2` is the shipped checkpoint-driven restart path —

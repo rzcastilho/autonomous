@@ -300,4 +300,183 @@ defmodule Autonomous.ConversationRecorderTest do
     assert Enum.any?(entries, &(&1.body["text"] == "early"))
     Conversation.close(handle, ok_result())
   end
+
+  describe "stderr capture (feature 043)" do
+    defp put_env!(key, value) do
+      prev = Application.fetch_env(:autonomous, key)
+      Application.put_env(:autonomous, key, value)
+
+      on_exit(fn ->
+        case prev do
+          {:ok, v} -> Application.put_env(:autonomous, key, v)
+          :error -> Application.delete_env(:autonomous, key)
+        end
+      end)
+    end
+
+    defp saved(root, ref) do
+      {:ok, entries, :eof} =
+        ConversationFile.page(ConversationFile.resolve(root, ref.path), 0, 100_000)
+
+      entries
+    end
+
+    test "stderr lines interleave with frames in mailbox order",
+         %{identity: identity, request: request, root: root} do
+      {:ok, handle, _} = Conversation.open(identity, request)
+      send(handle.pid, {:stderr, "warn one"})
+      send(handle.pid, {:frame, frame("hello")})
+      send(handle.pid, {:stderr, "warn two"})
+      ref = Conversation.close(handle, ok_result())
+
+      entries = saved(root, ref)
+
+      assert Enum.map(entries, & &1.kind) ==
+               [:start, :prompt, :stderr, :assistant_text, :stderr, :end]
+
+      assert Enum.map(Enum.filter(entries, &(&1.kind == :stderr)), & &1.body["line"]) ==
+               ["warn one", "warn two"]
+    end
+
+    test "credentials are masked in stderr lines and in a synthetic result's error",
+         %{identity: identity, request: request, root: root} do
+      System.put_env("GH_TOKEN", "ghp_supersecret1234")
+      on_exit(fn -> System.delete_env("GH_TOKEN") end)
+
+      {:ok, handle, _} = Conversation.open(identity, request)
+      send(handle.pid, {:stderr, "auth failed ghp_supersecret1234"})
+
+      send(
+        handle.pid,
+        {:frame, ClaudeAgentSDK.Message.error_result("exit with ghp_supersecret1234")}
+      )
+
+      ref = Conversation.close(handle, ok_result())
+      contents = File.read!(ConversationFile.resolve(root, ref.path))
+      refute contents =~ "supersecret"
+      assert contents =~ "[masked:GH_TOKEN]"
+    end
+
+    test "a burst past head + tail records head, one notice, tail, then :end",
+         %{identity: identity, request: request, root: root} do
+      put_env!(:conversation_stderr_head, 2)
+      put_env!(:conversation_stderr_tail, 3)
+
+      {:ok, handle, _} = Conversation.open(identity, request)
+      for i <- 1..10, do: send(handle.pid, {:stderr, "l#{i}"})
+      ref = Conversation.close(handle, ok_result())
+
+      entries = saved(root, ref)
+      stderr = Enum.filter(entries, &(&1.kind == :stderr))
+
+      assert Enum.map(stderr, & &1.body) == [
+               %{"line" => "l1"},
+               %{"line" => "l2"},
+               %{"notice" => "dropped", "dropped" => 5},
+               %{"line" => "l8"},
+               %{"line" => "l9"},
+               %{"line" => "l10"}
+             ]
+
+      assert List.last(entries).kind == :end
+      assert ref.status == :captured
+    end
+
+    test "at or under the cap there is no notice",
+         %{identity: identity, request: request, root: root} do
+      put_env!(:conversation_stderr_head, 2)
+      put_env!(:conversation_stderr_tail, 3)
+
+      {:ok, handle, _} = Conversation.open(identity, request)
+      for i <- 1..5, do: send(handle.pid, {:stderr, "l#{i}"})
+      ref = Conversation.close(handle, ok_result())
+
+      stderr = root |> saved(ref) |> Enum.filter(&(&1.kind == :stderr))
+      assert length(stderr) == 5
+      refute Enum.any?(stderr, &Map.has_key?(&1.body, "notice"))
+    end
+
+    test "a startup failure with stderr only (no frames) is recorded",
+         %{identity: identity, request: request, root: root} do
+      {:ok, handle, _} = Conversation.open(identity, request)
+      send(handle.pid, {:stderr, "Error: cannot read ~/.claude.json"})
+      ref = Conversation.close(handle, ok_result())
+
+      assert Enum.map(saved(root, ref), & &1.kind) == [:start, :prompt, :stderr, :end]
+    end
+
+    test "a stderr message sent after close is a harmless no-op",
+         %{identity: identity, request: request} do
+      {:ok, handle, _} = Conversation.open(identity, request)
+      Conversation.close(handle, ok_result())
+      assert send(handle.pid, {:stderr, "late"}) == {:stderr, "late"}
+    end
+
+    test "a fault while processing stderr degrades capture, never crashes",
+         %{identity: identity, request: request} do
+      {:ok, handle, _} = Conversation.open(identity, request)
+      send(handle.pid, {:stderr, :not_a_binary})
+      assert Process.alive?(handle.pid)
+      ref = Conversation.close(handle, ok_result())
+      assert ref.status == :partial
+    end
+
+    test "SC-006: a 100,000-line flood keeps 2,000 lines + one notice, frames and end intact",
+         %{identity: identity, request: request, root: root} do
+      {:ok, handle, _} = Conversation.open(identity, request)
+      pid = handle.pid
+
+      sender =
+        Task.async(fn ->
+          for i <- 1..100_000 do
+            if rem(i, 25_000) == 0, do: send(pid, {:frame, frame("f#{i}")})
+            send(pid, {:stderr, "line #{i}"})
+          end
+
+          :sent
+        end)
+
+      assert Task.await(sender, 30_000) == :sent
+      {us, ref} = :timer.tc(fn -> Conversation.close(handle, ok_result()) end)
+      assert us < 30_000_000
+      assert ref.status == :captured
+
+      entries = saved(root, ref)
+      stderr = Enum.filter(entries, &(&1.kind == :stderr))
+      lines = for %{body: %{"line" => l}} <- stderr, do: l
+      assert length(lines) == 2000
+      assert hd(lines) == "line 1"
+      assert Enum.at(lines, 999) == "line 1000"
+      assert Enum.at(lines, 1000) == "line 99001"
+      assert List.last(lines) == "line 100000"
+
+      assert [%{body: %{"dropped" => 98_000}}] =
+               Enum.filter(stderr, &Map.has_key?(&1.body, "notice"))
+
+      assert List.last(entries).kind == :end
+      assert Enum.count(entries, &(&1.kind == :assistant_text)) == 4
+    end
+  end
+
+  test "close/2 returns the pre-043 ConversationRef shape after usage, stderr and an error result",
+       %{identity: identity, request: request} do
+    {:ok, handle, _} = Conversation.open(identity, request)
+
+    send(
+      handle.pid,
+      {:frame,
+       FakeSdk.frame(:stream_event, %{
+         "event" => %{"type" => "message_delta", "usage" => %{"output_tokens" => 5}}
+       })}
+    )
+
+    send(handle.pid, {:stderr, "x"})
+    send(handle.pid, {:frame, ClaudeAgentSDK.Message.error_result("CLI exited 1")})
+    ref = Conversation.close(handle, ok_result())
+
+    assert Map.keys(ref) |> Enum.sort() ==
+             Map.keys(%ConversationRef{}) |> Enum.sort()
+
+    assert ref.status in [:captured, :partial, :not_captured]
+  end
 end
