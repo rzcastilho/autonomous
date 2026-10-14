@@ -72,6 +72,12 @@ defmodule Autonomous.Web.ConversationComponents do
             <span :if={@row.tool_name} class="conv-tool">{@row.tool_name}</span>
           </div>
           <.result_part row={@row} expand_event={@expand_event} />
+        <% :stderr -> %>
+          <div class="conv-meta">
+            <span class="conv-label">{@row.label}</span>
+            <span :if={@row.repeat > 1} class="conv-flag" data-repeat>×{@row.repeat}</span>
+          </div>
+          <pre class="conv-text conv-stderr" data-format="mono">{@row.body}</pre>
         <% :marker -> %>
           <details class="conv-fold conv-marker">
             <summary>
@@ -181,7 +187,7 @@ defmodule Autonomous.Web.ConversationComponents do
 
   @doc """
   The sticky bottom status line: activity, counters, background work, elapsed,
-  rate limit, cost and duration — each group only when it has something true to
+  tokens, rate limit, cost and duration — each group only when it has something true to
   say. Pulse and tick exist only while `live?`.
   """
   def status_line(assigns) do
@@ -193,7 +199,8 @@ defmodule Autonomous.Web.ConversationComponents do
         activity: SessionStatus.activity_text(status),
         dot: SessionStatus.status_name(status, assigns.live?),
         elapsed: if(assigns.live? or status.ended_at, do: SessionStatus.elapsed_s(status, now)),
-        lb?: status.lower_bound?
+        lb?: status.lower_bound?,
+        tokens: SessionStatus.tokens_text(status)
       )
 
     ~H"""
@@ -208,6 +215,7 @@ defmodule Autonomous.Web.ConversationComponents do
       <span class="conv-status-group" data-tools>
         tools {SessionStatus.count_text(@status.tool_calls, @lb?)}
       </span>
+      <span :if={@tokens} class="conv-status-group" data-tokens>{@tokens}</span>
       <span :if={@status.open_tasks > 0} class="conv-status-group" data-tasks>
         bg {@status.open_tasks}
       </span>

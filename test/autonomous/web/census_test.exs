@@ -59,4 +59,19 @@ defmodule Autonomous.Web.CensusTest do
       end
     end
   end
+
+  test "v1 files render identically to 042: no usage, stderr or result error appears" do
+    for path <- files(),
+        {:ok, %{"version" => 1}} <- [ConversationFile.header_of(path)] do
+      entries = load(path)
+      status = SessionStatus.apply_all(SessionStatus.new(), entries)
+
+      assert SessionStatus.tokens_text(status) == nil
+      assert status.result_error == nil
+      refute Enum.any?(entries, &(&1.kind in [:usage, :stderr]))
+
+      {rows, _} = ConversationRows.rows(entries)
+      refute Enum.any?(rows, &(Map.get(&1, :repeat, 1) > 1))
+    end
+  end
 end

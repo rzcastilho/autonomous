@@ -49,3 +49,7 @@ Rules:
 
 The same entry objects are the payload of the live PubSub messages, so the
 live tail and the saved file are identical entry-for-entry (SC-006).
+
+> **Amended by feature 043** (`specs/043-close-recorder-gaps/contracts/recording.md`): header
+> `version` is now 2 (adds `usage` and `stderr` kinds, `result.error`, `parent_tool_use_id`);
+> readers accept v1 and v2 and refuse ≥ 3 with `{:unsupported_version, v}`.

@@ -19,6 +19,9 @@ defmodule Autonomous.Web.ConversationRows do
     `expand/2` renders it whole.
   * Entries hidden by the classifier (`visible?/2`) produce no block but still
     advance the context; `new(all_frames: true)` shows every entry.
+  * Consecutive identical CLI stderr lines (feature 043) merge into the first
+    line's block — same key, `repeat` counting them, `seqs` listing every
+    merged entry. Only a visible block of another kind ends a run.
   * Outcomes render through `Autonomous.Report.format_outcome/1` — no
     `inspect/1` in the markup.
 
@@ -58,7 +61,9 @@ defmodule Autonomous.Web.ConversationRows do
           flag: nil | :is_error | :hook_failed | :result_error,
           unfinished?: boolean(),
           outcome: String.t() | nil,
-          chip: String.t() | nil
+          chip: String.t() | nil,
+          repeat: pos_integer(),
+          seqs: [non_neg_integer() | nil]
         }
 
   @type ctx :: %{
@@ -66,6 +71,7 @@ defmodule Autonomous.Web.ConversationRows do
           names: %{String.t() => String.t()},
           stale: [block()],
           result_owner: %{non_neg_integer() => String.t()},
+          stderr_run: nil | block(),
           all_frames?: boolean()
         }
 
@@ -77,6 +83,7 @@ defmodule Autonomous.Web.ConversationRows do
       names: %{},
       stale: [],
       result_owner: %{},
+      stderr_run: nil,
       all_frames?: Keyword.get(opts, :all_frames, false)
     }
 
@@ -124,10 +131,17 @@ defmodule Autonomous.Web.ConversationRows do
   defp one(%ConversationEntry{} = e, ctx, opts) do
     c = ConversationClass.classify(e)
 
-    if ConversationClass.visible?(c, ctx.all_frames?),
-      do: build(e, c, ctx, opts),
-      else: {[], ctx}
+    if ConversationClass.visible?(c, ctx.all_frames?) do
+      {blocks, ctx} = build(e, c, ctx, opts)
+      {blocks, end_stderr_run(ctx, e)}
+    else
+      {[], ctx}
+    end
   end
+
+  # A visible block of any other kind ends the stderr run; a notice does too.
+  defp end_stderr_run(ctx, %ConversationEntry{kind: :stderr, body: %{"line" => _}}), do: ctx
+  defp end_stderr_run(ctx, _e), do: %{ctx | stderr_run: nil}
 
   defp build(%ConversationEntry{kind: :tool_call} = e, _c, ctx, opts) do
     id = e.body["tool_use_id"]
@@ -167,6 +181,21 @@ defmodule Autonomous.Web.ConversationRows do
              result_owner: Map.put(ctx.result_owner, e.seq, id)
          }}
     end
+  end
+
+  defp build(%ConversationEntry{kind: :stderr, body: %{"line" => line}} = e, _c, ctx, opts) do
+    line = to_string(line)
+
+    block =
+      case ctx.stderr_run do
+        %{body: ^line} = run ->
+          %{run | repeat: run.repeat + 1, seqs: run.seqs ++ [e.seq]}
+
+        _ ->
+          base(e, :stderr, "stderr", :mono, line, opts)
+      end
+
+    {[block], %{ctx | stderr_run: block}}
   end
 
   defp build(%ConversationEntry{kind: :end} = e, _c, ctx, _opts) do
@@ -229,8 +258,13 @@ defmodule Autonomous.Web.ConversationRows do
 
   # ---- marker text --------------------------------------------------------
 
-  defp marker_summary(%ConversationEntry{kind: :result, body: b}, _c),
-    do: join(["result", b["subtype"]])
+  defp marker_summary(%ConversationEntry{kind: :stderr, body: %{"dropped" => n}}, _c),
+    do: "stderr · #{n} lines dropped"
+
+  defp marker_summary(%ConversationEntry{kind: :result, body: b}, _c) do
+    base = join(["result", b["subtype"]])
+    if b["is_error"] == true, do: base <> " — " <> (b["error"] || "no reason given"), else: base
+  end
 
   defp marker_summary(%ConversationEntry{body: %{"data" => data}} = e, c) do
     case ConversationClass.sub_kind(e) do
@@ -287,7 +321,9 @@ defmodule Autonomous.Web.ConversationRows do
       flag: nil,
       unfinished?: false,
       outcome: nil,
-      chip: nil
+      chip: nil,
+      repeat: 1,
+      seqs: [e.seq]
     }
   end
 

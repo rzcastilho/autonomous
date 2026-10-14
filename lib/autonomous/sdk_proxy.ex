@@ -74,8 +74,8 @@ defmodule Autonomous.SdkProxy do
   """
   def prepare(%{env: env} = options) when is_map(env) do
     {marker, env} = Map.pop(env, @env_key)
-    env = Map.delete(env, @conversation_key)
-    %{options | env: env, stderr: callback(decode(marker))}
+    {conversation, env} = Map.pop(env, @conversation_key)
+    %{options | env: env, stderr: callback(decode(marker), decode(conversation))}
   end
 
   def prepare(options), do: options
@@ -85,10 +85,19 @@ defmodule Autonomous.SdkProxy do
   forwards untrusted-workspace lines to `collector` (`nil` = log only).
   """
   @spec callback(pid() | nil) :: (String.t() -> :ok)
-  def callback(collector) do
+  def callback(collector), do: callback(collector, nil)
+
+  @doc """
+  As `callback/1`, and additionally `send/2`s `{:stderr, line}` to the
+  conversation `recorder` (feature 043) — bare, never awaited, so capture can
+  neither block nor alter the session. `nil` or a dead pid is a no-op.
+  """
+  @spec callback(pid() | nil, pid() | nil) :: (String.t() -> :ok)
+  def callback(collector, recorder) do
     fn line ->
       Logger.warning("CLI stderr: " <> line)
       if WorkspaceTrust.parse_line(line) != :other, do: Collector.push(collector, line)
+      if is_pid(recorder), do: send(recorder, {:stderr, line})
       :ok
     end
   end

@@ -130,6 +130,14 @@ defmodule Autonomous.Config do
   @spec phase_timeout() :: pos_integer()
   def phase_timeout, do: get(:phase_timeout, :timer.minutes(50))
 
+  @doc "Stderr lines kept from the start of a session's conversation record (feature 043)."
+  @spec conversation_stderr_head() :: pos_integer()
+  def conversation_stderr_head, do: positive!(:conversation_stderr_head, 1000)
+
+  @doc "Stderr lines kept from the end of a session's conversation record (feature 043)."
+  @spec conversation_stderr_tail() :: pos_integer()
+  def conversation_stderr_tail, do: positive!(:conversation_stderr_tail, 1000)
+
   @doc """
   Per-task deadline extension (ms) for an implement chunk — see
   `Chunking.deadline_ms/2`: `max(phase_timeout(), per_task * task_count)`.
@@ -256,5 +264,16 @@ defmodule Autonomous.Config do
   def clarify_poll_ms, do: get(:clarify_poll_ms, 1_000)
 
   @spec get(atom(), term()) :: term()
+  defp positive!(key, default) do
+    case get(key, default) do
+      n when is_integer(n) and n > 0 ->
+        n
+
+      other ->
+        raise ArgumentError,
+              "config :#{@app}, #{inspect(key)} must be a positive integer, got: #{inspect(other)}"
+    end
+  end
+
   defp get(key, default), do: Application.get_env(@app, key, default)
 end

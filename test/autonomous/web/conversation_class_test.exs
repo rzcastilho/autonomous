@@ -61,6 +61,28 @@ defmodule Autonomous.Web.ConversationClassTest do
              ConversationClass.classify(decoded)
   end
 
+  test "043 kinds: usage is a raw signal, stderr a quiet row, the dropped notice a marker" do
+    assert %{placement: :signal, row_class: :raw, fold: :line, label: "usage · message_delta"} =
+             c(:usage, %{"event" => "message_delta"})
+
+    assert %{label: "usage"} = c(:usage, %{})
+
+    assert %{placement: :row, row_class: :stderr, fold: :line, label: "stderr"} =
+             c(:stderr, %{"line" => "warn"})
+
+    assert %{placement: :row, row_class: :marker, fold: :line, label: "stderr"} =
+             c(:stderr, %{"notice" => "dropped", "dropped" => 3})
+  end
+
+  test "completeness: every kind is a row or a signal" do
+    for kind <- E.kinds() do
+      assert %{placement: p} = c(kind, %{})
+      assert p in [:row, :signal, :row_signal, :header_signal]
+    end
+
+    assert :usage in E.kinds() and :stderr in E.kinds()
+  end
+
   test "total: never raises on odd bodies" do
     for kind <- E.kinds(), body <- [%{}, %{"subtype" => 1}, %{"raw" => "x"}, %{"data" => nil}] do
       assert %{placement: _} = c(kind, body)

@@ -19,6 +19,40 @@ defmodule Autonomous.ConfigTest do
     assert is_map(Config.models())
   end
 
+  describe "conversation stderr caps" do
+    for {fun, key} <- [
+          {:conversation_stderr_head, :conversation_stderr_head},
+          {:conversation_stderr_tail, :conversation_stderr_tail}
+        ] do
+      test "#{fun}/0 defaults to 1000, honours an override, raises on bad values" do
+        key = unquote(key)
+        fun = unquote(fun)
+        prior = Application.fetch_env(:autonomous, key)
+
+        on_exit(fn ->
+          case prior do
+            {:ok, v} -> Application.put_env(:autonomous, key, v)
+            :error -> Application.delete_env(:autonomous, key)
+          end
+        end)
+
+        Application.delete_env(:autonomous, key)
+        assert apply(Config, fun, []) == 1000
+
+        Application.put_env(:autonomous, key, 5)
+        assert apply(Config, fun, []) == 5
+
+        for bad <- [0, -1, "10", 1.5, nil] do
+          Application.put_env(:autonomous, key, bad)
+
+          assert_raise ArgumentError, ~r/must be a positive integer/, fn ->
+            apply(Config, fun, [])
+          end
+        end
+      end
+    end
+  end
+
   test "model_for/1 returns the model alias per phase" do
     assert Config.model_for(:clarify) == "opus"
     assert Config.model_for(:implement) == "sonnet"

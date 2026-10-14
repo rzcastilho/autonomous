@@ -2759,6 +2759,11 @@ textarea {
   font-family: var(--font-sans);
 }
 
+/* CLI stderr (043): a quiet mono line — diagnosis, not an alarm. */
+.conv-stderr {
+  color: var(--text-muted);
+}
+
 .conv-thinking summary {
   cursor: pointer;
   font-size: var(--fs-meta);

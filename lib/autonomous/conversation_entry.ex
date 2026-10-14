@@ -11,7 +11,7 @@ defmodule Autonomous.ConversationEntry do
   content arrives complete in the assistant frame.
   """
 
-  @kinds ~w(start prompt assistant_text thinking tool_call tool_result system result other end)a
+  @kinds ~w(start prompt assistant_text thinking tool_call tool_result system result usage stderr other end)a
   @kind_by_name Map.new(@kinds, &{Atom.to_string(&1), &1})
 
   defstruct [:seq, :at, :kind, body: %{}]
@@ -25,6 +25,8 @@ defmodule Autonomous.ConversationEntry do
           | :tool_result
           | :system
           | :result
+          | :usage
+          | :stderr
           | :other
           | :end
 
@@ -41,15 +43,24 @@ defmodule Autonomous.ConversationEntry do
   @spec new(kind(), map()) :: t()
   def new(kind, body) when kind in @kinds, do: %__MODULE__{kind: kind, body: body}
 
+  @doc "A recorded CLI error-stream line (feature 043)."
+  @spec stderr(String.t()) :: t()
+  def stderr(line) when is_binary(line), do: new(:stderr, %{"line" => line})
+
+  @doc "The receipt for stderr lines discarded between the kept head and tail."
+  @spec stderr_dropped(pos_integer()) :: t()
+  def stderr_dropped(n) when is_integer(n) and n > 0,
+    do: new(:stderr, %{"notice" => "dropped", "dropped" => n})
+
   @doc "Entries for one raw frame."
   @spec from_frame(term()) :: [t()]
   def from_frame(%{type: type} = frame) do
     raw = raw(frame)
 
     case type do
-      :stream_event -> []
-      :assistant -> assistant(raw)
-      :user -> user(raw)
+      :stream_event -> usage(frame, raw)
+      :assistant -> raw |> assistant() |> attribute(raw)
+      :user -> raw |> user() |> attribute(raw)
       :system -> [system(frame, raw)]
       :result -> [result(frame, raw)]
       _ -> [new(:other, %{"raw" => raw_or_frame(frame, raw)})]
@@ -63,6 +74,64 @@ defmodule Autonomous.ConversationEntry do
 
   defp raw_or_frame(_frame, raw) when map_size(raw) > 0, do: raw
   defp raw_or_frame(frame, _), do: jsonable(Map.from_struct(frame))
+
+  # Subagent attribution is recorded, never rendered (feature 043, R5): only a
+  # non-empty string is kept, so an absent id is an absent key.
+  defp attribute(entries, raw) do
+    case parent_id(raw) do
+      nil -> entries
+      id -> Enum.map(entries, &%{&1 | body: Map.put(&1.body, "parent_tool_use_id", id)})
+    end
+  end
+
+  defp parent_id(%{"parent_tool_use_id" => id}) when is_binary(id) and id != "", do: id
+  defp parent_id(_), do: nil
+
+  # Per-message token usage from the streaming events (feature 043, R2); every
+  # other stream event repeats content the assistant frame carries whole.
+  defp usage(frame, raw) do
+    data = data(frame)
+
+    case stream_event(raw, data) do
+      %{"type" => "message_start"} = ev ->
+        [usage_entry("message_start", ev, ev["message"], frame, raw)]
+
+      %{"type" => "message_delta"} = ev ->
+        [usage_entry("message_delta", ev, ev, frame, raw)]
+
+      _ ->
+        []
+    end
+  end
+
+  defp stream_event(%{"event" => ev}, _data) when is_map(ev), do: ev
+  defp stream_event(_raw, %{event: ev}) when is_map(ev), do: ev
+  defp stream_event(_raw, _data), do: nil
+
+  @usage_fields ~w(input_tokens output_tokens cache_read_input_tokens cache_creation_input_tokens)
+
+  defp usage_entry(event, _ev, holder, frame, raw) do
+    counts = if is_map(holder), do: holder["usage"], else: nil
+
+    fields =
+      for f <- @usage_fields, is_map(counts), is_integer(counts[f]), into: %{}, do: {f, counts[f]}
+
+    body = Map.put(fields, "event", event)
+
+    body =
+      case holder do
+        %{"id" => id} when event == "message_start" and is_binary(id) ->
+          Map.put(body, "message_id", id)
+
+        _ ->
+          body
+      end
+
+    scope =
+      parent_id(raw) || parent_id(%{"parent_tool_use_id" => data(frame)[:parent_tool_use_id]})
+
+    new(:usage, if(scope, do: Map.put(body, "parent_tool_use_id", scope), else: body))
+  end
 
   defp message_content(raw), do: get_in(raw, ["message", "content"])
 
@@ -119,15 +188,35 @@ defmodule Autonomous.ConversationEntry do
     new(:system, %{"subtype" => subtype, "data" => Map.drop(raw, ["type", "subtype"])})
   end
 
+  # A synthetic result (`ClaudeAgentSDK.Message.error_result/2`) has an empty
+  # `raw`; its flag and text live in the parsed `data` (feature 043, R1).
   defp result(frame, raw) do
-    new(:result, %{
+    data = data(frame)
+    is_error = raw["is_error"] == true or data[:is_error] == true
+
+    body = %{
       "subtype" => raw["subtype"] || subtype(frame),
       "result" => raw["result"],
       "num_turns" => raw["num_turns"],
       "duration_ms" => raw["duration_ms"],
       "cost_usd" => raw["total_cost_usd"] || raw["cost_usd"],
-      "is_error" => raw["is_error"] == true
-    })
+      "is_error" => is_error
+    }
+
+    new(:result, if(is_error, do: Map.put(body, "error", error_text(data, raw)), else: body))
+  end
+
+  defp data(%{data: data}) when is_map(data), do: data
+  defp data(_), do: %{}
+
+  defp error_text(data, raw) do
+    case data[:error] || raw["error"] do
+      text when is_binary(text) ->
+        if String.trim(text) == "", do: nil, else: text
+
+      _ ->
+        nil
+    end
   end
 
   defp subtype(%{subtype: nil}), do: nil

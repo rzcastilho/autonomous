@@ -254,4 +254,142 @@ defmodule Autonomous.Web.SessionStatusTest do
     assert MapSet.size(all.open_hooks) == 0
     assert all.open_calls == %{}
   end
+
+  describe "result error (043 R7)" do
+    defp err_result(seq, error),
+      do:
+        e(seq, :result, %{
+          "subtype" => "error_during_execution",
+          "is_error" => true,
+          "error" => error
+        })
+
+    test "an error result sets activity and result_error" do
+      st = fold([err_result(0, "CLI exited 1")])
+      assert st.activity == {:result_error, "CLI exited 1"}
+      assert st.result_error == "CLI exited 1"
+      assert SessionStatus.activity_text(st) == "result error — CLI exited 1"
+    end
+
+    test "a nil error reads no reason given" do
+      st = fold([err_result(0, nil)])
+      assert st.result_error == "no reason given"
+      assert SessionStatus.activity_text(st) == "result error — no reason given"
+    end
+
+    test "end chip done plus a result error becomes failed" do
+      st = fold([err_result(0, "boom"), e(1, :end, %{"outcome" => "completed"})])
+      assert {"completed · result error", "failed"} = st.outcome
+      assert SessionStatus.status_name(st, false) == "failed"
+    end
+
+    test "end chip is untouched after a success result, or when already failed" do
+      ok =
+        fold([
+          e(0, :result, %{"subtype" => "success", "is_error" => false}),
+          e(1, :end, %{"outcome" => "completed"})
+        ])
+
+      assert {_text, "done"} = ok.outcome
+      assert ok.result_error == nil
+
+      st = fold([err_result(0, "boom"), e(1, :end, %{"outcome" => "timeout"})])
+      assert {text, "failed"} = st.outcome
+      refute text =~ "result error"
+    end
+  end
+
+  describe "token figure (043)" do
+    defp usage(seq, event, fields, scope) do
+      body = Map.put(fields, "event", event)
+      e(seq, :usage, if(scope, do: Map.put(body, "parent_tool_use_id", scope), else: body))
+    end
+
+    defp start(seq, input, output \\ 1, extra \\ %{}, scope \\ nil),
+      do:
+        usage(
+          seq,
+          "message_start",
+          Map.merge(%{"input_tokens" => input, "output_tokens" => output}, extra),
+          scope
+        )
+
+    defp delta(seq, output, scope \\ nil),
+      do: usage(seq, "message_delta", %{"output_tokens" => output}, scope)
+
+    test "nil, not zero, with no usage entries" do
+      st = fold([e(0, :assistant_text, %{"text" => "x"})])
+      assert {st.input_tokens, st.output_tokens} == {nil, nil}
+      assert SessionStatus.tokens_text(st) == nil
+    end
+
+    test "a delta replaces the message's output, never adds to it" do
+      st = fold([start(0, 1200), delta(1, 120), delta(2, 300)])
+      assert {st.input_tokens, st.output_tokens} == {1200, 300}
+    end
+
+    test "a new message_start closes the previous message" do
+      st = fold([start(0, 1200), delta(1, 300), start(2, 1500), delta(3, 200)])
+      assert {st.input_tokens, st.output_tokens} == {2700, 500}
+    end
+
+    test "cache fields are kept out of the figure" do
+      st =
+        fold([
+          start(0, 100, 1, %{
+            "cache_read_input_tokens" => 4000,
+            "cache_creation_input_tokens" => 900
+          })
+        ])
+
+      assert st.input_tokens == 100
+    end
+
+    test "scopes by parent_tool_use_id do not cross-contaminate" do
+      st =
+        fold([
+          start(0, 100),
+          start(1, 50, 1, %{}, "toolu_a"),
+          delta(2, 40, "toolu_a"),
+          delta(3, 10)
+        ])
+
+      assert {st.input_tokens, st.output_tokens} == {150, 50}
+    end
+
+    test "tokens_text formats thousands, small integers and lower bounds" do
+      st = fold([start(0, 12_100, 1), delta(1, 3_100)])
+      assert SessionStatus.tokens_text(st) == "in 12.1k · out 3.1k"
+
+      assert SessionStatus.tokens_text(SessionStatus.mark_lower_bound(st)) ==
+               "≥ in 12.1k · out 3.1k"
+
+      small = fold([start(0, 80, 5)])
+      assert SessionStatus.tokens_text(small) == "in 80 · out 5"
+    end
+
+    test "cost stays nil until the result reports it" do
+      st = fold([start(0, 100), delta(1, 20)])
+      assert st.cost_usd == nil
+
+      st = SessionStatus.apply(st, e(2, :result, %{"cost_usd" => 0.5, "is_error" => false}))
+      assert st.cost_usd == 0.5
+    end
+
+    test "usage after the outcome is ignored" do
+      st = fold([start(0, 100), e(1, :end, %{"outcome" => "completed"}), start(2, 900)])
+      assert st.input_tokens == 100
+    end
+
+    test "the 043 sample folds to the same figure whole or entry by entry" do
+      {:ok, entries, :eof} =
+        ConversationFile.page("test/fixtures/conversations/043_sample.jsonl", 0, 1_000)
+
+      whole = fold(entries)
+      stepped = Enum.reduce(entries, SessionStatus.new(), &SessionStatus.apply(&2, &1))
+      assert whole.input_tokens == stepped.input_tokens
+      assert whole.input_tokens == 2700
+      assert whole.output_tokens == 500
+    end
+  end
 end

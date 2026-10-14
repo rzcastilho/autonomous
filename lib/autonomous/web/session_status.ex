@@ -16,6 +16,8 @@ defmodule Autonomous.Web.SessionStatus do
   alias Autonomous.ConversationEntry
   alias Autonomous.Web.ConversationRows
 
+  @usage_fields ~w(input_tokens output_tokens cache_read_input_tokens cache_creation_input_tokens)
+
   defstruct last_seq: nil,
             activity: nil,
             turns: 0,
@@ -27,6 +29,10 @@ defmodule Autonomous.Web.SessionStatus do
             open_hooks: MapSet.new(),
             rate_limit: nil,
             cost_usd: nil,
+            usage: %{scopes: %{}, done: %{}},
+            input_tokens: nil,
+            output_tokens: nil,
+            result_error: nil,
             duration_ms: nil,
             started_at: nil,
             ended_at: nil,
@@ -46,6 +52,7 @@ defmodule Autonomous.Web.SessionStatus do
           | {:hook, String.t() | nil}
           | {:responding}
           | {:done}
+          | {:result_error, String.t()}
           | {:outcome, String.t(), String.t()}
 
   @type t :: %__MODULE__{
@@ -60,6 +67,10 @@ defmodule Autonomous.Web.SessionStatus do
           open_hooks: MapSet.t(),
           rate_limit: nil | %{type: String.t() | nil, resets_at: integer() | nil},
           cost_usd: number() | nil,
+          usage: %{scopes: map(), done: map()},
+          input_tokens: non_neg_integer() | nil,
+          output_tokens: non_neg_integer() | nil,
+          result_error: String.t() | nil,
           duration_ms: number() | nil,
           started_at: String.t() | nil,
           ended_at: String.t() | nil,
@@ -111,6 +122,8 @@ defmodule Autonomous.Web.SessionStatus do
   defp fold(s, %ConversationEntry{kind: :start} = e),
     do: %{s | started_at: e.at, model_alias: e.body["model"]}
 
+  defp fold(s, %ConversationEntry{kind: :stderr}), do: s
+
   defp fold(s, %ConversationEntry{kind: :prompt}), do: %{s | side: :user}
 
   defp fold(s, %ConversationEntry{kind: :assistant_text} = e),
@@ -138,18 +151,52 @@ defmodule Autonomous.Web.SessionStatus do
     end
   end
 
-  defp fold(s, %ConversationEntry{kind: :result} = e) do
+  # Streamed per-message usage (feature 043, R2/R6). Per message the latest value
+  # of each field wins (deltas are cumulative); a new `message_start` closes the
+  # scope's previous message. Cache fields are kept but not in the figure.
+  defp fold(s, %ConversationEntry{kind: :usage, body: body}) do
+    scope = body["parent_tool_use_id"] || :main
+    fields = Map.take(body, @usage_fields)
+    %{scopes: scopes, done: done} = s.usage
+
+    usage =
+      case body["event"] do
+        "message_start" ->
+          %{scopes: Map.put(scopes, scope, fields), done: close_message(done, scopes[scope])}
+
+        _delta ->
+          %{scopes: Map.update(scopes, scope, fields, &Map.merge(&1, fields)), done: done}
+      end
+
     %{
       s
-      | activity: {:done},
+      | usage: usage,
+        input_tokens: total(usage, "input_tokens"),
+        output_tokens: total(usage, "output_tokens")
+    }
+  end
+
+  defp fold(s, %ConversationEntry{kind: :result} = e) do
+    error = result_error(e.body)
+
+    %{
+      s
+      | activity: if(error, do: {:result_error, error}, else: {:done}),
+        result_error: error,
         cost_usd: e.body["cost_usd"],
         duration_ms: e.body["duration_ms"],
         turns: if(is_integer(e.body["num_turns"]), do: e.body["num_turns"], else: s.turns)
     }
   end
 
+  # The record says the result failed, so the footer may not show a clean finish.
   defp fold(s, %ConversationEntry{kind: :end} = e) do
     {text, chip} = ConversationRows.outcome(e)
+
+    {text, chip} =
+      if chip == "done" and s.result_error,
+        do: {text <> " · result error", "failed"},
+        else: {text, chip}
 
     %{
       s
@@ -230,6 +277,22 @@ defmodule Autonomous.Web.SessionStatus do
   defp next_open(open) when map_size(open) == 0, do: nil
   defp next_open(open), do: open |> Enum.min_by(&elem(&1, 0)) |> elem(1)
 
+  defp close_message(done, nil), do: done
+
+  defp close_message(done, message),
+    do: Enum.reduce(message, done, fn {k, v}, acc -> Map.update(acc, k, v, &(&1 + v)) end)
+
+  # `nil` until some entry carried the field — unknown is never shown as 0.
+  defp total(%{scopes: scopes, done: done}, field) do
+    case Enum.flat_map([done | Map.values(scopes)], &List.wrap(Map.get(&1, field))) do
+      [] -> nil
+      values -> Enum.sum(values)
+    end
+  end
+
+  defp result_error(%{"is_error" => true} = body), do: body["error"] || "no reason given"
+  defp result_error(_body), do: nil
+
   defp int(n) when is_integer(n), do: n
   defp int(n) when is_float(n), do: round(n)
   defp int(_), do: nil
@@ -247,7 +310,21 @@ defmodule Autonomous.Web.SessionStatus do
   def activity_text(%__MODULE__{activity: {:hook, name}}), do: "hook · #{name}"
   def activity_text(%__MODULE__{activity: {:responding}}), do: "responding"
   def activity_text(%__MODULE__{activity: {:done}}), do: "done"
+  def activity_text(%__MODULE__{activity: {:result_error, text}}), do: "result error — #{text}"
   def activity_text(%__MODULE__{activity: {:outcome, text, _chip}}), do: text
+
+  @doc "`in 12.1k · out 3.1k` (prefixed `≥ ` for a lower bound); `nil` with no usage recorded."
+  @spec tokens_text(t()) :: String.t() | nil
+  def tokens_text(%__MODULE__{input_tokens: nil, output_tokens: nil}), do: nil
+
+  def tokens_text(%__MODULE__{input_tokens: i, output_tokens: o, lower_bound?: lb?}) do
+    text =
+      [i && "in #{tokens(i)}", o && "out #{tokens(o)}"]
+      |> Enum.filter(& &1)
+      |> Enum.join(" · ")
+
+    if lb?, do: "≥ " <> text, else: text
+  end
 
   defp tokens(n) when n >= 1000, do: "#{Float.round(n / 1000, 1)}k"
   defp tokens(n), do: Integer.to_string(n)
