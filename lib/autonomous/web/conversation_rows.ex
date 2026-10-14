@@ -1,178 +1,331 @@
 defmodule Autonomous.Web.ConversationRows do
   @moduledoc """
-  Pure row model for the conversation views (feature 040). One row per
-  `ConversationEntry`; the live view and the saved-conversation view render the
-  same rows through the same component, so what an operator watched is what
-  they later review.
+  Pure block model for the conversation views (features 040, 042). The live
+  view and the saved-conversation view render the same blocks through the same
+  component, so what an operator watched is what they later review.
 
-  * A tool result is paired with its call by `tool_use_id` (the result row
-    carries the call's tool name).
-  * A call that has no result when the session's `:end` entry arrives is tagged
+  Placement comes from `Autonomous.Web.ConversationClass`; this module turns
+  each visible entry into a **block** and threads a context so a stream of
+  single entries blocks the same way a whole list does.
+
+  * A tool result is grouped **inside its call's block** (paired by
+    `tool_use_id`): the call block is re-emitted under the same key, so a
+    LiveView stream replaces it in place and parallel calls keep call order. A
+    result whose call is not in the context is a standalone `:result` block.
+  * A call with no result when the session's `:end` entry arrives is tagged
     `unfinished?` — the shape a deadline cut leaves behind.
   * A body over #{40} lines or #{4_000} chars is shown truncated with
     `omitted: %{lines:, chars:}`; the underlying entry is never changed, and
-    `rows/3` with `expand: true` renders it whole.
+    `expand/2` renders it whole.
+  * Entries hidden by the classifier (`visible?/2`) produce no block but still
+    advance the context; `new(all_frames: true)` shows every entry.
   * Outcomes render through `Autonomous.Report.format_outcome/1` — no
     `inspect/1` in the markup.
 
-  `rows/3` threads a context so a stream of single entries pairs and tags the
-  same way a whole list does; `ctx.stale` holds rows of earlier calls that the
-  latest `:end` tagged unfinished and that therefore need re-inserting.
+  `ctx.stale` holds blocks of earlier calls that the latest `:end` tagged
+  unfinished and that therefore need re-inserting.
   """
 
   alias Autonomous.{ConversationEntry, ConversationOutcome, Report}
+  alias Autonomous.Web.{ConversationClass, ToolSummary}
 
   @max_lines 40
   @max_chars 4_000
+  @preview_lines 5
 
-  @type row :: %{
+  @type result_part :: %{
+          seq: non_neg_integer() | nil,
+          preview: String.t(),
+          more_lines: non_neg_integer(),
+          full: String.t() | nil,
+          error?: boolean()
+        }
+
+  @type block :: %{
           key: String.t(),
           seq: non_neg_integer() | nil,
           at: String.t() | nil,
           kind: atom(),
+          class: ConversationClass.row_class(),
           label: String.t(),
+          summary: String.t(),
           format: :markup | :mono | :plain,
-          text: String.t(),
+          body: String.t(),
           omitted: %{lines: non_neg_integer(), chars: non_neg_integer()} | nil,
           tool_name: String.t() | nil,
           tool_use_id: String.t() | nil,
-          error?: boolean(),
+          result: result_part() | nil,
+          flag: nil | :is_error | :hook_failed | :result_error,
           unfinished?: boolean(),
           outcome: String.t() | nil,
           chip: String.t() | nil
         }
 
   @type ctx :: %{
-          calls: %{String.t() => row()},
+          calls: %{String.t() => block()},
           names: %{String.t() => String.t()},
-          stale: [row()]
+          stale: [block()],
+          result_owner: %{non_neg_integer() => String.t()},
+          all_frames?: boolean()
         }
 
-  @spec new() :: ctx()
-  def new, do: %{calls: %{}, names: %{}, stale: []}
+  @doc "Fresh context. Option: `:all_frames` (show every entry as a block)."
+  @spec new(keyword()) :: ctx()
+  def new(opts \\ []),
+    do: %{
+      calls: %{},
+      names: %{},
+      stale: [],
+      result_owner: %{},
+      all_frames?: Keyword.get(opts, :all_frames, false)
+    }
 
   @doc """
-  Rows for `entries` (in order) and the updated context. Options: `:expand`
-  (render untruncated).
+  Blocks for `entries` (in order) and the updated context. A block may appear
+  again in a later call (pairing, `unfinished`) under the same `key`. Options:
+  `:expand` (render untruncated).
   """
-  @spec rows([ConversationEntry.t()], ctx(), keyword()) :: {[row()], ctx()}
+  @spec rows([ConversationEntry.t()], ctx(), keyword()) :: {[block()], ctx()}
   def rows(entries, ctx \\ new(), opts \\ []) do
     ctx = %{ctx | stale: []}
 
-    {rows, ctx} =
-      Enum.map_reduce(entries, ctx, fn entry, ctx -> one(entry, ctx, opts) end)
+    {blocks, ctx} =
+      Enum.flat_map_reduce(entries, ctx, fn entry, ctx -> one(entry, ctx, opts) end)
 
-    {rows, ctx} = finalize(rows, ctx)
-    {rows, ctx}
+    {blocks, ctx} = finalize(blocks, ctx)
+    {collapse(blocks), ctx}
   end
 
-  @doc "One entry as a row, without touching the context (used to expand a row in place)."
-  @spec row(ConversationEntry.t(), ctx(), keyword()) :: row()
-  def row(%ConversationEntry{} = entry, ctx, opts \\ []) do
-    {row, _ctx} = one(entry, ctx, opts)
-    row
+  @doc """
+  The full (untruncated) block for an entry. A tool result returns its owning
+  call block carrying the whole result; a result with no call in view returns
+  the standalone result block.
+  """
+  @spec expand(ConversationEntry.t(), ctx()) :: block() | nil
+  def expand(%ConversationEntry{kind: :tool_result} = entry, ctx) do
+    id = entry.body["tool_use_id"]
+
+    case Map.get(ctx.calls, id) do
+      %{result: %{seq: seq}} = call when seq == entry.seq ->
+        %{call | result: result_part(entry, true)}
+
+      _ ->
+        standalone_result(entry, ctx, true)
+    end
+  end
+
+  def expand(%ConversationEntry{} = entry, ctx) do
+    {blocks, _ctx} = one(entry, %{ctx | stale: []}, expand: true)
+    List.last(blocks)
   end
 
   # ---- per entry ----------------------------------------------------------
 
-  defp one(%ConversationEntry{kind: :tool_call} = e, ctx, opts) do
+  defp one(%ConversationEntry{} = e, ctx, opts) do
+    c = ConversationClass.classify(e)
+
+    if ConversationClass.visible?(c, ctx.all_frames?),
+      do: build(e, c, ctx, opts),
+      else: {[], ctx}
+  end
+
+  defp build(%ConversationEntry{kind: :tool_call} = e, _c, ctx, opts) do
     id = e.body["tool_use_id"]
     name = e.body["name"]
 
-    row =
-      base(e, "tool call", :mono, pretty(e.body["input"]), opts)
-      |> Map.merge(%{tool_name: name, tool_use_id: id})
+    block =
+      base(e, :call, "tool call", :mono, pretty(e.body["input"]), opts)
+      |> Map.merge(%{
+        summary: ToolSummary.summary(name, e.body["input"]),
+        tool_name: name,
+        tool_use_id: id
+      })
 
     ctx =
       if id,
-        do: %{ctx | calls: Map.put(ctx.calls, id, row), names: Map.put(ctx.names, id, name)},
+        do: %{ctx | calls: Map.put(ctx.calls, id, block), names: Map.put(ctx.names, id, name)},
         else: ctx
 
-    {row, ctx}
+    {[block], ctx}
   end
 
-  defp one(%ConversationEntry{kind: :tool_result} = e, ctx, opts) do
+  defp build(%ConversationEntry{kind: :tool_result} = e, _c, ctx, opts) do
     id = e.body["tool_use_id"]
-    {call, calls} = Map.pop(ctx.calls, id)
+    part = result_part(e, Keyword.get(opts, :expand, false))
 
-    row =
-      base(e, "tool result", :mono, output_text(e.body["output"]), opts)
-      |> Map.merge(%{
-        tool_name: (call && call.tool_name) || Map.get(ctx.names, id),
-        tool_use_id: id,
-        error?: e.body["is_error"] == true
-      })
+    case Map.get(ctx.calls, id) do
+      nil ->
+        {[standalone_result(e, ctx, Keyword.get(opts, :expand, false))], ctx}
 
-    {row, %{ctx | calls: calls}}
+      call ->
+        call = %{call | result: part, unfinished?: false, flag: if(part.error?, do: :is_error)}
+
+        {[call],
+         %{
+           ctx
+           | calls: Map.put(ctx.calls, id, call),
+             result_owner: Map.put(ctx.result_owner, e.seq, id)
+         }}
+    end
   end
 
-  defp one(%ConversationEntry{kind: :end} = e, ctx, _opts) do
-    outcome = e.body["outcome"] |> to_string() |> ConversationOutcome.decode()
-    text = Report.format_outcome(outcome)
+  defp build(%ConversationEntry{kind: :end} = e, _c, ctx, _opts) do
+    {text, chip} = outcome(e)
 
-    row =
+    block =
       e
-      |> raw_row("end", :mono, text)
-      |> Map.merge(%{outcome: text, chip: chip(outcome)})
+      |> raw_block(:end, "end", :mono, text)
+      |> Map.merge(%{summary: text, outcome: text, chip: chip})
 
-    stale = ctx.calls |> Map.values() |> Enum.map(&%{&1 | unfinished?: true})
-    {row, %{ctx | calls: %{}, stale: stale}}
+    {stale, calls} = tag_unfinished(ctx.calls)
+    {[block], %{ctx | calls: calls, stale: stale}}
   end
 
-  defp one(%ConversationEntry{kind: :assistant_text} = e, ctx, opts),
-    do: {base(e, "assistant", :markup, to_string(e.body["text"]), opts), ctx}
+  defp build(%ConversationEntry{kind: :assistant_text} = e, _c, ctx, opts),
+    do: {[base(e, :prose, "assistant", :markup, to_string(e.body["text"]), opts)], ctx}
 
-  defp one(%ConversationEntry{kind: :thinking} = e, ctx, opts),
-    do: {base(e, "thinking", :plain, to_string(e.body["text"]), opts), ctx}
+  defp build(%ConversationEntry{kind: :thinking} = e, _c, ctx, opts) do
+    text = to_string(e.body["text"])
 
-  defp one(%ConversationEntry{kind: :prompt} = e, ctx, opts),
-    do: {base(e, "prompt", :plain, to_string(e.body["text"]), opts), ctx}
+    {[base(e, :thinking, "thinking", :plain, text, opts) |> Map.put(:summary, first_line(text))],
+     ctx}
+  end
 
-  defp one(%ConversationEntry{kind: :start} = e, ctx, _opts),
-    do: {raw_row(e, "start", :mono, start_text(e.body)), ctx}
+  defp build(%ConversationEntry{kind: :prompt} = e, _c, ctx, opts) do
+    text = to_string(e.body["text"])
 
-  defp one(%ConversationEntry{kind: :system} = e, ctx, opts),
-    do:
-      {base(e, "system", :mono, pretty(Map.drop(e.body, ["subtype"])), opts) |> put_subtype(e),
-       ctx}
+    {[base(e, :context, "prompt", :plain, text, opts) |> Map.put(:summary, first_line(text))],
+     ctx}
+  end
 
-  defp one(%ConversationEntry{kind: :result} = e, ctx, opts),
-    do: {base(e, "result", :mono, pretty(e.body), opts), ctx}
+  defp build(%ConversationEntry{kind: :start} = e, _c, ctx, _opts) do
+    summary = "session opened" <> opt(e.body["model"])
 
-  defp one(%ConversationEntry{} = e, ctx, opts),
-    do: {base(e, "other", :mono, pretty(e.body), opts), ctx}
+    {[raw_block(e, :divider, "start", :mono, start_text(e.body)) |> Map.put(:summary, summary)],
+     ctx}
+  end
 
-  defp put_subtype(row, %{body: %{"subtype" => s}}) when is_binary(s),
-    do: %{row | label: "system · " <> s}
+  defp build(%ConversationEntry{} = e, %{row_class: :context}, ctx, opts) do
+    text = to_string(get_in(e.body, ["raw", "text"]))
 
-  defp put_subtype(row, _), do: row
+    {[base(e, :context, "context", :plain, text, opts) |> Map.put(:summary, first_line(text))],
+     ctx}
+  end
 
-  # ---- row construction ---------------------------------------------------
+  defp build(%ConversationEntry{} = e, %{row_class: :marker} = c, ctx, opts) do
+    block =
+      base(e, :marker, c.label, :mono, pretty(payload(e)), opts)
+      |> Map.merge(%{summary: marker_summary(e, c), flag: c.flag})
 
-  defp raw_row(%ConversationEntry{} = e, label, format, text) do
+    {[block], ctx}
+  end
+
+  defp build(%ConversationEntry{} = e, c, ctx, opts) do
+    {[base(e, :raw, c.label, :mono, pretty(payload(e)), opts) |> Map.put(:summary, c.label)], ctx}
+  end
+
+  defp payload(%ConversationEntry{kind: :system, body: body}), do: Map.drop(body, ["subtype"])
+  defp payload(%ConversationEntry{body: body}), do: body
+
+  # ---- marker text --------------------------------------------------------
+
+  defp marker_summary(%ConversationEntry{kind: :result, body: b}, _c),
+    do: join(["result", b["subtype"]])
+
+  defp marker_summary(%ConversationEntry{body: %{"data" => data}} = e, c) do
+    case ConversationClass.sub_kind(e) do
+      "task_started" ->
+        join(["task started", data["description"]])
+
+      "task_notification" ->
+        join(["task #{data["status"]}", data["summary"]])
+
+      "api_retry" ->
+        join([
+          "api_retry",
+          "attempt #{data["attempt"]}/#{data["max_retries"]}",
+          data["error"],
+          data["retry_delay_ms"] && "#{data["retry_delay_ms"]} ms"
+        ])
+
+      "hook_response" ->
+        join([
+          "hook_response",
+          data["hook_name"],
+          data["exit_code"] && "exit #{data["exit_code"]}"
+        ])
+
+      _ ->
+        c.label
+    end
+  end
+
+  defp marker_summary(_e, c), do: c.label
+
+  defp join(parts), do: parts |> Enum.reject(&(&1 in [nil, false, ""])) |> Enum.join(" · ")
+
+  defp opt(nil), do: ""
+  defp opt(value), do: " · " <> to_string(value)
+
+  # ---- block construction -------------------------------------------------
+
+  defp raw_block(%ConversationEntry{} = e, class, label, format, body) do
     %{
       key: "entry-#{e.seq}",
       seq: e.seq,
       at: e.at,
       kind: e.kind,
+      class: class,
       label: label,
+      summary: label,
       format: format,
-      text: text,
+      body: body,
       omitted: nil,
       tool_name: nil,
       tool_use_id: nil,
-      error?: false,
+      result: nil,
+      flag: nil,
       unfinished?: false,
       outcome: nil,
       chip: nil
     }
   end
 
-  defp base(%ConversationEntry{} = e, label, format, text, opts) do
+  defp base(%ConversationEntry{} = e, class, label, format, text, opts) do
     {shown, omitted} =
       if Keyword.get(opts, :expand, false), do: {text, nil}, else: truncate(text)
 
-    %{raw_row(e, label, format, shown) | omitted: omitted}
+    %{raw_block(e, class, label, format, shown) | omitted: omitted}
+  end
+
+  defp standalone_result(%ConversationEntry{} = e, ctx, expand?) do
+    id = e.body["tool_use_id"]
+    name = Map.get(ctx.names, id)
+
+    raw_block(e, :result, "tool result", :mono, "")
+    |> Map.merge(%{
+      summary: "tool result" <> opt(name),
+      tool_name: name,
+      tool_use_id: id,
+      result: result_part(e, expand?),
+      flag: if(e.body["is_error"] == true, do: :is_error)
+    })
+  end
+
+  defp result_part(%ConversationEntry{} = e, expand?) do
+    text = output_text(e.body["output"])
+    lines = String.split(text, "\n")
+
+    preview =
+      lines |> Enum.take(@preview_lines) |> Enum.join("\n") |> String.slice(0, @max_chars)
+
+    %{
+      seq: e.seq,
+      preview: preview,
+      more_lines: max(length(lines) - @preview_lines, 0),
+      full: if(expand?, do: text),
+      error?: e.body["is_error"] == true
+    }
   end
 
   @doc "Head of `text` within the line/char limits and what was left out."
@@ -200,27 +353,44 @@ defmodule Autonomous.Web.ConversationRows do
     end
   end
 
-  # An `:end` in this batch tags open calls: rows inside the batch are updated
+  defp tag_unfinished(calls) do
+    stale =
+      calls
+      |> Map.values()
+      |> Enum.filter(&(is_nil(&1.result) and not &1.unfinished?))
+      |> Enum.map(&%{&1 | unfinished?: true})
+
+    {stale, Enum.reduce(stale, calls, &Map.put(&2, &1.tool_use_id, &1))}
+  end
+
+  # An `:end` in this batch tags open calls: blocks inside the batch are updated
   # in place; earlier ones are handed back in `ctx.stale` for re-insertion.
-  defp finalize(rows, %{stale: []} = ctx), do: {rows, ctx}
+  defp finalize(blocks, %{stale: []} = ctx), do: {blocks, ctx}
 
-  defp finalize(rows, %{stale: stale} = ctx) do
+  defp finalize(blocks, %{stale: stale} = ctx) do
     by_key = Map.new(stale, &{&1.key, &1})
-    in_batch = MapSet.new(rows, & &1.key)
+    in_batch = MapSet.new(blocks, & &1.key)
 
-    rows = Enum.map(rows, &Map.get(by_key, &1.key, &1))
-    {rows, %{ctx | stale: Enum.reject(stale, &MapSet.member?(in_batch, &1.key))}}
+    blocks = Enum.map(blocks, &Map.get(by_key, &1.key, &1))
+    {blocks, %{ctx | stale: Enum.reject(stale, &MapSet.member?(in_batch, &1.key))}}
+  end
+
+  # One block per key, at the position of its first appearance, with the content
+  # of its last (a call paired within the same batch).
+  defp collapse(blocks) do
+    last = Map.new(blocks, &{&1.key, &1})
+
+    blocks
+    |> Enum.uniq_by(& &1.key)
+    |> Enum.map(&Map.fetch!(last, &1.key))
   end
 
   # ---- text ---------------------------------------------------------------
 
+  defp first_line(text), do: text |> String.split("\n", parts: 2) |> hd() |> String.trim()
+
   defp start_text(body) do
-    [
-      body["run_id"],
-      body["feature_id"],
-      body["phase"],
-      body["model"]
-    ]
+    [body["run_id"], body["feature_id"], body["phase"], body["model"]]
     |> Enum.reject(&is_nil/1)
     |> Enum.join(" · ")
   end
@@ -247,7 +417,16 @@ defmodule Autonomous.Web.ConversationRows do
 
   defp output_text(other), do: pretty(other)
 
-  # Status colour travels as a name only (`CoreComponents.status_class/1`).
+  @doc """
+  The rendered outcome text and its status name of an `:end` entry (also read by
+  `SessionStatus`). Colour travels as a name only (`CoreComponents.status_class/1`).
+  """
+  @spec outcome(ConversationEntry.t()) :: {String.t(), String.t()}
+  def outcome(%ConversationEntry{body: body}) do
+    outcome = body["outcome"] |> to_string() |> ConversationOutcome.decode()
+    {Report.format_outcome(outcome), chip(outcome)}
+  end
+
   defp chip(:completed), do: "done"
   defp chip({:backgrounded_command, _}), do: "blocked"
   defp chip(:incomplete_session), do: "blocked"

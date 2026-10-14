@@ -1,8 +1,10 @@
 defmodule Autonomous.Web.ConversationRowsTest do
   use ExUnit.Case, async: true
 
-  alias Autonomous.ConversationEntry
+  alias Autonomous.{ConversationEntry, ConversationFile}
   alias Autonomous.Web.ConversationRows
+
+  @fixture "test/fixtures/conversations/042_sample.jsonl"
 
   defp entry(seq, kind, body), do: %ConversationEntry{seq: seq, at: "t", kind: kind, body: body}
 
@@ -17,36 +19,114 @@ defmodule Autonomous.Web.ConversationRowsTest do
   defp result(seq, id, out, err? \\ false),
     do: entry(seq, :tool_result, %{"tool_use_id" => id, "output" => out, "is_error" => err?})
 
-  test "one row per entry, in order, keyed by seq" do
+  defp sample do
+    {:ok, entries, :eof} = ConversationFile.page(@fixture, 0, 1_000)
+    entries
+  end
+
+  defp stream_blocks(entries, opts) do
+    {blocks, _ctx} =
+      Enum.reduce(entries, {[], ConversationRows.new(opts)}, fn e, {acc, ctx} ->
+        {rows, ctx} = ConversationRows.rows([e], ctx)
+        {acc ++ rows ++ ctx.stale, ctx}
+      end)
+
+    blocks
+  end
+
+  defp final_by_key(blocks), do: Map.new(blocks, &{&1.key, &1})
+
+  test "blocks are keyed by the opening entry's seq, in order; signals are hidden" do
     entries = [
       entry(1, :prompt, %{"text" => "go"}),
       entry(2, :assistant_text, %{"text" => "hi"}),
-      entry(3, :system, %{"subtype" => "init", "data" => %{}})
+      entry(3, :system, %{"subtype" => "init", "data" => %{}}),
+      entry(4, :system, %{"subtype" => "status", "data" => %{}})
     ]
 
     {rows, _ctx} = ConversationRows.rows(entries)
-    assert Enum.map(rows, & &1.key) == ["entry-1", "entry-2", "entry-3"]
-    assert Enum.map(rows, & &1.kind) == [:prompt, :assistant_text, :system]
+    assert Enum.map(rows, & &1.key) == ["entry-1", "entry-2"]
+    assert Enum.map(rows, & &1.class) == [:context, :prose]
   end
 
-  test "a tool result is paired to its call by tool_use_id" do
-    {rows, _} = ConversationRows.rows([call(1, "t1", "Grep"), result(2, "t1", "found")])
-    assert [%{tool_name: "Grep"}, %{tool_name: "Grep", text: "found", error?: false}] = rows
+  test "a result is grouped inside its call block, which is re-emitted under the same key" do
+    {[c1], ctx} = ConversationRows.rows([call(1, "t1", "Grep")])
+    assert c1.result == nil
+    assert c1.summary == "Grep"
+
+    {[paired], _} = ConversationRows.rows([result(2, "t1", "found")], ctx)
+    assert paired.key == c1.key
+    assert %{preview: "found", more_lines: 0, error?: false, seq: 2} = paired.result
   end
 
-  test "result error flag is carried as is_error, not a status colour" do
-    {[row], _} = ConversationRows.rows([result(1, "x", "boom", true)])
-    assert row.error?
-    assert row.chip == nil
+  test "within one batch a call and its result collapse to one block" do
+    {rows, _} = ConversationRows.rows([call(1, "t1"), result(2, "t1", "x")])
+    assert [%{key: "entry-1", result: %{preview: "x"}}] = rows
   end
 
-  test "a call with no result at :end is tagged unfinished (in the same batch)" do
-    end_entry = entry(3, :end, %{"outcome" => "deadline_exceeded"})
+  test "parallel calls keep call order even when results arrive out of order" do
+    entries = [call(1, "a"), call(2, "b"), result(3, "b", "rb"), result(4, "a", "ra")]
+    {rows, _} = ConversationRows.rows(entries)
+    assert Enum.map(rows, & &1.key) == ["entry-1", "entry-2"]
+    assert Enum.map(rows, & &1.result.preview) == ["ra", "rb"]
+  end
+
+  test "result preview is five lines with a +N count; error flag, not a status colour" do
+    out = Enum.map_join(1..40, "\n", &"line #{&1}")
+    {[b], _} = ConversationRows.rows([call(1, "t"), result(2, "t", out, true)])
+    assert b.result.preview == Enum.map_join(1..5, "\n", &"line #{&1}")
+    assert b.result.more_lines == 35
+    assert b.result.error?
+    assert b.flag == :is_error
+    assert b.chip == nil
+  end
+
+  test "an orphan result is a standalone block with the tool name when known" do
+    {[b], _} = ConversationRows.rows([result(5, "gone", "late", true)])
+    assert %{class: :result, key: "entry-5", flag: :is_error, tool_name: nil} = b
+    assert b.result.preview == "late"
+  end
+
+  test "expand/2 of a result seq returns the owning call block with the full result" do
+    out = Enum.map_join(1..40, "\n", &"line #{&1}")
+    r = result(2, "t", out)
+    {_, ctx} = ConversationRows.rows([call(1, "t"), r])
+    block = ConversationRows.expand(r, ctx)
+    assert block.key == "entry-1"
+    assert block.result.full == out
+  end
+
+  test "expand/2 of an orphan result and of another entry" do
+    r = result(5, "gone", "late\nmore")
+
+    assert %{class: :result, result: %{full: "late\nmore"}} =
+             ConversationRows.expand(r, ConversationRows.new())
+
+    long = Enum.map_join(1..60, "\n", &"line #{&1}")
+    e = entry(1, :assistant_text, %{"text" => long})
+    block = ConversationRows.expand(e, ConversationRows.new())
+    assert block.omitted == nil
+    assert block.body == long
+  end
+
+  test "hidden entries still advance pairing" do
+    entries = [
+      call(1, "t1"),
+      entry(2, :system, %{"subtype" => "hook_started", "data" => %{}}),
+      result(3, "t1", "ok")
+    ]
+
+    {rows, _} = ConversationRows.rows(entries)
+    assert [%{result: %{preview: "ok"}}] = rows
+  end
+
+  test "a call with no result at :end is tagged unfinished (same batch)" do
+    end_entry = entry(4, :end, %{"outcome" => "deadline_exceeded"})
 
     {rows, ctx} =
-      ConversationRows.rows([call(1, "t1"), call(2, "t2"), result(2, "t2", "x"), end_entry])
+      ConversationRows.rows([call(1, "t1"), call(2, "t2"), result(3, "t2", "x"), end_entry])
 
-    assert [%{unfinished?: true}, _, _, %{kind: :end}] = rows
+    assert [%{unfinished?: true}, %{unfinished?: false}, %{class: :end}] = rows
     assert ctx.stale == []
   end
 
@@ -54,36 +134,49 @@ defmodule Autonomous.Web.ConversationRowsTest do
     {_, ctx} = ConversationRows.rows([call(1, "t1")])
     {[end_row], ctx} = ConversationRows.rows([entry(2, :end, %{"outcome" => "completed"})], ctx)
 
-    assert end_row.kind == :end
+    assert end_row.class == :end
     assert [%{key: "entry-1", unfinished?: true}] = ctx.stale
+  end
+
+  test "a late result pairs normally and clears unfinished" do
+    {_, ctx} = ConversationRows.rows([call(1, "t1"), entry(2, :end, %{"outcome" => "completed"})])
+    {[b], _} = ConversationRows.rows([result(3, "t1", "x")], ctx)
+    assert b.result.preview == "x"
+    refute b.unfinished?
   end
 
   test "long bodies are truncated at 40 lines with omitted counts; the entry is untouched" do
     text = Enum.map_join(1..100, "\n", &"line #{&1}")
-    e = entry(1, :tool_result, %{"tool_use_id" => "a", "output" => text, "is_error" => false})
+    e = entry(1, :assistant_text, %{"text" => text})
 
     {[row], _} = ConversationRows.rows([e])
-    assert length(String.split(row.text, "\n")) == 40
+    assert length(String.split(row.body, "\n")) == 40
     assert %{lines: 60, chars: chars} = row.omitted
     assert chars > 0
-    assert e.body["output"] == text
+    assert e.body["text"] == text
 
     {[full], _} = ConversationRows.rows([e], ConversationRows.new(), expand: true)
-    assert full.text == text
+    assert full.body == text
     assert full.omitted == nil
   end
 
   test "bodies over 4,000 chars are cut even when short in lines" do
     e = entry(1, :assistant_text, %{"text" => String.duplicate("x", 9_000)})
     {[row], _} = ConversationRows.rows([e])
-    assert String.length(row.text) == 4_000
+    assert String.length(row.body) == 4_000
     assert %{chars: 5_000} = row.omitted
+    assert {_, nil} = ConversationRows.truncate("short")
   end
 
-  test "thinking rows are plain text (the component collapses them)" do
-    {[row], _} = ConversationRows.rows([entry(1, :thinking, %{"text" => "hmm"})])
-    assert row.kind == :thinking
-    assert row.format == :plain
+  test "thinking: plain, first line as summary; prompt likewise" do
+    {[t, p], _} =
+      ConversationRows.rows([
+        entry(1, :thinking, %{"text" => "hmm\nmore"}),
+        entry(2, :prompt, %{"text" => "go\nnow"})
+      ])
+
+    assert %{class: :thinking, format: :plain, summary: "hmm"} = t
+    assert %{class: :context, summary: "go"} = p
   end
 
   test "end marker carries the outcome rendered through Report, with a status name" do
@@ -100,69 +193,122 @@ defmodule Autonomous.Web.ConversationRowsTest do
 
     assert died.chip == "failed"
     refute died.outcome =~ "{"
+
+    {[a, b], _} =
+      ConversationRows.rows([
+        entry(1, :end, %{"outcome" => "incomplete_session"}),
+        entry(2, :end, %{"outcome" => "backgrounded_command"})
+      ])
+
+    assert a.chip == "blocked"
+    assert b.chip == "blocked"
   end
 
-  test "an unknown entry kind renders as other with the whole body" do
+  test "unknown entry renders as a raw block with the whole body" do
     {[row], _} = ConversationRows.rows([entry(1, :other, %{"raw" => %{"a" => 1}})])
-    assert row.label == "other"
-    assert row.text =~ "\"a\": 1"
+    assert %{class: :raw, label: "other"} = row
+    assert row.body =~ "\"a\": 1"
   end
 
-  test "start, prompt, system and result rows" do
-    {rows, _} =
+  test "start renders a divider with the model alias" do
+    {[d], _} =
       ConversationRows.rows([
         entry(0, :start, %{
           "run_id" => "r1",
           "feature_id" => "001",
           "phase" => "plan",
-          "model" => nil
-        }),
-        entry(1, :prompt, %{"text" => "go"}),
-        entry(2, :system, %{"subtype" => "init", "data" => %{"m" => 1}}),
-        entry(3, :system, %{"data" => %{}}),
-        entry(4, :result, %{"result" => "ok"})
+          "model" => "opus"
+        })
       ])
 
-    assert [start, prompt, sys, sys2, res] = rows
-    assert start.text == "r1 · 001 · plan"
-    assert prompt.text == "go"
-    assert sys.label == "system · init"
-    assert sys2.label == "system"
-    assert res.label == "result"
+    assert %{class: :divider, summary: "session opened · opus", body: "r1 · 001 · plan · opus"} =
+             d
+
+    {[d2], _} = ConversationRows.rows([entry(0, :start, %{"model" => nil})])
+    assert d2.summary == "session opened"
   end
 
-  test "tool output as blocks, nil, or other terms; id-less calls are not paired" do
-    {[a, b, c, d, e], _} =
+  test "marker summaries" do
+    entries = [
+      entry(1, :system, %{"subtype" => "task_started", "data" => %{"description" => "suite"}}),
+      entry(2, :system, %{
+        "subtype" => "task_notification",
+        "data" => %{"status" => "completed", "summary" => "green"}
+      }),
+      entry(3, :system, %{
+        "subtype" => "api_retry",
+        "data" => %{
+          "attempt" => 1,
+          "max_retries" => 3,
+          "error" => "busy",
+          "retry_delay_ms" => 500
+        }
+      }),
+      entry(4, :system, %{
+        "subtype" => "hook_response",
+        "data" => %{"hook_name" => "Pre", "outcome" => "error", "exit_code" => 1}
+      }),
+      entry(5, :result, %{"subtype" => "error_max_turns"})
+    ]
+
+    {rows, _} = ConversationRows.rows(entries)
+
+    assert Enum.map(rows, & &1.summary) == [
+             "task started · suite",
+             "task completed · green",
+             "api_retry · attempt 1/3 · busy · 500 ms",
+             "hook_response · Pre · exit 1",
+             "result · error_max_turns"
+           ]
+
+    assert Enum.map(rows, & &1.flag) == [nil, nil, nil, :hook_failed, :result_error]
+  end
+
+  test "injected text is a context block" do
+    {[b], _} =
+      ConversationRows.rows([
+        entry(1, :other, %{"raw" => %{"type" => "text", "text" => "skill\nbody"}})
+      ])
+
+    assert %{class: :context, label: "context", summary: "skill", body: "skill\nbody"} = b
+  end
+
+  test "tool output as blocks, nil, or other terms" do
+    {[a, b, c], _} =
       ConversationRows.rows([
         result(1, "x", [%{"text" => "one"}, %{"k" => 1}]),
         result(2, "y", nil),
-        result(3, "z", %{"k" => 2}),
-        entry(4, :tool_call, %{"name" => "Bash", "input" => nil}),
-        entry(5, :end, %{"outcome" => "completed"})
+        result(3, "z", %{"k" => 2})
       ])
 
-    assert a.text =~ "one"
-    assert a.text =~ "\"k\": 1"
-    assert b.text == ""
-    assert c.text =~ "\"k\": 2"
-    assert d.tool_use_id == nil
-    assert e.chip == "done"
+    assert a.result.preview =~ "one"
+    assert a.result.preview =~ "\"k\": 1"
+    assert b.result.preview == ""
+    assert c.result.preview =~ "\"k\": 2"
   end
 
-  test "end chips: backgrounded and incomplete are blocked; expand renders whole; row/3" do
-    {[a, b], _} =
-      ConversationRows.rows([
-        entry(1, :end, %{"outcome" => "incomplete_session"}),
-        entry(2, :end, %{"outcome" => "deadline_exceeded"})
-      ])
+  describe "sample fixture" do
+    test "stream equivalence: batch == one at a time" do
+      entries = sample()
+      {batch, _} = ConversationRows.rows(entries)
+      assert final_by_key(batch) == final_by_key(stream_blocks(entries, []))
+      assert Enum.map(batch, & &1.key) == Enum.uniq(Enum.map(batch, & &1.key))
+    end
 
-    assert a.chip == "blocked"
-    assert b.chip == "failed"
+    test "SC-002: all_frames shows every entry, results folded into their calls" do
+      entries = sample()
+      {blocks, _} = ConversationRows.rows(entries, ConversationRows.new(all_frames: true))
+      results = Enum.count(entries, &(&1.kind == :tool_result))
+      assert length(Enum.uniq_by(blocks, & &1.key)) == length(entries) - results
+    end
 
-    long = Enum.map_join(1..60, "\n", &"line #{&1}")
-    e = entry(1, :assistant_text, %{"text" => long})
-    assert ConversationRows.row(e, ConversationRows.new()).omitted
-    refute ConversationRows.row(e, ConversationRows.new(), expand: true).omitted
-    assert {_, nil} = ConversationRows.truncate("short")
+    test "default view has far fewer blocks than entries, none for pure progress" do
+      entries = sample()
+      {blocks, _} = ConversationRows.rows(entries)
+      assert length(blocks) < length(entries)
+      refute Enum.any?(blocks, &(&1.class == :raw))
+      assert Enum.any?(blocks, &(&1.flag == :hook_failed))
+      assert Enum.all?(Enum.filter(blocks, &(&1.class == :call)), & &1.result)
+    end
   end
 end

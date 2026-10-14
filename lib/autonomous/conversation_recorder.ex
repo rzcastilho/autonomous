@@ -37,7 +37,12 @@ defmodule Autonomous.ConversationRecorder do
     value = %{
       identity: %{identity | transcript_root: nil},
       opened_at: opened_at,
-      conversation_id: id
+      conversation_id: id,
+      path:
+        ConversationFile.resolve(
+          identity.transcript_root,
+          ConversationFile.relative_path(identity, id)
+        )
     }
 
     GenServer.start_link(__MODULE__, opts, name: {:via, Registry, {@registry, id, value}})

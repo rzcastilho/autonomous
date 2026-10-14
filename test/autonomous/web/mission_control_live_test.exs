@@ -1684,4 +1684,42 @@ defmodule Autonomous.Web.MissionControlLiveTest do
       assert page_title(view) =~ "Mission Control"
     end
   end
+
+  describe "embedded status line (042)" do
+    @describetag :tmp_dir
+
+    test "the live panel carries the status line", %{conn: conn, tmp_dir: root} do
+      pid = start_coordinator([feat("sl1")])
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+      identity = %Autonomous.ConversationIdentity{
+        repo_id: "o:repo",
+        run_id: "r000001",
+        feature_id: "sl1",
+        phase: :plan,
+        ordinal: 1,
+        kind: :phase,
+        transcript_root: root
+      }
+
+      request = Jido.Harness.RunRequest.new!(%{prompt: "p", model: "opus"})
+      {:ok, handle, _} = Autonomous.Conversation.open(identity, request)
+
+      on_exit(fn ->
+        if Process.alive?(handle.pid), do: Autonomous.Conversation.close(handle, nil)
+      end)
+
+      {:ok, view, _html} = live(conn, "/")
+      panel = find_live_child(view, "mc-conversation")
+
+      assert has_element?(panel, ~s(section[data-conv-status][role="region"]))
+      assert has_element?(panel, "[data-turns]")
+      assert has_element?(panel, "[data-tools]", "tools 0")
+
+      # the frames switch toggles in place, without touching the page URL
+      assert has_element?(panel, ~s(input[data-frames="default"]))
+      panel |> element(".conv-frames input") |> render_click()
+      assert has_element?(panel, ~s(input[data-frames="all"]))
+    end
+  end
 end

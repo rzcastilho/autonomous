@@ -21,10 +21,11 @@ defmodule Autonomous.Web.ConversationLive do
 
   use Autonomous.Web, :live_view
 
-  alias Autonomous.{Conversation, ConversationEntry}
-  alias Autonomous.Web.{ConversationComponents, ConversationRows}
+  alias Autonomous.{Conversation, ConversationFile}
+  alias Autonomous.Web.{ConversationComponents, ConversationRows, SessionStatus}
 
   @console_topic "console:run"
+  @tick_ms 1_000
 
   @impl true
   def mount(params, session, socket) do
@@ -38,12 +39,15 @@ defmodule Autonomous.Web.ConversationLive do
       |> assign(
         embedded?: embedded?,
         follow?: embedded?,
+        all_frames?: false,
         pinned?: is_map(params) and is_binary(params["conversation_id"]),
         conversation_id: nil,
         header: nil,
-        session_id: nil,
+        status: SessionStatus.new(),
+        now: DateTime.utc_now(),
+        tick?: false,
         ctx: ConversationRows.new(),
-        last_seq: 0,
+        last_seq: nil,
         live?: false,
         ended?: false,
         truncated?: false,
@@ -78,7 +82,8 @@ defmodule Autonomous.Web.ConversationLive do
     socket =
       assign(socket,
         pinned?: is_binary(params["conversation_id"]),
-        follow?: params["follow"] in ["1", "true"]
+        follow?: params["follow"] in ["1", "true"],
+        all_frames?: params["frames"] == "all"
       )
 
     {:noreply, attach(socket, target_id(params))}
@@ -109,13 +114,20 @@ defmodule Autonomous.Web.ConversationLive do
 
     case Conversation.catch_up(id) do
       {:ok, entries, last_seq, truncated?} ->
-        {rows, ctx} = ConversationRows.rows(entries)
+        {rows, ctx} =
+          ConversationRows.rows(
+            entries,
+            ConversationRows.new(all_frames: socket.assigns.all_frames?)
+          )
+
+        {header, opened_at} = header_for(id)
 
         socket
         |> assign(
           conversation_id: id,
-          header: header_for(id),
-          session_id: session_id_of(entries),
+          header: header,
+          status: seed_status(id, entries, last_seq, truncated?, opened_at),
+          now: DateTime.utc_now(),
           ctx: ctx,
           last_seq: last_seq,
           live?: true,
@@ -126,6 +138,7 @@ defmodule Autonomous.Web.ConversationLive do
           not_reachable?: false
         )
         |> stream(:rows, rows, reset: true)
+        |> schedule_tick()
 
       :not_live when not is_nil(socket.assigns.conversation_id) ->
         # Switching to a session whose recorder is gone or slow: say so, and link
@@ -186,17 +199,50 @@ defmodule Autonomous.Web.ConversationLive do
 
   defp header_for(id) do
     case Enum.find(Conversation.in_flight(nil), &(&1.conversation_id == id)) do
-      nil -> nil
-      %{identity: identity} -> identity
+      nil -> {nil, nil}
+      %{identity: identity, opened_at: opened_at} -> {identity, opened_at}
     end
   end
 
-  defp session_id_of(entries) do
-    Enum.find_value(entries, fn
-      %ConversationEntry{kind: :system, body: %{"data" => %{"session_id" => sid}}} -> sid
-      _ -> nil
-    end)
+  # Status seed (feature 042): the whole session so far, read once from the
+  # session's file up to the catch-up `last_seq` — exact counters past the
+  # 500-entry window. If the file cannot be read, fold the window instead; when
+  # the window was truncated those counters are lower bounds and say so.
+  defp seed_status(id, entries, last_seq, truncated?, opened_at) do
+    status =
+      with true <- is_integer(last_seq),
+           {:ok, path} <- Conversation.file_path(id),
+           {:ok, status} <-
+             ConversationFile.fold(path, SessionStatus.new(), &SessionStatus.apply(&2, &1),
+               through_seq: last_seq
+             ) do
+        status
+      else
+        _ ->
+          window = SessionStatus.apply_all(SessionStatus.new(), entries)
+          if truncated?, do: SessionStatus.mark_lower_bound(window), else: window
+      end
+
+    SessionStatus.put_started_at(status, opened_at)
   end
+
+  # The elapsed clock: one server tick a second, only while the session is live
+  # and not ended, and never more than one pending.
+  defp schedule_tick(%{assigns: %{tick?: true}} = socket), do: socket
+
+  defp schedule_tick(%{assigns: %{live?: true, ended?: false}} = socket) do
+    if connected?(socket) do
+      Process.send_after(self(), :tick, @tick_ms)
+      assign(socket, tick?: true)
+    else
+      socket
+    end
+  end
+
+  defp schedule_tick(socket), do: socket
+
+  defp fresh?(_seq, nil), do: true
+  defp fresh?(seq, last_seq), do: seq > last_seq
 
   # ---- events ---------------------------------------------------------------
 
@@ -212,12 +258,32 @@ defmodule Autonomous.Web.ConversationLive do
     end
   end
 
+  def handle_event("toggle_frames", _params, socket) do
+    socket = assign(socket, all_frames?: not socket.assigns.all_frames?)
+
+    socket =
+      with id when is_binary(id) <- socket.assigns.conversation_id,
+           {:ok, entries, _last, _truncated?} <- Conversation.catch_up(id) do
+        {rows, ctx} =
+          ConversationRows.rows(
+            entries,
+            ConversationRows.new(all_frames: socket.assigns.all_frames?)
+          )
+
+        socket |> assign(ctx: ctx) |> stream(:rows, rows, reset: true)
+      else
+        _ -> socket
+      end
+
+    {:noreply, refresh_url(socket)}
+  end
+
   def handle_event("expand", %{"seq" => seq}, socket) do
     with {n, ""} <- Integer.parse(seq),
          id when is_binary(id) <- socket.assigns.conversation_id,
-         {:ok, entry} <- Conversation.entry(id, n) do
-      row = ConversationRows.row(entry, socket.assigns.ctx, expand: true)
-      {:noreply, stream_insert(socket, :rows, row)}
+         {:ok, entry} <- Conversation.entry(id, n),
+         %{} = block <- ConversationRows.expand(entry, socket.assigns.ctx) do
+      {:noreply, stream_insert(socket, :rows, block)}
     else
       _ -> {:noreply, socket}
     end
@@ -227,7 +293,7 @@ defmodule Autonomous.Web.ConversationLive do
 
   @impl true
   def handle_info({:conversation, id, :entry, entry}, %{assigns: %{conversation_id: id}} = socket) do
-    if entry.seq > socket.assigns.last_seq do
+    if fresh?(entry.seq, socket.assigns.last_seq) do
       {rows, ctx} = ConversationRows.rows([entry], socket.assigns.ctx)
 
       socket =
@@ -237,7 +303,7 @@ defmodule Autonomous.Web.ConversationLive do
        assign(socket,
          ctx: ctx,
          last_seq: entry.seq,
-         session_id: socket.assigns.session_id || session_id_of([entry])
+         status: SessionStatus.apply(socket.assigns.status, entry)
        )}
     else
       {:noreply, socket}
@@ -284,6 +350,17 @@ defmodule Autonomous.Web.ConversationLive do
     end
   end
 
+  def handle_info(:tick, socket) do
+    a = socket.assigns
+
+    if a.live? and not a.ended? do
+      Process.send_after(self(), :tick, @tick_ms)
+      {:noreply, assign(socket, now: DateTime.utc_now())}
+    else
+      {:noreply, assign(socket, tick?: false)}
+    end
+  end
+
   def handle_info(_other, socket), do: {:noreply, socket}
 
   # Move to another session: in place when embedded (a child LiveView cannot
@@ -291,19 +368,31 @@ defmodule Autonomous.Web.ConversationLive do
   defp follow_to(%{assigns: %{embedded?: true}} = socket, id), do: attach(socket, id)
 
   defp follow_to(socket, id),
-    do: push_patch(socket, to: live_path(id, socket.assigns.follow?))
+    do: push_patch(socket, to: live_path(id, socket.assigns.follow?, socket.assigns.all_frames?))
 
   defp refresh_url(%{assigns: %{embedded?: true}} = socket), do: socket
 
   defp refresh_url(%{assigns: %{pinned?: true, conversation_id: id}} = socket) when is_binary(id),
-    do: push_patch(socket, to: live_path(id, socket.assigns.follow?), replace: true)
+    do:
+      push_patch(socket,
+        to: live_path(id, socket.assigns.follow?, socket.assigns.all_frames?),
+        replace: true
+      )
 
   defp refresh_url(socket),
-    do: push_patch(socket, to: live_path(nil, socket.assigns.follow?), replace: true)
+    do:
+      push_patch(socket,
+        to: live_path(nil, socket.assigns.follow?, socket.assigns.all_frames?),
+        replace: true
+      )
 
-  defp live_path(id, follow?) do
+  defp live_path(id, follow?, all_frames?) do
     base = if id, do: "/live/" <> id, else: "/live"
-    if follow?, do: base <> "?follow=1", else: base
+
+    case Enum.filter([follow? && "follow=1", all_frames? && "frames=all"], & &1) do
+      [] -> base
+      params -> base <> "?" <> Enum.join(params, "&")
+    end
   end
 
   defp next_session(%{assigns: %{pinned?: true, follow?: false}}, _id), do: nil
@@ -344,6 +433,7 @@ defmodule Autonomous.Web.ConversationLive do
             <span class="switch-track"><span class="switch-knob"></span></span>
             <span class="option-name">follow conversations</span>
           </label>
+          <ConversationComponents.frames_toggle all_frames?={@all_frames?} />
           <a
             :if={@embedded? and @conversation_id}
             href={"/live/" <> @conversation_id}
@@ -361,7 +451,8 @@ defmodule Autonomous.Web.ConversationLive do
             {@header.run_id} &middot; {@header.feature_id} &middot; {@header.phase} &middot; {@header.ordinal}<span :if={@header.chunk}> &middot; chunk</span><span :if={@header.attempt}> &middot; attempt {@header.attempt}</span>
             &middot;
           </span>
-          {@conversation_id}<span :if={@session_id}> &middot; {@session_id}</span>
+          {@conversation_id}<span :if={@status.session_id}> &middot; {@status.session_id}</span>
+          <ConversationComponents.model_header status={@status} />
         </p>
       </div>
 
@@ -401,6 +492,8 @@ defmodule Autonomous.Web.ConversationLive do
           next session:
           <a href={"/live/" <> @next_session} class="btn-link">{@next_session}</a>
         </p>
+
+        <ConversationComponents.status_line status={@status} live?={@live?} now={@now} />
       </div>
     </div>
     """

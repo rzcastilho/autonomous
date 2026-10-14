@@ -197,6 +197,19 @@ defmodule Autonomous.Conversation do
     :exit, _ -> :not_live
   end
 
+  @doc """
+  Absolute path of an in-flight conversation's file, read from its registry
+  entry (which the recorder fills at start; the identity there has the
+  transcript root stripped). `:not_live` when it is not registered.
+  """
+  @spec file_path(String.t()) :: {:ok, Path.t()} | :not_live
+  def file_path(id) do
+    case Registry.lookup(@registry, id) do
+      [{_pid, %{path: path}}] when is_binary(path) -> {:ok, path}
+      _ -> :not_live
+    end
+  end
+
   @doc "In-flight conversations of `repo_id` (any when `nil`), newest first."
   @spec in_flight(String.t() | nil) :: [map()]
   def in_flight(repo_id \\ nil) do

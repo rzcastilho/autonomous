@@ -1,0 +1,40 @@
+{"format": "speckit.conversation", "version": 1, "conversation_id": "implement-1-sample", "opened_at": "2026-10-13T12:00:00Z", "run_id": "r000001", "feature_id": "042", "phase": "implement", "ordinal": 1}
+{"seq": 0, "at": "2026-10-13T12:00:00Z", "kind": "start", "body": {"run_id": "r000001", "feature_id": "042", "phase": "implement", "model": "opus"}}
+{"seq": 1, "at": "2026-10-13T12:00:01Z", "kind": "prompt", "body": {"text": "Implement feature 042.\nFollow tasks.md."}}
+{"seq": 2, "at": "2026-10-13T12:00:02Z", "kind": "system", "body": {"subtype": "init", "data": {"model": "claude-opus-4-8", "claude_code_version": "2.1.100", "session_id": "sess-042"}}}
+{"seq": 3, "at": "2026-10-13T12:00:03Z", "kind": "system", "body": {"subtype": "status", "data": {"status": "requesting"}}}
+{"seq": 4, "at": "2026-10-13T12:00:04Z", "kind": "system", "body": {"subtype": "thinking_tokens", "data": {"estimated_tokens": 1200}}}
+{"seq": 5, "at": "2026-10-13T12:00:05Z", "kind": "system", "body": {"subtype": "hook_started", "data": {"hook_id": "h1", "hook_name": "SessionStart:startup", "hook_event": "SessionStart"}}}
+{"seq": 6, "at": "2026-10-13T12:00:06Z", "kind": "system", "body": {"subtype": "hook_progress", "data": {"hook_id": "h1", "hook_name": "SessionStart:startup", "hook_event": "SessionStart"}}}
+{"seq": 7, "at": "2026-10-13T12:00:07Z", "kind": "system", "body": {"subtype": "hook_response", "data": {"hook_id": "h1", "hook_name": "SessionStart:startup", "outcome": "success", "exit_code": 0, "output": ""}}}
+{"seq": 8, "at": "2026-10-13T12:00:08Z", "kind": "system", "body": {"subtype": "hook_started", "data": {"hook_id": "h2", "hook_name": "PreToolUse:Bash", "hook_event": "PreToolUse"}}}
+{"seq": 9, "at": "2026-10-13T12:00:09Z", "kind": "system", "body": {"subtype": "hook_response", "data": {"hook_id": "h2", "hook_name": "PreToolUse:Bash", "outcome": "error", "exit_code": 1, "output": "boom"}}}
+{"seq": 10, "at": "2026-10-13T12:00:10Z", "kind": "thinking", "body": {"text": "", "message_id": "m1"}}
+{"seq": 11, "at": "2026-10-13T12:00:11Z", "kind": "assistant_text", "body": {"text": "I will read the plan, then edit.", "message_id": "m1"}}
+{"seq": 12, "at": "2026-10-13T12:00:12Z", "kind": "tool_call", "body": {"tool_use_id": "t1", "name": "Bash", "input": {"command": "mix test\nmix format"}}}
+{"seq": 13, "at": "2026-10-13T12:00:13Z", "kind": "tool_call", "body": {"tool_use_id": "t2", "name": "Read", "input": {"file_path": "/repo/plan.md"}}}
+{"seq": 14, "at": "2026-10-13T12:00:14Z", "kind": "tool_call", "body": {"tool_use_id": "t3", "name": "Write", "input": {"file_path": "/repo/out.txt", "content": "x"}}}
+{"seq": 15, "at": "2026-10-13T12:00:15Z", "kind": "other", "body": {"raw": {"type": "tool_progress", "tool_name": "Bash", "parent_tool_use_id": "t1", "elapsed_time_seconds": 30}}}
+{"seq": 16, "at": "2026-10-13T12:00:16Z", "kind": "tool_result", "body": {"tool_use_id": "t2", "output": "short result", "is_error": false}}
+{"seq": 17, "at": "2026-10-13T12:00:17Z", "kind": "tool_result", "body": {"tool_use_id": "t1", "output": "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11\nline 12\nline 13\nline 14\nline 15\nline 16\nline 17\nline 18\nline 19\nline 20\nline 21\nline 22\nline 23\nline 24\nline 25\nline 26\nline 27\nline 28\nline 29\nline 30\nline 31\nline 32\nline 33\nline 34\nline 35\nline 36\nline 37\nline 38\nline 39\nline 40", "is_error": false}}
+{"seq": 18, "at": "2026-10-13T12:00:18Z", "kind": "tool_result", "body": {"tool_use_id": "t3", "output": "permission denied", "is_error": true}}
+{"seq": 19, "at": "2026-10-13T12:00:19Z", "kind": "tool_call", "body": {"tool_use_id": "t4", "name": "Edit", "input": {"file_path": "/repo/a.ex", "old_string": "a", "new_string": "b"}}}
+{"seq": 20, "at": "2026-10-13T12:00:20Z", "kind": "tool_call", "body": {"tool_use_id": "t5", "name": "Glob", "input": {"pattern": "lib/**/*.ex"}}}
+{"seq": 21, "at": "2026-10-13T12:00:21Z", "kind": "tool_call", "body": {"tool_use_id": "t6", "name": "Grep", "input": {"pattern": "defmodule"}}}
+{"seq": 22, "at": "2026-10-13T12:00:22Z", "kind": "tool_call", "body": {"tool_use_id": "t7", "name": "Skill", "input": {"skill": "speckit-plan"}}}
+{"seq": 23, "at": "2026-10-13T12:00:23Z", "kind": "tool_call", "body": {"tool_use_id": "t8", "name": "Mystery", "input": {"b": 1, "a": "x"}}}
+{"seq": 24, "at": "2026-10-13T12:00:24Z", "kind": "tool_result", "body": {"tool_use_id": "t4", "output": [{"type": "text", "text": "ok t4"}], "is_error": false}}
+{"seq": 25, "at": "2026-10-13T12:00:25Z", "kind": "tool_result", "body": {"tool_use_id": "t5", "output": [{"type": "text", "text": "ok t5"}], "is_error": false}}
+{"seq": 26, "at": "2026-10-13T12:00:26Z", "kind": "tool_result", "body": {"tool_use_id": "t6", "output": [{"type": "text", "text": "ok t6"}], "is_error": false}}
+{"seq": 27, "at": "2026-10-13T12:00:27Z", "kind": "tool_result", "body": {"tool_use_id": "t7", "output": [{"type": "text", "text": "ok t7"}], "is_error": false}}
+{"seq": 28, "at": "2026-10-13T12:00:28Z", "kind": "tool_result", "body": {"tool_use_id": "t8", "output": [{"type": "text", "text": "ok t8"}], "is_error": false}}
+{"seq": 29, "at": "2026-10-13T12:00:29Z", "kind": "other", "body": {"raw": {"type": "rate_limit_event", "rate_limit_info": {"status": "allowed", "rateLimitType": "five_hour", "resetsAt": 1760400000}}}}
+{"seq": 30, "at": "2026-10-13T12:00:30Z", "kind": "other", "body": {"raw": {"type": "rate_limit_event", "rate_limit_info": {"status": "limited", "rateLimitType": "five_hour", "resetsAt": 1760400000}}}}
+{"seq": 31, "at": "2026-10-13T12:00:31Z", "kind": "other", "body": {"raw": {"type": "rate_limit_event", "rate_limit_info": {"status": "allowed", "rateLimitType": "five_hour", "resetsAt": 1760400000}}}}
+{"seq": 32, "at": "2026-10-13T12:00:32Z", "kind": "system", "body": {"subtype": "task_started", "data": {"task_id": "k1", "description": "run suite", "task_type": "local_bash"}}}
+{"seq": 33, "at": "2026-10-13T12:00:33Z", "kind": "system", "body": {"subtype": "task_notification", "data": {"task_id": "k1", "status": "completed", "summary": "suite green"}}}
+{"seq": 34, "at": "2026-10-13T12:00:34Z", "kind": "system", "body": {"subtype": "api_retry", "data": {"attempt": 1, "max_retries": 3, "error": "overloaded", "error_status": 529, "retry_delay_ms": 1000}}}
+{"seq": 35, "at": "2026-10-13T12:00:35Z", "kind": "other", "body": {"raw": {"type": "text", "text": "Injected skill expansion text"}}}
+{"seq": 36, "at": "2026-10-13T12:00:36Z", "kind": "assistant_text", "body": {"text": "All done.", "message_id": "m2"}}
+{"seq": 37, "at": "2026-10-13T12:00:37Z", "kind": "result", "body": {"subtype": "success", "result": "done", "num_turns": 3, "duration_ms": 716000, "cost_usd": 0.77, "is_error": false}}
+{"seq": 38, "at": "2026-10-13T12:00:38Z", "kind": "end", "body": {"outcome": "completed"}}
