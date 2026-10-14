@@ -30,7 +30,10 @@ defmodule Autonomous.StubDocker do
       File.write!(Path.join(state, "labels-" <> name), labels)
     end
 
-    File.write!(Path.join(state, "containers"), Enum.join(Keyword.get(opts, :containers, []), "\n"))
+    File.write!(
+      Path.join(state, "containers"),
+      Enum.join(Keyword.get(opts, :containers, []), "\n")
+    )
 
     image_exit = if Keyword.get(opts, :image, true), do: 0, else: 1
     run_exit = Keyword.get(opts, :run_exit, 0)

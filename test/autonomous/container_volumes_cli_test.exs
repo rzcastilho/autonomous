@@ -25,7 +25,8 @@ defmodule Autonomous.ContainerVolumesCliTest do
     %{base: base, home: home, xdg: xdg, repo: repo, docker: docker}
   end
 
-  defp declaration(ctx), do: Path.join([ctx.xdg, "autonomous", "targets", @segment, "volumes.toml"])
+  defp declaration(ctx),
+    do: Path.join([ctx.xdg, "autonomous", "targets", @segment, "volumes.toml"])
 
   defp write_declaration(ctx, text) do
     File.mkdir_p!(Path.dirname(declaration(ctx)))
@@ -86,8 +87,12 @@ defmodule Autonomous.ContainerVolumesCliTest do
 
       assert out =~ "autonomous: volumes  "
       assert out =~ "volumes.toml"
-      assert out =~ "autonomous: volume cargo-target -> #{@parent}/cargo-target (1 variable, 0 path dirs)"
-      assert out =~ "autonomous: volume mise-data: MISE_DATA_DIR overrides image value /opt/mise with #{@parent}/mise-data"
+
+      assert out =~
+               "autonomous: volume cargo-target -> #{@parent}/cargo-target (1 variable, 0 path dirs)"
+
+      assert out =~
+               "autonomous: volume mise-data: MISE_DATA_DIR overrides image value /opt/mise with #{@parent}/mise-data"
     end
 
     test "volume lines come after the summary", ctx do
@@ -195,12 +200,27 @@ defmodule Autonomous.ContainerVolumesCliTest do
       """)
 
       File.chmod!(Path.join(shim, "python3"), 0o755)
-      env = [{"PATH", shim <> ":" <> ctx.docker.bin <> ":" <> System.get_env("PATH")}, {"HOME", ctx.home}, {"XDG_CONFIG_HOME", ctx.xdg}]
 
-      assert {_, 0} = System.cmd("sh", [@wrapper, "shell", "--target", ctx.repo], env: env, stderr_to_stdout: true)
+      env = [
+        {"PATH", shim <> ":" <> ctx.docker.bin <> ":" <> System.get_env("PATH")},
+        {"HOME", ctx.home},
+        {"XDG_CONFIG_HOME", ctx.xdg}
+      ]
+
+      assert {_, 0} =
+               System.cmd("sh", [@wrapper, "shell", "--target", ctx.repo],
+                 env: env,
+                 stderr_to_stdout: true
+               )
 
       write_declaration(ctx, @one_volume)
-      assert {out, 2} = System.cmd("sh", [@wrapper, "shell", "--target", ctx.repo], env: env, stderr_to_stdout: true)
+
+      assert {out, 2} =
+               System.cmd("sh", [@wrapper, "shell", "--target", ctx.repo],
+                 env: env,
+                 stderr_to_stdout: true
+               )
+
       assert out =~ "needs python3 >= 3.11"
     end
   end
@@ -327,7 +347,9 @@ defmodule Autonomous.ContainerVolumesCliTest do
       assert {out, 0} = run(ctx, ["stop", "--target", ctx.repo, "--purge"])
       calls = StubDocker.calls(ctx.docker)
 
-      assert calls =~ "volume ls -q --filter label=dev.autonomous.kind=user-volume --filter label=dev.autonomous.segment=#{@segment}"
+      assert calls =~
+               "volume ls -q --filter label=dev.autonomous.kind=user-volume --filter label=dev.autonomous.segment=#{@segment}"
+
       assert calls =~ "volume rm #{@segment_vols_a}"
       assert calls =~ "volume rm #{@segment_vols_b}"
       assert out =~ "autonomous: #{@segment_vols_a} removed"
