@@ -141,7 +141,7 @@ Single Elixir app: `lib/autonomous/`, `lib/autonomous/web/`, `test/autonomous/`,
 - [X] T035 [P] Update `docs/runbook.md` live-view section (status line, `frames=all`, header fields, lower-bound `≥` fallback)
 - [X] T036 [P] Add one paragraph under "Live agent conversation (feature 040)" in `CLAUDE.md` and a cross-reference in the 040 console-surfaces contract
 - [X] T037 Run full suite `mise exec -- mix test` (warnings_as_errors, design-contract guard rule count unchanged — SC-008) and `mise exec -- mix test --cover` for >90% on the new pure modules
-- [ ] T038 Run quickstart.md §1–2 and the by-hand checklist §4, including SC-006 by hand (status line follows a live session within 2 s) (record result in the PR description)
+- [X] T038 Run quickstart.md §1–2 and the by-hand checklist §4, including SC-006 by hand (status line follows a live session within 2 s) (record result in the PR description)
 
 ---
 
