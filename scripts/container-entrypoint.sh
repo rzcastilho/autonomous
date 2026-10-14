@@ -176,6 +176,10 @@ fi
 # orchestrated session exists.
 prepare_build() {
   cd /workspace
+  # Hex/rebar live inside the mise elixir install; a declared MISE_DATA_DIR volume
+  # (feature 041) starts empty and reinstalls the toolchain without them.
+  mise exec -- mix local.hex --force --if-missing || die "mix local.hex failed"
+  mise exec -- mix local.rebar --force --if-missing || die "mix local.rebar failed"
   lock_hash="$(sha256sum mix.lock | cut -d' ' -f1)"
   marker="deps/.autonomous_lock_hash"
   if [ ! -f "$marker" ] || [ "$(cat "$marker")" != "$lock_hash" ]; then
