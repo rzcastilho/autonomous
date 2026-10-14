@@ -106,3 +106,5 @@ an `open full view` link to `/live/<id>`, its own scroll
   `prefers-reduced-motion: reduce`.
 - Outcome and status text in HEEx goes through `ConversationRows` /
   `Report.format_reason/1` — no raw `inspect/1` (G-inspect).
+
+> **Superseded in part by feature 042:** the **Body** and **Truncation** bullets are replaced by `specs/042-classify-conversation-output/contracts/console-surfaces.md` (blocks, status line, `frames=all`).

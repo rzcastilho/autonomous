@@ -27,7 +27,13 @@ defmodule Autonomous.Web.TranscriptsLive do
   use Autonomous.Web, :live_view
 
   alias Autonomous.{ConversationFile, Pipeline, Report}
-  alias Autonomous.Web.{ConversationComponents, ConversationRows, TranscriptMarkup}
+
+  alias Autonomous.Web.{
+    ConversationComponents,
+    ConversationRows,
+    SessionStatus,
+    TranscriptMarkup
+  }
 
   @page 500
 
@@ -39,6 +45,7 @@ defmodule Autonomous.Web.TranscriptsLive do
        current_path: "/transcripts",
        transcript_root: nil,
        selected_session: nil,
+       all_frames?: false,
        conv: nil
      )
      |> stream_configure(:conv_rows, dom_id: & &1.key)
@@ -65,7 +72,8 @@ defmodule Autonomous.Web.TranscriptsLive do
        selected_feature_id: selected_feature_id,
        selected_index: selected_index,
        transcript_root: root,
-       selected_session: parse_index(params["session"])
+       selected_session: parse_index(params["session"]),
+       all_frames?: params["frames"] == "all"
      )
      |> assign_doc(selected_feature, selected_index)}
   end
@@ -107,6 +115,15 @@ defmodule Autonomous.Web.TranscriptsLive do
 
   # Next page of the saved conversation; the context threads through so a tool
   # result on page two still pairs with its call on page one.
+  def handle_event("toggle_frames", _params, socket) do
+    socket = assign(socket, all_frames?: not socket.assigns.all_frames?)
+
+    {:noreply,
+     socket
+     |> rebuild_rows()
+     |> push_patch(to: transcripts_path(socket.assigns), replace: true)}
+  end
+
   def handle_event("load_next", _params, %{assigns: %{conv: %{state: :rows} = conv}} = socket) do
     case conv.next_seq do
       :eof ->
@@ -125,15 +142,54 @@ defmodule Autonomous.Web.TranscriptsLive do
         %{assigns: %{conv: %{state: :rows} = conv}} = socket
       ) do
     with {n, ""} <- Integer.parse(seq),
-         {:ok, entry} <- ConversationFile.entry(conv.path, n) do
-      row = ConversationRows.row(entry, conv.ctx, expand: true)
-      {:noreply, stream_insert(socket, :conv_rows, row)}
+         {:ok, entry} <- ConversationFile.entry(conv.path, n),
+         %{} = block <- ConversationRows.expand(entry, conv.ctx) do
+      {:noreply, stream_insert(socket, :conv_rows, block)}
     else
       _ -> {:noreply, socket}
     end
   end
 
   def handle_event("expand", _params, socket), do: {:noreply, socket}
+
+  # Re-block everything loaded so far under the current frames setting.
+  defp rebuild_rows(%{assigns: %{conv: %{state: :rows} = conv}} = socket) do
+    limit = if is_integer(conv.next_seq), do: conv.next_seq, else: 10_000_000
+
+    case ConversationFile.page(conv.path, 0, max(limit, 1)) do
+      {status, entries, _} when status == :ok ->
+        reblock(socket, conv, entries)
+
+      {:error, {:malformed, _}, entries} ->
+        reblock(socket, conv, entries)
+
+      _ ->
+        socket
+    end
+  end
+
+  defp rebuild_rows(socket), do: socket
+
+  defp reblock(socket, conv, entries) do
+    {rows, ctx} =
+      ConversationRows.rows(entries, ConversationRows.new(all_frames: socket.assigns.all_frames?))
+
+    socket |> assign(conv: %{conv | ctx: ctx}) |> stream(:conv_rows, rows, reset: true)
+  end
+
+  defp transcripts_path(a) do
+    params =
+      [
+        {"run_id", a.run_id},
+        {"feature", a.selected_feature_id},
+        {"attempt", a.selected_index},
+        {"session", a.conv && a.conv.state == :rows && a.conv.session},
+        {"frames", a.all_frames? && "all"}
+      ]
+      |> Enum.reject(fn {_k, v} -> v in [nil, false] end)
+
+    "/transcripts?" <> URI.encode_query(params)
+  end
 
   defp parse_index(nil), do: nil
 
@@ -274,7 +330,8 @@ defmodule Autonomous.Web.TranscriptsLive do
   end
 
   defp show_rows(socket, refs, session, ref, path, entries, next, damaged) do
-    {rows, ctx} = ConversationRows.rows(entries)
+    {rows, ctx} =
+      ConversationRows.rows(entries, ConversationRows.new(all_frames: socket.assigns.all_frames?))
 
     conv = %{
       state: :rows,
@@ -284,6 +341,7 @@ defmodule Autonomous.Web.TranscriptsLive do
       path: path,
       next_seq: next,
       ctx: ctx,
+      status: SessionStatus.apply_all(SessionStatus.new(), entries),
       damaged: damaged
     }
 
@@ -307,7 +365,8 @@ defmodule Autonomous.Web.TranscriptsLive do
         stream_insert(acc, :conv_rows, row)
       end)
 
-    assign(socket, conv: %{conv | next_seq: next, ctx: ctx, damaged: damaged})
+    status = SessionStatus.apply_all(conv.status, entries)
+    assign(socket, conv: %{conv | next_seq: next, ctx: ctx, status: status, damaged: damaged})
   end
 
   defp put_conv(socket, nil),
@@ -462,6 +521,12 @@ defmodule Autonomous.Web.TranscriptsLive do
               </div>
 
               <%= if rows?(@conv) do %>
+                <div class="conv-toolbar-row" data-conv-toolbar>
+                  <ConversationComponents.frames_toggle all_frames?={@all_frames?} />
+                  <span class="conv-header transcript-path" data-conversation-header>
+                    <ConversationComponents.model_header status={@conv.status} />
+                  </span>
+                </div>
                 <div id="saved-conversation-rows" phx-update="stream" class="conv-rows" data-saved-conversation>
                   <ConversationComponents.conversation_row
                     :for={{dom_id, row} <- @streams.conv_rows}
@@ -469,6 +534,8 @@ defmodule Autonomous.Web.TranscriptsLive do
                     row={row}
                   />
                 </div>
+
+                <ConversationComponents.status_line status={@conv.status} />
 
                 <p :if={match?({:malformed, _}, @conv.damaged)} class="conv-notice" data-notice="damaged">
                   Saved conversation is damaged at line {elem(@conv.damaged, 1)}; showing the entries before it.

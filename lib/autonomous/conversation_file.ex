@@ -133,6 +133,46 @@ defmodule Autonomous.ConversationFile do
     e in File.Error -> {:error, {:unreadable, e.reason}}
   end
 
+  @doc """
+  Fold `fun` over the entries in order, streaming line by line (the file is
+  never loaded whole). Option `:through_seq` stops after that seq without
+  reading past it, so a line the recorder is writing concurrently is never
+  seen. A malformed line before the stop is `{:error, {:malformed, line_no}}`.
+  """
+  @spec fold(Path.t(), acc, (ConversationEntry.t(), acc -> acc), keyword()) ::
+          {:ok, acc} | {:error, read_error()}
+        when acc: term()
+  def fold(path, acc, fun, opts \\ []) when is_function(fun, 2) do
+    through = Keyword.get(opts, :through_seq)
+
+    with :ok <- readable(path),
+         {:ok, header_line} <- read_header(path),
+         :ok <- check_header(header_line) do
+      path
+      |> File.stream!(:line)
+      |> Stream.drop(1)
+      |> Stream.with_index()
+      |> Enum.reduce_while({:ok, acc}, fn {line, seq}, {:ok, acc} ->
+        fold_line(line, seq, through, fun, acc)
+      end)
+    end
+  rescue
+    e in File.Error -> {:error, {:unreadable, e.reason}}
+  end
+
+  defp fold_line(_line, seq, through, _fun, acc) when is_integer(through) and seq > through,
+    do: {:halt, {:ok, acc}}
+
+  defp fold_line(line, seq, _through, fun, acc) do
+    case Jason.decode(line) do
+      {:ok, %{"seq" => ^seq, "kind" => _} = m} ->
+        {:cont, {:ok, fun.(ConversationEntry.decode(m), acc)}}
+
+      _ ->
+        {:halt, {:error, {:malformed, seq + 2}}}
+    end
+  end
+
   @doc "The entry with `seq`, read without loading the file."
   @spec entry(Path.t(), non_neg_integer()) :: {:ok, ConversationEntry.t()} | {:error, term()}
   def entry(path, seq) do

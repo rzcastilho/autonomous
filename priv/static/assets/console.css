@@ -2764,6 +2764,63 @@ textarea {
   font-size: var(--fs-meta);
 }
 
+.conv-fold > summary {
+  cursor: pointer;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-8);
+  align-items: baseline;
+  font-size: var(--fs-meta);
+}
+
+.conv-label {
+  font-family: var(--font-mono);
+  font-size: var(--fs-eyebrow);
+  color: var(--text-faint);
+}
+
+.conv-first {
+  color: var(--text-secondary);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conv-call-line {
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conv-result {
+  margin-top: var(--sp-4);
+  padding-left: var(--sp-12);
+  border-left: 1px solid var(--border-subtle);
+}
+
+.conv-marker .conv-first {
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+}
+
+.conv-divider {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--text-muted);
+  border-top: 1px solid var(--border);
+  padding-top: var(--sp-4);
+}
+
+.conv-end {
+  display: flex;
+  gap: var(--sp-8);
+  align-items: baseline;
+}
+
 .conv-omitted {
   font-family: var(--font-mono);
   font-size: var(--fs-meta);
@@ -2781,6 +2838,50 @@ textarea {
   font-size: var(--fs-meta);
   cursor: pointer;
   text-decoration: underline;
+}
+
+/* Status line (042): the sticky bottom line of a conversation view — activity,
+   counters, elapsed, cost. Mono (machine values), tokens only, wraps at the
+   one narrow-screen breakpoint's width by flex-wrap alone. The activity dot
+   reads its colour from the status name (--sc); only the shared live dot
+   pulses, and only while live. */
+.conv-status {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sp-4) var(--sp-14);
+  padding: var(--sp-8) 0;
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--text-secondary);
+}
+
+.view-conversation .conv-status {
+  bottom: calc(-1 * var(--sp-22));
+  margin: 0 calc(-1 * var(--sp-22)) calc(-1 * var(--sp-22));
+  padding: var(--sp-8) var(--sp-22);
+}
+
+/* Inside Mission Control's panel the line pins to the panel's own bottom edge. */
+.mc-live-panel .conv-status {
+  bottom: calc(-1 * var(--sp-14));
+  margin: 0 calc(-1 * var(--sp-14)) calc(-1 * var(--sp-14));
+  padding: var(--sp-8) var(--sp-14);
+  background: var(--card);
+}
+
+.conv-status-group .transcript-live {
+  margin-left: 0;
+  margin-right: var(--sp-6);
+}
+
+.conv-status .transcript-live[data-status] {
+  background: var(--sc);
 }
 
 /* Follow toggle row (040): the "follow conversations" switch, and in the
@@ -2818,6 +2919,16 @@ textarea {
 
 .conv-toolbar .conv-header {
   margin: 0;
+}
+
+.conv-header-model {
+  font-family: var(--font-mono);
+  margin-left: var(--sp-8);
+}
+
+.conv-header-model::before {
+  content: "\00b7";
+  margin-right: var(--sp-8);
 }
 
 /* The badge in the bar names the shown session's state; not a link. */

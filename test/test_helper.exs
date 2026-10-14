@@ -9,4 +9,4 @@
 # schema files.
 System.at_exit(fn _status -> File.rm_rf(Autonomous.Config.store_dir()) end)
 
-ExUnit.start(exclude: [:integration])
+ExUnit.start(exclude: [:integration, :census])

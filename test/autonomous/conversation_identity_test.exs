@@ -38,4 +38,32 @@ defmodule Autonomous.ConversationIdentityTest do
     refute Map.has_key?(m, "transcript_root")
     assert m["phase"] == "clarify"
   end
+
+  describe "Conversation.file_path/1" do
+    @describetag :tmp_dir
+
+    test "resolves a live conversation's file from its registry identity", %{tmp_dir: root} do
+      identity = %I{
+        repo_id: "o:repo",
+        run_id: "r000001",
+        feature_id: "001",
+        phase: :clarify,
+        ordinal: 1,
+        kind: :phase,
+        transcript_root: root
+      }
+
+      request = Jido.Harness.RunRequest.new!(%{prompt: "p", model: "opus"})
+      {:ok, handle, _} = Autonomous.Conversation.open(identity, request)
+
+      on_exit(fn ->
+        if Process.alive?(handle.pid), do: Autonomous.Conversation.close(handle, nil)
+      end)
+
+      assert {:ok, path} = Autonomous.Conversation.file_path(handle.conversation_id)
+      assert File.exists?(path)
+      assert String.starts_with?(path, root)
+      assert Autonomous.Conversation.file_path("no-such") == :not_live
+    end
+  end
 end

@@ -1569,6 +1569,23 @@ the PR describe session — is recorded as it runs.
 - Export carries status/reason/entry count/bytes per attempt only — no path, no
   content.
 
+### Reading a conversation: blocks, status line, frames (042)
+
+The live and saved views classify what a session records instead of listing every frame.
+
+- **Scroll.** Prompt/context, thinking and tool calls are folded to one line (`Bash(ls -la)`);
+  a tool result nests under its call with its first 5 lines and `+N lines` to expand. Task,
+  retry, failed-hook and failed-result entries are one-line markers.
+- **Status line** (sticky bottom; Mission Control, `/live`, Transcripts): activity, turns,
+  tools, background tasks, elapsed, rate limit, cost/duration. Live it ticks once a second;
+  saved it is static and equals the live end state. When the session's file cannot be read
+  at join time the counters are seeded from the last 500 entries and shown as `≥ n`.
+- **`show all frames`** (`?frames=all`, combines with `follow=1`; no URL in the embedded
+  panel) restores every recorded entry as a folded `<kind> · <sub-kind>` row.
+- **Header** adds model alias · resolved model · `cli <version>` once the session's `init`
+  arrives; nothing is shown for a value that is not known.
+- Re-measure on your own transcripts: `AUTONOMOUS_CENSUS_DIR=<dir> mise exec -- mix test --only census test/autonomous/web/census_test.exs`.
+
 ## Persistent volumes for a target (041)
 
 Use when a target re-downloads toolchains or rebuilds from scratch every restart

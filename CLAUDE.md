@@ -337,6 +337,12 @@ and broadcasts to `/live`. `close/2` returns a `ConversationRef` stored on the a
 Transcripts/Run Detail read the file back via `ConversationRows`; pre-040 attempts fall
 back to the final-text transcript. Constitution 7.1.0. See `docs/runbook.md`,
 `specs/040-live-agent-conversation/`.
+**Classified conversation output (feature 042).** Display-only (no stored change): `ConversationClass`
+places every entry as row and/or signal; `ConversationRows` builds blocks (call + nested 5-line result,
+folded prompt/thinking, markers, divider); `ToolSummary` renders `Tool(summary)`; `SessionStatus` folds
+signals into the sticky status line and header fields (seeded on join via `ConversationFile.fold/4` and
+`Conversation.file_path/1`, `≥` when only the window is available). `frames=all` / `toggle_frames`
+restores every frame. `specs/042-classify-conversation-output/`.
 `Autonomous.resolve/1` frees a kept worktree so a human-resolved feature
 re-runs on its existing branch (`Worktree.create` reuses an existing branch).
 `Autonomous.resume/2` is the shipped checkpoint-driven restart path —

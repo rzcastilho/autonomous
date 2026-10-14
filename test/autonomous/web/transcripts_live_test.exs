@@ -391,6 +391,78 @@ defmodule Autonomous.Web.TranscriptsLiveTest do
     refute has_element?(view, "[data-load-next]")
   end
 
+  test "a saved conversation shows a static status line, equal to the live end state (042)", %{
+    conn: conn,
+    repo: repo
+  } do
+    ref = record_conversation(repo, "c3", 3, @ok)
+    run_id = seed_run(repo, [{"c3", :plan, "body", %{conversations: [ref]}}])
+
+    {:ok, view, html} = live(conn, "/transcripts?run_id=#{run_id}&feature=c3&attempt=0")
+
+    assert has_element?(view, ~s(section[data-conv-status][role="region"]))
+    assert has_element?(view, "[data-activity]", "completed")
+    assert has_element?(view, ~s([data-activity] [data-status="done"]))
+    assert has_element?(view, "[data-elapsed]")
+
+    # no live clock, no pulse
+    refute has_element?(view, ~s([data-conv-status] .transcript-live[data-live="true"]))
+    refute html =~ "phx-hook=\"Tick"
+
+    # same fold over the same file as the live view would have produced
+    {:ok, entries, :eof} =
+      Autonomous.ConversationFile.page(Path.join(transcript_root(repo), ref.path), 0, 500)
+
+    status = Autonomous.Web.SessionStatus.apply_all(Autonomous.Web.SessionStatus.new(), entries)
+    assert has_element?(view, "[data-turns]", "turns #{status.turns}")
+    assert has_element?(view, "[data-tools]", "tools #{status.tool_calls}")
+    assert status.turns == 3
+  end
+
+  test "load-next folds the next page into the static status line (042)", %{
+    conn: conn,
+    repo: repo
+  } do
+    ref = record_conversation(repo, "c4", 520, @ok)
+    run_id = seed_run(repo, [{"c4", :plan, "body", %{conversations: [ref]}}])
+
+    {:ok, view, _html} = live(conn, "/transcripts?run_id=#{run_id}&feature=c4&attempt=0")
+    refute has_element?(view, "[data-activity]", "completed")
+    assert has_element?(view, "[data-turns]", "turns 498")
+
+    view |> element("[data-load-next]") |> render_click()
+    assert has_element?(view, "[data-turns]", "turns 520")
+    assert has_element?(view, "[data-activity]", "completed")
+  end
+
+  test "show all frames toggles, patches the URL, and leaves the status line unchanged (042)", %{
+    conn: conn,
+    repo: repo
+  } do
+    ref = record_conversation(repo, "c5", 3, @ok)
+    run_id = seed_run(repo, [{"c5", :plan, "body", %{conversations: [ref]}}])
+
+    {:ok, view, _html} = live(conn, "/transcripts?run_id=#{run_id}&feature=c5&attempt=0")
+    assert has_element?(view, ~s(input[data-frames="default"]))
+    turns = view |> element("[data-turns]") |> render()
+
+    view |> element(".conv-frames input") |> render_click()
+
+    assert_patch(
+      view,
+      "/transcripts?run_id=#{run_id}&feature=c5&attempt=0&session=0&frames=all"
+    )
+
+    assert has_element?(view, ~s(input[data-frames="all"]))
+    assert view |> element("[data-turns]") |> render() == turns
+    assert has_element?(view, ~s(.conv-row[data-kind="end"]))
+
+    {:ok, view2, _} =
+      live(conn, "/transcripts?run_id=#{run_id}&feature=c5&attempt=0&frames=all")
+
+    assert has_element?(view2, ~s(input[data-frames="all"]))
+  end
+
   test "the session param selects a ref; retried phases list both sessions (040)", %{
     conn: conn,
     repo: repo

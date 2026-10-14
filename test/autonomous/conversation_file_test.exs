@@ -112,4 +112,43 @@ defmodule Autonomous.ConversationFileTest do
     File.write!(path, "hello\n")
     assert {:error, {:malformed, 1}} = ConversationFile.page(path, 0, 5)
   end
+
+  describe "fold/4" do
+    defp seqs(path, opts \\ []),
+      do: ConversationFile.fold(path, [], fn e, acc -> [e.seq | acc] end, opts)
+
+    test "streams every entry in order", %{tmp_dir: root} do
+      path = write!(root, 5)
+      assert {:ok, [4, 3, 2, 1, 0]} = seqs(path)
+    end
+
+    test "through_seq stops without reading past it", %{tmp_dir: root} do
+      path = write!(root, 5)
+      assert {:ok, [2, 1, 0]} = seqs(path, through_seq: 2)
+
+      # content after the stop is never decoded, so a partly written line there is harmless
+      File.write!(path, "{partial", [:append])
+      assert {:ok, [4, 3, 2, 1, 0]} = seqs(path, through_seq: 4)
+      assert {:error, {:malformed, 7}} = seqs(path)
+    end
+
+    test "errors are tagged", %{tmp_dir: root} do
+      assert {:error, :missing} = seqs(Path.join(root, "nope.jsonl"))
+      assert {:error, {:unreadable, _}} = seqs(root)
+
+      v2 = Path.join(root, "v2.jsonl")
+
+      File.write!(
+        v2,
+        Jason.encode!(%{"format" => "speckit.conversation", "version" => 2}) <> "\n"
+      )
+
+      assert {:error, {:unsupported_version, 2}} = seqs(v2)
+
+      bad = write!(Path.join(root, "x") |> tap(&File.mkdir_p!/1), 3)
+      File.write!(bad, "{not json\n", [:append])
+      assert {:error, {:malformed, 5}} = seqs(bad)
+      assert {:ok, [2, 1, 0]} = seqs(bad, through_seq: 2)
+    end
+  end
 end
