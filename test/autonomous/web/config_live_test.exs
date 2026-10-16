@@ -148,6 +148,71 @@ defmodule Autonomous.Web.ConfigLiveTest do
     refute html =~ "data-agent-root-warning"
   end
 
+  # ---- 044: target pack row ------------------------------------------------
+
+  defp serve_target(marker_json) do
+    repo = Path.join(System.tmp_dir!(), "cfg_pack_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(Path.join(repo, ".specify/memory"))
+    File.write!(Path.join(repo, ".specify/memory/constitution.md"), "# Real\n")
+    git = fn args -> {_, 0} = System.cmd("git", ["-C", repo | args], stderr_to_stdout: true) end
+
+    if marker_json do
+      File.mkdir_p!(Path.join(repo, ".claude"))
+      File.write!(Path.join(repo, ".claude/autonomous-pack.json"), marker_json)
+    end
+
+    git.(["init", "-q", "-b", "main"])
+    git.(["config", "user.email", "t@e.com"])
+    git.(["config", "user.name", "T"])
+    git.(["add", "-A"])
+    git.(["commit", "-q", "-m", "base"])
+
+    prior = Application.get_env(:autonomous, :repo)
+    Application.put_env(:autonomous, :repo, repo)
+
+    on_exit(fn ->
+      restore(:repo, prior)
+      File.rm_rf(repo)
+    end)
+  end
+
+  test "target pack: no committed pack shows supplied by the orchestrator", %{conn: conn} do
+    serve_target(nil)
+    {:ok, view, _html} = live(conn, "/config")
+    html = render_async(view, 3_000)
+
+    assert has_element?(view, ~s([data-pack-source="supplied"]))
+    assert html =~ "target pack"
+    assert html =~ "supplied by the orchestrator — contract 6"
+  end
+
+  test "target pack: a committed current pack shows committed with its contract", %{conn: conn} do
+    serve_target(~s({"contract": 6}))
+    {:ok, view, _html} = live(conn, "/config")
+    html = render_async(view, 3_000)
+
+    assert has_element?(view, ~s([data-pack-source="committed"]))
+    assert html =~ "committed in the target — contract 6"
+  end
+
+  test "target pack: an outdated committed pack renders the refusal text", %{conn: conn} do
+    serve_target(~s({"contract": 5}))
+    {:ok, view, _html} = live(conn, "/config")
+    html = render_async(view, 3_000)
+
+    assert has_element?(view, ~s([data-pack-source="refused"] .form-refusal))
+    assert html =~ ".claude/autonomous-pack.json"
+    assert html =~ "git rm --cached"
+    refute html =~ "{:pack_outdated"
+  end
+
+  test "target pack: shows checking… until the check resolves", %{conn: conn} do
+    serve_target(nil)
+    {:ok, _view, html} = live(conn, "/config")
+    # the disconnected (static) render never has the answer yet
+    assert html =~ "checking…" or html =~ "supplied by the orchestrator"
+  end
+
   # ---- 033 US5: dirty tracking, sticky bar ---------------------------------
 
   test "form is clean on mount: data-dirty absent and no unsaved count", %{conn: conn} do

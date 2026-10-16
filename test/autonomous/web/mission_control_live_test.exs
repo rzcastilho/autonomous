@@ -1148,6 +1148,7 @@ defmodule Autonomous.Web.MissionControlLiveTest do
     root = repo <> "_wt"
     File.mkdir_p!(repo)
     {:ok, _} = TargetPack.install(repo)
+    File.rm!(Path.join(repo, ".claude/settings.local.json"))
     File.write!(Path.join(repo, ".specify/memory/constitution.md"), "# Real\n\n1. cents.\n")
     git = fn args -> {_, 0} = System.cmd("git", ["-C", repo | args], stderr_to_stdout: true) end
     remote = repo <> "_remote.git"
@@ -1159,7 +1160,7 @@ defmodule Autonomous.Web.MissionControlLiveTest do
     git.(["config", "user.name", "T"])
 
     # 039: a committed pack without the contract-6 marker lags.
-    File.rm!(Path.join(repo, ".claude/autonomous-pack.json"))
+    File.write!(Path.join(repo, ".claude/autonomous-pack.json"), ~s({"contract": 5}))
     git.(["add", "-A"])
     git.(["commit", "-q", "-m", "pack lags"])
 

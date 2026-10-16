@@ -22,7 +22,7 @@ defmodule Autonomous.Web.ConfigLive do
 
   use Autonomous.Web, :live_view
 
-  alias Autonomous.Web.{AgentRootView, ConfigDiff, VolumesView}
+  alias Autonomous.Web.{AgentRootView, ConfigDiff, PackView, VolumesView}
 
   alias Autonomous.{
     AgentRoot,
@@ -31,6 +31,7 @@ defmodule Autonomous.Web.ConfigLive do
     ConsoleProjection,
     LiveConfig,
     Pipeline,
+    TargetPack,
     VolumeUsage
   }
 
@@ -60,6 +61,14 @@ defmodule Autonomous.Web.ConfigLive do
   end
 
   @impl true
+  def handle_async(:pack_source, {:ok, result}, socket) do
+    {:noreply, assign(socket, pack: PackView.state(result))}
+  end
+
+  def handle_async(:pack_source, {:exit, _reason}, socket) do
+    {:noreply, assign(socket, pack: {:refused, "the pack check crashed — reload to retry"})}
+  end
+
   def handle_async({:volume_usage, name}, {:ok, usage}, socket) do
     {:noreply, update(socket, :volume_usage, &Map.put(&1, name, usage))}
   end
@@ -82,6 +91,20 @@ defmodule Autonomous.Web.ConfigLive do
       agent_root: AgentRootView.state(AgentRoot.advertised?())
     )
     |> put_edited(applied)
+    |> load_pack()
+  end
+
+  # 044: the pack source reads the target's committed tree through git, so it is
+  # computed off the LiveView process; `:loading` renders `checking…` until then.
+  defp load_pack(socket) do
+    socket = assign(socket, pack: :loading)
+
+    if connected?(socket) do
+      repo = Config.repo()
+      start_async(socket, :pack_source, fn -> TargetPack.source(repo) end)
+    else
+      socket
+    end
   end
 
   defp applied_fields do
@@ -130,6 +153,9 @@ defmodule Autonomous.Web.ConfigLive do
         {:noreply, assign(socket, errors: errors)}
     end
   end
+
+  defp pack_source_name(:loading), do: "loading"
+  defp pack_source_name(state), do: PackView.source_name(state)
 
   defp edited_from(params, prior) do
     Map.new(prior, fn {field, old} -> {field, params[field] || old} end)
@@ -256,6 +282,19 @@ defmodule Autonomous.Web.ConfigLive do
               <dt :if={@agent_root != :hidden}>agent root</dt>
               <dd :if={@agent_root != :hidden} class="config-instance-id" data-agent-root>
                 {AgentRootView.summary()}
+              </dd>
+              <dt>target pack</dt>
+              <dd
+                class="config-instance-id"
+                data-pack-source={pack_source_name(@pack)}
+              >
+                <.form_refusal :if={match?({:refused, _}, @pack)} label="target pack">
+                  {PackView.summary(@pack)}
+                </.form_refusal>
+                <span :if={@pack == :loading}>checking…</span>
+                <span :if={@pack != :loading and not match?({:refused, _}, @pack)}>
+                  {PackView.summary(@pack)}
+                </span>
               </dd>
             </dl>
           </.record_block>

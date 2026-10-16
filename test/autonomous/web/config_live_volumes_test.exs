@@ -51,7 +51,7 @@ defmodule Autonomous.Web.ConfigLiveVolumesTest do
     assert render(view) =~ "as applied at start"
     assert render(view) =~ "BUILD_DIR=#{dir}/b"
 
-    html = render_async(view)
+    html = render_async(view, 3_000)
     assert html =~ ~s(data-volume-usage="known")
     assert html =~ ~s(data-volume-usage="unknown")
     assert html =~ "unknown (not mounted)"
@@ -75,10 +75,10 @@ defmodule Autonomous.Web.ConfigLiveVolumesTest do
   test "reload re-measures", %{conn: conn, tmp_dir: dir} do
     apply_volumes([{"cache", dir}])
     {:ok, view, _} = live(conn, "/config")
-    assert render_async(view) =~ ~s(data-volume-usage="known")
+    assert render_async(view, 3_000) =~ ~s(data-volume-usage="known")
 
     {:ok, view2, html2} = live(conn, "/config")
     assert html2 =~ ~s(data-volume-usage="measuring")
-    assert render_async(view2) =~ ~s(data-volume-usage="known")
+    assert render_async(view2, 3_000) =~ ~s(data-volume-usage="known")
   end
 end

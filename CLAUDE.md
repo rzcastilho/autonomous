@@ -368,20 +368,38 @@ disallowed; the launch env carries shell timeouts (+ agent-root markers when
 advertised) and no `AUTONOMOUS_ORCHESTRATED`/`AUTONOMOUS_CONTAINMENT_PROFILE`.
 The container (`scripts/autonomous`, `docs/container.md`) is the boundary;
 a start outside it logs `RuntimeNotice.container_warning/1` and proceeds.
-The committed **target-repo pack** (`priv/target_pack/.claude/`) is contract
-6: marker `.claude/autonomous-pack.json` `{"contract": 6}`, `settings.json`
-with no `hooks` key and no `permissions.deny`. `TargetPack.install/2` writes
-the marker, drops a stale scope-guard hook registration and file, never
-clobbers the constitution; `TargetPack.verify/2` (no `:profile` option) runs
-on every run, resume, continue and `run_spec/2` and, besides the template
-constitution / uncommitted checks, reads the committed tree and refuses an
-older pack with `{:pack_outdated, path, hint}` — reinstall, commit in the
-target, retry. `budget_usd`/`containment_profile` (start/continue options, app
+The **target-repo pack** (`priv/target_pack/.claude/`) is contract
+6: marker `.claude/autonomous-pack.json` `{"contract": 6}`, settings with no
+`hooks` key and no `permissions.deny`. Since 044 the orchestrator supplies it
+(below); a target may still commit one. `TargetPack.verify/2` (no `:profile`
+option) runs on every run, resume, continue and `run_spec/2`; it no longer
+requires the pack files, but besides the template constitution / uncommitted
+checks it reads the committed tree and refuses a committed pack older than
+contract 6 with `{:pack_outdated, path, hint}` (both remedies named). `budget_usd`/`containment_profile` (start/continue options, app
 env, `AUTONOMOUS_BUDGET_USD`/`AUTONOMOUS_CONTAINMENT_PROFILE`, `LiveConfig`)
 are refused naming the key. Pre-039 records (settings with those keys,
 `{:needs_human, :breaker}`, clarify `:breaker` rounds, `{:untrusted_workspace,
 …}`) still load and render; nothing reinstates the old behaviour.
 Constitution 7.0.0. See `docs/enforcement.md`, `specs/039-remove-budget-strict-profile/`.
+
+## Orchestrator-owned pack (feature 044)
+
+A target repo needs no committed orchestrator file. `TargetPack.supply/1` runs from
+`Worktree.create/2` (after the scaffold check; option `:supply_pack`, default true) and
+`Worktree.restore/1` (after `reset`/`clean`), never on the checkout: it (1) inspects the
+worktree's **tracked** pack files (outdated committed pack → `{:pack_outdated, …}`, tracked
+`settings.local.json` → `{:pack_local_tracked, …}`, non-object `settings.json` →
+`{:invalid_settings, …}`), (2) appends a marked block to the target's common-dir
+`info/exclude` (idempotent, never reorders operator lines), (3) writes
+`.claude/settings.local.json` = `TargetPack.local_settings/2` (pack settings minus any `env`
+key the tracked `settings.json` sets, so the operator wins) and the marker only if absent/not
+current. It never writes, merges or deletes a tracked file; failure at create tears the
+worktree down and returns `{:pack_supply, reason}` (rendered by `Report.format_reason/1`).
+`Worktree.@scaffold_files` is gone (scaffold = `.specify`, `.claude/skills`).
+`TargetPack.source/1` → `:supplied | :committed` feeds `Web.PackView` and the Configuration
+"target pack" row (`ConfigLive`, loaded in a `Task`). `install/2` is optional/manual and never
+writes `settings.json`. Contract stays 6; no store change. Constitution 7.2.0. See
+`docs/enforcement.md`, `docs/runbook.md`, `specs/044-orchestrator-owned-pack/`.
 
 **Control plane (Phase 4).** `Autonomous.run/1` (facade) loads the
 backlog and starts a per-run `Coordinator`; `status/0` reports it. The

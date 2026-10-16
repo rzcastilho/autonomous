@@ -307,4 +307,30 @@ defmodule Autonomous.ReportTest do
                "in remediation attempt 2 —"
     end
   end
+
+  describe "format_reason/1 (044 target pack)" do
+    test "pack_local_tracked names the file and the hint" do
+      assert Report.format_reason({:pack_local_tracked, ".claude/settings.local.json", "stop it"}) ==
+               ".claude/settings.local.json is tracked: stop it"
+    end
+
+    test "invalid_settings says what to do" do
+      assert Report.format_reason({:invalid_settings, ".claude/settings.json"}) ==
+               ".claude/settings.json is not a JSON object — fix or remove it, commit, and re-run"
+    end
+
+    test "pack_supply wraps the inner refusal" do
+      reason = {:pack_supply, {:invalid_settings, ".claude/settings.json"}}
+
+      assert Report.format_reason(reason) ==
+               "could not supply the target pack: " <>
+                 Report.format_reason({:invalid_settings, ".claude/settings.json"})
+    end
+
+    test "pack_outdated renders readably, with no raw term" do
+      out = Report.format_reason({:pack_outdated, ".claude/autonomous-pack.json", "do x"})
+      assert out == ".claude/autonomous-pack.json: do x"
+      refute out =~ "{:"
+    end
+  end
 end

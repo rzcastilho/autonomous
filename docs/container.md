@@ -70,7 +70,7 @@ never reach the host.
 The `claude` CLI ignores a repo's committed `permissions.allow` /
 `permissions.additionalDirectories` until the workspace is *trusted*
 (`projects["<path>"].hasTrustDialogAccepted` in `~/.claude.json`). A fresh container has
-no such record, so the committed target pack was silently dropped. The entrypoint now runs
+no such record, so the target pack (supplied into each worktree, or committed) was silently dropped. The entrypoint now runs
 a `trust_workspaces` step (also `container-entrypoint.sh trust-config`) after config
 seeding that merges **exactly two** records into the container-private `~/.claude.json`:
 

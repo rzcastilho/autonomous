@@ -9,13 +9,15 @@ defmodule Autonomous.Worktree do
   the base repo, which is the correct behavior. Running `specify init --force`
   would clobber `constitution.md`.
 
-  `create/2` asserts that the committed scaffold (`.specify/`,
-  `.claude/settings.json`, `.claude/skills/`) traveled into the worktree; a
-  missing scaffold aborts and removes the half-made worktree rather than running
-  a feature in an unguarded tree.
+  `create/2` asserts that the committed scaffold (`.specify/`, `.claude/skills/`)
+  traveled into the worktree; a missing scaffold aborts and removes the
+  half-made worktree rather than running a feature in an unguarded tree. It then
+  supplies the orchestrator pack (`TargetPack.supply/1`, feature 044) — untracked,
+  so it never reaches a commit, the squash or the PR; a supply failure tears the
+  worktree down the same way. `restore/1` re-supplies after its `clean`.
   """
 
-  alias Autonomous.{Config, Feature}
+  alias Autonomous.{Config, Feature, TargetPack}
 
   @enforce_keys [:path, :branch, :repo, :feature_id]
   defstruct [:path, :branch, :repo, :feature_id]
@@ -28,7 +30,6 @@ defmodule Autonomous.Worktree do
         }
 
   @scaffold_dirs [".specify", ".claude/skills"]
-  @scaffold_files [".claude/settings.json"]
 
   @doc """
   Create a worktree for `feature`.
@@ -37,8 +38,10 @@ defmodule Autonomous.Worktree do
     * `:repo` — base repo path (default `Config.repo/0`).
     * `:worktree_root` — root for worktrees (default `Config.worktree_root/0`).
     * `:base` — git ref to branch from (default `"HEAD"`).
-    * `:require_scaffold` — assert the committed `.specify`/`.claude` scaffold is
-      present in the worktree (default `true`).
+    * `:require_scaffold` — assert the committed `.specify`/`.claude/skills`
+      scaffold is present in the worktree (default `true`).
+    * `:supply_pack` — supply the orchestrator pack into the worktree (default
+      `true`; `false` only for unit tests of git plumbing).
   """
   @spec create(Feature.t(), keyword()) :: {:ok, t()} | {:error, term()}
   def create(%Feature{} = feature, opts \\ []) do
@@ -48,7 +51,8 @@ defmodule Autonomous.Worktree do
 
     with :ok <- ensure_root(root),
          :ok <- git_worktree_add(repo, branch, path, base),
-         :ok <- maybe_assert_scaffold(wt, Keyword.get(opts, :require_scaffold, true)) do
+         :ok <- maybe_assert_scaffold(wt, Keyword.get(opts, :require_scaffold, true)),
+         :ok <- maybe_supply_pack(wt, Keyword.get(opts, :supply_pack, true), :teardown) do
       {:ok, wt}
     end
   end
@@ -181,15 +185,17 @@ defmodule Autonomous.Worktree do
   Discard any uncommitted output before a resumed phase re-runs (FR-003):
   `git reset --hard HEAD` then `git clean -fd`, returning the worktree to the
   last phase-boundary commit. `clean -fd` respects `.gitignore`, so
-  `.speckit_logs/` transcripts (the audit trail) survive.
+  `.speckit_logs/` transcripts (the audit trail) survive — and so do the
+  excluded pack files. The pack is then re-supplied (044), which also covers a
+  worktree that predates the feature and never had it.
 
   See `specs/009-crash-recovery/contracts/worktree-squash-restore.md`.
   """
   @spec restore(t()) :: :ok | {:error, term()}
-  def restore(%__MODULE__{path: path}) do
+  def restore(%__MODULE__{path: path} = wt) do
     with {:ok, _} <- git(path, ["reset", "--hard", "HEAD"]),
          {:ok, _} <- git(path, ["clean", "-fd"]) do
-      :ok
+      maybe_supply_pack(wt, true, :keep)
     end
   end
 
@@ -351,12 +357,25 @@ defmodule Autonomous.Worktree do
     match?({:ok, _}, git(repo, ["rev-parse", "--verify", "--quiet", "refs/heads/#{branch}"]))
   end
 
+  defp maybe_supply_pack(_wt, false, _on_error), do: :ok
+
+  defp maybe_supply_pack(%__MODULE__{path: path} = wt, true, on_error) do
+    case TargetPack.supply(path) do
+      {:ok, _summary} ->
+        :ok
+
+      {:error, reason} ->
+        # `create/2` leaves nothing half-made; `restore/1` keeps the worktree for the caller.
+        if on_error == :teardown, do: _ = remove(wt)
+        {:error, {:pack_supply, reason}}
+    end
+  end
+
   defp maybe_assert_scaffold(_wt, false), do: :ok
 
   defp maybe_assert_scaffold(%__MODULE__{path: path} = wt, true) do
     missing =
-      Enum.reject(@scaffold_dirs, &File.dir?(Path.join(path, &1))) ++
-        Enum.reject(@scaffold_files, &File.regular?(Path.join(path, &1)))
+      Enum.reject(@scaffold_dirs, &File.dir?(Path.join(path, &1)))
 
     case missing do
       [] ->

@@ -84,7 +84,7 @@ defmodule Autonomous.WorktreeTest do
     assert wt.feature_id == "001"
     assert File.dir?(wt.path)
     assert File.dir?(Path.join(wt.path, ".specify"))
-    assert File.regular?(Path.join(wt.path, ".claude/settings.json"))
+    assert File.dir?(Path.join(wt.path, ".claude/skills"))
 
     {out, 0} = System.cmd("git", ["-C", repo, "branch", "--list", "feature/001-core-ledger"])
     assert out =~ "feature/001-core-ledger"
@@ -96,7 +96,7 @@ defmodule Autonomous.WorktreeTest do
 
     assert {:error, {:missing_scaffold, missing}} = Worktree.create(feature(), opts)
     assert ".specify" in missing
-    assert ".claude/settings.json" in missing
+    assert ".claude/skills" in missing
     # half-made worktree was removed
     refute File.dir?(Path.join(opts[:worktree_root], "001-core-ledger"))
   end
@@ -536,5 +536,129 @@ defmodule Autonomous.WorktreeTest do
     # The human's commit is still the remote tip.
     {after_ref, 0} = System.cmd("git", ["-C", remote_dir, "rev-parse", wt.branch])
     assert String.trim(after_ref) == String.trim(human_ref)
+  end
+
+  # ---- 044: the orchestrator-supplied pack ---------------------------------
+
+  describe "pack supply (044)" do
+    @marker ".claude/autonomous-pack.json"
+    @local ".claude/settings.local.json"
+
+    defp porcelain(dir) do
+      {out, 0} = System.cmd("git", ["-C", dir, "status", "--porcelain"], stderr_to_stdout: true)
+      out
+    end
+
+    defp commit_in(repo, msg) do
+      git!(repo, ["add", "-A"])
+      git!(repo, ["commit", "-q", "-m", msg])
+    end
+
+    test "G2/G10: create/2 supplies both files, untracked, and never writes the checkout" do
+      repo = base_repo()
+      assert {:ok, wt} = Worktree.create(feature(), with_root(repo))
+
+      assert File.regular?(Path.join(wt.path, @marker))
+      assert File.regular?(Path.join(wt.path, @local))
+      assert porcelain(wt.path) == ""
+      assert porcelain(repo) == ""
+      refute File.exists?(Path.join(repo, @marker))
+      refute File.exists?(Path.join(repo, @local))
+    end
+
+    test "G3/FR-014: the pack never reaches a commit, the squash or the diff" do
+      repo = base_repo()
+      {:ok, wt} = Worktree.create(feature(), with_root(repo))
+      {fork, 0} = System.cmd("git", ["-C", repo, "rev-parse", "HEAD"])
+      fork = String.trim(fork)
+
+      File.write!(Path.join(wt.path, "feature.txt"), "work\n")
+      assert :ok = Worktree.commit(wt, "checkpoint")
+      assert :ok = Worktree.squash(wt, fork, "squashed")
+
+      {names, 0} = System.cmd("git", ["-C", repo, "diff", "--name-only", "#{fork}..#{wt.branch}"])
+      assert String.split(names, "\n", trim: true) == ["feature.txt"]
+
+      {msg, 0} = System.cmd("git", ["-C", repo, "log", "-1", "--format=%B", wt.branch])
+      refute msg =~ "autonomous-pack"
+      refute msg =~ "settings.local"
+    end
+
+    test "G4: a committed current pack is left byte-identical; the operator's env key wins" do
+      repo = base_repo()
+      File.write!(Path.join(repo, @marker), ~s({"contract": 6}))
+
+      File.write!(
+        Path.join(repo, ".claude/settings.json"),
+        ~s({"env": {"BASH_DEFAULT_TIMEOUT_MS": "60000"}})
+      )
+
+      commit_in(repo, "committed pack")
+
+      assert {:ok, wt} = Worktree.create(feature(), with_root(repo))
+
+      assert File.read!(Path.join(wt.path, ".claude/settings.json")) ==
+               ~s({"env": {"BASH_DEFAULT_TIMEOUT_MS": "60000"}})
+
+      assert porcelain(wt.path) == ""
+      {diff, 0} = System.cmd("git", ["-C", wt.path, "diff"])
+      assert diff == ""
+
+      env = Jason.decode!(File.read!(Path.join(wt.path, @local)))["env"]
+      refute Map.has_key?(env, "BASH_DEFAULT_TIMEOUT_MS")
+    end
+
+    test "create/2 with an outdated committed pack fails and leaves no worktree" do
+      repo = base_repo()
+      File.write!(Path.join(repo, @marker), ~s({"contract": 5}))
+      commit_in(repo, "old pack")
+      opts = with_root(repo)
+
+      assert {:error, {:pack_supply, {:pack_outdated, @marker, _hint}}} =
+               Worktree.create(feature(), opts)
+
+      refute File.dir?(Path.join(opts[:worktree_root], "001-core-ledger"))
+    end
+
+    test "supply_pack: false skips supply (git plumbing tests)" do
+      repo = base_repo()
+      assert {:ok, wt} = Worktree.create(feature(), with_root(repo) ++ [supply_pack: false])
+      refute File.exists?(Path.join(wt.path, @marker))
+    end
+
+    test "G8: restore/1 supplies a pre-044 worktree that has neither file, once" do
+      repo = base_repo()
+      {:ok, wt} = Worktree.create(feature(), with_root(repo) ++ [supply_pack: false])
+      refute File.exists?(Path.join(wt.path, @local))
+
+      assert :ok = Worktree.restore(wt)
+      assert File.regular?(Path.join(wt.path, @marker))
+      assert File.regular?(Path.join(wt.path, @local))
+      assert porcelain(wt.path) == ""
+
+      assert :ok = Worktree.restore(wt)
+      exclude = File.read!(Path.join(repo, ".git/info/exclude"))
+      assert length(Regex.scan(~r/feature 044/, exclude)) == 1
+    end
+
+    test "G8: restore/1 on a pre-044 worktree with a committed current pack changes nothing tracked" do
+      repo = base_repo()
+      File.write!(Path.join(repo, @marker), ~s({"contract": 6}))
+      commit_in(repo, "committed pack")
+      {:ok, wt} = Worktree.create(feature(), with_root(repo) ++ [supply_pack: false])
+
+      assert :ok = Worktree.restore(wt)
+      assert File.read!(Path.join(wt.path, @marker)) == ~s({"contract": 6})
+      assert File.regular?(Path.join(wt.path, @local))
+      assert porcelain(wt.path) == ""
+    end
+
+    test "restore/1 keeps the supplied files across reset and clean" do
+      repo = base_repo()
+      {:ok, wt} = Worktree.create(feature(), with_root(repo))
+      assert :ok = Worktree.restore(wt)
+      assert File.regular?(Path.join(wt.path, @marker))
+      assert File.regular?(Path.join(wt.path, @local))
+    end
   end
 end

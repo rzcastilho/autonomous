@@ -1,5 +1,23 @@
 <!--
 Sync Impact Report
+Version change: 7.1.0 → 7.2.0
+Bump rationale: MINOR. Feature 044 (orchestrator-owned target pack, research
+  R11). The pack is supplied by the orchestrator into each feature worktree,
+  untracked (marker + `.claude/settings.local.json`, shared `info/exclude`);
+  a committed pack becomes optional but, when present, MUST still meet
+  contract 6. No MUST is removed — the contract-6 guarantee holds for both
+  sources — so not MAJOR.
+Modified principles:
+  - III Container-Bounded Execution: bullets 3–4 reworded (pack source,
+    refusal names both remedies, supplying MUST NOT modify a tracked file,
+    supplied files exist only in feature worktrees).
+Modified sections:
+  - Development Workflow: worktree bullet (scaffold travels; pack supplied).
+Templates requiring updates: none (principle-agnostic).
+  ✅ docs and CLAUDE.md updated by feature 044's own tasks (T035–T038).
+Follow-up TODOs: none.
+
+Prior report (7.1.0):
 Version change: 7.0.0 → 7.1.0
 Bump rationale: MINOR. Feature 040 (live and durable agent conversation view,
   research R13). Technology Stack → Persistence materially expanded: the
@@ -516,12 +534,18 @@ Headless sessions run without a human to approve tool calls. There is exactly
   the supported runtime and stating that sessions run with full access and no
   in-tree deny list — and then proceed. The warning MUST NOT be turned into a
   silent default, and it MUST NOT block;
-- a run MUST NOT start against a committed target-repo pack that does not meet
-  the current pack contract. Preflight fails loudly with reinstall
-  instructions instead of running under rules the pack cannot honour;
+- a run MUST NOT start against a target-repo pack — committed or
+  orchestrator-supplied — that does not meet the current pack contract. The
+  orchestrator supplies the pack into each worktree, untracked; a committed
+  pack is optional and, when present, MUST meet the contract or preflight
+  fails loudly naming both remedies (update the tracked file, or remove it
+  from version control so the orchestrator supplies it). Supplying the pack
+  MUST NOT modify a tracked file;
 - a Claude Code session that a human starts interactively in a target repo is
-  not an orchestrator session. The pack MUST NOT add denials to it; it stays
-  under the human's own Claude Code permission settings and prompts;
+  not an orchestrator session. The supplied pack files exist only in feature
+  worktrees, so such a session never sees them; the pack MUST NOT add denials
+  to it, and it stays under the human's own Claude Code permission settings
+  and prompts;
 - the correctness gates (branch drift, artifact substance, incomplete
   session, analyze, clarify) and the session deadlines are not containment.
   They are unaffected by this principle.
@@ -962,8 +986,9 @@ four permitted keyframes.
   clarify re-run carrying a human's answers from an interactive clarify round
   (Principle V) is the human's resolution, not a retry past them.
 - Each feature runs in its own git worktree on a `feature/NNN-slug` branch, one
-  feature at a time; the committed `.specify/`/`.claude/` scaffold MUST travel
-  into each worktree, and `specify init` MUST NEVER be run inside a worktree.
+  feature at a time; the committed `.specify/` scaffold and the target's own
+  `.claude/` content MUST travel into each worktree, the orchestrator pack is
+  supplied into it, and `specify init` MUST NEVER be run inside a worktree.
 - The implementation plan (`docs/autonomous-implementation-plan.md`) is
   the source of truth for scope, sequencing, and exit criteria.
 
@@ -980,4 +1005,4 @@ deviation already is. Reviews and PRs MUST verify compliance with these
 principles; the constitution and the implementation plan together are the
 runtime guidance for autonomous and human contributors alike.
 
-**Version**: 7.1.0 | **Ratified**: 2026-07-11 | **Last Amended**: 2026-10-10
+**Version**: 7.2.0 | **Ratified**: 2026-07-11 | **Last Amended**: 2026-10-16

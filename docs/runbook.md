@@ -182,24 +182,22 @@ cd /path/to/parent
 specify init my-target --integration claude --script sh --ignore-agent-tools
 cd my-target && git init -q
 
-# From the ORCHESTRATOR repo, lay in the enforcement pack:
-mise exec -- mix run --no-start -e \
-  'Autonomous.TargetPack.install("/path/to/my-target")'
 ```
 
 `specify init` provides `.specify/` (templates + `.specify/scripts/*.sh`) and the
-Spec Kit skills under `.claude/skills/`. `TargetPack.install` adds
-`.claude/settings.json` (it **must allow `Bash`**, because the Spec Kit phase
-scripts run under Bash; no hooks, no `permissions.deny`) and the contract
-marker `.claude/autonomous-pack.json` (`{"contract": 6}`, feature 039). If the
-target already has a `.claude/settings.json`, install merges
-it: the pack's `env` shell timeouts (feature 032) are added only where the
-target has no value of its own, and every other key is replaced by the pack's —
-so an old scope-guard hook entry is dropped, and a leftover
-`.claude/hooks/scope_guard.py` is deleted.
-A `settings.json` that is not a JSON object returns
-`{:error, {:invalid_settings, ".claude/settings.json"}}` and writes nothing —
-fix or remove the file, then re-run.
+Spec Kit skills under `.claude/skills/`. **No orchestrator file is committed**
+(feature 044): the orchestrator supplies the pack into every feature worktree
+itself — `.claude/settings.local.json` (the pack settings: it **must allow
+`Bash`**, because the Spec Kit phase scripts run under Bash; no hooks, no
+`permissions.deny`; the `env` shell timeouts of feature 032) and the contract
+marker `.claude/autonomous-pack.json` (`{"contract": 6}`) — untracked, via a
+marked block in the target's `info/exclude`. If the target has its own
+`.claude/settings.json`, it is left untouched and its `env` keys win over the
+pack's. `TargetPack.install/2` is optional now: it lays the same two files into
+the directory you give it, only useful for sessions you drive yourself in the
+target checkout (it never writes `settings.json`). A tracked `settings.json` that
+is not a JSON object is refused as `{:invalid_settings, ".claude/settings.json"}`
+— fix or remove it, commit, then re-run.
 
 ### 2. Write a real constitution
 
@@ -219,15 +217,15 @@ can't answer will stall `plan`/`clarify` — see "Decide the tech stack" below.*
 ### 4. Commit the target and preflight
 
 ```bash
-cd /path/to/my-target && git add -A && git commit -m "spec kit + enforcement pack"
+cd /path/to/my-target && git add .specify .claude/skills && git commit -m "spec kit"
 ```
 ```elixir
 # preflight must be :ok before a run
 Autonomous.TargetPack.verify("/path/to/my-target")   # => :ok
 ```
 `verify` fails while the template constitution marker is present, if the
-constitution is uncommitted, or if the committed pack is older than contract 6
-(see "Outdated target pack" below). It runs on every `run/1`, `run_spec/2`,
+constitution is uncommitted, or if a *committed* pack is older than contract 6
+(see "Outdated target pack" below). A target with no pack files passes. It runs on every `run/1`, `run_spec/2`,
 `resume/2` and `continue_run/1`.
 
 ### 5. Point the orchestrator at the target + decide the tech stack
@@ -301,38 +299,46 @@ The console's Trigger Run page supplies this from its package picker.
 
 ---
 
-## Outdated target pack (039)
+## Outdated target pack (039, 044)
 
 **Symptom.** `run/1`, `run_spec/2`, `resume/2` or `continue_run/1` refuses to
-start:
+start (the console flashes the same cause):
 
 ```elixir
 iex> Autonomous.run()
 {:error, {:preflight, [{:pack_outdated, ".claude/autonomous-pack.json",
-  "pack is older than contract 6 — run TargetPack.install/2 in the target repo, commit the result, and re-run"}]}}
+  "pack is older than contract 6 — either update the tracked file to contract 6 and commit it, or remove the pack files from version control (`git rm --cached <file>`, commit) so the orchestrator supplies them"}]}}
 ```
 
-**Cause.** The target's **committed** pack predates contract 6: the
-`.claude/autonomous-pack.json` marker is missing or below 6, `settings.json`
+**Cause.** The target **commits** a pack file that does not meet contract 6: the
+`.claude/autonomous-pack.json` marker is below 6 or unreadable, `settings.json`
 still registers the `scope_guard.py` hook or carries a `permissions.deny`, or
-`.claude/hooks/scope_guard.py` is still committed. The path in the tuple names
-the offending file. An uncommitted upgrade does not count — worktrees are built
-from the committed tree.
+`.claude/hooks/scope_guard.py` is still committed. Two sibling refusals:
+`{:pack_local_tracked, ".claude/settings.local.json", hint}` (the orchestrator
+owns that file — it must not be tracked) and `{:invalid_settings, path}` (tracked
+`settings.json` is not a JSON object). The path names the offending file. An
+uncommitted change does not count — worktrees are built from the committed tree.
+A target that commits **no** pack file is never refused for it.
 
-**Fix.**
+**Fix** — either remedy, then commit in the target:
 
-1. From the orchestrator, reinstall the pack into the target:
-   ```elixir
-   Autonomous.TargetPack.install("/path/to/target")
-   ```
-   It writes the contract 6 marker, drops the old hook entry and deny list from
-   `settings.json` (keeping the target's own `env` values), deletes
-   `scope_guard.py`, and never touches the constitution. A second install is a
-   no-op.
-2. Commit the result in the target:
-   `git -C /path/to/target add -A .claude && git -C /path/to/target commit -m "autonomous pack contract 6"`.
-3. Retry the call that was refused. A refused `continue_run/1` left the run
-   `:parked`, unchanged (035) — just call it again.
+1. **Let the orchestrator supply it** (preferred):
+   `git -C /path/to/target rm --cached .claude/autonomous-pack.json` (and the
+   other pack file the refusal names; delete a stale `scope_guard.py`; for a
+   `settings.json` that holds your own settings, drop its scope-guard hook entry
+   and `permissions.deny` instead of untracking it). For `settings.local.json`:
+   `git rm --cached .claude/settings.local.json`.
+2. **Keep it committed**: update the tracked file to contract 6 (marker
+   `{"contract": 6}`, no hook, no deny).
+
+Then retry the call that was refused. A refused `continue_run/1` left the run
+`:parked`, unchanged (035) — just call it again. Runs started before 044 resume
+unchanged: `Worktree.restore/1` supplies the pack into an old worktree, and
+nothing tracked is modified.
+
+**Configuration → target pack.** The Instance panel shows where the pack comes
+from for the served repository: `supplied by the orchestrator — contract 6`,
+`committed in the target — contract N`, or the refusal text above.
 
 ## Single-spec run (no backlog required)
 
