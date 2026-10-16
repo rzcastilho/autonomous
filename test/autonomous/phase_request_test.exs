@@ -56,6 +56,20 @@ defmodule Autonomous.PhaseRequestTest do
     end
   end
 
+  # 044 SC-003/FR-009: PhaseRequest takes no pack input, so a supplied and a
+  # committed pack yield the same session configuration by construction.
+  test "session configuration does not depend on where the pack comes from (044)" do
+    for phase <- @all_phases do
+      r = PhaseRequest.build(feature(), phase)
+      assert r.permission_mode == :bypass_permissions
+      assert r.allowed_tools == @full_tools
+      assert r.disallowed_tools == @headless_excluded
+      env = r.metadata["claude"][:env]
+      assert Map.take(env, Map.keys(@default_timeouts)) == @default_timeouts
+      refute Enum.any?(Map.keys(env), &String.contains?(&1, "PACK"))
+    end
+  end
+
   test "no orchestration/profile markers reach any session's launch env (039)" do
     for phase <- @all_phases, agent_root <- [false, true] do
       env = PhaseRequest.build(feature(), phase, agent_root: agent_root).metadata["claude"][:env]

@@ -290,6 +290,8 @@ defmodule Autonomous.ContinueRunAtomicTest do
       File.mkdir_p!(repo)
       File.mkdir_p!(remote)
       {:ok, _} = TargetPack.install(repo)
+      # 044: a committed pack is the marker alone here; the local settings are never tracked.
+      File.rm!(Path.join(repo, ".claude/settings.local.json"))
       File.write!(Path.join(repo, ".specify/memory/constitution.md"), "# Real\n\n1. cents.\n")
       git!(remote, ["init", "-q", "--bare"])
       git!(repo, ["init", "-q", "-b", "main"])
@@ -323,7 +325,7 @@ defmodule Autonomous.ContinueRunAtomicTest do
       do: {_, 0} = System.cmd("git", ["-C", repo | args], stderr_to_stdout: true)
 
     defp downgrade_pack(repo) do
-      File.rm!(Path.join(repo, ".claude/autonomous-pack.json"))
+      File.write!(Path.join(repo, ".claude/autonomous-pack.json"), ~s({"contract": 5}))
       git!(repo, ["add", "-A"])
       git!(repo, ["commit", "-q", "-m", "pack lags"])
     end
@@ -344,7 +346,7 @@ defmodule Autonomous.ContinueRunAtomicTest do
       assert Process.whereis(@stack_tracker) == nil
 
       # US1-AS3: fix the cause and the same call now proceeds.
-      {:ok, _} = TargetPack.install(repo)
+      File.write!(Path.join(repo, ".claude/autonomous-pack.json"), ~s({"contract": 6}))
       git!(repo, ["add", "-A"])
       git!(repo, ["commit", "-q", "-m", "pack fixed"])
 
@@ -361,6 +363,73 @@ defmodule Autonomous.ContinueRunAtomicTest do
 
       assert {:ok, %{run: %{state: state, stopped_by: nil}}} = Store.run(run_key)
       assert state in [:in_flight, :completed]
+    end
+  end
+
+  # 044 US2-4: the other remedy — remove the pack from version control so the
+  # orchestrator supplies it.
+  describe "committed pack lags, remedy: remove it from version control" do
+    setup do
+      repo = Path.join(System.tmp_dir!(), "continue_044_#{System.unique_integer([:positive])}")
+      root = repo <> "_wt"
+      remote = repo <> "_remote.git"
+      File.mkdir_p!(Path.join(repo, ".claude/skills"))
+      File.mkdir_p!(Path.join(repo, ".specify/memory"))
+      File.mkdir_p!(remote)
+      File.write!(Path.join(repo, ".claude/autonomous-pack.json"), ~s({"contract": 5}))
+      File.write!(Path.join(repo, ".specify/memory/constitution.md"), "# Real\n\n1. cents.\n")
+      git!(remote, ["init", "-q", "--bare"])
+      git!(repo, ["init", "-q", "-b", "main"])
+      git!(repo, ["config", "user.email", "t@e.com"])
+      git!(repo, ["config", "user.name", "T"])
+      git!(repo, ["remote", "add", "origin", remote])
+      git!(repo, ["add", "-A"])
+      git!(repo, ["commit", "-q", "-m", "old pack"])
+
+      prev = for k <- [:repo, :worktree_root], do: {k, Application.get_env(:autonomous, k)}
+      Application.put_env(:autonomous, :repo, repo)
+      Application.put_env(:autonomous, :worktree_root, root)
+
+      on_exit(fn ->
+        for {k, v} <- prev,
+            do:
+              if(v,
+                do: Application.put_env(:autonomous, k, v),
+                else: Application.delete_env(:autonomous, k)
+              )
+
+        File.rm_rf(repo)
+        File.rm_rf(root)
+        File.rm_rf(remote)
+      end)
+
+      {:ok, repo: repo}
+    end
+
+    test "the refusal leaves the run parked; `git rm --cached` then lets it continue", %{
+      repo: repo
+    } do
+      run_key = park({:halted, :critical_finding})
+      before = snapshot(run_key)
+
+      assert {:error, {:preflight, [{:pack_outdated, ".claude/autonomous-pack.json", hint} | _]}} =
+               Autonomous.continue_run(features: features(), owner: self())
+
+      assert hint =~ "git rm --cached"
+      assert_intact(run_key, before)
+
+      git!(repo, ["rm", "-q", "--cached", ".claude/autonomous-pack.json"])
+      git!(repo, ["commit", "-q", "-m", "stop tracking the pack"])
+      me = self()
+
+      assert {:ok, pid} =
+               Autonomous.continue_run(
+                 features: features(),
+                 runner: fake_runner(me, %{"002" => :done}),
+                 owner: me
+               )
+
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
     end
   end
 

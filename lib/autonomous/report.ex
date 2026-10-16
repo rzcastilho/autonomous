@@ -162,6 +162,16 @@ defmodule Autonomous.Report do
   def format_reason({:preflight, problems}) when is_list(problems),
     do: "preflight failed: " <> Enum.map_join(problems, "; ", &format_reason/1)
 
+  # 044: target-pack refusals (preflight and supply).
+  def format_reason({:pack_outdated, rel, hint}), do: "#{rel}: #{hint}"
+  def format_reason({:pack_local_tracked, rel, hint}), do: "#{rel} is tracked: #{hint}"
+
+  def format_reason({:invalid_settings, rel}),
+    do: "#{rel} is not a JSON object — fix or remove it, commit, and re-run"
+
+  def format_reason({:pack_supply, reason}),
+    do: "could not supply the target pack: " <> format_reason(reason)
+
   # 040: why a session's conversation was not (fully) captured. Capture never
   # changes a session's outcome; these only explain the saved record.
   def format_reason({:open_failed, {:bad_identity, field}}),

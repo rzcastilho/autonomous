@@ -2163,8 +2163,11 @@ defmodule Autonomous do
 
         case result do
           {:ok, wt} ->
-            _ = Worktree.restore(wt)
-            {:ok, wt}
+            # A git failure here stays lenient (as before); a pack refusal (044) must surface.
+            case Worktree.restore(wt) do
+              {:error, {:pack_supply, _} = reason} -> {:error, {:worktree, reason}}
+              _ -> {:ok, wt}
+            end
 
           {:error, reason} ->
             {:error, {:worktree, reason}}

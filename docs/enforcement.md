@@ -94,71 +94,95 @@ enabling `--agent-root` is an explicit operator decision per image.
 
 ## Target pack (contract 6)
 
-The pack lives in `priv/target_pack/.claude/` and travels into every worktree
-because it is committed in the target's base repo:
+Feature 044: **the orchestrator owns the pack.** A target does not need to commit
+any orchestrator file. `TargetPack.supply/1` writes the pack into every feature
+worktree (at `Worktree.create/2` and again at `Worktree.restore/1`), untracked:
 
-| Path | Contract 6 |
-|---|---|
-| `settings.json` | `env` (032 shell timeouts), `permissions.defaultMode`, `permissions.allow`. No `hooks`, no `permissions.deny`. |
-| `autonomous-pack.json` | `{"contract": 6}` — the contract marker |
-| `skills/` | Spec Kit skills (unchanged) |
+| Path in the worktree | Source (`priv/target_pack/.claude/`) | Contract 6 |
+|---|---|---|
+| `.claude/settings.local.json` | `settings.json`, minus any `env` key the target's tracked `settings.json` sets | `env` (032 shell timeouts), `permissions.defaultMode`, `permissions.allow`. No `hooks`, no `permissions.deny`. |
+| `.claude/autonomous-pack.json` | `autonomous-pack.json` | `{"contract": 6}` — the contract marker (not written if the target tracks one) |
+| `.claude/skills/` | — (the target's Spec Kit skills, committed) | unchanged |
+
+Both supplied files stay out of git through a marked block in the target's
+common-dir `info/exclude` (shared by the checkout and every linked worktree), so
+they never reach a commit, the squash, the PR diff or the checkout itself. Claude
+Code ranks local settings above project settings, so an `env` key the target sets
+in its own `.claude/settings.json` wins: the local file simply does not restate it.
+Supplying never writes, merges or deletes a tracked file. Session configuration
+(`PhaseRequest`) is identical whichever way the pack arrives.
 
 ### What `TargetPack.verify/2` checks
 
 `verify/2` runs on **every** run, resume, continue and `run_spec/2` (there is
 no `:profile` option). Reading the committed tree, it requires:
 
-1. `.claude/settings.json` and `.claude/skills/` present;
+1. `.claude/skills/` present;
 2. a real constitution — the template marker gone, non-empty, and committed;
-3. the pack contract (`check_pack_contract/2`):
-   - `.claude/autonomous-pack.json` exists, decodes, and `contract >= 6`;
-   - `.claude/settings.json` registers no `scope_guard.py` hook and carries no
-     `permissions.deny`;
-   - `.claude/hooks/scope_guard.py` is not committed.
+3. the pack contract (`check_pack_contract/2`) for whatever pack the target
+   commits — **absent files are fine**; present ones must meet it:
+   - `.claude/autonomous-pack.json` decodes with `contract >= 6`;
+   - `.claude/settings.json` is a JSON object that registers no `scope_guard.py`
+     hook and carries no `permissions.deny`;
+   - `.claude/hooks/scope_guard.py` is not committed;
+   - `.claude/settings.local.json` is not committed (the orchestrator owns it).
 
-A pack-contract failure is `{:pack_outdated, path, hint}`, `path` naming the
-offending file and the hint reading "pack is older than contract 6 — run
-TargetPack.install/2 in the target repo, commit the result, and re-run".
-Because worktrees come from the committed tree, no session can ever meet an old
-hook.
+A failure is `{:pack_outdated, path, hint}` (older than contract 6),
+`{:invalid_settings, path}` (tracked `settings.json` not a JSON object) or
+`{:pack_local_tracked, path, hint}`. `supply/1` applies the same rules to the
+worktree's own tracked tree, so no session can ever meet an old hook.
 
-### Installing the pack in a target repo
+### Three target states
+
+| Target `HEAD` | Preflight | In the worktree |
+|---|---|---|
+| no pack files | passes | pack supplied, untracked |
+| committed pack at contract 6 | passes | tracked files used as-is; local file adds the pack settings (tracked `env` keys win) |
+| committed pack older than contract 6, a tracked `settings.local.json`, or an unparseable `settings.json` | refused before any store write or session | — |
+| non-pack tracked `settings.json` (no marker, no deny/hook) | passes | left untouched; local file layered on top |
+
+Configuration shows a **target pack** row: `supplied by the orchestrator`,
+`committed in the target`, or the refusal text.
+
+### Setting up a target repo
 
 ```
 # 1. Bootstrap Spec Kit (creates .specify/ and .claude/skills/)
 specify init . --integration claude --integration-options="--skills"
 
-# 2. Install the orchestrator pack (settings.json + autonomous-pack.json;
-#    installs a template constitution only if none exists — never clobbers
-#    yours) from iex against the repo path:
-Autonomous.TargetPack.install("/path/to/target/repo")
-#    (returns {:error, {:invalid_settings, _}} if the target's settings.json
-#    is not valid JSON; an existing settings.json `env` is kept, every other
-#    key is the pack's)
+# 2. Write a real constitution with checkable MUSTs, then commit
+#    (the shipped template is AUTONOMOUS_TEMPLATE-marked and is refused)
+git add .specify .claude/skills && git commit -m "spec kit"
 
-# 3. Write a real constitution with checkable MUSTs, then commit everything
-git add .specify .claude && git commit -m "spec kit + autonomous pack"
-
-# 4. Preflight (fails while the template constitution marker is present, if
-#    the constitution is uncommitted / scaffold missing, or if the committed
-#    pack is older than contract 6)
+# 3. Preflight (fails while the template constitution marker is present, if
+#    the constitution is uncommitted / skills missing, or if a committed pack
+#    is older than contract 6)
 Autonomous.TargetPack.verify("/path/to/target/repo")  # => :ok
 ```
 
-### Reinstalling an outdated pack
+There is no install step: the orchestrator supplies the pack. `TargetPack.install/2`
+remains as an **optional** manual path — it writes `settings.local.json` and the
+marker into the directory you give it (never `settings.json`, never clobbering a
+constitution) — useful only for sessions you drive yourself in the target checkout.
+
+### Fixing a refused pack
 
 A target last installed before 039 (pack contracts 2–5) fails preflight with
-`{:pack_outdated, path, hint}`. To fix it:
+`{:pack_outdated, path, hint}`. Either remedy works:
 
-1. In iex: `Autonomous.TargetPack.install("/path/to/target/repo")`. It writes
-   `autonomous-pack.json`, merges `settings.json` (pack wins every key but
-   `env`, so the old `hooks.PreToolUse` scope-guard entry is dropped), deletes
-   `.claude/hooks/scope_guard.py` (and the empty `hooks/` directory), and
-   leaves the constitution alone. It is idempotent.
-2. Commit the result in the target:
-   `git add -A .claude && git commit -m "autonomous pack contract 6"`.
-3. Re-run (`run/1`, `resume/2` or `continue_run/1`); `TargetPack.verify/1`
-   now returns `:ok`.
+1. **Hand the pack to the orchestrator** (preferred): remove the pack files from
+   version control and commit —
+   `git rm --cached .claude/autonomous-pack.json .claude/settings.json` (only the
+   files the refusal names; keep a `settings.json` that holds your own settings but
+   delete its `hooks.PreToolUse` scope-guard entry and any `permissions.deny`),
+   `git rm .claude/hooks/scope_guard.py`, commit.
+2. **Keep it committed**: update the tracked file to contract 6 — marker
+   `{"contract": 6}`, no scope-guard hook, no `permissions.deny`, no
+   `scope_guard.py` — and commit.
+
+A tracked `.claude/settings.local.json` is refused the same way:
+`git rm --cached .claude/settings.local.json`, commit. Then re-run (`run/1`,
+`resume/2` or `continue_run/1`); a refused continue leaves the run parked.
 
 ## Upgrade procedure (reconcile with Spec Kit)
 
@@ -168,11 +192,11 @@ without losing the pack:
 1. **Back up the constitution** — `cp .specify/memory/constitution.md /tmp`.
    **Never** run `specify init --force` (it overwrites the constitution, §4.3).
 2. Run `specify self upgrade` (or re-init **without** `--force`).
-3. **Re-diff `.claude/`**: confirm `settings.json` and `autonomous-pack.json`
-   still exist and were not replaced by Spec Kit's defaults. Re-run
-   `TargetPack.install/2` to restore them if needed (it does not touch the
-   constitution). Commit the result — preflight reads the committed tree and
-   rejects an outdated pack (`{:pack_outdated, path, hint}`).
+3. **Re-diff `.claude/`**: confirm `.claude/skills/` is intact and that Spec Kit
+   did not add a `permissions.deny` or hook to a tracked `settings.json`. The
+   orchestrator pack needs no restoring — it is supplied into each worktree.
+   Commit the result — preflight reads the committed tree and rejects an
+   outdated committed pack (`{:pack_outdated, path, hint}`).
 4. Re-run `TargetPack.verify/1` and diff `constitution.md` against the backup.
 5. `specify self check` to confirm the CLI version, and record the tag in
    `config.exs` (`:speckit_version`).

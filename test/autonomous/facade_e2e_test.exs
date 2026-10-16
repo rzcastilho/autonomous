@@ -144,6 +144,6 @@ defmodule Autonomous.FacadeE2ETest do
     on_exit(fn -> File.rm_rf(bare) end)
 
     assert {:error, {:preflight, problems}} = Autonomous.run(owner: self())
-    assert {:missing, ".claude/settings.json"} in problems
+    assert {:missing, ".claude/skills"} in problems
   end
 end
