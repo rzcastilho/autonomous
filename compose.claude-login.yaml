@@ -15,3 +15,5 @@ services:
       - "${HOME}/.claude.json:/home/autonomous/.claude.host.json:ro"
   console:
     volumes: *login-mounts
+  release:
+    volumes: *login-mounts
