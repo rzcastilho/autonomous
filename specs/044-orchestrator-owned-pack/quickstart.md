@@ -33,7 +33,7 @@ touch .claude/skills/.gitkeep && git add -A && git commit -qm scaffold
 # mise exec -- iex -S mix
 Autonomous.TargetPack.verify(t, check_remote: false)   #=> :ok
 Autonomous.TargetPack.source(t)                        #=> {:ok, %{source: :supplied, contract: 6}}
-f = %Autonomous.Feature{id: "001", number: 1, slug: "demo", group: :backlog}
+f = %Autonomous.Feature{id: "001", number: 1, slug: "demo", path: "001-demo.md", group: :backlog}
 {:ok, wt} = Autonomous.Worktree.create(f, repo: t, worktree_root: Path.join(t, "../wt"))
 ```
 
