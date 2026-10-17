@@ -38,7 +38,7 @@ usage: scripts/autonomous <command> [options]
                                          builds autonomous-release:local; --web/--desktop/--android
                                          add the opt-in testing capabilities (default: none)
   shell --target <repo> [--port <n>]     interactive iex with the console served
-  console --target <repo> [--port <n>]   detached console (mix phx.server)
+  console --target <repo> [--port <n>]   detached console (Phoenix server)
   release --target <repo> [--port <n>]   detached release instance (needs build --release)
   remote  --target <repo>                remote console into a running release
   port  --target <repo>                  print the console address of a running instance
