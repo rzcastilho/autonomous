@@ -361,7 +361,13 @@ case "$cmd" in
     vm_exec iex --sname "$AUTONOMOUS_NODE_NAME" --cookie "$cookie" -S mix
     ;;
   console)
-    vm_exec elixir --sname "$AUTONOMOUS_NODE_NAME" --cookie "$cookie" -S mix phx.server
+    # Same as `mix phx.server`, spelled out so "phx.server" never appears in the
+    # orchestrator's command line: agent sessions share this container and stop
+    # the target's own Phoenix server with `pkill -f phx.server`, which used to
+    # SIGTERM the orchestrator mid-run.
+    vm_exec elixir --sname "$AUTONOMOUS_NODE_NAME" --cookie "$cookie" \
+      -e 'Application.put_env(:phoenix, :serve_endpoints, true, persistent: true)' \
+      -S mix run --no-halt
     ;;
   release)
     # rel/env.sh.eex turns AUTONOMOUS_NODE_NAME / AUTONOMOUS_COOKIE_PATH into

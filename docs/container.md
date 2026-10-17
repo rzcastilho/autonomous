@@ -275,7 +275,9 @@ scripts/autonomous port    --target ../ledgerlite    # console address
 
 `scripts/autonomous console --target <repo> [--port <n>]` starts a detached
 `mix phx.server` (the `console` service) and returns once the console answers; the start
-lines name the loopback address. `scripts/autonomous port --target <repo>` prints the
+lines name the loopback address. The entrypoint spells `phx.server` out as
+`serve_endpoints` + `mix run --no-halt`, so an agent session's `pkill -f phx.server`
+(aimed at the target's own server) cannot match the orchestrator's VM. `scripts/autonomous port --target <repo>` prints the
 address of any running instance (shell, console or release).
 
 - The image binds `0.0.0.0` *inside* the container; Compose publishes it as
