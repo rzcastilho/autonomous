@@ -114,11 +114,7 @@ defmodule Autonomous.Web.ConversationLive do
 
     case Conversation.catch_up(id) do
       {:ok, entries, last_seq, truncated?} ->
-        {rows, ctx} =
-          ConversationRows.rows(
-            entries,
-            ConversationRows.new(all_frames: socket.assigns.all_frames?)
-          )
+        {rows, ctx} = rows_for(socket, entries)
 
         {header, opened_at} = header_for(id)
 
@@ -148,6 +144,17 @@ defmodule Autonomous.Web.ConversationLive do
       :not_live ->
         not_live(socket, id)
     end
+  end
+
+  # The embedded panel (045) shows the header and status footer only, so it
+  # builds no rows; the status fold still sees every entry.
+  defp rows_for(%{assigns: %{embedded?: true, ctx: ctx}}, _entries), do: {[], ctx}
+
+  defp rows_for(socket, entries) do
+    ConversationRows.rows(
+      entries,
+      ConversationRows.new(all_frames: socket.assigns.all_frames?)
+    )
   end
 
   # Stop listening to the session the view is moving away from.
@@ -294,10 +301,7 @@ defmodule Autonomous.Web.ConversationLive do
   @impl true
   def handle_info({:conversation, id, :entry, entry}, %{assigns: %{conversation_id: id}} = socket) do
     if fresh?(entry.seq, socket.assigns.last_seq) do
-      {rows, ctx} = ConversationRows.rows([entry], socket.assigns.ctx)
-
-      socket =
-        Enum.reduce(rows ++ ctx.stale, socket, fn row, acc -> stream_insert(acc, :rows, row) end)
+      {socket, ctx} = insert_rows(socket, entry)
 
       {:noreply,
        assign(socket,
@@ -363,6 +367,15 @@ defmodule Autonomous.Web.ConversationLive do
 
   def handle_info(_other, socket), do: {:noreply, socket}
 
+  defp insert_rows(%{assigns: %{embedded?: true, ctx: ctx}} = socket, _entry), do: {socket, ctx}
+
+  defp insert_rows(socket, entry) do
+    {rows, ctx} = ConversationRows.rows([entry], socket.assigns.ctx)
+
+    {Enum.reduce(rows ++ ctx.stale, socket, fn row, acc -> stream_insert(acc, :rows, row) end),
+     ctx}
+  end
+
   # Move to another session: in place when embedded (a child LiveView cannot
   # patch the page URL), else by patching the URL so a reload keeps the place.
   defp follow_to(%{assigns: %{embedded?: true}} = socket, id), do: attach(socket, id)
@@ -385,6 +398,22 @@ defmodule Autonomous.Web.ConversationLive do
         to: live_path(nil, socket.assigns.follow?, socket.assigns.all_frames?),
         replace: true
       )
+
+  defp header_title(header, id, status) do
+    lead =
+      if header do
+        [header.run_id, header.feature_id, header.phase, header.ordinal]
+        |> Kernel.++(if header.chunk, do: ["chunk"], else: [])
+        |> Kernel.++(if header.attempt, do: ["attempt #{header.attempt}"], else: [])
+      else
+        []
+      end
+
+    tail =
+      [id, status.session_id, status.model_alias, status.model_resolved] |> Enum.reject(&is_nil/1)
+
+    Enum.join(lead ++ tail, " · ")
+  end
 
   defp live_path(id, follow?, all_frames?) do
     base = if id, do: "/live/" <> id, else: "/live"
@@ -421,7 +450,7 @@ defmodule Autonomous.Web.ConversationLive do
             <span class="transcript-live" data-live={to_string(@live?)}></span>
             {if @live?, do: "live session", else: "session ended"}
           </span>
-          <label class="pr-toggle conv-follow">
+          <label :if={not @embedded?} class="pr-toggle conv-follow">
             <input
               type="checkbox"
               class="switch-input"
@@ -433,11 +462,11 @@ defmodule Autonomous.Web.ConversationLive do
             <span class="switch-track"><span class="switch-knob"></span></span>
             <span class="option-name">follow conversations</span>
           </label>
-          <ConversationComponents.frames_toggle all_frames?={@all_frames?} />
+          <ConversationComponents.frames_toggle :if={not @embedded?} all_frames?={@all_frames?} />
           <a
             :if={@embedded? and @conversation_id}
             href={"/live/" <> @conversation_id}
-            class="btn-link conv-open-full"
+            class="btn-secondary btn-compact conv-open-full"
           >
             open full view
           </a>
@@ -445,6 +474,7 @@ defmodule Autonomous.Web.ConversationLive do
         <p
           :if={is_nil(@empty) and @conversation_id}
           class="conv-header transcript-path"
+          title={header_title(@header, @conversation_id, @status)}
           data-conversation-header
         >
           <span :if={@header}>
@@ -465,7 +495,7 @@ defmodule Autonomous.Web.ConversationLive do
       </div>
 
       <div :if={is_nil(@empty) and @conversation_id} class="conv-view">
-        <p :if={@truncated?} class="conv-notice" data-notice="truncated">
+        <p :if={@truncated? and not @embedded?} class="conv-notice" data-notice="truncated">
           Showing the most recent 500 entries; earlier entries are in the full conversation once the session ends.
         </p>
 
@@ -475,6 +505,7 @@ defmodule Autonomous.Web.ConversationLive do
         </p>
 
         <div
+          :if={not @embedded?}
           id="conversation-rows"
           phx-update="stream"
           phx-hook="FollowTail"
@@ -488,7 +519,7 @@ defmodule Autonomous.Web.ConversationLive do
           />
         </div>
 
-        <p :if={@next_session} class="conv-next" data-next-session>
+        <p :if={not @embedded? and @next_session} class="conv-next" data-next-session>
           next session:
           <a href={"/live/" <> @next_session} class="btn-link">{@next_session}</a>
         </p>

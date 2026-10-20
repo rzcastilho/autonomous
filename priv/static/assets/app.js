@@ -37,9 +37,30 @@ const FollowTail = {
   }
 };
 
+// Feature 045: the Mission Control telemetry feed can be hidden; remember the
+// choice per browser. Storage may be unavailable (private window, blocked
+// site data) — every access is guarded and failure is a no-op.
+const TELEMETRY_KEY = "autonomous.mc.telemetry";
+
+const TelemetryPref = {
+  mounted() {
+    try {
+      if (window.localStorage.getItem(TELEMETRY_KEY) === "hidden") {
+        this.pushEvent("telemetry_restore", { hidden: true });
+      }
+    } catch (_e) {}
+
+    this.handleEvent("telemetry_pref", ({ hidden }) => {
+      try {
+        window.localStorage.setItem(TELEMETRY_KEY, hidden ? "hidden" : "shown");
+      } catch (_e) {}
+    });
+  }
+};
+
 let liveSocket = new LiveView.LiveSocket("/live", Phoenix.Socket, {
   params: { _csrf_token: csrfToken },
-  hooks: { FollowTail }
+  hooks: { FollowTail, TelemetryPref }
 });
 
 liveSocket.connect();

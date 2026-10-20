@@ -125,7 +125,7 @@ defmodule Autonomous.Web.DesignContract do
   @spacing_tokens ~w(--sp-4 --sp-6 --sp-8 --sp-10 --sp-12 --sp-14 --sp-18 --sp-20 --sp-22)
   @font_family_tokens ~w(--font-sans --font-mono)
   @derived_tokens ~w(--scrim --shadow-drawer --shadow-toast --glow-accent --gradient-primary --selection --hatch-reserved --border-input)
-  @layout_tokens ~w(--measure-transcript --rail-compact --card-min)
+  @layout_tokens ~w(--measure-transcript --rail-compact --card-min --cell-truncate-max --phase-strip-min)
 
   @allowed_root_names (@contract_colors |> Enum.map(&elem(&1, 0))) ++
                         @radius_tokens ++

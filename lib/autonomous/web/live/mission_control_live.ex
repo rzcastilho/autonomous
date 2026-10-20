@@ -55,7 +55,7 @@ defmodule Autonomous.Web.MissionControlLive do
        page_title: "Mission Control",
        current_path: "/",
        selected_feature_id: nil,
-       live_sessions: Autonomous.Conversation.live_by_feature()
+       telemetry_hidden?: false
      )
      |> seed()
      |> refresh_run_state()}
@@ -124,14 +124,10 @@ defmodule Autonomous.Web.MissionControlLive do
     {:noreply, assign(socket, view: %{view | per_feature: Map.put(view.per_feature, id, merged)})}
   end
 
-  def handle_info({:console, event, payload}, socket)
+  def handle_info({:console, event, _payload}, socket)
       when event in [:conversation_opened, :conversation_closed] do
-    {:noreply,
-     update(
-       socket,
-       :live_sessions,
-       &Autonomous.Conversation.apply_console_event(&1, event, payload)
-     )}
+    # 045: the row no longer shows a live-session link; the embedded panel follows sessions itself.
+    {:noreply, socket}
   end
 
   def handle_info({:console, :feed, entry}, socket) do
@@ -200,6 +196,31 @@ defmodule Autonomous.Web.MissionControlLive do
     {:noreply, assign(socket, selected_feature_id: nil)}
   end
 
+  # ---- telemetry feed visibility (045) --------------------------------------
+  # The feed keeps accumulating in `view.feed` while hidden, so showing it again
+  # restores everything received meanwhile. The choice is remembered per browser
+  # by the `TelemetryPref` hook (`telemetry_pref` push / `telemetry_restore`).
+
+  def handle_event("telemetry_hide", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(telemetry_hidden?: true)
+     |> push_event("telemetry_pref", %{hidden: true})}
+  end
+
+  def handle_event("telemetry_show", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(telemetry_hidden?: false)
+     |> push_event("telemetry_pref", %{hidden: false})}
+  end
+
+  def handle_event("telemetry_restore", %{"hidden" => true}, socket) do
+    {:noreply, assign(socket, telemetry_hidden?: true)}
+  end
+
+  def handle_event("telemetry_restore", _params, socket), do: {:noreply, socket}
+
   # ---- render -----------------------------------------------------------
 
   @impl true
@@ -260,22 +281,50 @@ defmodule Autonomous.Web.MissionControlLive do
         </dl>
       </div>
 
-      <div :if={(@view.active? or @recovered?) and not @view.finished?} class="run-live" data-state="live">
-        <div class="mission-grid">
+      <div
+        :if={(@view.active? or @recovered?) and not @view.finished?}
+        id="mission-live"
+        class="run-live"
+        data-state="live"
+        phx-hook="TelemetryPref"
+      >
+        <div class="mission-grid" data-telemetry={if @telemetry_hidden?, do: "hidden", else: "shown"}>
           <div class="mission-main">
-            <div class="status-count-strip" data-status-strip>
-              <div
-                :for={{status, count} <- @status_counts}
-                class="status-count-cell"
-                data-status={status}
-                data-zero={count == 0}
-              >
-                <span class="status-dot" data-status={status}></span>
-                <span class="status-name">{status}</span>
-                <span class="count">{count}</span>
+            <p
+              :if={@telemetry_hidden? and Map.get(@view, :delayed?, false)}
+              class="recovered-banner"
+              data-console-delayed
+            >
+              live status delayed — <span class="parked-banner-mono">Coordinator.status/1</span>
+              not answering; showing last known state
+            </p>
+            <div class="mission-main-head">
+              <div class="status-count-strip" data-status-strip>
+                <div
+                  :for={{status, count} <- @status_counts}
+                  class="status-count-cell"
+                  data-status={status}
+                  data-zero={count == 0}
+                >
+                  <span class="status-dot" data-status={status}></span>
+                  <span class="status-name">{status}</span>
+                  <span class="count">{count}</span>
+                </div>
               </div>
+              <button
+                :if={@telemetry_hidden?}
+                type="button"
+                class="btn-secondary btn-compact"
+                phx-click="telemetry_show"
+                aria-expanded="false"
+                aria-controls="mission-feed"
+                data-telemetry-toggle="show"
+              >
+                show telemetry
+              </button>
             </div>
 
+            <div class="backlog-scroll">
             <table class="backlog-table">
               <thead>
                 <tr>
@@ -299,7 +348,9 @@ defmodule Autonomous.Web.MissionControlLive do
                   data-feature-row={id}
                 >
                   <td>{id}</td>
-                  <td class="cell-secondary">{f.slug}</td>
+                  <td class="cell-secondary">
+                    <span class="cell-truncate" title={f.slug}>{f.slug}</span>
+                  </td>
                   <td class="cell-status">
                     <.status_pill status={f.status} />
                     <span
@@ -308,15 +359,6 @@ defmodule Autonomous.Web.MissionControlLive do
                     >
                       {awaiting_meta(Map.get(@awaiting_by_feature, id))}
                     </span>
-                    <a
-                      :if={Map.get(@live_sessions, id)}
-                      href={"/live/" <> Map.get(@live_sessions, id)}
-                      class="live-session-link"
-                      data-live-session={Map.get(@live_sessions, id)}
-                    >
-                      <span class="transcript-live" data-live="true"></span>
-                      live session
-                    </a>
                   </td>
                   <td class="cell-progress">
                     <.phase_strip
@@ -332,6 +374,7 @@ defmodule Autonomous.Web.MissionControlLive do
                 </tr>
               </tbody>
             </table>
+            </div>
 
             <section class="mc-live-panel" data-live-panel aria-label="Live session">
               {live_render(@socket, Autonomous.Web.ConversationPanelLive,
@@ -340,8 +383,20 @@ defmodule Autonomous.Web.MissionControlLive do
             </section>
           </div>
 
-          <div class="mission-feed">
-            <div class="mission-feed-header">Telemetry</div>
+          <div :if={not @telemetry_hidden?} id="mission-feed" class="mission-feed">
+            <div class="mission-feed-header">
+              Telemetry
+              <button
+                type="button"
+                class="btn-link mission-feed-toggle"
+                phx-click="telemetry_hide"
+                aria-expanded="true"
+                aria-controls="mission-feed"
+                data-telemetry-toggle="hide"
+              >
+                hide
+              </button>
+            </div>
             <p :if={Map.get(@view, :delayed?, false)} class="recovered-banner" data-console-delayed>
               live status delayed — <span class="parked-banner-mono">Coordinator.status/1</span>
               not answering; showing last known state

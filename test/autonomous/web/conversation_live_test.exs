@@ -504,9 +504,13 @@ defmodule Autonomous.Web.ConversationLiveTest do
       feed(first, [text_frame("first session words")])
 
       {:ok, view, html} = live_isolated(conn, Autonomous.Web.ConversationPanelLive)
-      assert html =~ "first session words"
-      assert has_element?(view, ~s(.conv-follow input[data-follow="true"]))
-      assert has_element?(view, ~s(a.conv-open-full[href="/live/#{first.conversation_id}"]))
+      refute html =~ "first session words"
+      refute has_element?(view, ".conv-follow")
+      assert has_element?(view, "[data-live-badge]")
+      assert has_element?(
+               view,
+               ~s(a.btn-secondary.btn-compact.conv-open-full[href="/live/#{first.conversation_id}"])
+             )
 
       Conversation.close(first, %PhaseResult{status: :ok, final_text: "x"})
       second = open_session(root, req, feature_id: "002")
@@ -514,24 +518,83 @@ defmodule Autonomous.Web.ConversationLiveTest do
 
       html = render(view)
       assert html =~ second.conversation_id
-      assert html =~ "second session words"
-      refute html =~ "first session words"
+      refute html =~ first.conversation_id
+      refute html =~ "second session words"
     end
 
-    test "with follow off it keeps the ended session and offers the link", %{
+    test "has no rows, toggles, notices or next-session link; /live keeps them", %{
       conn: conn,
       root: root,
       request: req
     } do
-      first = open_session(root, req)
+      handle = open_session(root, req)
+      feed(handle, [text_frame("some words")])
+
       {:ok, view, _} = live_isolated(conn, Autonomous.Web.ConversationPanelLive)
-      view |> element(".conv-follow input") |> render_click()
 
-      Conversation.close(first, %PhaseResult{status: :ok, final_text: "x"})
-      second = open_session(root, req, feature_id: "002")
+      for sel <- [
+            ".conv-follow",
+            "input[data-follow]",
+            ".conv-frames",
+            "input[data-frames]",
+            "#conversation-rows",
+            ".conv-row",
+            ~s([data-notice="truncated"]),
+            "[data-next-session]"
+          ] do
+        refute has_element?(view, sel), sel
+      end
 
-      assert render(view) =~ first.conversation_id
-      assert has_element?(view, "[data-next-session] a", second.conversation_id)
+      assert has_element?(view, "[data-live-badge]")
+      assert has_element?(view, "[data-conversation-header]")
+      assert has_element?(view, "section[data-conv-status]")
+
+      {:ok, full, _} = live(conn, "/live/#{handle.conversation_id}")
+      assert has_element?(full, ".conv-follow")
+      assert has_element?(full, ".conv-frames")
+      assert has_element?(full, "#conversation-rows")
+      refute has_element?(full, ".conv-open-full")
+    end
+
+    test "open full view leads to the full /live conversation", %{
+      conn: conn,
+      root: root,
+      request: req
+    } do
+      handle = open_session(root, req)
+      feed(handle, [text_frame("full view words")])
+
+      {:ok, panel, _} = live_isolated(conn, Autonomous.Web.ConversationPanelLive)
+
+      [_, href] =
+        Regex.run(~r/href="([^"]+)"/, panel |> element("a.conv-open-full") |> render())
+
+      assert href == "/live/#{handle.conversation_id}"
+
+      {:ok, full, html} = live(conn, href)
+      assert html =~ "full view words"
+      assert has_element?(full, ".conv-follow")
+      assert has_element?(full, ".conv-frames")
+      assert has_element?(full, "#conversation-rows")
+    end
+
+    test "the status footer still updates as entries arrive", %{
+      conn: conn,
+      root: root,
+      request: req
+    } do
+      handle = open_session(root, req)
+      {:ok, view, _} = live_isolated(conn, Autonomous.Web.ConversationPanelLive)
+      before_html = view |> element("section[data-conv-status]") |> render()
+
+      feed(handle, [text_frame("a"), call_frame("t1")])
+      refute view |> element("section[data-conv-status]") |> render() == before_html
+    end
+
+    test "no session shows the empty state and no open-full-view link", %{conn: conn} do
+      {:ok, view, _} = live_isolated(conn, Autonomous.Web.ConversationPanelLive)
+      assert has_element?(view, ~s([data-state="nothing-in-flight"]))
+      refute has_element?(view, ".conv-open-full")
     end
   end
 
