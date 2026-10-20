@@ -1636,3 +1636,10 @@ Use when a target re-downloads toolchains or rebuilds from scratch every restart
 Three-target walkthrough (Rust `mod-player`, Node+pnpm `fretboard-master`, Elixir
 `autonomous`), rejection table and smoke: `specs/041-user-defined-volumes/quickstart.md`,
 `scripts/container-smoke.sh volumes`.
+
+## Mission Control polish (045)
+
+- **Telemetry feed hide/show.** The feed column has a *hide* control; hidden, the main panel takes the full width and a *show telemetry* button sits beside the status strip. Events keep accumulating while hidden and reappear on show. The choice is per browser (`localStorage` key `autonomous.mc.telemetry`, via the `TelemetryPref` hook); storage unavailable ⇒ feed simply starts shown. The "live status delayed" line stays visible in both states.
+- **Compact live panel.** The embedded panel on `/` shows the badge, header, status footer and an *open full view* button only; rows, follow and frames toggles live on `/live/<id>` (unchanged). The panel still auto-switches to the next session.
+- **Backlog table.** Long slugs ellipsize (full slug in the `title`); the table scrolls inside its own container instead of sliding under the feed. The inline `live session` link in running rows is gone — use the panel button or Run Detail.
+- No store, schema or control-plane change. See `specs/045-mission-control-polish/`.

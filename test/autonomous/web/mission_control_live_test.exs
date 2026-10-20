@@ -1630,10 +1630,8 @@ defmodule Autonomous.Web.MissionControlLiveTest do
     refute render(view) =~ "data-console-delayed"
   end
 
-  describe "live session link (040, SC-001)" do
-    test "appears on a conversation_opened event and disappears on conversation_closed", %{
-      conn: conn
-    } do
+  describe "no inline live session link (045, US4)" do
+    test "running row has no live-session link even after conversation_opened", %{conn: conn} do
       pid = start_coordinator([feat("lv1")])
       on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
 
@@ -1646,11 +1644,8 @@ defmodule Autonomous.Web.MissionControlLiveTest do
          %{conversation_id: "specify-1-abc", feature_id: "lv1", phase: :specify}}
       )
 
-      assert has_element?(
-               view,
-               ~s(a[data-live-session="specify-1-abc"][href="/live/specify-1-abc"]),
-               "live session"
-             )
+      render(view)
+      refute has_element?(view, "[data-feature-row] [data-live-session]")
 
       send(
         view.pid,
@@ -1658,14 +1653,7 @@ defmodule Autonomous.Web.MissionControlLiveTest do
       )
 
       render(view)
-      refute has_element?(view, "[data-live-session]")
-    end
-
-    test "no link when nothing is open", %{conn: conn} do
-      pid = start_coordinator([feat("lv2")])
-      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
-
-      {:ok, view, _html} = live(conn, "/")
+      assert Process.alive?(view.pid)
       refute has_element?(view, "[data-live-session]")
     end
 
@@ -1674,15 +1662,64 @@ defmodule Autonomous.Web.MissionControlLiveTest do
       on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
 
       {:ok, view, html} = live(conn, "/")
-      assert has_element?(view, ".mission-main table.backlog-table + section[data-live-panel]")
+      assert has_element?(view, ".mission-main .backlog-scroll + section[data-live-panel]")
       [_, after_table] = String.split(html, "backlog-table", parts: 2)
       assert after_table =~ "data-live-panel"
 
       assert page_title(view) =~ "Mission Control"
       panel = find_live_child(view, "mc-conversation")
-      assert has_element?(panel, ~s(.conv-follow input[data-follow="true"]))
       assert render(panel) =~ "No agent session in flight"
+      refute has_element?(panel, ".conv-open-full")
       assert page_title(view) =~ "Mission Control"
+    end
+  end
+
+  describe "overlap-safe main panel (045, US1)" do
+    @describetag :tmp_dir
+
+    test "table is scroll-wrapped and cells truncate with full text on hover", %{conn: conn} do
+      pid = start_coordinator([feat("ov1")])
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+      {:ok, view, _html} = live(conn, "/")
+
+      assert has_element?(view, ".mission-main .backlog-scroll > table.backlog-table")
+
+      assert has_element?(
+               view,
+               ~s(td.cell-secondary .cell-truncate[title="slug-ov1"]),
+               "slug-ov1"
+             )
+
+      assert has_element?(view, "td.cell-progress .phase-strip")
+    end
+
+    test "embedded panel header carries its full text as a title", %{conn: conn, tmp_dir: root} do
+      pid = start_coordinator([feat("ov2")])
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+      identity = %Autonomous.ConversationIdentity{
+        repo_id: "o:repo",
+        run_id: "r000001",
+        feature_id: "ov2",
+        phase: :plan,
+        ordinal: 1,
+        kind: :phase,
+        transcript_root: root
+      }
+
+      request = Jido.Harness.RunRequest.new!(%{prompt: "p", model: "opus"})
+      {:ok, handle, _} = Autonomous.Conversation.open(identity, request)
+
+      on_exit(fn ->
+        if Process.alive?(handle.pid), do: Autonomous.Conversation.close(handle, nil)
+      end)
+
+      {:ok, view, _html} = live(conn, "/")
+      panel = find_live_child(view, "mc-conversation")
+
+      assert has_element?(panel, ".conv-header[title][data-conversation-header]")
+      assert has_element?(panel, ~s(.conv-header[title*="ov2"]))
     end
   end
 
@@ -1717,10 +1754,157 @@ defmodule Autonomous.Web.MissionControlLiveTest do
       assert has_element?(panel, "[data-turns]")
       assert has_element?(panel, "[data-tools]", "tools 0")
 
-      # the frames switch toggles in place, without touching the page URL
-      assert has_element?(panel, ~s(input[data-frames="default"]))
-      panel |> element(".conv-frames input") |> render_click()
-      assert has_element?(panel, ~s(input[data-frames="all"]))
+      # compact panel (045): no frames switch, no rows
+      refute has_element?(panel, ".conv-frames")
+    end
+  end
+
+  describe "compact embedded panel (045, US3)" do
+    @describetag :tmp_dir
+
+    test "badge, header and status footer only — no rows or toggles", %{conn: conn, tmp_dir: root} do
+      pid = start_coordinator([feat("cp1")])
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+      identity = %Autonomous.ConversationIdentity{
+        repo_id: "o:repo",
+        run_id: "r000001",
+        feature_id: "cp1",
+        phase: :plan,
+        ordinal: 1,
+        kind: :phase,
+        transcript_root: root
+      }
+
+      request = Jido.Harness.RunRequest.new!(%{prompt: "p", model: "opus"})
+      {:ok, handle, _} = Autonomous.Conversation.open(identity, request)
+
+      on_exit(fn ->
+        if Process.alive?(handle.pid), do: Autonomous.Conversation.close(handle, nil)
+      end)
+
+      {:ok, view, _html} = live(conn, "/")
+      panel = find_live_child(view, "mc-conversation")
+
+      for sel <- ["[data-live-badge]", "[data-conversation-header]", "section[data-conv-status]"] do
+        assert has_element?(panel, sel), sel
+      end
+
+      for sel <- [
+            ".conv-follow",
+            "input[data-follow]",
+            ".conv-frames",
+            "input[data-frames]",
+            "#conversation-rows",
+            ".conv-row",
+            ~s([data-notice="truncated"]),
+            "[data-next-session]"
+          ] do
+        refute has_element?(panel, sel), sel
+      end
+
+      assert has_element?(panel, ~s(a.conv-open-full[href="/live/#{handle.conversation_id}"]))
+    end
+  end
+
+  describe "telemetry hide/show (045, US2)" do
+    test "shown by default with exactly the hide control", %{conn: conn} do
+      pid = start_coordinator([feat("th1")])
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+      {:ok, view, _html} = live(conn, "/")
+
+      assert has_element?(view, ~s(.mission-grid[data-telemetry="shown"]))
+      assert has_element?(view, "#mission-feed")
+      assert has_element?(view, "#mission-live[phx-hook=TelemetryPref]")
+
+      assert has_element?(
+               view,
+               ~s(.mission-feed-header [data-telemetry-toggle="hide"][aria-expanded="true"])
+             )
+
+      refute has_element?(view, ~s([data-telemetry-toggle="show"]))
+    end
+
+    test "hide collapses the feed, persists the choice and show restores it", %{conn: conn} do
+      pid = start_coordinator([feat("th2")])
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+      {:ok, view, _html} = live(conn, "/")
+
+      view |> element(~s([data-telemetry-toggle="hide"])) |> render_click()
+      assert_push_event(view, "telemetry_pref", %{hidden: true})
+
+      assert has_element?(view, ~s(.mission-grid[data-telemetry="hidden"]))
+      refute has_element?(view, "#mission-feed")
+      refute has_element?(view, ~s([data-telemetry-toggle="hide"]))
+
+      assert has_element?(
+               view,
+               ~s(.mission-main-head [data-telemetry-toggle="show"][aria-expanded="false"])
+             )
+
+      view |> element(~s([data-telemetry-toggle="show"])) |> render_click()
+      assert_push_event(view, "telemetry_pref", %{hidden: false})
+      assert has_element?(view, ~s(.mission-grid[data-telemetry="shown"]))
+      assert has_element?(view, "#mission-feed")
+      refute has_element?(view, ~s([data-telemetry-toggle="show"]))
+    end
+
+    test "feed entries received while hidden are there after show (FR-004)", %{conn: conn} do
+      pid = start_coordinator([feat("th3")])
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+      {:ok, view, _html} = live(conn, "/")
+      view |> element(~s([data-telemetry-toggle="hide"])) |> render_click()
+
+      send(
+        view.pid,
+        {:console, :feed,
+         %{
+           at: DateTime.utc_now(),
+           feature_id: "th3",
+           severity: :info,
+           text: "buffered while hidden"
+         }}
+      )
+
+      refute render(view) =~ "buffered while hidden"
+      view |> element(~s([data-telemetry-toggle="show"])) |> render_click()
+      assert render(view) =~ "buffered while hidden"
+    end
+
+    test "telemetry_restore hides without a push; other params change nothing", %{conn: conn} do
+      pid = start_coordinator([feat("th4")])
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+      {:ok, view, _html} = live(conn, "/")
+
+      render_hook(view, "telemetry_restore", %{"hidden" => "garbage"})
+      assert has_element?(view, ~s(.mission-grid[data-telemetry="shown"]))
+
+      render_hook(view, "telemetry_restore", %{"hidden" => true})
+      assert has_element?(view, ~s(.mission-grid[data-telemetry="hidden"]))
+      refute_push_event(view, "telemetry_pref", _)
+    end
+
+    test "the delayed notice stays visible in both states", %{conn: conn} do
+      pid = start_coordinator([feat("th5")])
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+      {:ok, view, _html} = live(conn, "/")
+
+      Phoenix.PubSub.broadcast(
+        Autonomous.PubSub,
+        ConsoleProjection.topic(),
+        {:console, :reconciled, %{coordinator: Coordinator.status(pid), delayed?: true}}
+      )
+
+      assert has_element?(view, "#mission-feed [data-console-delayed]")
+
+      view |> element(~s([data-telemetry-toggle="hide"])) |> render_click()
+      assert has_element?(view, ".mission-main > [data-console-delayed]")
+      refute has_element?(view, "#mission-feed")
     end
   end
 end

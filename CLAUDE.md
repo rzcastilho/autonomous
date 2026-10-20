@@ -350,6 +350,13 @@ forwards CLI stderr to the recorder (bare `send/2`); `StderrBound` (pure) keeps 
 (`Config.conversation_stderr_head/tail`, 1,000 each) and the recorder emits a dropped-count notice before `:end`.
 `SessionStatus` folds usage into the `in/out` token figure and turns a `done` chip `failed` on an error result.
 No store change. `specs/043-close-recorder-gaps/`.
+**Mission Control polish (feature 045).** `MissionControlLive` gains a `telemetry_hidden?` assign
+(`telemetry_hide|show|restore` events; the `TelemetryPref` JS hook persists `autonomous.mc.telemetry` in
+`localStorage`, `push_event "telemetry_pref"`). Embedded `ConversationLive` renders badge + header + status footer +
+`a.btn-secondary.btn-compact.conv-open-full` only (no rows/toggles; `/live` markup unchanged). Backlog table wrapped in
+`.backlog-scroll` with `.cell-truncate`; `live_sessions` assign and the row `live session` link removed (the
+`:conversation_opened|closed` clause stays as a no-op). Two layout tokens added (`--cell-truncate-max`,
+`--phase-strip-min`). No store change. `specs/045-mission-control-polish/`.
 `Autonomous.resolve/1` frees a kept worktree so a human-resolved feature
 re-runs on its existing branch (`Worktree.create` reuses an existing branch).
 `Autonomous.resume/2` is the shipped checkpoint-driven restart path —
