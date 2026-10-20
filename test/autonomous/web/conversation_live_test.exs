@@ -556,6 +556,28 @@ defmodule Autonomous.Web.ConversationLiveTest do
       refute has_element?(full, ".conv-open-full")
     end
 
+    test "open full view leads to the full /live conversation", %{
+      conn: conn,
+      root: root,
+      request: req
+    } do
+      handle = open_session(root, req)
+      feed(handle, [text_frame("full view words")])
+
+      {:ok, panel, _} = live_isolated(conn, Autonomous.Web.ConversationPanelLive)
+
+      [_, href] =
+        Regex.run(~r/href="([^"]+)"/, panel |> element("a.conv-open-full") |> render())
+
+      assert href == "/live/#{handle.conversation_id}"
+
+      {:ok, full, html} = live(conn, href)
+      assert html =~ "full view words"
+      assert has_element?(full, ".conv-follow")
+      assert has_element?(full, ".conv-frames")
+      assert has_element?(full, "#conversation-rows")
+    end
+
     test "the status footer still updates as entries arrive", %{
       conn: conn,
       root: root,
