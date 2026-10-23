@@ -22,6 +22,7 @@ defmodule Autonomous.PhaseRequest do
   alias Autonomous.{
     AgentRoot,
     Config,
+    ContainerEngine,
     Feature,
     Layout,
     Prompts,
@@ -92,6 +93,11 @@ defmodule Autonomous.PhaseRequest do
       and appends the agent-root note to the `:implement` and `:converge` prompts
       (after the scope/headless rule, before resume/clarify/background-retry).
       `false` leaves the request byte-identical to pre-037.
+    * `:container_engine` — (046) boolean, default `ContainerEngine.advertised?/0`.
+      `true` appends the container-engine note to the `:implement` and `:converge`
+      prompts, right after the agent-root note (before resume/clarify/background-
+      retry). `false` leaves the request byte-identical to pre-046. The launch env
+      never changes: sessions inherit `DOCKER_HOST` from the container.
     * `:stderr_collector` — (036) pid of a `WorkspaceTrust.Collector`; the session's
       CLI stderr callback (installed by `SdkProxy`) forwards untrusted-workspace
       lines to it. `nil`/absent = lines are only logged.
@@ -101,6 +107,7 @@ defmodule Autonomous.PhaseRequest do
     layout = Keyword.get(opts, :layout)
     agent_root = Keyword.get_lazy(opts, :agent_root, &AgentRoot.advertised?/0)
     opts = Keyword.put(opts, :agent_root, agent_root)
+    container_engine = Keyword.get_lazy(opts, :container_engine, &ContainerEngine.advertised?/0)
 
     %{
       prompt:
@@ -108,6 +115,7 @@ defmodule Autonomous.PhaseRequest do
         |> prompt(phase, layout)
         |> apply_scope(phase, Keyword.get(opts, :scope))
         |> append_agent_root(phase, agent_root)
+        |> append_container_engine(phase, container_engine)
         |> append_resume_prompt(Keyword.get(opts, :resume_prompt))
         |> append_clarify_answers(Keyword.get(opts, :clarify_answers))
         |> append_background_retry(Keyword.get(opts, :background_retry)),
@@ -311,6 +319,13 @@ defmodule Autonomous.PhaseRequest do
     do: prompt <> AgentRoot.prompt_note(true)
 
   defp append_agent_root(prompt, _phase, _agent_root), do: prompt
+
+  # 046 — same scope as agent root: only the phases that build and run the target's
+  # tests learn about the engine; every other prompt stays byte-identical.
+  defp append_container_engine(prompt, phase, true) when phase in [:implement, :converge],
+    do: prompt <> ContainerEngine.prompt_note(true)
+
+  defp append_container_engine(prompt, _phase, _container_engine), do: prompt
 
   # Blank (nil/""/whitespace-only) guidance leaves the prompt byte-identical to
   # the no-opt build — only a non-blank string gets the trailing section.

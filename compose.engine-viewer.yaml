@@ -1,0 +1,18 @@
+# Opt-in (feature 046): the noVNC viewer with the container-engine sidecar.
+# Added by `scripts/autonomous ... --docker --viewer`, in place of
+# compose.desktop-viewer.yaml: with `network_mode: service:engine` the agent
+# services cannot publish ports, so the viewer port is published on `engine`.
+# Loopback only; empty AUTONOMOUS_VIEWER_PORT = Docker picks a free port.
+
+x-viewer-env: &viewer-env
+  environment:
+    AUTONOMOUS_DISPLAY: "1"
+    AUTONOMOUS_DISPLAY_VIEWER: "1"
+
+services:
+  engine:
+    ports:
+      - "127.0.0.1:${AUTONOMOUS_VIEWER_PORT:-}:6080"
+  dev: *viewer-env
+  console: *viewer-env
+  release: *viewer-env

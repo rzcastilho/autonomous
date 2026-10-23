@@ -542,6 +542,77 @@ defmodule Autonomous.PhaseRequestTest do
     end
   end
 
+  describe ":container_engine option (046)" do
+    alias Autonomous.ContainerEngine
+
+    test "false and the default (no env) are byte-identical to the option-less request" do
+      for phase <- @all_phases, scope <- [nil, :whole_list] do
+        base = PhaseRequest.build(feature(), phase, scope: scope)
+        off = PhaseRequest.build(feature(), phase, container_engine: false, scope: scope)
+        assert off.prompt == base.prompt
+        assert off.metadata == base.metadata
+        refute off.prompt =~ "container engine is available"
+      end
+    end
+
+    test "true: the note lands on implement (any scope) and converge only" do
+      note = ContainerEngine.prompt_note(true)
+
+      for scope <- [
+            nil,
+            :whole_list,
+            {:sweep,
+             [%Autonomous.TaskPlan.Task{id: "T001", text: "x", complete?: false, line: 1}]}
+          ] do
+        off = PhaseRequest.build(feature(), :implement, container_engine: false, scope: scope)
+        on = PhaseRequest.build(feature(), :implement, container_engine: true, scope: scope)
+        assert on.prompt == off.prompt <> note
+      end
+
+      off = PhaseRequest.build(feature(), :converge, container_engine: false)
+
+      assert PhaseRequest.build(feature(), :converge, container_engine: true).prompt ==
+               off.prompt <> note
+
+      for phase <- @all_phases -- [:implement, :converge] do
+        assert PhaseRequest.build(feature(), phase, container_engine: true).prompt ==
+                 PhaseRequest.build(feature(), phase, container_engine: false).prompt
+      end
+    end
+
+    test "true: the launch env, permissions and tools are unchanged" do
+      for phase <- @all_phases do
+        off = PhaseRequest.build(feature(), phase, container_engine: false)
+        on = PhaseRequest.build(feature(), phase, container_engine: true)
+        assert on.metadata == off.metadata
+        assert on.permission_mode == off.permission_mode
+        assert on.allowed_tools == off.allowed_tools
+        assert on.disallowed_tools == off.disallowed_tools
+      end
+    end
+
+    test "the note follows the agent-root note and precedes resume and background-retry" do
+      r =
+        PhaseRequest.build(feature(), :implement,
+          agent_root: true,
+          container_engine: true,
+          resume_prompt: "operator hint",
+          background_retry: ["sleep 1 &"]
+        )
+
+      {root, _} = :binary.match(r.prompt, "Agent root is available")
+      {engine, _} = :binary.match(r.prompt, "container engine is available")
+      {resume, _} = :binary.match(r.prompt, "operator hint")
+      assert root < engine
+      assert engine < resume
+    end
+
+    test "build_remediation/3 never carries the note" do
+      r = PhaseRequest.build_remediation(feature(), "sonnet", container_engine: true)
+      refute r.prompt =~ "container engine is available"
+    end
+  end
+
   describe ":agent_root option (037)" do
     alias Autonomous.AgentRoot
 

@@ -7,6 +7,7 @@
 #   toolchain  base + build deps + mise + the repository's mise.toml toolchain.
 #   dev        toolchain; source is bind-mounted at /workspace, not copied.
 #   build      toolchain + the sources; compiles `mix release` (MIX_ENV=prod).
+#   engine     (opt-in, feature 046) rootless container-engine sidecar; not part of dev/release
 #   release    base + the release only: no mise, no Erlang/Elixir install, no
 #              sources at runtime (FR-002). Started by `bin/autonomous start`.
 #
@@ -14,6 +15,8 @@
 # mise.toml, the single version source. No secret is a build arg or ENV (FR-015).
 
 ARG DEBIAN_TAG=bookworm-slim
+# One pin for the docker client (base) and the sidecar daemon (engine), feature 046.
+ARG DOCKER_VERSION=29.9.2
 
 # ---------------------------------------------------------------------------
 FROM debian:${DEBIAN_TAG} AS base
@@ -32,6 +35,13 @@ ARG WITH_ANDROID=0
 ARG EXTRA_APT_PACKAGES=""
 # Opt-in agent root (feature 037): passwordless sudo for any uid. 0 = no sudo at all.
 ARG WITH_AGENT_ROOT=0
+# Opt-in container engine client (feature 046). DOCKER_VERSION is declared once,
+# before the first FROM (it pins the `engine` stage's base tag) and re-declared here
+# without a default so the static client below uses the same pin.
+ARG WITH_DOCKER=0
+ARG DOCKER_VERSION
+ARG COMPOSE_VERSION=5.6.1
+ARG BUILDX_VERSION=0.38.1
 # Must match the @playwright/test version the target's tests use (docs/container.md).
 ARG PLAYWRIGHT_VERSION=1.49.1
 ARG ANDROID_CMDLINE_TOOLS=11076708
@@ -148,6 +158,32 @@ RUN if [ "$WITH_AGENT_ROOT" = 1 ]; then \
    && rm -rf /var/lib/apt/lists/*; \
     fi
 
+# ---- Container engine client (feature 046, FR-001) -------------------------------
+# Static docker CLI + compose/buildx plugins in the system-wide plugin path (every
+# uid can read it). The daemon is NOT here: it lives in the `engine` stage's
+# sidecar. A download failure fails the build (no `|| true`).
+RUN if [ "$WITH_DOCKER" = 1 ]; then \
+      arch="$(uname -m)"; \
+      case "$arch" in \
+        x86_64) compose_arch=x86_64; buildx_arch=amd64 ;; \
+        aarch64) compose_arch=aarch64; buildx_arch=arm64 ;; \
+        *) echo "unsupported architecture: $arch" >&2; exit 1 ;; \
+      esac \
+   && curl -fsSL "https://download.docker.com/linux/static/stable/${arch}/docker-${DOCKER_VERSION}.tgz" \
+        | tar -xz -C /tmp docker/docker \
+   && install -m 0755 /tmp/docker/docker /usr/local/bin/docker \
+   && rm -rf /tmp/docker \
+   && mkdir -p /usr/local/lib/docker/cli-plugins \
+   && curl -fsSL -o /usr/local/lib/docker/cli-plugins/docker-compose \
+        "https://github.com/docker/compose/releases/download/v${COMPOSE_VERSION}/docker-compose-linux-${compose_arch}" \
+   && curl -fsSL -o /usr/local/lib/docker/cli-plugins/docker-buildx \
+        "https://github.com/docker/buildx/releases/download/v${BUILDX_VERSION}/buildx-v${BUILDX_VERSION}.linux-${buildx_arch}" \
+   && chmod 0755 /usr/local/lib/docker/cli-plugins/docker-compose /usr/local/lib/docker/cli-plugins/docker-buildx \
+   && mkdir -p /etc/autonomous \
+   && printf '%s\n' "docker=${DOCKER_VERSION}" "compose=${COMPOSE_VERSION}" "buildx=${BUILDX_VERSION}" \
+        > /etc/autonomous/container-engine; \
+    fi
+
 # ---------------------------------------------------------------------------
 FROM base AS toolchain
 
@@ -234,3 +270,31 @@ ENV SHELL=/bin/bash
 
 ENTRYPOINT ["/usr/local/bin/container-entrypoint.sh"]
 CMD ["release"]
+
+# ---------------------------------------------------------------------------
+# Container-engine sidecar (feature 046, research R1). Only built for the
+# `engine` compose service (compose.engine.yaml); `dev` and `release` never
+# depend on it. Rootless on purpose (constitution III): `docker run --privileged`
+# from a session is privileged only inside a user namespace whose root is the
+# operator's uid, and files written to a bind-mounted worktree stay operator-owned.
+# The upstream image's `rootless` user is uid 1000; re-create it with the
+# operator's ids (reusing a pre-existing group with the requested gid, as `base`
+# does) so any uid works. Its subordinate id ranges live in /etc/subuid|subgid.
+FROM docker:${DOCKER_VERSION}-dind-rootless AS engine
+
+ARG UID=1000
+ARG GID=1000
+
+USER root
+RUN set -eux; \
+    [ "${UID}" != 0 ] || { echo "the engine sidecar must not run as uid 0 (rootless)" >&2; exit 1; }; \
+    deluser rootless; \
+    (delgroup rootless || true); \
+    grp="$(getent group "${GID}" | cut -d: -f1 || true)"; \
+    if [ -z "$grp" ]; then grp=rootless; addgroup -g "${GID}" "$grp"; fi; \
+    adduser -D -h /home/rootless -u "${UID}" -G "$grp" rootless; \
+    grep -q '^rootless:' /etc/subuid || echo 'rootless:100000:65536' >> /etc/subuid; \
+    grep -q '^rootless:' /etc/subgid || echo 'rootless:100000:65536' >> /etc/subgid; \
+    mkdir -p /home/rootless/.local/share/docker; \
+    chown -R "${UID}:${GID}" /home/rootless
+USER ${UID}

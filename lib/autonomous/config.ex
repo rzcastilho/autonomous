@@ -130,6 +130,21 @@ defmodule Autonomous.Config do
   @spec phase_timeout() :: pos_integer()
   def phase_timeout, do: get(:phase_timeout, :timer.minutes(50))
 
+  @doc """
+  Module implementing `Autonomous.ContainerEngine.Cli` — the `docker` boundary used
+  to probe the engine sidecar and clean it up at phase boundaries (feature 046).
+  Tests inject a stub.
+  """
+  @spec container_engine_cli() :: module()
+  def container_engine_cli, do: get(:container_engine_cli, Autonomous.ContainerEngine.Cli)
+
+  @doc """
+  Hard bound, in ms, on one end-of-phase engine cleanup (feature 046). Cleanup is
+  not a session, so it is deliberately outside the session deadline.
+  """
+  @spec container_engine_cleanup_timeout_ms() :: pos_integer()
+  def container_engine_cleanup_timeout_ms, do: get(:container_engine_cleanup_timeout_ms, 120_000)
+
   @doc "Stderr lines kept from the start of a session's conversation record (feature 043)."
   @spec conversation_stderr_head() :: pos_integer()
   def conversation_stderr_head, do: positive!(:conversation_stderr_head, 1000)
