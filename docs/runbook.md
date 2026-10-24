@@ -1643,3 +1643,33 @@ Three-target walkthrough (Rust `mod-player`, Node+pnpm `fretboard-master`, Elixi
 - **Compact live panel.** The embedded panel on `/` shows the badge, header, status footer and an *open full view* button only; rows, follow and frames toggles live on `/live/<id>` (unchanged). The panel still auto-switches to the next session.
 - **Backlog table.** Long slugs ellipsize (full slug in the `title`); the table scrolls inside its own container instead of sliding under the feed. The inline `live session` link in running rows is gone — use the panel button or Run Detail.
 - No store, schema or control-plane change. See `specs/045-mission-control-polish/`.
+
+## Container engine sidecar (046)
+
+Start with `scripts/autonomous console --target <repo> --docker` (image built with
+`build --docker`). Architecture and limits: `docs/container.md`.
+
+**Refusals (nothing is left running).**
+
+| Exit | Meaning | Do |
+|---|---|---|
+| 77 | Sidecar could not start; message names the cause (usually the host refused a privileged container) | Use Docker Engine on Linux or Docker Desktop with privileged containers allowed |
+| 78 | Engine not ready within `AUTONOMOUS_ENGINE_TIMEOUT` (default 60 s), at the wrapper or the entrypoint probe | Read the last engine log lines in the message; check host disk; `reset-cache --target <repo> --engine` if storage is corrupt; raise the bound on a cold host |
+| 5 | Image built without `--docker`, or `autonomous-engine:local` missing | `scripts/autonomous build --docker` (add `--release`) |
+| 3 | Compose older than 2.24.4 | Upgrade Compose |
+
+**Cleanup residue.** At each phase boundary the orchestrator removes all containers,
+networks and volumes from the engine (never images). If that fails or times out it logs a
+residue line naming what remained and the phase outcome is unchanged. Remove leftovers by
+hand from `shell --docker` (`docker rm -f $(docker ps -aq)`, `docker network prune -f`,
+`docker volume prune -f`) or restart the instance (the entrypoint sweeps on start).
+
+**Storage.** Pulled images persist across `stop`. `stop --purge` removes them with the
+declared volumes; `reset-cache --engine` removes only the engine storage (refused with 75
+while the instance is up).
+
+**Configuration row "container engine"** (shown only when `--docker` was requested):
+`checking…` while probing; `available — engine <version>`; `unreachable — <cause>` (reload
+to re-probe; the engine container may have stopped). No row without `--docker`.
+
+No store or schema change. See `specs/046-docker-sidecar/`.

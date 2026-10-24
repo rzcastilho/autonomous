@@ -24,6 +24,7 @@ defmodule Autonomous.FeatureRunner do
     Checkpoint,
     ChunkRunner,
     Config,
+    ContainerEngine,
     ConversationSite,
     Cost,
     Describe,
@@ -128,7 +129,14 @@ defmodule Autonomous.FeatureRunner do
     # in which case every store write below is a silent no-op.
     run_key = Keyword.get(opts, :run_key)
 
+    # 046: the container-engine sweep settings, resolved once per feature run. Opts
+    # for `ContainerEngine.after_boundary/3`; `advertised?: false` (the default
+    # outside the engine sidecar) makes every boundary sweep a no-op.
+    engine =
+      Keyword.get_lazy(opts, :engine, fn -> [advertised?: ContainerEngine.advertised?()] end)
+
     step_opts = %{
+      engine: engine,
       start_task_phase: Keyword.get(opts, :start_task_phase),
       reset_implement_sessions: Keyword.get(opts, :reset_implement_sessions, false),
       remediation_settings: remediation_settings!(run_context),
@@ -166,7 +174,7 @@ defmodule Autonomous.FeatureRunner do
           )
 
         {status, reason, agent} =
-          case maybe_run_remediation(pid, feature, timeout, remediation_prompt, run_key) do
+          case maybe_run_remediation(pid, feature, timeout, remediation_prompt, run_key, engine) do
             {:error, agent} ->
               {:failed, remediation_failure_reason(agent), agent}
 
@@ -188,7 +196,7 @@ defmodule Autonomous.FeatureRunner do
           end
 
         call(pid, "feature.finalize", %{status: status, reason: reason}, timeout)
-        {message, pr} = commit_message_and_pr(feature, status, worktree, layout, run_key)
+        {message, pr} = commit_message_and_pr(feature, status, worktree, layout, run_key, engine)
         handle_worktree(feature, status, reason, worktree, message, stack_base)
 
         if drained?(status, reason) do
@@ -225,7 +233,7 @@ defmodule Autonomous.FeatureRunner do
   # guarantees "at most once, before the target phase only" (FR-005/SC-003).
   # Blank prompt = zero overhead (FR-004/SC-002): no signal, no telemetry span,
   # no cost.
-  defp maybe_run_remediation(pid, feature, timeout, remediation_prompt, run_key) do
+  defp maybe_run_remediation(pid, feature, timeout, remediation_prompt, run_key, engine) do
     if blank?(remediation_prompt) do
       :ok
     else
@@ -236,6 +244,7 @@ defmodule Autonomous.FeatureRunner do
           timeout,
           Config.phase_max_retries(),
           run_key,
+          engine,
           false
         )
 
@@ -256,10 +265,11 @@ defmodule Autonomous.FeatureRunner do
          timeout,
          retries,
          run_key,
+         engine,
          died_retried?,
          carried \\ []
        ) do
-    agent = run_remediation(pid, feature, timeout, run_key, carried)
+    agent = run_remediation(pid, feature, timeout, run_key, engine, carried)
     st = agent.state
     refs = st.conversations || []
 
@@ -277,14 +287,23 @@ defmodule Autonomous.FeatureRunner do
             "#{get_in(st.last_signals, [:session_died, :excerpt])} — retrying once"
         )
 
-        remediation_with_retry(pid, feature, timeout, retries, run_key, true, refs)
+        remediation_with_retry(pid, feature, timeout, retries, run_key, engine, true, refs)
 
       retries > 0 and st.last_outcome == :error and PhaseResult.transient?(st.last_result) ->
         Logger.warning(
           "feature #{feature.id} remediation failed transiently — retrying (#{retries} left)"
         )
 
-        remediation_with_retry(pid, feature, timeout, retries - 1, run_key, died_retried?, refs)
+        remediation_with_retry(
+          pid,
+          feature,
+          timeout,
+          retries - 1,
+          run_key,
+          engine,
+          died_retried?,
+          refs
+        )
 
       true ->
         agent
@@ -296,14 +315,21 @@ defmodule Autonomous.FeatureRunner do
   # (ordinal 1 — this step runs at most once, before the phase loop starts),
   # so it precedes the target phase's own attempt in any store-sourced
   # listing.
-  defp run_remediation(pid, feature, timeout, run_key, carried) do
+  defp run_remediation(pid, feature, timeout, run_key, engine, carried) do
     meta = %{feature_id: feature.id, phase: :remediation, step: 0}
     started_at = DateTime.utc_now()
 
     :telemetry.span([:speckit, :phase], meta, fn ->
       {:ok, %{agent: before}} = AgentServer.state(pid)
       Workers.session_started(timeout)
-      {:ok, agent} = call(pid, "remediation.run", %{}, PhaseSession.call_timeout(timeout))
+
+      {:ok, agent} =
+        try do
+          call(pid, "remediation.run", %{}, PhaseSession.call_timeout(timeout))
+        after
+          ContainerEngine.after_boundary(feature, :remediation, engine)
+        end
+
       # 040 (FR-020): keep one ref per session across a retry.
       agent = %{
         agent
@@ -354,7 +380,14 @@ defmodule Autonomous.FeatureRunner do
          clarify_rounds_used
        ) do
     started_at = DateTime.utc_now()
-    agent = run_step(pid, feature, phase, step, timeout, worktree, layout, step_opts)
+
+    agent =
+      try do
+        run_step(pid, feature, phase, step, timeout, worktree, layout, step_opts)
+      after
+        ContainerEngine.after_boundary(feature, phase, step_opts.engine)
+      end
+
     st = agent.state
     gate_sigs = gate_signals(phase, st, step_opts)
 
@@ -1115,7 +1148,7 @@ defmodule Autonomous.FeatureRunner do
   # and the git history it describes always agree. Claude-authored via
   # `Describe.run/3` (019: every run publishes a PR, unconditionally). A
   # describe failure logs and falls back — never blocks.
-  defp commit_message_and_pr(feature, :done, %Worktree{} = wt, layout, run_key) do
+  defp commit_message_and_pr(feature, :done, %Worktree{} = wt, layout, run_key, engine) do
     fallback = "speckit: feature #{feature.id} pipeline artifacts (done)"
     started_at = DateTime.utc_now()
 
@@ -1126,7 +1159,13 @@ defmodule Autonomous.FeatureRunner do
         kind: :describe
       )
 
-    {described, capture} = Describe.run_captured(feature, wt, layout, identity)
+    {described, capture} =
+      try do
+        Describe.run_captured(feature, wt, layout, identity)
+      after
+        ContainerEngine.after_boundary(feature, :describe, engine)
+      end
+
     record_describe_attempt(run_key, feature, started_at, described, capture)
 
     case described do
@@ -1140,7 +1179,7 @@ defmodule Autonomous.FeatureRunner do
     end
   end
 
-  defp commit_message_and_pr(feature, status, _wt, _layout, _run_key) do
+  defp commit_message_and_pr(feature, status, _wt, _layout, _run_key, _engine) do
     {"speckit: feature #{feature.id} pipeline artifacts (#{status})", nil}
   end
 

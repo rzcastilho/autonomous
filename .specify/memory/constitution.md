@@ -1,5 +1,21 @@
 <!--
 Sync Impact Report
+Version change: 7.2.0 → 7.3.0
+Bump rationale: MINOR. Feature 046 (container engine sidecar, research R10).
+  An opt-in container-engine sidecar is the first container in the runtime
+  allowed to hold elevated privileges, which changes where Principle III's
+  boundary sits. No MUST is removed — the agent container keeps every
+  existing restriction — so not MAJOR.
+Modified principles:
+  - III Container-Bounded Execution: one bullet added (sidecar MAY be
+    privileged; the agent container MUST NOT gain any privilege for it; the
+    host engine socket MUST NEVER be mounted; the engine sessions control
+    MUST run rootless).
+Templates requiring updates: none (checked .specify/templates/*; principle-agnostic).
+  ✅ docs and CLAUDE.md updated by feature 046's own tasks (T044–T047).
+Follow-up TODOs: none.
+
+Prior report (7.2.0):
 Version change: 7.1.0 → 7.2.0
 Bump rationale: MINOR. Feature 044 (orchestrator-owned target pack, research
   R11). The pack is supplied by the orchestrator into each feature worktree,
@@ -546,6 +562,13 @@ Headless sessions run without a human to approve tool calls. There is exactly
   worktrees, so such a session never sees them; the pack MUST NOT add denials
   to it, and it stays under the human's own Claude Code permission settings
   and prompts;
+- an opt-in **container-engine sidecar** MAY hold elevated privileges, because
+  it is a separate container that only the operator's explicit `--docker`
+  option creates. The agent container MUST NOT gain any privilege, capability,
+  device or socket mount for it; the host engine's control socket MUST NEVER be
+  mounted into any container; and the engine that sessions control MUST run
+  rootless, so that privilege requested through it (`--privileged`, `--device`,
+  host namespaces) cannot reach the host;
 - the correctness gates (branch drift, artifact substance, incomplete
   session, analyze, clarify) and the session deadlines are not containment.
   They are unaffected by this principle.
@@ -1005,4 +1028,4 @@ deviation already is. Reviews and PRs MUST verify compliance with these
 principles; the constitution and the implementation plan together are the
 runtime guidance for autonomous and human contributors alike.
 
-**Version**: 7.2.0 | **Ratified**: 2026-07-11 | **Last Amended**: 2026-10-16
+**Version**: 7.3.0 | **Ratified**: 2026-07-11 | **Last Amended**: 2026-10-23

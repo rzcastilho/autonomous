@@ -111,6 +111,28 @@ Console Configuration shows an "agent root" row via `AgentRootView` (`:hidden |
 `scripts/container-smoke.sh sysdeps`. See `docs/container.md`, `docs/enforcement.md`,
 `docs/runbook.md`.
 
+## Container engine sidecar (feature 046)
+
+Opt-in rootless container engine for targets whose build/tests start containers.
+`scripts/autonomous build --docker` (`WITH_DOCKER=1`: pinned static `docker` + compose/buildx
+in `base`, plus the `engine` stage → `autonomous-engine:local`); `shell|console|release
+--docker` add `compose.engine.yaml`: a `privileged` sidecar running a **rootless** engine on
+`tcp://127.0.0.1:2375`, repo/state mounted at the same paths, labelled storage volume
+(`dev.autonomous.kind=engine-storage`). Agent services use `network_mode: service:engine`
+(hostname/port/extra-host reset) and gain no privilege; the host `docker.sock` is never
+mounted (`container_engine_guard_test`). Wrapper refuses with exit 77 (sidecar could not
+start) or 78 (not ready within `AUTONOMOUS_ENGINE_TIMEOUT`, default 60 s), removing what it
+created; 5/3 for missing client/old Compose; `stop` detects the labelled sidecar, `--purge`
+and `reset-cache --engine` clear storage. Entrypoint step `container_engine` probes, sweeps,
+then exports `AUTONOMOUS_CONTAINER_ENGINE=1`. `Autonomous.ContainerEngine` (advertisement
+from env, prompt note via `PhaseRequest` `:container_engine`, `cleanup/1`) removes all
+containers/networks/volumes — never images — in `FeatureRunner` `try … after` around every
+phase step (implement once, after all chunks), pre-phase remediation and describe; failure
+logs and never changes an outcome; not advertised ⇒ zero calls. Configuration "container
+engine" row via `Web.ContainerEngineView` (async probe; hidden unless requested). No store
+change. Constitution 7.3.0 (Principle III). Smoke: `scripts/container-smoke.sh engine`. See
+`docs/container.md`, `docs/enforcement.md`, `docs/runbook.md`, `specs/046-docker-sidecar/`.
+
 ## User-defined volumes (feature 041)
 
 Operator-declared Docker named volumes keep a target's toolchains/caches/build output across

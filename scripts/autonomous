@@ -2,21 +2,22 @@
 # The documented entry point for operating the orchestrator (feature 031, FR-003).
 # Contract: specs/031-containerized-runtime/contracts/wrapper-cli.md
 #
-#   scripts/autonomous build [--release] [--web] [--desktop] [--android] [--apt "<pkg> ..."] [--agent-root]
-#   scripts/autonomous shell   --target <repo> [--port <n>] [--with-login]
-#   scripts/autonomous console --target <repo> [--port <n>] [--with-login]
-#   scripts/autonomous release --target <repo> [--port <n>] [--with-login]
+#   scripts/autonomous build [--release] [--web] [--desktop] [--android] [--apt "<pkg> ..."] [--agent-root] [--docker]
+#   scripts/autonomous shell   --target <repo> [--port <n>] [--with-login] [--docker]
+#   scripts/autonomous console --target <repo> [--port <n>] [--with-login] [--docker]
+#   scripts/autonomous release --target <repo> [--port <n>] [--with-login] [--docker]
 #   scripts/autonomous remote  --target <repo>
 #   scripts/autonomous port    --target <repo>
 #   scripts/autonomous stop    --target <repo> [--purge]
 #   scripts/autonomous volumes --target <repo> [--init]
-#   scripts/autonomous reset-cache --target <repo> [--volume <name>]...
+#   scripts/autonomous reset-cache --target <repo> [--volume <name>]... [--engine]
 #   scripts/autonomous viewer  --target <repo>
 #   scripts/autonomous test  [mix test args]
 #
 # Requires Docker Engine + Compose v2 on Linux (other engines are unsupported).
 # Exit codes: 2 usage, 3 not Compose v2, 4 target not a git repo, 5 image not
-# built, 75 target already served, 76 console port busy.
+# built, 75 target already served, 76 console port busy, 77 the container-engine
+# sidecar could not start, 78 the engine was not ready in time (--docker, feature 046).
 set -eu
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -33,7 +34,7 @@ usage() {
   cat >&2 <<'EOF'
 usage: scripts/autonomous <command> [options]
 
-  build [--release] [--web] [--desktop] [--android] [--apt "<pkg> ..."] [--agent-root]
+  build [--release] [--web] [--desktop] [--android] [--apt "<pkg> ..."] [--agent-root] [--docker]
                                          build the dev image (autonomous-dev:local); --release also
                                          builds autonomous-release:local; --web/--desktop/--android
                                          add the opt-in testing capabilities (default: none)
@@ -47,9 +48,9 @@ usage: scripts/autonomous <command> [options]
                                          declared volumes
   volumes --target <repo> [--init]       print the target's volume declaration path, entries and
                                          validation result; --init writes a commented starter file
-  reset-cache --target <repo> [--volume <name>]...
+  reset-cache --target <repo> [--volume <name>]... [--engine]
                                          remove declared volumes of a stopped instance (all when no
-                                         --volume)
+                                         --volume); --engine removes the engine storage volume
   test  [mix test args]                  run the test suite inside the dev image
 
 options:
@@ -57,6 +58,11 @@ options:
                                          `sudo apt-get install` missing packages (build only)
   --apt <list>                           system packages to install into the image at build time
                                          (repeatable; space/comma separated; build only)
+  --docker                               container engine for sessions (feature 046): on build, install the
+                                         docker client and build the engine sidecar image; on shell/console/
+                                         release, start the rootless engine sidecar (needs an image built
+                                         with --docker; Compose >= 2.24.4)
+  --engine                               reset-cache only: remove the engine storage volume
   --with-login                           mount the host agent login (opt-in)
   --viewer                               serve the virtual display through noVNC on loopback
                                          (needs an image built with --desktop)
@@ -83,6 +89,8 @@ with_android=0
 viewer=0
 apt_packages=""
 with_agent_root=0
+with_docker=0
+reset_engine=0
 test_args=""
 
 # Validate and accumulate one --apt value (feature 037). Runs at parse time so a
@@ -130,6 +138,12 @@ else
       --desktop) with_desktop=1; shift ;;
       --android) with_android=1; shift ;;
       --viewer) viewer=1; shift ;;
+      --docker)
+        case "$cmd" in build | shell | console | release) ;; *) err "unknown option '$1'"; usage ;; esac
+        with_docker=1; shift ;;
+      --engine)
+        [ "$cmd" = reset-cache ] || { err "unknown option '$1'"; usage; }
+        reset_engine=1; shift ;;
       --agent-root)
         [ "$cmd" = build ] || { err "unknown option '$1'"; usage; }
         with_agent_root=1; shift ;;
@@ -154,6 +168,16 @@ esac
 [ "$compose_major" -ge 2 ] \
   || die 3 "Docker Compose v2 is required (found: $compose_version); other engines are unsupported"
 
+# Version gate for the container-engine overlay (`!reset`, `up --wait-timeout`).
+compose_at_least() { # compose_at_least <major.minor.patch>
+  cal_have="$(printf '%s' "$compose_version" | sed 's/^v//; s/[^0-9.].*//')"
+  [ "$(printf '%s\n%s\n' "$1" "$cal_have" | sort -t. -k1,1n -k2,2n -k3,3n | head -n1)" = "$1" ]
+}
+if [ "$with_docker" = 1 ]; then
+  compose_at_least 2.24.4 \
+    || die 3 "--docker needs Docker Compose >= 2.24.4 (found: $compose_version)"
+fi
+
 # ---- environment shared by every compose call ------------------------------------
 state_root="$HOME/.autonomous"
 # Bind-mount sources must exist: Docker would otherwise create them root-owned.
@@ -176,7 +200,9 @@ if [ "$with_login" = 1 ]; then
   compose_files="$compose_files -f compose.claude-login.yaml"
 fi
 
-if [ "$viewer" = 1 ]; then
+# With the engine sidecar the viewer port lives on the sidecar (compose.engine-viewer.yaml,
+# added with the engine overlay) because the agent services share its network namespace.
+if [ "$viewer" = 1 ] && [ "$with_docker" != 1 ]; then
   compose_files="$compose_files -f compose.desktop-viewer.yaml"
 fi
 if [ "$with_android" = 1 ] && [ "$cmd" != build ]; then
@@ -381,6 +407,12 @@ wait_for_console() { # wait_for_console <project> <service>
           code="${state#* }"
           # shellcheck disable=SC2086
           logs="$(docker compose -p "$1" $compose_files logs --no-log-prefix "$2" 2>&1 | tail -n 20)"
+          if [ "$with_docker" = 1 ]; then
+            # The agent is gone (e.g. the entrypoint's engine probe returned 78): do not
+            # leave the sidecar running. No -v — the engine storage survives.
+            # shellcheck disable=SC2086
+            docker compose -p "$1" $compose_files down >/dev/null 2>&1 || true
+          fi
           if [ "$code" = 75 ]; then
             err "$(printf '%s\n' "$logs" | grep 'already served' | tail -n1 | sed 's/^autonomous: //')"
             exit 75
@@ -396,12 +428,79 @@ wait_for_console() { # wait_for_console <project> <service>
   done
 }
 
+# ---- container engine sidecar (feature 046, contracts/wrapper-cli.md) -------------
+ENGINE_IMAGE="autonomous-engine:local"
+
+# Preconditions, checked before any container or volume exists: the engine image is
+# built (5) and the agent image carries the docker client + compose + buildx (5).
+engine_preconditions() { # engine_preconditions <agent image>
+  docker image inspect "$ENGINE_IMAGE" >/dev/null 2>&1 \
+    || die 5 "image $ENGINE_IMAGE not found; run scripts/autonomous build --docker"
+  docker run --rm --entrypoint sh "$1" -c \
+    'command -v docker && docker compose version && docker buildx version' >/dev/null 2>&1 \
+    || die 5 "image $1 has no docker client; run scripts/autonomous build --docker"
+}
+
+# Adds the sidecar overlay (and its viewer variant) once everything that needs the
+# overlay-free file list (identity lookup) has run. $segment is exported because the
+# overlay labels the storage volume with it.
+engine_overlay() {
+  AUTONOMOUS_INSTANCE_SEGMENT="$segment"
+  export AUTONOMOUS_INSTANCE_SEGMENT
+  compose_files="$compose_files -f compose.engine.yaml"
+  if [ "$viewer" = 1 ]; then
+    compose_files="$compose_files -f compose.engine-viewer.yaml"
+  fi
+}
+
+# Removes the sidecar container; the engine storage volume is kept.
+engine_remove() { # engine_remove <project>
+  # shellcheck disable=SC2086
+  docker compose -p "$1" $compose_files rm -sf engine >/dev/null 2>&1 || true
+}
+
+# Starts the sidecar and waits for its healthcheck within the bound. On any failure
+# the sidecar is removed again and the start is refused: 76 (console port taken),
+# 77 (the host runtime refused it) or 78 (not ready in time). Never degrades to
+# starting without the engine (FR-012).
+engine_up() { # engine_up <project>
+  eu_bound="${AUTONOMOUS_ENGINE_TIMEOUT:-60}"
+  eu_rc=0
+  # shellcheck disable=SC2086
+  eu_out="$(docker compose -p "$1" $compose_files up -d --no-build --pull never \
+    --wait --wait-timeout "$eu_bound" engine 2>&1)" || eu_rc=$?
+  [ "$eu_rc" != 0 ] || return 0
+
+  # shellcheck disable=SC2086
+  eu_logs="$(docker compose -p "$1" $compose_files logs --no-log-prefix --tail 20 engine 2>&1 || true)"
+  engine_remove "$1"
+  if printf '%s' "$eu_out" | grep -Eqi 'port is already allocated|address already in use'; then
+    die 76 "console port $port is already in use on 127.0.0.1"
+  fi
+  if printf '%s\n%s' "$eu_out" "$eu_logs" | grep -Eqi 'privileged|operation not permitted|rootless|cannot be run in'; then
+    printf '%s\n' "$eu_out" >&2
+    die 77 "the container-engine sidecar could not start: the host runtime refused a privileged container. Run on Docker Engine (Linux) or Docker Desktop with privileged containers allowed"
+  fi
+  printf '%s\n' "$eu_out" >&2
+  printf '%s\n' "$eu_logs" >&2
+  die 78 "the container engine was not ready within ${eu_bound}s. Last engine log lines are above; reset a broken store with: scripts/autonomous reset-cache --target $target --engine, check host disk space, or raise AUTONOMOUS_ENGINE_TIMEOUT"
+}
+
 case "$cmd" in
   build)
     AUTONOMOUS_REPO="$root"
     export AUTONOMOUS_REPO
     services="dev"
     [ "$build_release" = 1 ] && services="dev release"
+    if [ "$with_docker" = 1 ]; then
+      # The client is a build arg (no-op unless 1); the sidecar image is its own service.
+      WITH_DOCKER=1
+      export WITH_DOCKER
+      AUTONOMOUS_INSTANCE_SEGMENT="bootstrap"
+      export AUTONOMOUS_INSTANCE_SEGMENT
+      compose_files="$compose_files -f compose.engine.yaml"
+      services="$services engine"
+    fi
     # Capabilities are build args; each is a no-op in the Dockerfile unless 1.
     WITH_WEB="$with_web"; WITH_DESKTOP="$with_desktop"; WITH_ANDROID="$with_android"
     export WITH_WEB WITH_DESKTOP WITH_ANDROID
@@ -430,10 +529,28 @@ case "$cmd" in
     segment="$(env_value "$identity" AUTONOMOUS_INSTANCE_SEGMENT)"
     down_flags=""
     [ "$purge" = 1 ] && down_flags="-v"
+    # Feature 046: an instance started with --docker owns an engine sidecar container.
+    # Detect it by compose labels (running or exited) and take the overlay down with the
+    # rest; without one, the `down` below is exactly the pre-046 call.
+    engine_found="$(docker ps -a \
+      --filter "label=com.docker.compose.project=autonomous-$segment" \
+      --filter "label=com.docker.compose.service=engine" --format '{{.Names}}' 2>/dev/null | head -n1)"
+    if [ -n "$engine_found" ]; then
+      AUTONOMOUS_INSTANCE_SEGMENT="$segment"
+      export AUTONOMOUS_INSTANCE_SEGMENT
+      compose_files="$compose_files -f compose.engine.yaml"
+    fi
     # shellcheck disable=SC2086
     docker compose -p "autonomous-$segment" $compose_files down $down_flags \
       || die 1 "could not stop the instance for $target"
     if [ "$purge" = 1 ]; then
+      # Feature 046: the engine storage volume (images + build cache) of this segment.
+      for pe in $(docker volume ls -q \
+        --filter "label=dev.autonomous.kind=engine-storage" \
+        --filter "label=dev.autonomous.segment=$segment" 2>/dev/null); do
+        docker volume rm "$pe" >/dev/null || die 1 "could not remove volume $pe"
+        say "$pe removed"
+      done
       # Feature 041 (research.md R12): every labelled user volume of this segment,
       # declared or not. Plain `stop` touches none.
       for pv in $(docker volume ls -q \
@@ -459,10 +576,32 @@ case "$cmd" in
     [ -z "$pinned" ] \
       || die 75 "target $target is served by $pinned; stop it first: scripts/autonomous stop --target $target"
 
+    # Feature 046: --engine removes only the engine storage volume of this segment (images
+    # and build cache). Declared volumes are left alone unless --volume is also given.
+    engine_rc=0
+    if [ "$reset_engine" = 1 ]; then
+      engine_vols="$(docker volume ls -q \
+        --filter "label=dev.autonomous.kind=engine-storage" \
+        --filter "label=dev.autonomous.segment=$segment" 2>/dev/null)"
+      if [ -z "$engine_vols" ]; then
+        say "engine storage not present"
+      else
+        for ev in $engine_vols; do
+          if docker volume rm "$ev" >/dev/null; then
+            say "engine storage removed"
+          else
+            err "could not remove volume $ev"
+            engine_rc=1
+          fi
+        done
+      fi
+      [ -n "$volume_names" ] || exit "$engine_rc"
+    fi
+
     volumes_declaration_path "$segment"
     if [ ! -f "$volumes_file" ]; then
       say "no declared volumes"
-      exit 0
+      exit "$engine_rc"
     fi
     select_args=""
     for vn in $volume_names; do select_args="$select_args --volume $vn"; done
@@ -472,10 +611,10 @@ case "$cmd" in
     [ "$sel_rc" = 0 ] || exit "$sel_rc"
     if [ -z "$selected" ]; then
       say "no declared volumes"
-      exit 0
+      exit "$engine_rc"
     fi
 
-    rc=0
+    rc="$engine_rc"
     for vn in $selected; do
       dn="autonomous-${segment}_vol-$vn"
       if ! docker volume inspect "$dn" >/dev/null 2>&1; then
@@ -527,6 +666,7 @@ case "$cmd" in
     node_name="$(env_value "$identity" AUTONOMOUS_NODE_NAME)"
     [ -n "$segment" ] || die 1 "could not derive the instance identity for $target"
 
+    [ "$with_docker" != 1 ] || engine_preconditions "$DEV_IMAGE"
     volumes_prepare "$DEV_IMAGE"
     choose_port
     print_summary
@@ -534,6 +674,18 @@ case "$cmd" in
 
     tty_flag=""
     [ -t 0 ] || tty_flag="-T"
+    if [ "$with_docker" = 1 ]; then
+      # A foreground `run` cannot `exec`: the sidecar must be removed on every exit
+      # path, so the wrapper stays alive and exits with the session's status.
+      project="autonomous-$segment"
+      engine_overlay
+      trap 'engine_remove "$project"' EXIT
+      engine_up "$project"
+      sh_rc=0
+      # shellcheck disable=SC2086
+      docker compose -p "$project" $compose_files run --rm $tty_flag dev shell || sh_rc=$?
+      exit "$sh_rc"
+    fi
     # shellcheck disable=SC2086
     exec docker compose -p "autonomous-$segment" $compose_files \
       run --rm --service-ports $tty_flag dev shell
@@ -553,6 +705,7 @@ case "$cmd" in
     [ -n "$segment" ] || die 1 "could not derive the instance identity for $target"
 
     project="autonomous-$segment"
+    [ "$with_docker" != 1 ] || engine_preconditions "$image"
     volumes_prepare "$image"
     # `up -d` would recreate a running instance of this project with the new port
     # and silently replace it; refuse instead (the entrypoint lock covers the
@@ -572,6 +725,11 @@ PY
     print_summary
     volumes_apply "$image"
 
+    if [ "$with_docker" = 1 ]; then
+      engine_overlay
+      engine_up "$project"
+    fi
+
     # A port taken between the check above and the bind is translated too (76).
     # shellcheck disable=SC2086
     if ! up_out="$(docker compose -p "$project" $compose_files up -d --no-build --pull never "$service" 2>&1)"; then
@@ -579,6 +737,10 @@ PY
         die 76 "console port $port is already in use on 127.0.0.1"
       fi
       printf '%s\n' "$up_out" >&2
+      if [ "$with_docker" = 1 ]; then
+        # shellcheck disable=SC2086
+        docker compose -p "$project" $compose_files down >/dev/null 2>&1 || true
+      fi
       die 1 "could not start the $service for $target"
     fi
     wait_for_console "$project" "$service"
@@ -616,10 +778,15 @@ PY
     segment="$(env_value "$identity" AUTONOMOUS_INSTANCE_SEGMENT)"
     [ -n "$segment" ] || die 1 "could not derive the instance identity for $target"
 
-    # Any running service of the project (shell, console, release) publishes 4000.
-    cid="$(docker ps -q --filter "label=com.docker.compose.project=autonomous-$segment" | head -n1)"
-    [ -n "$cid" ] || die 1 "no running instance for $target"
-    published="$(docker port "$cid" 4000/tcp 2>/dev/null | head -n1)"
+    # Any running container of the project publishes 4000: the agent service, or with
+    # --docker (feature 046) the engine sidecar that owns the shared network namespace.
+    cids="$(docker ps -q --filter "label=com.docker.compose.project=autonomous-$segment")"
+    [ -n "$cids" ] || die 1 "no running instance for $target"
+    published=""
+    for cid in $cids; do
+      published="$(docker port "$cid" 4000/tcp 2>/dev/null | head -n1)"
+      [ -z "$published" ] || break
+    done
     [ -n "$published" ] || die 1 "instance for $target publishes no console port"
     say "console  http://${published}/"
     ;;
@@ -632,9 +799,13 @@ PY
     segment="$(env_value "$identity" AUTONOMOUS_INSTANCE_SEGMENT)"
     [ -n "$segment" ] || die 1 "could not derive the instance identity for $target"
 
-    cid="$(docker ps -q --filter "label=com.docker.compose.project=autonomous-$segment" | head -n1)"
-    [ -n "$cid" ] || die 1 "no running instance for $target"
-    published="$(docker port "$cid" 6080/tcp 2>/dev/null | head -n1)"
+    cids="$(docker ps -q --filter "label=com.docker.compose.project=autonomous-$segment")"
+    [ -n "$cids" ] || die 1 "no running instance for $target"
+    published=""
+    for cid in $cids; do
+      published="$(docker port "$cid" 6080/tcp 2>/dev/null | head -n1)"
+      [ -z "$published" ] || break
+    done
     [ -n "$published" ] || die 1 "instance for $target publishes no viewer; start it with --viewer"
     say "viewer   http://${published}/vnc.html"
     ;;

@@ -132,6 +132,43 @@ agent_root() {
   fi
 }
 
+# Advertise the container engine (feature 046) only after a positive probe. The
+# overlay sets AUTONOMOUS_CONTAINER_ENGINE_REQUESTED=1; a value for the advertisement
+# itself from .env or compose is never honoured (always unset first). Not requested:
+# silent, zero docker calls. Requested but unusable: refuse (78) so the wrapper tears
+# the sidecar down — never run a session that believes it has an engine and has none.
+container_engine() {
+  unset AUTONOMOUS_CONTAINER_ENGINE AUTONOMOUS_CONTAINER_ENGINE_VERSION
+  [ "${AUTONOMOUS_CONTAINER_ENGINE_REQUESTED:-}" = 1 ] || return 0
+  if ! command -v docker >/dev/null 2>&1; then
+    say "the container engine was requested but this image has no docker client (build with scripts/autonomous build --docker)"
+    exit 78
+  fi
+  ce_bound="${AUTONOMOUS_ENGINE_TIMEOUT:-60}"
+  ce_deadline=$(( $(date +%s) + ce_bound ))
+  while :; do
+    if ce_version="$(docker version --format '{{.Server.Version}}' 2>/dev/null)" && [ -n "$ce_version" ]; then
+      break
+    fi
+    if [ "$(date +%s)" -ge "$ce_deadline" ]; then
+      ce_err="$(docker version --format '{{.Server.Version}}' 2>&1 >/dev/null | tail -n1 || true)"
+      say "the container engine did not answer within ${ce_bound}s${ce_err:+ (last error: $ce_err)}"
+      exit 78
+    fi
+    sleep 1
+  done
+  # Instance-start sweep: nothing from a previous instance survives (images and build
+  # cache are kept). A failure here only warns — the engine answered.
+  ce_ids="$(docker ps -aq 2>/dev/null || true)"
+  # shellcheck disable=SC2086
+  { [ -z "$ce_ids" ] || docker rm -f -v $ce_ids >/dev/null 2>&1; } \
+    && docker network prune -f >/dev/null 2>&1 \
+    && docker volume prune -af >/dev/null 2>&1 \
+    || warn "could not sweep leftover engine containers, networks or volumes; the next phase boundary retries"
+  export AUTONOMOUS_CONTAINER_ENGINE=1 AUTONOMOUS_CONTAINER_ENGINE_VERSION="$ce_version"
+  say "container engine: available (engine $ce_version at ${DOCKER_HOST:-the default endpoint})"
+}
+
 # VM handover for the dev shape (feature 041). `mise exec` puts the mise tool
 # directories ahead of PATH, so declared volume path directories are re-prepended
 # inside it (the inner `sh` expands PATH after mise has set it). Unset/empty
@@ -165,6 +202,14 @@ fi
 if [ "$cmd" = "agent-root" ]; then
   agent_root
   printf 'AUTONOMOUS_AGENT_ROOT=%s\n' "${AUTONOMOUS_AGENT_ROOT:-0}"
+  exit 0
+fi
+
+# Smoke hook: run only the container-engine step and report what it decided.
+if [ "$cmd" = "container-engine" ]; then
+  container_engine
+  printf 'AUTONOMOUS_CONTAINER_ENGINE=%s VERSION=%s\n' \
+    "${AUTONOMOUS_CONTAINER_ENGINE:-0}" "${AUTONOMOUS_CONTAINER_ENGINE_VERSION:-}"
   exit 0
 fi
 
@@ -319,6 +364,9 @@ trust_workspaces
 
 # ---- 4d. Agent root: verify sudo and advertise it (feature 037) ------------------
 agent_root
+
+# ---- 4e. Container engine: probe, sweep and advertise it (feature 046) ----------
+container_engine
 
 # ---- 5. Warnings (FR-016) --------------------------------------------------------
 if [ -z "${ANTHROPIC_API_KEY:-}" ] && [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] \

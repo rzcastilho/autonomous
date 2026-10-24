@@ -4,7 +4,7 @@
 # FAIL. Sections are added per user story — see
 # specs/031-containerized-runtime/quickstart.md.
 #
-#   scripts/container-smoke.sh [us1|us2|us3|us4|us5|us6|secrets|trust|sysdeps|conversation|volumes]
+#   scripts/container-smoke.sh [us1|us2|us3|us4|us5|us6|secrets|trust|sysdeps|conversation|volumes|engine]
 #
 # Needs: Docker Engine + Compose v2, the image built (scripts/autonomous build).
 # Agent-auth checks (SC-011) spend a few cents and run only with SMOKE_AGENT=1.
@@ -925,6 +925,247 @@ env = { WIPE_DIR = \"$parent/wipe\" }"
   [ "$(vol_count "$seg")" = 0 ] && pass "stop --purge removed the declared volumes" || fail "volumes remain after purge"
 }
 
+# Feature 046: container engine sidecar. Hand-run against real images (needs
+# `scripts/autonomous build --docker`, Compose >= 2.24.4, a host that permits
+# privileged containers). SMOKE_IMAGE=autonomous-release:local runs it against the
+# release image. Steps follow specs/046-docker-sidecar/quickstart.md section 2.
+engine() {
+  echo "== Container engine sidecar (feature 046) =="
+
+  # Step 1: the image carries the client and both plugins.
+  if ! in_image 'command -v docker' >/dev/null 2>&1; then
+    skip "image $IMAGE has no docker client (build with scripts/autonomous build --docker)"
+    return
+  fi
+  check "step 1: docker, docker compose and docker buildx run in $IMAGE" \
+    in_image 'docker --version && docker compose version && docker buildx version'
+  docker image inspect autonomous-engine:local >/dev/null 2>&1 \
+    || { skip "autonomous-engine:local is not built (scripts/autonomous build --docker)"; return; }
+
+  service=console
+  case "$IMAGE" in
+    *release*)
+      service=release
+      AUTONOMOUS_SECRET_KEY_BASE="${AUTONOMOUS_SECRET_KEY_BASE:-$(python3 -c 'import secrets; print(secrets.token_hex(32))')}"
+      export AUTONOMOUS_SECRET_KEY_BASE ;;
+  esac
+
+  t="$(make_target engine-smoke)"
+  # The wrapper mounts the symlink-resolved path (/var -> /private/var on macOS); use the same.
+  t="$(cd "$t" && pwd -P)"
+  seg="$(basename "$(instance_dir_of "$t")")"
+  proj="autonomous-$seg"
+  port="$(free_port)"
+
+  # Step 2: a --docker instance reaches a ready engine through DOCKER_HOST.
+  started="$(date +%s)"
+  out="$(scripts/autonomous "$service" --target "$t" --port "$port" --docker 2>&1)" && rc=0 || rc=$?
+  if [ "$rc" != 0 ]; then
+    fail "step 2: start with --docker (exit $rc): $(printf '%s' "$out" | tail -n 3)"
+    engine_teardown "$t" "$proj"
+    return
+  fi
+  agent="$(docker ps -q --filter "label=com.docker.compose.project=$proj" --filter "label=com.docker.compose.service=$service" | head -n1)"
+  eng() { docker exec -i "$agent" sh -c "$1"; }
+  ver="$(eng 'docker version --format "{{.Server.Version}}"' 2>/dev/null)"
+  if [ -n "$ver" ]; then
+    pass "step 2: engine $ver reachable through DOCKER_HOST ($(( $(date +%s) - started ))s from start to console)"
+  else
+    fail "step 2: no server version from the engine"
+  fi
+
+  # Step 3: a bind mount of the target resolves to the same files, and what a
+  # container writes there is owned by the operator.
+  eng "echo hello > '$t/smoke-f' && docker pull -q alpine:3 >/dev/null" >/dev/null 2>&1
+  got="$(eng "docker run --rm -v '$t:$t' alpine:3 sh -c 'cat $t/smoke-f; echo x > $t/smoke-g'" 2>/dev/null)"
+  if [ "$got" = hello ] && [ "$(eng "stat -c %u '$t/smoke-g'" 2>/dev/null)" = "$(id -u)" ]; then
+    pass "step 3: worktree mount round-trip; the written file is owned by uid $(id -u)"
+  else
+    fail "step 3: mount round-trip (read '$got')"
+  fi
+
+  # Step 4: a published port answers on localhost, in the agent's own namespace.
+  eng 'docker run -d --name smoke-web -p 18080:80 nginx:alpine' >/dev/null 2>&1
+  i=0
+  until eng 'curl -sf http://localhost:18080/' >/dev/null 2>&1 || [ "$i" -ge 20 ]; do i=$((i + 1)); sleep 1; done
+  check "step 4: published port reachable on localhost" eng 'curl -sf http://localhost:18080/'
+  eng 'docker rm -f -v smoke-web' >/dev/null 2>&1
+
+  # Step 5: a two-service compose stack: name resolution, a relative bind mount, a
+  # published port and a build: service; up --wait, probe, down; nothing left.
+  eng "mkdir -p '$t/stack/data' '$t/stack/b' && echo data > '$t/stack/data/f' \
+    && printf 'FROM alpine:3\nRUN echo built > /built\n' > '$t/stack/b/Dockerfile' \
+    && cat > '$t/stack/compose.yaml' <<'YAML'
+services:
+  db:
+    image: nginx:alpine
+    ports: ['18081:80']
+    volumes: ['./data:/usr/share/nginx/html/data:ro']
+  built:
+    build: ./b
+    command: ['sleep', '600']
+  probe:
+    image: alpine:3
+    depends_on: { db: { condition: service_started } }
+    command: ['sh', '-c', 'sleep 1; wget -qO- http://db/data/f']
+YAML" >/dev/null 2>&1
+  if eng "cd '$t/stack' && docker compose up -d --wait db built" >/dev/null 2>&1 \
+    && [ "$(eng "cd '$t/stack' && docker compose run --rm probe" 2>/dev/null | tr -d '\r')" = data ] \
+    && eng 'curl -sf http://localhost:18081/data/f' >/dev/null 2>&1; then
+    pass "step 5: two-service stack (name resolution, relative mount, published port, build:)"
+  else
+    fail "step 5: compose stack"
+  fi
+  eng "cd '$t/stack' && docker compose down -v --remove-orphans" >/dev/null 2>&1
+  left="$(eng 'docker ps -aq; docker network ls -q --filter type=custom' 2>/dev/null | tr -d '[:space:]')"
+  [ -z "$left" ] && pass "step 5: nothing left after the stack came down" || fail "step 5: residue after down: $left"
+
+  # Step 6: the session sees only the sidecar's engine, never the host's containers.
+  host_ids="$(docker ps -aq | sort)"
+  sess_ids="$(eng 'docker ps -aq' 2>/dev/null | tr -d '\r' | sort)"
+  if [ -z "$sess_ids" ] || [ -z "$(comm -12 <(printf '%s\n' "$host_ids") <(printf '%s\n' "$sess_ids"))" ]; then
+    pass "step 6: docker ps -a from the session lists none of the host's containers"
+  else
+    fail "step 6: the session sees host containers"
+  fi
+
+  # Step 7: the agent container is exactly as unprivileged as without --docker.
+  priv="$(docker inspect -f '{{.HostConfig.Privileged}}|{{len .HostConfig.CapAdd}}|{{len .HostConfig.Devices}}' "$agent")"
+  [ "$priv" = "false|0|0" ] && pass "step 7: agent Privileged=false, no CapAdd, no Devices" || fail "step 7: agent privilege is $priv"
+
+  # Step 8: even --privileged and a host-root bind land in the sidecar, not on the host.
+  eng 'docker pull -q alpine:3' >/dev/null 2>&1
+  root_ls="$(eng 'docker run --rm -v /:/host alpine:3 ls /host/home' 2>/dev/null | tr -d '\r')"
+  if printf '%s\n' "$root_ls" | grep -qx rootless && ! printf '%s\n' "$root_ls" | grep -qx "$(id -un)"; then
+    pass "step 8: -v /:/host shows the sidecar filesystem, not the host's"
+  else
+    fail "step 8: -v /:/host listing: $root_ls"
+  fi
+  disk="$(eng 'docker run --rm --privileged alpine:3 sh -c "mkdir -p /m && mount /dev/sda1 /m 2>&1 || mount /dev/vda1 /m 2>&1" ' 2>&1 || true)"
+  case "$disk" in
+    *"Operation not permitted"* | *"Permission denied"* | *"No such file"*) pass "step 8: a --privileged container cannot mount a host disk" ;;
+    "") fail "step 8: a --privileged container mounted a host disk" ;;
+    *) pass "step 8: a --privileged container cannot mount a host disk ($(printf '%s' "$disk" | head -n1))" ;;
+  esac
+  published="$(docker port "$(docker ps -q --filter "label=com.docker.compose.project=$proj" --filter "label=com.docker.compose.service=engine" | head -n1)")"
+  if printf '%s\n' "$published" | grep -q '4000/tcp' && ! printf '%s\n' "$published" | grep -q 2375; then
+    pass "step 8: host publishes only the console port (2375 absent)"
+  else
+    fail "step 8: published ports: $published"
+  fi
+
+  # Step 9: the phase-boundary sweep (the same commands ContainerEngine.cleanup runs)
+  # removes containers, networks and volumes but keeps images.
+  eng "docker network create smoke-net && docker volume create smoke-vol \
+    && docker run -d --name smoke-keep --network smoke-net -v smoke-vol:/d alpine:3 sleep 600" >/dev/null 2>&1
+  eng 'ids="$(docker ps -aq)"; [ -z "$ids" ] || docker rm -f -v $ids; docker network prune -f; docker volume prune -af' >/dev/null 2>&1
+  left="$(eng 'docker ps -aq; docker network ls -q --filter type=custom; docker volume ls -q' 2>/dev/null | tr -d '[:space:]')"
+  images="$(eng 'docker images -q alpine:3' 2>/dev/null | tr -d '[:space:]')"
+  if [ -z "$left" ] && [ -n "$images" ]; then
+    pass "step 9: sweep left no containers/networks/volumes and kept the image"
+  else
+    fail "step 9: sweep residue '$left', image '$images'"
+  fi
+
+  # Step 10: images survive stop -> start (no download).
+  scripts/autonomous stop --target "$t" >/dev/null 2>&1
+  out="$(scripts/autonomous "$service" --target "$t" --port "$(free_port)" --docker 2>&1)" && rc=0 || rc=$?
+  agent="$(docker ps -q --filter "label=com.docker.compose.project=$proj" --filter "label=com.docker.compose.service=$service" | head -n1)"
+  if [ "$rc" = 0 ] && [ -n "$(eng 'docker images -q alpine:3' 2>/dev/null | tr -d '[:space:]')" ]; then
+    pass "step 10: the pulled image survived stop and start"
+  else
+    fail "step 10: image gone after restart (exit $rc)"
+  fi
+
+  # Step 11: stop --purge empties the engine; a second target is isolated from the first.
+  t2="$(make_target engine-smoke2)"
+  t2="$(cd "$t2" && pwd -P)"
+  scripts/autonomous stop --target "$t" --purge >/dev/null 2>&1
+  out="$(scripts/autonomous "$service" --target "$t" --port "$(free_port)" --docker 2>&1)" && rc=0 || rc=$?
+  agent="$(docker ps -q --filter "label=com.docker.compose.project=$proj" --filter "label=com.docker.compose.service=$service" | head -n1)"
+  if [ "$rc" = 0 ] && [ -z "$(eng 'docker images -q' 2>/dev/null | tr -d '[:space:]')" ]; then
+    pass "step 11: after stop --purge the engine starts empty"
+  else
+    fail "step 11: engine not empty after purge (exit $rc)"
+  fi
+  eng 'docker pull -q alpine:3' >/dev/null 2>&1
+  seg2="$(basename "$(instance_dir_of "$t2")")"
+  proj2="autonomous-$seg2"
+  if scripts/autonomous "$service" --target "$t2" --port "$(free_port)" --docker >/dev/null 2>&1; then
+    agent2="$(docker ps -q --filter "label=com.docker.compose.project=$proj2" --filter "label=com.docker.compose.service=$service" | head -n1)"
+    if [ -z "$(docker exec "$agent2" docker images -q 2>/dev/null | tr -d '[:space:]')" ]; then
+      pass "step 11: a second target's engine does not see the first target's images"
+    else
+      fail "step 11: engine storage is shared between targets"
+    fi
+  else
+    fail "step 11: second target did not start with --docker"
+  fi
+  engine_teardown "$t2" "$proj2"
+
+  # Step 12: reset-cache --engine on a stopped instance removes only the storage volume.
+  scripts/autonomous stop --target "$t" >/dev/null 2>&1
+  seg_label="${proj#autonomous-}"
+  before="$(docker volume ls -q --filter "label=dev.autonomous.segment=$seg_label" | wc -l | tr -d ' ')"
+  out="$(scripts/autonomous reset-cache --target "$t" --engine 2>&1)" && rc=0 || rc=$?
+  after="$(docker volume ls -q --filter "label=dev.autonomous.segment=$seg_label" | wc -l | tr -d ' ')"
+  eng_left="$(docker volume ls -q --filter "label=dev.autonomous.kind=engine-storage" --filter "label=dev.autonomous.segment=$seg_label")"
+  if [ "$rc" = 0 ] && [ -z "$eng_left" ] && [ "$after" = "$((before - 1))" ]; then
+    pass "step 12: reset-cache --engine removed only the engine storage ($out)"
+  else
+    fail "step 12: reset-cache --engine (exit $rc, volumes $before -> $after): $out"
+  fi
+
+  # Step 13: the probe the Configuration row runs (`docker version --format
+  # '{{.Server.Version}}'`) answers while the engine is up and fails once it is stopped.
+  # (The rendered row is a LiveView check: see quickstart.md section 2, step 13.)
+  out="$(scripts/autonomous "$service" --target "$t" --port "$(free_port)" --docker 2>&1)" && rc=0 || rc=$?
+  agent="$(docker ps -q --filter "label=com.docker.compose.project=$proj" --filter "label=com.docker.compose.service=$service" | head -n1)"
+  probe='docker version --format "{{.Server.Version}}"'
+  if [ "$rc" = 0 ] && [ -n "$(eng "$probe" 2>/dev/null | tr -d '[:space:]')" ]; then
+    engine_cid="$(docker ps -q --filter "label=com.docker.compose.project=$proj" --filter "label=com.docker.compose.service=engine" | head -n1)"
+    docker stop "$engine_cid" >/dev/null 2>&1
+    if eng "timeout 8 $probe" >/dev/null 2>&1; then
+      fail "step 13: the probe still answers after the engine was stopped"
+    else
+      pass "step 13: probe answers with the engine up and fails once it is stopped"
+    fi
+  else
+    fail "step 13: no probe answer from a freshly started --docker instance (exit $rc)"
+  fi
+  engine_teardown "$t" "$proj"
+
+  # Step 14: an instance started without --docker has no engine container and no DOCKER_HOST.
+  t3="$(make_target engine-smoke3)"
+  t3="$(cd "$t3" && pwd -P)"
+  seg3="$(basename "$(instance_dir_of "$t3")")"
+  proj3="autonomous-$seg3"
+  if scripts/autonomous "$service" --target "$t3" --port "$(free_port)" >/dev/null 2>&1; then
+    agent3="$(docker ps -q --filter "label=com.docker.compose.project=$proj3" --filter "label=com.docker.compose.service=$service" | head -n1)"
+    n_engine="$(docker ps -aq --filter "label=com.docker.compose.project=$proj3" --filter "label=com.docker.compose.service=engine" | wc -l | tr -d ' ')"
+    dh="$(docker exec "$agent3" sh -c 'printf %s "${DOCKER_HOST:-}${AUTONOMOUS_CONTAINER_ENGINE_REQUESTED:-}"' 2>/dev/null)"
+    if [ "$n_engine" = 0 ] && [ -z "$dh" ]; then
+      pass "step 14: an instance without --docker has no engine container and no DOCKER_HOST"
+    else
+      fail "step 14: engine containers=$n_engine, engine env='$dh'"
+    fi
+  else
+    fail "step 14: instance without --docker did not start"
+  fi
+  purge_target "$t3"
+}
+
+# Remove an engine smoke instance: the wrapper's own stop --purge, then a label-based
+# sweep so a half-started instance never leaks a sidecar or its storage volume.
+engine_teardown() { # engine_teardown <target> <project>
+  purge_target "$1"
+  ids="$(docker ps -aq --filter "label=com.docker.compose.project=$2")"
+  # shellcheck disable=SC2086
+  [ -z "$ids" ] || docker rm -f -v $ids >/dev/null 2>&1
+  for v in $(docker volume ls -q --filter "label=dev.autonomous.kind=engine-storage" \
+    --filter "label=dev.autonomous.segment=${2#autonomous-}"); do docker volume rm "$v" >/dev/null 2>&1; done
+}
+
 section="${1:-all}"
 case "$section" in
   us1) us1 ;;
@@ -938,8 +1179,9 @@ case "$section" in
   sysdeps) sysdeps ;;
   conversation) conversation ;;
   volumes) volumes ;;
-  all) us1; us2; us3; us4; us5; us6; secrets; trust; sysdeps; conversation; volumes ;;
-  *) echo "usage: scripts/container-smoke.sh [us1|us2|us3|us4|us5|us6|secrets|trust|sysdeps|conversation|volumes]" >&2; exit 2 ;;
+  engine) engine ;;
+  all) us1; us2; us3; us4; us5; us6; secrets; trust; sysdeps; conversation; volumes; engine ;;
+  *) echo "usage: scripts/container-smoke.sh [us1|us2|us3|us4|us5|us6|secrets|trust|sysdeps|conversation|volumes|engine]" >&2; exit 2 ;;
 esac
 
 echo

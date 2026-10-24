@@ -1,0 +1,104 @@
+# Opt-in (feature 046): an isolated, rootless container engine in a sidecar.
+# Added by `scripts/autonomous ... --docker` (needs an image built with --docker,
+# `scripts/autonomous build --docker`). Needs Docker Compose >= 2.24.4 (`!reset`).
+# Contract: specs/046-docker-sidecar/contracts/build-and-compose.md
+#
+# - ONLY `engine` is elevated (privileged: true — rootlesskit needs it for its user
+#   namespace). The daemon inside runs rootless as the operator's uid, so
+#   `docker run --privileged` from a session cannot reach the host (constitution III).
+# - The agent services join the sidecar's network namespace: `localhost:<published
+#   port>` works in sessions. The sidecar therefore owns the hostname, the console
+#   port and the host.docker.internal mapping; the agent services lose those keys.
+# - The engine endpoint is tcp://127.0.0.1:2375 on that shared loopback and is NEVER
+#   published. No host engine socket is mounted anywhere.
+# - The repo and the state root are mounted at the SAME paths as in the agent
+#   container, so the engine resolves bind-mount sources to the same files.
+
+# `!reset` is NOT honoured through a YAML alias (Compose drops the tag), so the
+# resets are spelled out on each agent service; only the plain environment map is shared.
+x-engine-env: &engine-env
+  DOCKER_HOST: "tcp://127.0.0.1:2375"
+  # Test container libraries: the engine's "host" is the shared loopback, and the
+  # reaper mounts the rootless daemon's socket as it exists INSIDE the sidecar.
+  TESTCONTAINERS_HOST_OVERRIDE: "127.0.0.1"
+  TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE: "/run/user/${AUTONOMOUS_UID}/docker.sock"
+  # Set here only: the entrypoint advertises the engine after a positive probe.
+  AUTONOMOUS_CONTAINER_ENGINE_REQUESTED: "1"
+
+services:
+  engine:
+    image: autonomous-engine:local
+    pull_policy: never
+    build:
+      context: .
+      target: engine
+      args:
+        UID: "${AUTONOMOUS_UID:-1000}"
+        GID: "${AUTONOMOUS_GID:-1000}"
+        DOCKER_VERSION: "${DOCKER_VERSION:-29.9.2}" # keep equal to the Dockerfile default
+    privileged: true # the ONLY privileged container (FR-004)
+    init: true
+    hostname: autonomous # the Erlang node name's host part moves here (R2)
+    # Starting with `dockerd` bypasses the image's default listeners. The daemon runs
+    # inside rootlesskit's own network namespace, so it listens on 0.0.0.0 THERE and
+    # rootlesskit forwards only the sidecar's 127.0.0.1:2375 to it (never published).
+    command:
+      - dockerd
+      - "--host=unix:///run/user/${AUTONOMOUS_UID}/docker.sock"
+      - "--host=tcp://0.0.0.0:2375"
+    environment:
+      DOCKER_TLS_CERTDIR: ""
+      DOCKERD_ROOTLESS_ROOTLESSKIT_FLAGS: "-p 127.0.0.1:2375:2375/tcp"
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: "0" # rootless engine may publish ports < 1024
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      # Loopback only (FR-021 of 031); empty host port = Docker picks a free one.
+      - "127.0.0.1:${AUTONOMOUS_HOST_PORT:-}:4000"
+    volumes:
+      - "${AUTONOMOUS_REPO}:${AUTONOMOUS_REPO}"
+      - "${AUTONOMOUS_ROOT}:${AUTONOMOUS_ROOT}"
+      - "autonomous-engine:/home/rootless/.local/share/docker"
+    healthcheck:
+      test: ["CMD", "docker", "-H", "tcp://127.0.0.1:2375", "info"]
+      interval: 1s
+      timeout: 5s
+      retries: 600
+
+  dev:
+    network_mode: "service:engine"
+    hostname: !reset null
+    ports: !reset []
+    extra_hosts: !reset []
+    depends_on:
+      engine:
+        condition: service_healthy
+    environment: *engine-env
+  console:
+    network_mode: "service:engine"
+    hostname: !reset null
+    ports: !reset []
+    extra_hosts: !reset []
+    depends_on:
+      engine:
+        condition: service_healthy
+    environment: *engine-env
+  release:
+    network_mode: "service:engine"
+    hostname: !reset null
+    ports: !reset []
+    extra_hosts: !reset []
+    depends_on:
+      engine:
+        condition: service_healthy
+    environment: *engine-env
+
+# Declared without `name:` so Compose scopes it per project (autonomous-<segment>_
+# autonomous-engine): two targets never share engine storage. Labels let `stop
+# --purge` and `reset-cache --engine` find it without trusting a name.
+volumes:
+  autonomous-engine:
+    labels:
+      dev.autonomous.kind: engine-storage
+      dev.autonomous.segment: "${AUTONOMOUS_INSTANCE_SEGMENT}"

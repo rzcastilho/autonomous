@@ -289,6 +289,55 @@ address of any running instance (shell, console or release).
   accept `//localhost` and `//127.0.0.1` on any port because the host port is chosen at
   start.
 
+## Container engine sidecar (046)
+
+Opt-in. For targets whose build or tests start containers (compose files,
+test-containers libraries). Without `--docker` nothing here applies and every docker call
+the wrapper makes is unchanged.
+
+```bash
+scripts/autonomous build --docker [--release]            # client in the image + autonomous-engine:local
+scripts/autonomous console --target <repo> --docker      # also: shell, release
+scripts/autonomous stop --target <repo> [--purge]
+scripts/autonomous reset-cache --target <repo> --engine  # removes only the engine storage volume
+```
+
+**Architecture.** A `privileged` sidecar (`engine` service, `compose.engine.yaml`) runs a
+**rootless** engine as the operator's uid on `tcp://127.0.0.1:2375`. The agent container
+joins the sidecar's network namespace (`network_mode: service:engine`), so `DOCKER_HOST`
+and published ports are plain loopback. The agent container gains no privilege,
+capability, device or socket mount; the host's `docker.sock` is never mounted (a guard
+test fails if it appears). A privileged container started by a session is privileged only
+inside the rootless engine, so it cannot reach the host. Port `2375` is not published;
+only the console port is.
+
+**Same-path mount.** The sidecar mounts the repo and the state root at the same paths as
+the agent, so `-v <worktree>:<worktree>` from a session resolves. Bind mounts outside
+those trees are not visible to the engine: stage files under the worktree.
+
+**Rootless limits.** Files written by containers as non-root users appear owned by
+subordinate ids, not the operator's. overlay2 needs a kernel ≥ 5.11; cgroup resource
+limits may be unavailable. Compose ≥ 2.24.4 is required on the host.
+
+**Reserved.** The sidecar owns the hostname, the console port and the extra host; the
+agent services have those keys reset.
+
+**Storage and cleanup.** Pulled images persist in a labelled volume
+(`dev.autonomous.kind=engine-storage`) across `stop`; `stop --purge` also removes it and
+`reset-cache --engine` clears it alone (exit 75 while any project container exists).
+The orchestrator removes all containers, networks and volumes (never images or build
+cache) at every phase boundary; a failure logs loudly and never changes an outcome.
+
+**Exit codes.** `77` — the sidecar could not start (host refused a privileged container;
+use Docker Engine on Linux or Docker Desktop with privileged containers allowed). `78` —
+the engine was not ready within `AUTONOMOUS_ENGINE_TIMEOUT` (seconds, default 60), at the
+wrapper or at the entrypoint probe. Both remove what the wrapper created. `5` — image
+built without `--docker`, or `autonomous-engine:local` missing; `3` — Compose too old.
+
+**Smoke.** `scripts/container-smoke.sh engine` (dev image) and
+`SMOKE_IMAGE=autonomous-release:local scripts/container-smoke.sh engine` (release).
+See `specs/046-docker-sidecar/quickstart.md`.
+
 ## Stopping cleanly
 
 Leave `iex` with `System.stop()` (or `:init.stop()`). A hard halt (`System.halt/1`,

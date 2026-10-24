@@ -80,6 +80,30 @@ missing OS packages with `sudo apt-get update && sudo apt-get install -y
 root inside the container; the container is the boundary, which is why
 enabling `--agent-root` is an explicit operator decision per image.
 
+### Container engine sidecar (feature 046)
+
+Constitution 7.3.0 amends Principle III: an **opt-in** container-engine sidecar MAY hold
+elevated privileges, but (1) the agent container MUST NOT gain any privilege, capability,
+device or socket mount for it, (2) the host engine's control socket MUST NEVER be mounted,
+and (3) the engine sessions control MUST run unprivileged (rootless).
+
+**Trade-off.** `compose.engine.yaml` marks the `engine` service `privileged: true` so the
+rootless engine can set up user namespaces. That privilege belongs to the sidecar, not to
+sessions. A session can ask the engine for a `--privileged` container or a `-v /:/host`
+mount, but both resolve inside the rootless engine's own filesystem and uid mapping, so
+neither reaches host disks or host root. Rootless is therefore load-bearing: a later
+"simplify to rootful dind" would silently give sessions host-root reach, which is why it
+is written into the constitution.
+
+**Guard.** `container_engine_guard_test.exs` fails if any compose file or script mentions
+`docker.sock`, or if `dev`, `console` or `release` gain `privileged`, `cap_add`, `devices`
+or `security_opt` in `compose.engine.yaml`. Port `2375` is never published.
+
+**Advertisement.** The entrypoint step `container_engine` exports
+`AUTONOMOUS_CONTAINER_ENGINE=1` only after probing the engine; `ContainerEngine` then adds
+a prompt note on `:implement`/`:converge` and runs boundary cleanup. Not advertised: zero
+docker calls, zero log lines. See `docs/container.md`, `specs/046-docker-sidecar/`.
+
 ### Open gaps
 
 - **No egress restriction (FR-029).** The container has unrestricted outbound
