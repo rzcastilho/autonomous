@@ -14,6 +14,8 @@ defmodule Autonomous.StubDocker do
     * `:segment`  - instance segment printed for `compose ... identity` (default `t-1a2b`)
     * `:image_env` - JSON printed for `image inspect -f` (default none)
     * `:ls`       - lines printed for `volume ls`
+    * `:engine_ls` - lines printed for `volume ls` filtered on `engine-storage` (feature 046)
+    * `:volume_rm_exit` - exit status of `volume rm` (default 0)
 
   Feature 046 (container engine sidecar) adds, all defaulting to "healthy engine":
 
@@ -56,6 +58,8 @@ defmodule Autonomous.StubDocker do
     segment = Keyword.get(opts, :segment, "t-1a2b")
     File.write!(Path.join(state, "image_env"), Keyword.get(opts, :image_env, ""))
     File.write!(Path.join(state, "ls"), Enum.join(Keyword.get(opts, :ls, []), "\n"))
+    File.write!(Path.join(state, "engine_ls"), Enum.join(Keyword.get(opts, :engine_ls, []), "\n"))
+    volume_rm_exit = Keyword.get(opts, :volume_rm_exit, 0)
 
     compose_version = Keyword.get(opts, :compose_version, "2.30.0")
     client_exit = Keyword.get(opts, :client, 0)
@@ -97,13 +101,18 @@ defmodule Autonomous.StubDocker do
         [ -e "$state/labels-$name" ] && cat "$state/labels-$name"
         exit 0 ;;
       "volume create") exit 0 ;;
-      "volume rm") exit 0 ;;
+      "volume rm") exit #{volume_rm_exit} ;;
       "image inspect")
         for a in "$@"; do last="$a"; done
         grep -qxF "$last" "$state/missing_images" && exit 1
         case "$*" in *"-f"*) cat "$state/image_env" ;; esac
         exit #{image_exit} ;;
-      "volume ls") cat "$state/ls"; exit 0 ;;
+      "volume ls")
+        case "$*" in
+          *engine-storage*) cat "$state/engine_ls" ;;
+          *) cat "$state/ls" ;;
+        esac
+        exit 0 ;;
     esac
     case "$*" in
       *"command -v docker"*) exit #{client_exit} ;;

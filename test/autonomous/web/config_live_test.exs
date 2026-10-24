@@ -148,6 +148,115 @@ defmodule Autonomous.Web.ConfigLiveTest do
     refute html =~ "data-agent-root-warning"
   end
 
+  # ---- 046: container engine row ------------------------------------------
+
+  defp request_engine(cli) do
+    prior =
+      {System.get_env("AUTONOMOUS_CONTAINER"),
+       System.get_env("AUTONOMOUS_CONTAINER_ENGINE_REQUESTED"),
+       Application.get_env(:autonomous, :container_engine_cli)}
+
+    System.put_env("AUTONOMOUS_CONTAINER", "1")
+    System.put_env("AUTONOMOUS_CONTAINER_ENGINE_REQUESTED", "1")
+    Application.put_env(:autonomous, :container_engine_cli, cli)
+
+    on_exit(fn ->
+      {c, r, m} = prior
+
+      for {k, v} <- [{"AUTONOMOUS_CONTAINER", c}, {"AUTONOMOUS_CONTAINER_ENGINE_REQUESTED", r}] do
+        if v, do: System.put_env(k, v), else: System.delete_env(k)
+      end
+
+      restore(:container_engine_cli, m)
+    end)
+  end
+
+  test "container engine: not requested leaves the page without the row and starts no probe",
+       %{conn: conn} do
+    System.delete_env("AUTONOMOUS_CONTAINER_ENGINE_REQUESTED")
+    cli = Autonomous.StubEngineCli.new(fn _ -> {:ok, "29.9.2\n"} end)
+    prior = Application.get_env(:autonomous, :container_engine_cli)
+    Application.put_env(:autonomous, :container_engine_cli, cli)
+    on_exit(fn -> restore(:container_engine_cli, prior) end)
+
+    {:ok, view, html} = live(conn, "/config")
+    _ = render_async(view, 3_000)
+
+    refute html =~ "container engine"
+    refute html =~ "data-container-engine"
+    refute render(view) =~ "data-container-engine"
+    assert [] = Autonomous.StubEngineCli.calls(cli)
+  end
+
+  test "container engine: requested shows checking…, then the probed version", %{conn: conn} do
+    cli = Autonomous.StubEngineCli.new(fn _ -> {:ok, "29.9.2\n"} end)
+    request_engine(cli)
+
+    {:ok, view, _html} = live(conn, "/config")
+    html = render_async(view, 3_000)
+
+    assert html =~ "data-container-engine"
+    assert html =~ "available — engine 29.9.2"
+    assert [["version", "--format", "{{.Server.Version}}"]] = Autonomous.StubEngineCli.calls(cli)
+  end
+
+  test "container engine: an unreachable engine shows the cause", %{conn: conn} do
+    cli =
+      Autonomous.StubEngineCli.new(fn _ ->
+        {:error, {:exit, 1, "Cannot connect to the Docker daemon at tcp://127.0.0.1:2375"}}
+      end)
+
+    request_engine(cli)
+    {:ok, view, _} = live(conn, "/config")
+    html = render_async(view, 3_000)
+
+    assert html =~ "unreachable — Cannot connect to the Docker daemon at tcp://127.0.0.1:2375"
+    refute html =~ "available — engine"
+  end
+
+  test "container engine: the row is placed right after agent root", %{conn: conn} do
+    advertise_agent_root()
+    request_engine(Autonomous.StubEngineCli.new(fn _ -> {:ok, "1.2.3"} end))
+
+    {:ok, view, _} = live(conn, "/config")
+    html = render_async(view, 3_000)
+
+    {a, _} = :binary.match(html, "data-agent-root")
+    {e, _} = :binary.match(html, "data-container-engine")
+    {t, _} = :binary.match(html, "target pack")
+    assert a < e and e < t
+  end
+
+  test "container engine: a probe task exit renders the crash text" do
+    socket = Phoenix.Component.assign(%Phoenix.LiveView.Socket{}, container_engine: :checking)
+
+    assert {:noreply, socket} =
+             Autonomous.Web.ConfigLive.handle_async(:container_engine, {:exit, :boom}, socket)
+
+    assert socket.assigns.container_engine ==
+             {:unreachable, "the engine probe crashed — reload to retry"}
+  end
+
+  test "container engine: every mount re-probes — a healthy value is never cached", %{conn: conn} do
+    {:ok, state} = Agent.start_link(fn -> {:ok, "29.9.2\n"} end)
+
+    cli =
+      Autonomous.StubEngineCli.new(fn _ -> Agent.get(state, & &1) end)
+
+    request_engine(cli)
+
+    {:ok, view, _} = live(conn, "/config")
+    assert render_async(view, 3_000) =~ "available — engine 29.9.2"
+
+    Agent.update(state, fn _ -> {:error, {:exit, 1, "engine stopped"}} end)
+    {:ok, view2, _} = live(conn, "/config")
+    html = render_async(view2, 3_000)
+
+    assert html =~ "unreachable — engine stopped"
+    refute html =~ "available — engine"
+    assert length(Autonomous.StubEngineCli.calls(cli)) == 2
+  end
+
   # ---- 044: target pack row ------------------------------------------------
 
   defp serve_target(marker_json) do

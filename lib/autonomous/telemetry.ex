@@ -137,7 +137,8 @@ defmodule Autonomous.Telemetry do
     [:speckit, :store, :capacity_refused],
     [:speckit, :store, :pruned],
     [:speckit, :publish, :opened],
-    [:speckit, :publish, :failed]
+    [:speckit, :publish, :failed],
+    [:speckit, :engine, :cleanup]
   ]
 
   @doc "The `:telemetry.span/3` prefix for phase events."
@@ -235,6 +236,13 @@ defmodule Autonomous.Telemetry do
     Logger.warning(
       "feature #{meta.feature_id} PR publish failed: " <>
         (PublishOutcome.describe(meta.reason) || inspect(meta.reason))
+    )
+  end
+
+  def handle_event([:speckit, :engine, :cleanup], %{duration: dur}, meta, _cfg) do
+    Logger.debug(
+      "engine cleanup feature=#{meta.feature_id} phase=#{meta.phase} result=#{meta.result} " <>
+        "residue=#{inspect(meta.residue)} #{ms(dur)}ms"
     )
   end
 

@@ -360,4 +360,101 @@ defmodule Autonomous.ContainerEngineCliTest do
       assert out =~ "publishes no console port"
     end
   end
+
+  describe "stop with the engine sidecar" do
+    defp stop(ctx, extra \\ []), do: run(ctx, ["stop", "--target", ctx.repo] ++ extra)
+
+    defp down_calls(ctx), do: Enum.filter(argvs(ctx), &String.contains?(&1, " down"))
+
+    test "adds the engine overlay to down only when an engine container exists" do
+      ctx = setup_env(engine_ps: ["autonomous-t-1a2b-engine-1"])
+      assert {_, 0} = stop(ctx)
+      assert down_calls(ctx) == ["compose -p #{@project} #{@files} down"]
+      assert StubDocker.calls(ctx.docker) =~ "SEGMENT=[#{@segment}]"
+      assert Enum.any?(argvs(ctx), &(&1 =~ "service=engine"))
+    end
+
+    test "no engine container: down is exactly the pre-046 call" do
+      ctx = setup_env()
+      assert {_, 0} = stop(ctx)
+      assert down_calls(ctx) == ["compose -p #{@project} -f compose.yaml down"]
+      refute Enum.any?(argvs(ctx), &(&1 =~ "compose.engine.yaml"))
+    end
+
+    test "stop --purge also removes the labelled engine storage volume, naming it" do
+      ctx = setup_env(engine_ps: ["e"], engine_ls: ["autonomous-t-1a2b_autonomous-engine"])
+      assert {out, 0} = stop(ctx, ["--purge"])
+      assert out =~ "autonomous-t-1a2b_autonomous-engine removed"
+
+      assert Enum.any?(
+               argvs(ctx),
+               &(&1 =~ "volume ls" and &1 =~ "label=dev.autonomous.kind=engine-storage" and
+                   &1 =~ "label=dev.autonomous.segment=#{@segment}")
+             )
+
+      assert "volume rm autonomous-t-1a2b_autonomous-engine" in argvs(ctx)
+      assert down_calls(ctx) == ["compose -p #{@project} #{@files} down -v"]
+    end
+
+    test "plain stop never removes the engine storage" do
+      ctx = setup_env(engine_ps: ["e"], engine_ls: ["autonomous-t-1a2b_autonomous-engine"])
+      assert {_, 0} = stop(ctx)
+      refute Enum.any?(argvs(ctx), &String.starts_with?(&1, "volume rm"))
+    end
+  end
+
+  describe "reset-cache --engine" do
+    defp reset(ctx, extra), do: run(ctx, ["reset-cache", "--target", ctx.repo] ++ extra)
+
+    test "refuses 75 while any project container exists" do
+      ctx = setup_env(containers: ["autonomous-t-1a2b-console-1"])
+      assert {out, 75} = reset(ctx, ["--engine"])
+      assert out =~ "stop it first"
+      refute Enum.any?(argvs(ctx), &String.starts_with?(&1, "volume rm"))
+    end
+
+    test "absent storage prints a message and exits 0" do
+      ctx = setup_env()
+      assert {out, 0} = reset(ctx, ["--engine"])
+      assert out =~ "engine storage not present"
+    end
+
+    test "removes only the engine storage volume" do
+      ctx = setup_env(engine_ls: ["autonomous-t-1a2b_autonomous-engine"])
+      assert {out, 0} = reset(ctx, ["--engine"])
+      assert out =~ "engine storage removed"
+
+      assert ["volume rm autonomous-t-1a2b_autonomous-engine"] =
+               Enum.filter(argvs(ctx), &String.starts_with?(&1, "volume rm"))
+    end
+
+    test "a removal failure exits 1" do
+      ctx = setup_env(engine_ls: ["v"], volume_rm_exit: 1)
+      assert {out, 1} = reset(ctx, ["--engine"])
+      assert out =~ "could not remove volume v"
+    end
+
+    test "combines with --volume: both are handled, declared volumes via the declaration" do
+      ctx = setup_env(engine_ls: ["autonomous-t-1a2b_autonomous-engine"])
+      decl = Path.join([ctx.xdg, "autonomous", "targets", "t-1a2b", "volumes.toml"])
+      File.mkdir_p!(Path.dirname(decl))
+
+      File.write!(decl, """
+      [[volume]]
+      name = "cache"
+      path = "/var/lib/autonomous/volumes/cache"
+      """)
+
+      assert {out, _rc} = reset(ctx, ["--engine", "--volume", "cache"])
+      assert out =~ "engine storage removed"
+      assert out =~ "cache not present"
+    end
+
+    test "without --engine the command is the pre-046 one (no engine-storage lookup)" do
+      ctx = setup_env()
+      assert {out, 0} = reset(ctx, [])
+      assert out =~ "no declared volumes"
+      refute Enum.any?(argvs(ctx), &(&1 =~ "engine-storage"))
+    end
+  end
 end

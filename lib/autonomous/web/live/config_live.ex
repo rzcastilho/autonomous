@@ -22,13 +22,14 @@ defmodule Autonomous.Web.ConfigLive do
 
   use Autonomous.Web, :live_view
 
-  alias Autonomous.Web.{AgentRootView, ConfigDiff, PackView, VolumesView}
+  alias Autonomous.Web.{AgentRootView, ConfigDiff, ContainerEngineView, PackView, VolumesView}
 
   alias Autonomous.{
     AgentRoot,
     AppliedVolumes,
     Config,
     ConsoleProjection,
+    ContainerEngine,
     LiveConfig,
     Pipeline,
     TargetPack,
@@ -69,6 +70,15 @@ defmodule Autonomous.Web.ConfigLive do
     {:noreply, assign(socket, pack: {:refused, "the pack check crashed — reload to retry"})}
   end
 
+  # 046: the engine probe is a fresh answer for this mount, never a cached one.
+  def handle_async(:container_engine, {:ok, result}, socket) do
+    {:noreply, assign(socket, container_engine: ContainerEngineView.from_probe(result))}
+  end
+
+  def handle_async(:container_engine, {:exit, _reason}, socket) do
+    {:noreply, assign(socket, container_engine: ContainerEngineView.crashed())}
+  end
+
   def handle_async({:volume_usage, name}, {:ok, usage}, socket) do
     {:noreply, update(socket, :volume_usage, &Map.put(&1, name, usage))}
   end
@@ -92,6 +102,20 @@ defmodule Autonomous.Web.ConfigLive do
     )
     |> put_edited(applied)
     |> load_pack()
+    |> load_container_engine()
+  end
+
+  # 046: only an instance started with `--docker` shows the row and probes; otherwise
+  # no async work starts and the page is unchanged.
+  defp load_container_engine(socket) do
+    state = ContainerEngineView.state(ContainerEngine.requested?())
+    socket = assign(socket, container_engine: state)
+
+    if state == :checking and connected?(socket) do
+      start_async(socket, :container_engine, fn -> ContainerEngine.probe([]) end)
+    else
+      socket
+    end
   end
 
   # 044: the pack source reads the target's committed tree through git, so it is
@@ -282,6 +306,14 @@ defmodule Autonomous.Web.ConfigLive do
               <dt :if={@agent_root != :hidden}>agent root</dt>
               <dd :if={@agent_root != :hidden} class="config-instance-id" data-agent-root>
                 {AgentRootView.summary()}
+              </dd>
+              <dt :if={@container_engine != :hidden}>container engine</dt>
+              <dd
+                :if={@container_engine != :hidden}
+                class="config-instance-id"
+                data-container-engine
+              >
+                {ContainerEngineView.summary(@container_engine)}
               </dd>
               <dt>target pack</dt>
               <dd

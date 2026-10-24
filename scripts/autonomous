@@ -529,10 +529,28 @@ case "$cmd" in
     segment="$(env_value "$identity" AUTONOMOUS_INSTANCE_SEGMENT)"
     down_flags=""
     [ "$purge" = 1 ] && down_flags="-v"
+    # Feature 046: an instance started with --docker owns an engine sidecar container.
+    # Detect it by compose labels (running or exited) and take the overlay down with the
+    # rest; without one, the `down` below is exactly the pre-046 call.
+    engine_found="$(docker ps -a \
+      --filter "label=com.docker.compose.project=autonomous-$segment" \
+      --filter "label=com.docker.compose.service=engine" --format '{{.Names}}' 2>/dev/null | head -n1)"
+    if [ -n "$engine_found" ]; then
+      AUTONOMOUS_INSTANCE_SEGMENT="$segment"
+      export AUTONOMOUS_INSTANCE_SEGMENT
+      compose_files="$compose_files -f compose.engine.yaml"
+    fi
     # shellcheck disable=SC2086
     docker compose -p "autonomous-$segment" $compose_files down $down_flags \
       || die 1 "could not stop the instance for $target"
     if [ "$purge" = 1 ]; then
+      # Feature 046: the engine storage volume (images + build cache) of this segment.
+      for pe in $(docker volume ls -q \
+        --filter "label=dev.autonomous.kind=engine-storage" \
+        --filter "label=dev.autonomous.segment=$segment" 2>/dev/null); do
+        docker volume rm "$pe" >/dev/null || die 1 "could not remove volume $pe"
+        say "$pe removed"
+      done
       # Feature 041 (research.md R12): every labelled user volume of this segment,
       # declared or not. Plain `stop` touches none.
       for pv in $(docker volume ls -q \
@@ -558,10 +576,32 @@ case "$cmd" in
     [ -z "$pinned" ] \
       || die 75 "target $target is served by $pinned; stop it first: scripts/autonomous stop --target $target"
 
+    # Feature 046: --engine removes only the engine storage volume of this segment (images
+    # and build cache). Declared volumes are left alone unless --volume is also given.
+    engine_rc=0
+    if [ "$reset_engine" = 1 ]; then
+      engine_vols="$(docker volume ls -q \
+        --filter "label=dev.autonomous.kind=engine-storage" \
+        --filter "label=dev.autonomous.segment=$segment" 2>/dev/null)"
+      if [ -z "$engine_vols" ]; then
+        say "engine storage not present"
+      else
+        for ev in $engine_vols; do
+          if docker volume rm "$ev" >/dev/null; then
+            say "engine storage removed"
+          else
+            err "could not remove volume $ev"
+            engine_rc=1
+          fi
+        done
+      fi
+      [ -n "$volume_names" ] || exit "$engine_rc"
+    fi
+
     volumes_declaration_path "$segment"
     if [ ! -f "$volumes_file" ]; then
       say "no declared volumes"
-      exit 0
+      exit "$engine_rc"
     fi
     select_args=""
     for vn in $volume_names; do select_args="$select_args --volume $vn"; done
@@ -571,10 +611,10 @@ case "$cmd" in
     [ "$sel_rc" = 0 ] || exit "$sel_rc"
     if [ -z "$selected" ]; then
       say "no declared volumes"
-      exit 0
+      exit "$engine_rc"
     fi
 
-    rc=0
+    rc="$engine_rc"
     for vn in $selected; do
       dn="autonomous-${segment}_vol-$vn"
       if ! docker volume inspect "$dn" >/dev/null 2>&1; then
