@@ -154,7 +154,7 @@ description: "Task list for 047 Multi-Modal Single-Spec Run"
 - [X] T046 [P] Add a "Multi-modal single-spec (feature 047)" section to `CLAUDE.md` summarising Attachment/Attachments/Sniff/Limits, schema v9, R3 and R8 exceptions to FR-022, console surfaces
 - [X] T047 Regression guards (FR-022/023/024): text-only single-spec prompts/seed/commits unchanged; backlog run unaffected; gates unchanged — add assertions in the existing pipeline/phase_request/run_spec tests
 - [X] T048 Full suite and coverage: `mise exec -- mix test` zero warnings; `mise exec -- mix test --cover` pure-core modules (`Attachment`, `Attachments.Sniff`, `Attachments.Limits`, `AttachmentForm`, `AttachmentsView`) above 90%
-- [ ] T049 Run `quickstart.md` validation V1–V9 against a real target (manual; V1, V3–V5, V7 need a live harness)
+- [X] T049 Run `quickstart.md` validation V1–V9 against a real target (manual; V1, V3–V5, V7 need a live harness)
 
 ---
 
