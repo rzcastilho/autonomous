@@ -538,7 +538,7 @@ format contract, to reconcile with real `macro-spec-breakdown` output later.
 size, `sha256`), `Attachments` (`load/2` → `{manifest, payloads}` held in the seed-executor
 closure, `commit/3`, `verify/2`, `prompt_block/2`, `pr_note/1`), `Attachments.Sniff` (content
 signatures before extension) and `Attachments.Limits` (`AUTONOMOUS_ATTACHMENT_MAX_FILES|FILE_BYTES|TOTAL_BYTES`,
-10 / 10 MB / 25 MB). Files are committed by `Worktree.commit_paths/3` into
+10 / 6 MB / 25 MB; the per-file default is the largest whose `Read` fits the transport's 16 MiB line ceiling, `Config.session_max_line_bytes/0` clamps to it). Files are committed by `Worktree.commit_paths/3` into
 `specs/<id>-<slug>/attachments/` before the seed; sessions open them with `Read` (adapter does
 not forward `RunRequest.attachments`). `FeatureRunner.run/2` entry verifies sha256 →
 `{:attachments_changed, names}`; no new `Pipeline` gate. Store schema v9. Prompt block via

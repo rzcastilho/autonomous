@@ -29,7 +29,7 @@ the payloads exist only in the executor closure.
 
 ```elixir
 {:error, {:attachments, [%{file: "song.mp3", reason: :unsupported_type},
-                         %{file: "huge.png", reason: {:too_large, 12_000_000, 10_000_000}}]}}
+                         %{file: "huge.png", reason: {:too_large, 12_000_000, 6_000_000}}]}}
 ```
 
 Reasons are listed in [data-model.md](../data-model.md#refusal). `Report.format_reason/1`

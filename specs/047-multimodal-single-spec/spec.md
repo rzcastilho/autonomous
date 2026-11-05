@@ -115,7 +115,7 @@ Reviewing a run — while it is live, after it ends, or on an escalation — the
 - **FR-002**: The single-spec form MUST list each added file with its name and size, and let the operator remove it before starting.
 - **FR-003**: The single-spec programmatic entry point MUST accept a list of file paths alongside the description.
 - **FR-004**: System MUST accept attachments of these types: images (PNG, JPEG, GIF, WebP), PDF, and text/data files (Markdown, plain text, CSV, JSON). All other types, including audio and video, MUST be refused.
-- **FR-005**: System MUST enforce a per-run limit on attachment count, a per-file limit on size and a per-run limit on total size, with defaults of 10 files, 10 MB per file and 25 MB total, each overridable by configuration.
+- **FR-005**: System MUST enforce a per-run limit on attachment count, a per-file limit on size and a per-run limit on total size, with defaults of 10 files, 6 MB per file and 25 MB total, each overridable by configuration.
 - **FR-006**: System MUST determine an image's or PDF's type from its content, and refuse a file whose content does not match a supported type, regardless of its extension. A text/data file MUST carry a supported extension and MUST be valid text; a JSON file need not be well-formed JSON.
 - **FR-007**: Every refusal MUST name the file and the specific reason, and MUST happen before any worktree, branch, or run record is created (fail loud at the boundary).
 - **FR-008**: A description MUST remain required; attachments supplement a description and never replace it. Id and slug derivation from the description are unchanged.

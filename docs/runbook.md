@@ -382,7 +382,9 @@ Autonomous.run_spec("Build the screen in the mockup", attachments: ["~/mock.png"
 - Validation is content-based (`Attachments.Sniff`): signature first, extension second.
   Every refusal is named per file (`{:error, {:attachments, [%{file:, reason:}]}}`); a
   refused start writes nothing.
-- Limits (defaults): 10 files, 10 MB each, 25 MB total. Override with
+- Limits (defaults): 10 files, **6 MB each**, 25 MB total. Do not raise the per-file limit past
+  about 6.2 MB: a `Read` of a larger PDF/image puts a base64 line past the transport's 16 MiB
+  ceiling and the session ends silently (live probe, 047). Override with
   `AUTONOMOUS_ATTACHMENT_MAX_FILES`, `AUTONOMOUS_ATTACHMENT_MAX_FILE_BYTES`,
   `AUTONOMOUS_ATTACHMENT_MAX_TOTAL_BYTES`; a bad value raises at first read.
 - Files are committed by the orchestrator into `specs/<id>-<slug>/attachments/` before the

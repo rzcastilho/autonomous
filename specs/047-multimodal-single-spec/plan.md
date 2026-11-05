@@ -61,7 +61,7 @@ maximum-size attachment no slower than a text-only one (SC-007).
 deliberate session-plumbing exceptions). `warnings_as_errors` on. Console styling
 through tokens only (`design_contract_test`). No Node, no bundler, no new JS hook.
 
-**Scale/Scope**: 10 files, 10 MB each, 25 MB per run, one feature per run.
+**Scale/Scope**: 10 files, 6 MB each, 25 MB per run, one feature per run.
 
 ## Constitution Check
 

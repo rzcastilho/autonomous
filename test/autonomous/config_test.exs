@@ -56,7 +56,7 @@ defmodule Autonomous.ConfigTest do
   describe "attachment limits (047)" do
     @limits [
       {:attachment_max_files, 10},
-      {:attachment_max_file_bytes, 10_000_000},
+      {:attachment_max_file_bytes, 6_000_000},
       {:attachment_max_total_bytes, 25_000_000}
     ]
 
@@ -78,7 +78,7 @@ defmodule Autonomous.ConfigTest do
 
     test "defaults, override and bad value" do
       assert Config.attachment_max_files() == 10
-      assert Config.attachment_max_file_bytes() == 10_000_000
+      assert Config.attachment_max_file_bytes() == 6_000_000
       assert Config.attachment_max_total_bytes() == 25_000_000
 
       Application.put_env(:autonomous, :attachment_max_files, 3)
@@ -99,11 +99,17 @@ defmodule Autonomous.ConfigTest do
     end
 
     test "session_max_line_bytes derives from the per-file limit" do
-      assert Config.session_max_line_bytes() == 2 * 13_333_334 + 1_048_576
-      assert_in_delta Config.session_max_line_bytes(), 27_715_244, 1
+      # 6 MB -> 8 MB of base64, twice, plus 512 KiB: just under the 16 MiB ceiling
+      assert Config.session_max_line_bytes() == 2 * 8_000_000 + 524_288
+      assert Config.session_max_line_bytes() < 16_777_216
 
       Application.put_env(:autonomous, :attachment_max_file_bytes, 3_000)
-      assert Config.session_max_line_bytes() == 2 * 4_000 + 1_048_576
+      assert Config.session_max_line_bytes() == 2 * 4_000 + 524_288
+    end
+
+    test "session_max_line_bytes never exceeds the transport's 16 MiB line ceiling" do
+      Application.put_env(:autonomous, :attachment_max_file_bytes, 10_000_000)
+      assert Config.session_max_line_bytes() == 16_777_216
     end
   end
 

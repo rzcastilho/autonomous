@@ -13,7 +13,7 @@ scripts/autonomous build
 
 A target repo with a working pack, a `gh`-authenticated remote, and fixtures: a
 mockup PNG whose content appears nowhere in the description, a 5-page PDF, a `.md`
-file, and a PDF near 10 MB.
+file, and a PDF at the per-file limit (about 6 MB).
 
 ## Automated
 
@@ -81,8 +81,9 @@ the page matches `main`. The PR body lists the files, and they appear in the dif
 mise exec -- mix test --include integration test/autonomous/attachment_read_integration_test.exs
 ```
 
-Real session reads the 10 MB PDF. Expected: session ends normally, no
-`buffer_overflow`. Open `/live` for that session: placeholder shown, loads as fast as a
+Real session reads a PDF at the 6 MB limit and the tool result is a `document` block.
+Expected: session ends normally, no `buffer_overflow`. The same test with a PDF past
+about 6.2 MB must fail `:incomplete`; that is why the default is 6 MB. Open `/live` for that session: placeholder shown, loads as fast as a
 text-only session, and the conversation file has no base64.
 
 ## V8. Unaffected paths (FR-022, FR-023)

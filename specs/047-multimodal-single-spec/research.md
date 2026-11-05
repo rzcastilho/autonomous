@@ -57,9 +57,18 @@ A PDF of under 400 KB already passes 1 MiB, so without this change a routine PDF
 attachment ends the session.
 
 The 1 MiB line was derived from the deps, not observed; quickstart V7 proves the
-raised limit end to end with a maximum-size PDF.
+raised limit end to end with a maximum-size PDF (it did not: see below).
 
-Limit: `2 * ceil(max_file_bytes * 4 / 3) + 1 MiB`, 27.7 MB at defaults.
+Limit: `min(2 * ceil(max_file_bytes * 4 / 3) + 512 KiB, 16 MiB)`, 16.5 MB at defaults.
+
+**Amended after V7 (live probe).** Raising `max_buffer_size` is not enough: the
+transport also ends the stream, with no error, on any stdout line past its
+`max_recoverable_line_bytes` (16 MiB, not exposed by `ClaudeAgentSDK`). Real PDFs read
+with haiku: 5.4 MB (13.7 MiB line) ok, 6.4 MB (16.3 MiB) ends `:incomplete`, 9.6 MB
+(25.6 MiB) ends `:incomplete` even with `max_buffer_size` at 81 MB, while the CLI alone reads
+the 9.6 MB file. So the per-file default dropped from 10 MB to 6 MB, the largest size whose
+line stays under 16 MiB, and `session_max_line_bytes/0` is clamped to that ceiling. A larger
+override is accepted by the form and unreadable by the session.
 
 Set for all sessions because it is one line in one place, is unobservable without a
 large read, and a text-only session reading a large repo file would otherwise still
@@ -231,6 +240,13 @@ read the file, and FR-012a applies at specify and clarify. Later phases are cove
 by the spec's assumption: anything read at specify is byte-identical later.
 
 **Decision**: No extra limit beyond the spec's three. No Dockerfile change.
+
+**Addendum (V7).** When the model passes `pages` to `Read` on a larger PDF, the CLI needs
+`pdftoppm` (poppler) and errors without it ("pdftoppm is not installed"). That happened
+on some runs of 7-10 MB files. The session then cannot read the file, so FR-012a applies
+(`## NEEDS HUMAN`); nothing is silently lost. Adding `poppler-utils` to the image would
+make those reads work, and is left for an operator who attaches long PDFs
+(`scripts/autonomous build --apt poppler-utils`).
 
 ## Resolved unknowns
 

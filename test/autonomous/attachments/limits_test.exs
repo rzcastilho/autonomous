@@ -20,8 +20,8 @@ defmodule Autonomous.Attachments.LimitsTest do
 
   test "maxima default to Config" do
     assert Limits.check_count(10) == :ok
-    assert Limits.check_file(10_000_000) == :ok
-    assert {:error, {:too_large, _, 10_000_000}} = Limits.check_file(10_000_001)
+    assert Limits.check_file(6_000_000) == :ok
+    assert {:error, {:too_large, _, 6_000_000}} = Limits.check_file(6_000_001)
     assert Limits.check_total(25_000_000) == :ok
   end
 end

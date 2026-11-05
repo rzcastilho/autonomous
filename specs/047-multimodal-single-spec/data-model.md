@@ -47,7 +47,7 @@ do nothing after the start, so nothing about them needs reapplying on resume.
 | Key | Default | Env override |
 |---|---|---|
 | `attachment_max_files` | 10 | `AUTONOMOUS_ATTACHMENT_MAX_FILES` |
-| `attachment_max_file_bytes` | 10 MB (10_000_000) | `AUTONOMOUS_ATTACHMENT_MAX_FILE_BYTES` |
+| `attachment_max_file_bytes` | 6 MB (6_000_000) | `AUTONOMOUS_ATTACHMENT_MAX_FILE_BYTES` |
 | `attachment_max_total_bytes` | 25 MB (25_000_000) | `AUTONOMOUS_ATTACHMENT_MAX_TOTAL_BYTES` |
 
 All three go through `positive!/2`, so a bad value raises rather than falling back.
