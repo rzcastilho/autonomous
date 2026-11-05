@@ -53,6 +53,60 @@ defmodule Autonomous.ConfigTest do
     end
   end
 
+  describe "attachment limits (047)" do
+    @limits [
+      {:attachment_max_files, 10},
+      {:attachment_max_file_bytes, 10_000_000},
+      {:attachment_max_total_bytes, 25_000_000}
+    ]
+
+    setup do
+      prior = for {k, _} <- @limits, do: {k, Application.fetch_env(:autonomous, k)}
+
+      on_exit(fn ->
+        for {k, v} <- prior do
+          case v do
+            {:ok, val} -> Application.put_env(:autonomous, k, val)
+            :error -> Application.delete_env(:autonomous, k)
+          end
+        end
+      end)
+
+      for {k, _} <- @limits, do: Application.delete_env(:autonomous, k)
+      :ok
+    end
+
+    test "defaults, override and bad value" do
+      assert Config.attachment_max_files() == 10
+      assert Config.attachment_max_file_bytes() == 10_000_000
+      assert Config.attachment_max_total_bytes() == 25_000_000
+
+      Application.put_env(:autonomous, :attachment_max_files, 3)
+      assert Config.attachment_max_files() == 3
+
+      for {k, fun} <- [
+            {:attachment_max_files, :attachment_max_files},
+            {:attachment_max_file_bytes, :attachment_max_file_bytes},
+            {:attachment_max_total_bytes, :attachment_max_total_bytes}
+          ],
+          bad <- [0, -1, "10", nil] do
+        Application.put_env(:autonomous, k, bad)
+
+        assert_raise ArgumentError, ~r/must be a positive integer/, fn ->
+          apply(Config, fun, [])
+        end
+      end
+    end
+
+    test "session_max_line_bytes derives from the per-file limit" do
+      assert Config.session_max_line_bytes() == 2 * 13_333_334 + 1_048_576
+      assert_in_delta Config.session_max_line_bytes(), 27_715_244, 1
+
+      Application.put_env(:autonomous, :attachment_max_file_bytes, 3_000)
+      assert Config.session_max_line_bytes() == 2 * 4_000 + 1_048_576
+    end
+  end
+
   test "model_for/1 returns the model alias per phase" do
     assert Config.model_for(:clarify) == "opus"
     assert Config.model_for(:implement) == "sonnet"

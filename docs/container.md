@@ -425,3 +425,8 @@ The image grows by several GB with `--android` (JDK, SDK, emulator, one system i
 The system image and platform are the `ANDROID_SYSTEM_IMAGE` / `ANDROID_PLATFORM` build args
 in the `Dockerfile` (edit the default to change them); the AVD is created at build time under
 `/opt/android` and is writable by any uid.
+
+## Attachments (047)
+
+Nothing new needed: attachments are plain files committed into the worktree and read with `Read`.
+No image/package, mount or env change (a 12-page PDF read without `poppler-utils`).

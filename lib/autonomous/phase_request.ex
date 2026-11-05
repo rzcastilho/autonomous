@@ -116,6 +116,7 @@ defmodule Autonomous.PhaseRequest do
         |> apply_scope(phase, Keyword.get(opts, :scope))
         |> append_agent_root(phase, agent_root)
         |> append_container_engine(phase, container_engine)
+        |> append_attachments(feature, phase)
         |> append_resume_prompt(Keyword.get(opts, :resume_prompt))
         |> append_clarify_answers(Keyword.get(opts, :clarify_answers))
         |> append_background_retry(Keyword.get(opts, :background_retry)),
@@ -151,7 +152,9 @@ defmodule Autonomous.PhaseRequest do
     opts = Keyword.put_new_lazy(opts, :agent_root, &AgentRoot.advertised?/0)
 
     %{
-      prompt: remediation_prompt(feature, layout, Keyword.get(opts, :prompt)),
+      prompt:
+        remediation_prompt(feature, layout, Keyword.get(opts, :prompt))
+        |> append_attachments(feature, :remediation),
       cwd: Keyword.get(opts, :cwd, Config.repo()),
       model: model,
       metadata: session_metadata(opts)
@@ -326,6 +329,10 @@ defmodule Autonomous.PhaseRequest do
     do: prompt <> ContainerEngine.prompt_note(true)
 
   defp append_container_engine(prompt, _phase, _container_engine), do: prompt
+
+  # 047: every session is told about the operator's attachments (`""` when none).
+  defp append_attachments(prompt, feature, phase),
+    do: prompt <> Autonomous.Attachments.prompt_block(feature, phase)
 
   # Blank (nil/""/whitespace-only) guidance leaves the prompt byte-identical to
   # the no-opt build — only a non-blank string gets the trailing section.

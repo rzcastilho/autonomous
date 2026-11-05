@@ -180,7 +180,8 @@ defmodule Autonomous.Recovery do
       path: f.path,
       group: Map.get(f, :group, :backlog),
       created_at: Map.get(f, :created_at),
-      spec_number: Map.get(f, :spec_number)
+      spec_number: Map.get(f, :spec_number),
+      attachments: Autonomous.Attachment.from_records(Map.get(f, :attachments))
     }
 
   # Maps a `Reconcile.result()` onto the `Feature.status()` persisted to the

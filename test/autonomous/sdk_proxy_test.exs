@@ -18,6 +18,11 @@ defmodule Autonomous.SdkProxyTest do
 
   defp options(env), do: %ClaudeAgentSDK.Options{env: env}
 
+  test "prepare/1 raises the transport line limit for attachment reads (047)" do
+    assert %{max_buffer_size: n} = SdkProxy.prepare(options(%{}))
+    assert n == Autonomous.Config.session_max_line_bytes()
+  end
+
   test "prepare/1 pops both markers so the CLI never sees them (FR-026)" do
     env = %{
       "KEEP" => "1",

@@ -3052,3 +3052,62 @@ a.live-session-link:hover {
 .live-session-link .transcript-live {
   margin-left: 0;
 }
+
+/* Attachments on the single-spec Trigger form (047): a drop zone around the
+   file input, one mono row per file, and the commit/push notice. Tokens only. */
+.attachments-drop {
+  margin-top: var(--sp-14);
+  padding: var(--sp-12);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--r-input);
+  background: var(--bg);
+}
+
+.attachments-drop.phx-drop-target-active {
+  border-color: var(--accent-light);
+}
+
+.attachment-list {
+  list-style: none;
+  margin: var(--sp-10) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+}
+
+.attachment-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-12);
+  padding: var(--sp-6) var(--sp-12);
+  border: 1px solid var(--border);
+  border-radius: var(--r-control);
+  background: var(--card);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+}
+
+.attachment-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--text-secondary);
+}
+
+.attachment-meta {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+}
+
+.attachments-notice {
+  margin-top: var(--sp-10);
+}
+
+[data-attachments] .attachment-row {
+  flex-wrap: wrap;
+  margin-bottom: var(--sp-8);
+}
+
+[data-attachments] .attachment-name {
+  flex: 0 0 auto;
+}

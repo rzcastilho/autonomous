@@ -177,11 +177,34 @@ defmodule Autonomous.ConversationEntry do
     do:
       new(:tool_result, %{
         "tool_use_id" => b["tool_use_id"],
-        "output" => b["content"],
+        "output" => strip_binary(b["content"]),
         "is_error" => b["is_error"] == true
       })
 
-  defp user_block(other), do: new(:other, %{"raw" => other})
+  defp user_block(other), do: new(:other, %{"raw" => strip_binary(other)})
+
+  # Feature 047 (R8): a Read of an attached image/PDF returns the file as a base64
+  # `source` block. It is never recorded — a text placeholder keeps the entry small
+  # and keeps megabytes of base64 out of the masker, window, file and live feed.
+  defp strip_binary(list) when is_list(list), do: Enum.map(list, &strip_binary/1)
+
+  defp strip_binary(%{"source" => %{"type" => "base64", "data" => data} = source} = block)
+       when is_binary(data) do
+    media = source["media_type"] || "binary"
+    size = Autonomous.Attachment.format_size(div(byte_size(data) * 3, 4))
+
+    block
+    |> Map.drop(["source"])
+    |> Map.merge(%{
+      "type" => "text",
+      "text" => "[#{media}, #{size}: binary content not recorded]"
+    })
+  end
+
+  defp strip_binary(%{} = map) when not is_struct(map),
+    do: Map.new(map, fn {k, v} -> {k, strip_binary(v)} end)
+
+  defp strip_binary(other), do: other
 
   defp system(frame, raw) do
     subtype = raw["subtype"] || subtype(frame)

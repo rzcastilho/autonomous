@@ -369,6 +369,57 @@ defmodule Autonomous.Web.RunDetailLiveTest do
     assert html |> String.split(~s(data-advanced-with-findings)) |> length() == 2
   end
 
+  test "attachments block lists each file and escapes a hostile original name (047)", %{
+    conn: conn,
+    repo_id: repo_id
+  } do
+    feature = %{
+      feature_id: "001",
+      slug: "checkout",
+      path: "specs/001",
+      number: 1,
+      group: :ad_hoc,
+      created_at: DateTime.utc_now(),
+      attachments: [
+        %{
+          original_name: "<script>alert(1)</script>.png",
+          stored_name: "script-alert-1-script.png",
+          type: :png,
+          media_type: "image/png",
+          size: 1_200_000,
+          sha256: String.duplicate("ab", 32)
+        }
+      ]
+    }
+
+    {:ok, run_id} =
+      Writer.open_run(repo_id, %{
+        features: [feature],
+        settings: %{},
+        scope: :ad_hoc,
+        layout: %{}
+      })
+
+    {:ok, _view, html} = live(conn, "/runs/#{run_id}")
+
+    assert html =~ "data-attachments"
+    assert html =~ "image/png"
+    assert html =~ "1.2 MB"
+    assert html =~ "attachments/script-alert-1-script.png"
+    assert html =~ "sha256 abababababab"
+    refute html =~ "<script>alert(1)"
+    assert html =~ "&lt;script&gt;"
+  end
+
+  test "a run without attachments renders no attachments block (047)", %{
+    conn: conn,
+    repo_id: repo_id
+  } do
+    run_id = open(repo_id, ["001"])
+    {:ok, _view, html} = live(conn, "/runs/#{run_id}")
+    refute html =~ "data-attachments"
+  end
+
   test "a parked run's header names the stopper and reason, and a never-started feature renders as such",
        %{conn: conn, repo_id: repo_id} do
     run_id = open(repo_id, ["001", "002"])

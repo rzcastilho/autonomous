@@ -683,4 +683,66 @@ defmodule Autonomous.PhaseRequestTest do
       assert on.prompt == off.prompt
     end
   end
+
+  describe "attachments (047)" do
+    defp with_attachment do
+      %{
+        feature()
+        | spec_number: 1,
+          attachments: [
+            %Autonomous.Attachment{
+              original_name: "m.png",
+              stored_name: "m.png",
+              type: :png,
+              media_type: "image/png",
+              size: 10,
+              sha256: "x"
+            }
+          ]
+      }
+    end
+
+    test "text-only prompt is unchanged" do
+      for phase <- @all_phases do
+        base = PhaseRequest.build(feature(), phase, agent_root: false, container_engine: false)
+
+        same =
+          PhaseRequest.build(%{feature() | attachments: []}, phase,
+            agent_root: false,
+            container_engine: false
+          )
+
+        assert base.prompt == same.prompt
+        refute base.prompt =~ "## Attachments"
+      end
+    end
+
+    test "every phase carries the block, before resume guidance" do
+      for phase <- @all_phases do
+        r =
+          PhaseRequest.build(with_attachment(), phase,
+            agent_root: false,
+            container_engine: false,
+            resume_prompt: "RESUME-NOTE"
+          )
+
+        assert r.prompt =~ "specs/001-core-ledger/attachments/m.png"
+        {a, _} = :binary.match(r.prompt, "## Attachments")
+        {b, _} = :binary.match(r.prompt, "RESUME-NOTE")
+        assert a < b
+      end
+    end
+
+    test "remediation appends after the operator instruction" do
+      r =
+        PhaseRequest.build_remediation(with_attachment(), "opus",
+          prompt: "FIX-IT",
+          agent_root: false
+        )
+
+      {a, _} = :binary.match(r.prompt, "FIX-IT")
+      {b, _} = :binary.match(r.prompt, "## Attachments")
+      assert a < b
+    end
+  end
 end

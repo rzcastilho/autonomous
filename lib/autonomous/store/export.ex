@@ -34,7 +34,8 @@ defmodule Autonomous.Store.Export do
           checkpoint: Records.Checkpoint.t() | nil,
           escalations: [Records.Escalation.t()],
           remediation_attempts: [Records.RemediationAttempt.t()],
-          phase_attempts: [phase_attempt_export()]
+          phase_attempts: [phase_attempt_export()],
+          attachments: [map()]
         }
 
   @type input :: %{
@@ -131,6 +132,26 @@ defmodule Autonomous.Store.Export do
   end
 
   defp feature_document(f) do
+    base = feature_base(f)
+
+    case Map.get(f, :attachments) do
+      [_ | _] = list -> Map.put(base, "attachments", Enum.map(list, &attachment_document/1))
+      _ -> base
+    end
+  end
+
+  defp attachment_document(a) do
+    %{
+      "original_name" => a.original_name,
+      "stored_name" => a.stored_name,
+      "type" => to_string(a.type),
+      "media_type" => a.media_type,
+      "size" => a.size,
+      "sha256" => a.sha256
+    }
+  end
+
+  defp feature_base(f) do
     %{
       "feature_id" => f.feature_id,
       "slug" => f.slug,

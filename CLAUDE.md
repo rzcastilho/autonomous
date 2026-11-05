@@ -530,3 +530,21 @@ validation run. `breakdown_duplicate/` proves the one remaining load-time
 guard fires: two files whose `NNN` prefixes are numerically equal raise
 `Backlog.DuplicateNumberError`. `docs/breakdown-format.md` is the parser's
 format contract, to reconcile with real `macro-spec-breakdown` output later.
+
+## Multi-modal single-spec (feature 047)
+
+`run_spec/2` and the console single-spec form accept attachments at start only. `Attachment`
+(pure struct/manifest entry: `stored_name` limited to `[A-Za-z0-9._-]`, `original_name`, type,
+size, `sha256`), `Attachments` (`load/2` → `{manifest, payloads}` held in the seed-executor
+closure, `commit/3`, `verify/2`, `prompt_block/2`, `pr_note/1`), `Attachments.Sniff` (content
+signatures before extension) and `Attachments.Limits` (`AUTONOMOUS_ATTACHMENT_MAX_FILES|FILE_BYTES|TOTAL_BYTES`,
+10 / 10 MB / 25 MB). Files are committed by `Worktree.commit_paths/3` into
+`specs/<id>-<slug>/attachments/` before the seed; sessions open them with `Read` (adapter does
+not forward `RunRequest.attachments`). `FeatureRunner.run/2` entry verifies sha256 →
+`{:attachments_changed, names}`; no new `Pipeline` gate. Store schema v9. Prompt block via
+`PhaseRequest` (`priv/prompts/attachments*.md`); unreadable attachment is material at clarify.
+**Deliberate exceptions to FR-022 (text-only unchanged):** R3 — `SdkProxy.prepare/1` raises
+`max_buffer_size` for every session (`Config.session_max_line_bytes/0`); R8 — `ConversationEntry`
+replaces base64 source blocks with a text placeholder in every session. Console: `Web.AttachmentForm`
+(pure upload triage), `Web.AttachmentsView` (Run Detail list), `TriggerLive` upload via LiveView
+`allow_upload`. See `docs/runbook.md`, `specs/047-multimodal-single-spec/`.

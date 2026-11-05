@@ -54,6 +54,28 @@ if config_env() != :test do
     """
   end
 
+  # 047: attachment limits for a single-spec run. A bad value raises at first
+  # use (Config.positive!/2), it never falls back.
+  for {env, key} <- [
+        {"AUTONOMOUS_ATTACHMENT_MAX_FILES", :attachment_max_files},
+        {"AUTONOMOUS_ATTACHMENT_MAX_FILE_BYTES", :attachment_max_file_bytes},
+        {"AUTONOMOUS_ATTACHMENT_MAX_TOTAL_BYTES", :attachment_max_total_bytes}
+      ] do
+    case System.get_env(env) do
+      nil ->
+        :ok
+
+      raw ->
+        case Integer.parse(raw) do
+          {n, ""} when n > 0 ->
+            config :autonomous, [{key, n}]
+
+          _ ->
+            raise "#{env} must be a positive integer, got: #{inspect(raw)}"
+        end
+    end
+  end
+
   # Target Spec Kit repo the orchestrator drives.
   case config_env() do
     :prod ->

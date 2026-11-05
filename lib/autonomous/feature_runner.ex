@@ -151,7 +151,8 @@ defmodule Autonomous.FeatureRunner do
       clarify_answers: nil
     }
 
-    with {:ok, pid} <- start_agent(feature, opts) do
+    with :ok <- verify_attachments(feature, worktree),
+         {:ok, pid} <- start_agent(feature, opts) do
       record_feature_started(run_key, feature)
 
       try do
@@ -224,8 +225,25 @@ defmodule Autonomous.FeatureRunner do
           stop_agent(pid)
           %{feature_id: feature.id, status: :failed, reason: {kind, err}, cost_total: nil}
       end
+    else
+      {:error, {:attachments_changed, _} = reason} ->
+        # 047: committed attachments no longer match the manifest — fail before
+        # any session runs; the worktree is kept for inspection.
+        record_feature_started(run_key, feature)
+        handle_worktree(feature, :failed, reason, worktree, nil, stack_base)
+        record_feature_terminal(run_key, feature, :failed, reason, nil)
+        notify(notify, feature.id, :failed, reason)
+        %{feature_id: feature.id, status: :failed, reason: reason, cost_total: nil}
+
+      other ->
+        other
     end
   end
+
+  defp verify_attachments(%{attachments: [_ | _]} = feature, %Autonomous.Worktree{} = worktree),
+    do: Autonomous.Attachments.verify(feature, worktree)
+
+  defp verify_attachments(_feature, _worktree), do: :ok
 
   # ---- pre-phase remediation (feature 013) ---------------------------------
 

@@ -3,9 +3,8 @@ defmodule Autonomous.Store.MigrationV8Test do
 
   alias Autonomous.Store.{Migrations, Records, Schema}
 
-  test "current_version/0 is 8 and the migration is registered" do
-    assert Migrations.current_version() == 8
-    assert {8, description, fun} = List.last(Migrations.all())
+  test "the v8 migration is registered" do
+    assert {8, description, fun} = List.keyfind(Migrations.all(), 8, 0)
     assert description =~ "speckit_phase_attempt.conversations"
     assert is_function(fun, 0)
   end

@@ -24,6 +24,8 @@ defmodule Autonomous.Web.TriggerLive do
   @run_wait_ms 5_000
 
   alias Autonomous.{
+    Attachment,
+    Attachments,
     Backlog,
     Config,
     ConsoleProjection,
@@ -35,7 +37,7 @@ defmodule Autonomous.Web.TriggerLive do
     Severity
   }
 
-  alias Autonomous.Web.StartConfirm
+  alias Autonomous.Web.{AttachmentForm, StartConfirm}
 
   @impl true
   def mount(_params, _session, socket) do
@@ -67,9 +69,23 @@ defmodule Autonomous.Web.TriggerLive do
        preview: nil,
        field_error: nil,
        start_error: nil,
+       attachment_refusals: [],
+       attachment_refs: [],
        packages: packages,
        selected_package: List.first(packages),
        expected_breakdown_dir: Path.join([Config.repo(), Config.specs_root(), "breakdown"])
+     )
+     # 047: files for a single-spec run. LiveView uploads, no JS hook; the
+     # per-file cap is enforced by LiveView, the rest by `AttachmentForm`, and
+     # the content check runs per file as it finishes (`handle_progress/3`).
+     # One extra entry is allowed so the file past the count limit is refused
+     # by name instead of being silently dropped.
+     |> allow_upload(:attachments,
+       accept: :any,
+       auto_upload: true,
+       max_entries: Config.attachment_max_files() + 1,
+       max_file_size: Config.attachment_max_file_bytes(),
+       progress: &handle_progress/3
      )
      |> refresh_backlog_preview()}
   end
@@ -204,7 +220,20 @@ defmodule Autonomous.Web.TriggerLive do
   def handle_event("update_description", %{"description" => description}, socket) do
     preview = Autonomous.preview_single_spec(description)
 
-    {:noreply, assign(socket, description: description, preview: preview, field_error: nil)}
+    {:noreply,
+     socket
+     |> assign(description: description, preview: preview, field_error: nil)
+     |> triage_attachments()}
+  end
+
+  def handle_event("update_description", _params, socket),
+    do: {:noreply, triage_attachments(socket)}
+
+  def handle_event("remove_attachment", %{"ref" => ref}, socket) do
+    {:noreply,
+     socket
+     |> cancel_upload(:attachments, ref)
+     |> assign(attachment_refusals: [], start_error: nil)}
   end
 
   # ---- start ------------------------------------------------------------
@@ -223,13 +252,19 @@ defmodule Autonomous.Web.TriggerLive do
   def handle_event("start_single_spec", %{"description" => description}, socket) do
     socket = assign(socket, description: description)
 
-    if blank?(description) do
-      {:noreply, assign(socket, field_error: "Description is required")}
-    else
-      case confirm_click(socket, :single_spec) do
-        {:dispatch, socket} -> start_single_spec(socket, description)
-        {:none, socket} -> {:noreply, socket}
-      end
+    cond do
+      blank?(description) ->
+        {:noreply, assign(socket, field_error: "Description is required")}
+
+      uploads_in_flight?(socket) ->
+        {:noreply,
+         assign(socket, start_error: "Attachments are still uploading — wait for them to finish")}
+
+      true ->
+        case confirm_click(socket, :single_spec) do
+          {:dispatch, socket} -> start_single_spec(socket, description)
+          {:none, socket} -> {:noreply, socket}
+        end
     end
   end
 
@@ -268,6 +303,10 @@ defmodule Autonomous.Web.TriggerLive do
   defp start_single_spec(socket, description) do
     case start_opts(socket) do
       {:ok, opts} ->
+        # 047: the one place attachments join the start options — the backlog
+        # start shares `start_opts/1` and must never carry them (FR-023).
+        opts = Keyword.put(opts, :attachments, attachment_inputs(socket))
+
         case run_unlinked(fn -> Autonomous.run_spec(description, opts) end) do
           {:ok, _pid} ->
             {:noreply,
@@ -294,6 +333,86 @@ defmodule Autonomous.Web.TriggerLive do
   end
 
   defp blank?(description), do: String.trim(description || "") == ""
+
+  # ---- attachments (047) -------------------------------------------------
+
+  defp attachment_limits do
+    %{
+      max_files: Config.attachment_max_files(),
+      max_file_bytes: Config.attachment_max_file_bytes(),
+      max_total_bytes: Config.attachment_max_total_bytes()
+    }
+  end
+
+  # A cancelled entry lingers until its upload channel confirms; it is no
+  # longer part of the form (`cancelled?` is LiveView's own flag).
+  defp live_entries(conf), do: Enum.reject(conf.entries, & &1.cancelled?)
+
+  defp uploads_in_flight?(socket),
+    do: Enum.any?(live_entries(socket.assigns.uploads.attachments), &(not &1.done?))
+
+  # Judge the entries LiveView currently holds: cancel what the limits refuse
+  # and name it. A change event that brings in no new file leaves earlier
+  # refusals standing; one that does replaces them.
+  defp triage_attachments(socket) do
+    conf = socket.assigns.uploads.attachments
+
+    entries =
+      Enum.map(live_entries(conf), fn e ->
+        %{
+          ref: e.ref,
+          name: e.client_name,
+          size: e.client_size,
+          errors: upload_errors(conf, e)
+        }
+      end)
+
+    %{cancel: cancel, refusals: refusals} = AttachmentForm.triage(entries, attachment_limits())
+    refs = Enum.map(live_entries(conf), & &1.ref)
+    fresh? = refs -- socket.assigns.attachment_refs != []
+
+    socket = Enum.reduce(cancel, socket, &cancel_upload(&2, :attachments, &1))
+    socket = assign(socket, attachment_refs: refs)
+
+    if fresh?, do: assign(socket, attachment_refusals: refusals), else: socket
+  end
+
+  # A finished upload is read from its temp file and validated like any other
+  # attachment (type by content, corrupt/empty refused). The entry is postponed,
+  # not consumed: the file stays until the run starts.
+  def handle_progress(:attachments, entry, socket) do
+    if entry.done? do
+      result =
+        consume_uploaded_entry(socket, entry, fn %{path: path} ->
+          {:postpone, Attachments.load([{path, entry.client_name}])}
+        end)
+
+      case result do
+        {:ok, _loaded} ->
+          {:noreply, socket}
+
+        {:error, {:attachments, refusals}} ->
+          {:noreply,
+           socket
+           |> cancel_upload(:attachments, entry.ref)
+           |> assign(attachment_refusals: refusals)}
+      end
+    else
+      {:noreply, socket}
+    end
+  end
+
+  # Postponed, so a start the confirmation or the run controller then refuses
+  # keeps the files for the retry.
+  defp attachment_inputs(socket) do
+    socket
+    |> consume_uploaded_entries(:attachments, fn %{path: path}, entry ->
+      {:postpone, if(entry.cancelled?, do: nil, else: {path, entry.client_name})}
+    end)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp format_refusals(refusals), do: Autonomous.Report.format_reason({:attachments, refusals})
 
   # Echoes the actual assigned id/slug (FR-011) rather than a generic
   # "started" message, matching whatever `update_description`'s live preview
@@ -448,6 +567,9 @@ defmodule Autonomous.Web.TriggerLive do
       "retry once you're sure it's stuck"
   end
 
+  defp format_start_error({:attachments, refusals} = reason) when is_list(refusals),
+    do: "Attachments refused: " <> Autonomous.Report.format_reason(reason)
+
   defp format_start_error(reason), do: "Failed to start: #{inspect(reason)}"
 
   defp drain_stuck_features(stuck), do: Enum.map_join(stuck, ", ", & &1.feature_id)
@@ -586,6 +708,57 @@ defmodule Autonomous.Web.TriggerLive do
             <span>ID: {elem(@preview, 0)}</span>
             <span>Slug: {elem(@preview, 1)}</span>
           </div>
+
+          <div class="attachments-drop" data-attachments-drop phx-drop-target={@uploads.attachments.ref}>
+            <label class="field-label">
+              Attachments (optional): images, PDF, text or data files
+              <.live_file_input upload={@uploads.attachments} class="console-input" />
+            </label>
+          </div>
+
+          <ul :if={live_entries(@uploads.attachments) != []} class="attachment-list" data-attachment-list>
+            <li
+              :for={entry <- live_entries(@uploads.attachments)}
+              class="attachment-row"
+              data-attachment={entry.ref}
+            >
+              <span class="attachment-name cell-truncate" title={entry.client_name}>
+                {entry.client_name}
+              </span>
+              <span class="attachment-meta">
+                {Attachment.format_size(entry.client_size)} · {if entry.done?,
+                  do: "ready",
+                  else: "#{entry.progress}%"}
+              </span>
+              <button
+                type="button"
+                class="btn-secondary btn-compact"
+                phx-click="remove_attachment"
+                phx-value-ref={entry.ref}
+                data-action="remove-attachment"
+              >
+                Remove
+              </button>
+            </li>
+          </ul>
+
+          <.form_refusal
+            :for={refusal <- @attachment_refusals}
+            label="Attachment refused"
+            data-error="attachment"
+          >
+            {format_refusals([refusal])}
+          </.form_refusal>
+
+          <p
+            :if={live_entries(@uploads.attachments) != []}
+            class="pr-hint attachments-notice"
+            data-attachments-notice
+          >
+            Attachments are committed to the feature branch and pushed to the target's
+            remote with it. Anyone who can read that repository can read them, and they
+            stay in its history.
+          </p>
         </form>
       </div>
 

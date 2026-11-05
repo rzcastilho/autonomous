@@ -3,11 +3,11 @@ defmodule Autonomous.Store.MigrationsTest do
 
   alias Autonomous.Store.Migrations
 
-  test "current_version/0 is 8 (… + continue_restore_failure + phase_attempt.conversations)" do
-    assert Migrations.current_version() == 8
+  test "current_version/0 is 9 (… + phase_attempt.conversations + feature_run.attachments)" do
+    assert Migrations.current_version() == 9
   end
 
-  test "all/0 is the v2 refusal, the v3 pr_url transform, the v4 advanced_with_findings transform, the v5 spec_number transform, the v6 clarify_round create, the v7 continue_restore_failure transform, and the v8 conversations transform" do
+  test "all/0 is the v2 refusal, the v3 pr_url transform, the v4 advanced_with_findings transform, the v5 spec_number transform, the v6 clarify_round create, the v7 continue_restore_failure transform, the v8 conversations transform, and the v9 attachments transform" do
     assert [
              {2, v2_description, v2_fun},
              {3, v3_description, v3_fun},
@@ -15,7 +15,8 @@ defmodule Autonomous.Store.MigrationsTest do
              {5, v5_description, v5_fun},
              {6, v6_description, v6_fun},
              {7, v7_description, v7_fun},
-             {8, v8_description, v8_fun}
+             {8, v8_description, v8_fun},
+             {9, v9_description, v9_fun}
            ] = Migrations.all()
 
     assert v2_description =~ "019 clean break"
@@ -39,6 +40,9 @@ defmodule Autonomous.Store.MigrationsTest do
 
     assert v8_description =~ "conversations"
     assert is_function(v8_fun, 0)
+
+    assert v9_description =~ "attachments"
+    assert is_function(v9_fun, 0)
   end
 
   describe "apply_pending/1" do
@@ -67,12 +71,17 @@ defmodule Autonomous.Store.MigrationsTest do
       boot_script(dir, """
       alias Autonomous.Store.{Mnesia, Records, Schema}
 
-      v5 = Schema.table(:speckit_feature_run).attributes
-      v4 = List.delete(v5, :spec_number)
+      v9 = Schema.table(:speckit_feature_run).attributes
+      v4 = v9 |> List.delete(:spec_number) |> List.delete(:attachments)
 
-      # Reshape the live table back into the v4 record it would have on disk,
-      # then write two rows through that older shape.
-      Mnesia.transform_table(:speckit_feature_run, &Tuple.delete_at(&1, tuple_size(&1) - 1), v4)
+      # Reshape the live table back into the v4 record it would have on disk
+      # (spec_number and attachments are the two trailing attributes), then
+      # write two rows through that older shape.
+      Mnesia.transform_table(
+        :speckit_feature_run,
+        &(&1 |> Tuple.delete_at(tuple_size(&1) - 1) |> Tuple.delete_at(tuple_size(&1) - 2)),
+        v4
+      )
 
       # ...and the run table back to its v6 shape, so migration 7 has a real
       # attribute to append.
@@ -125,7 +134,7 @@ defmodule Autonomous.Store.MigrationsTest do
 
     assert output =~ "BOOT_OK"
     assert output =~ "SECOND_BOOT_OK"
-    assert output =~ "VERSION_AFTER [{:speckit_meta, :schema_version, 8}]"
+    assert output =~ "VERSION_AFTER [{:speckit_meta, :schema_version, 9}]"
     # Nothing dropped or truncated; each row's spec_number equals its own
     # :number (FR-007) — a backfill, not an invented value.
     assert output =~ ~s(MIGRATED {"001", 1, 1, :done})
@@ -176,6 +185,48 @@ defmodule Autonomous.Store.MigrationsTest do
 
     assert output =~ "SECOND_BOOT_OK"
     assert output =~ ~s(MIGRATED {"r000001", :parked, nil})
+  end
+
+  @tag :integration
+  test "a recorded v8 schema migrates to v9 — every feature row gets nil attachments" do
+    dir = tmp_dir("v8_migrated")
+
+    output =
+      boot_script(dir, """
+      alias Autonomous.Store.{Mnesia, Records, Schema}
+
+      v8 = List.delete(Schema.table(:speckit_feature_run).attributes, :attachments)
+      Mnesia.transform_table(:speckit_feature_run, &Tuple.delete_at(&1, tuple_size(&1) - 1), v8)
+
+      row =
+        List.to_tuple([:speckit_feature_run | Enum.map(v8, fn
+          :key -> {"o:repo", "r000001", "001"}
+          :run_key -> {"o:repo", "r000001"}
+          :feature_id -> "001"
+          :slug -> "core-ledger"
+          :number -> 1
+          :spec_number -> 1
+          :status -> :done
+          _ -> nil
+        end)])
+
+      Mnesia.transaction(fn ->
+        Mnesia.write(row)
+        Mnesia.write({:speckit_meta, :schema_version, 8})
+      end)
+
+      case Autonomous.Store.Boot.start!(#{inspect(dir)}) do
+        :ok -> IO.puts("SECOND_BOOT_OK")
+        {:error, reason} -> IO.puts("SECOND_BOOT_ERROR " <> inspect(reason))
+      end
+
+      {:ok, [tuple]} = Mnesia.transaction(fn -> Mnesia.read(:speckit_feature_run, {"o:repo", "r000001", "001"}) end)
+      {:ok, f} = Records.decode(:speckit_feature_run, tuple)
+      IO.puts("MIGRATED " <> inspect({f.feature_id, f.status, f.spec_number, f.attachments}))
+      """)
+
+    assert output =~ "SECOND_BOOT_OK"
+    assert output =~ ~s(MIGRATED {"001", :done, 1, nil})
   end
 
   @tag :integration

@@ -129,7 +129,8 @@ defmodule Autonomous.Store.Records do
       :started_at,
       :ended_at,
       :advanced_with_findings,
-      :spec_number
+      :spec_number,
+      :attachments
     ]
 
     @type t :: %__MODULE__{
@@ -158,7 +159,8 @@ defmodule Autonomous.Store.Records do
             started_at: DateTime.t() | nil,
             ended_at: DateTime.t() | nil,
             advanced_with_findings: map() | nil,
-            spec_number: pos_integer() | nil
+            spec_number: pos_integer() | nil,
+            attachments: [map()] | nil
           }
   end
 

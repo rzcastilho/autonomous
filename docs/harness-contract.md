@@ -205,3 +205,11 @@ fact below.
 - **First event = initialized.** The SDK emits the CLI's `system/init` message
   as the first stream element only after a successful initialize, so "no event
   yet" distinguishes `:start_failed` from `:ended_early`.
+
+## Attachments (feature 047)
+
+`RunRequest.attachments` exists but the pinned `jido_claude` adapter does **not** forward it
+(no code in `deps/jido_claude/lib` reads it). Attachments are delivered by file instead: committed
+into the worktree and opened by the session with `Read` (PNG → `image` block, PDF → `document`
+block; probed on CLI 2.1.318). Such a read emits one `user` frame carrying the base64 twice, so
+`SdkProxy.prepare/1` sets `max_buffer_size` to `Config.session_max_line_bytes/0` for every session.

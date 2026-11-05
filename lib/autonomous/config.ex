@@ -145,6 +145,27 @@ defmodule Autonomous.Config do
   @spec container_engine_cleanup_timeout_ms() :: pos_integer()
   def container_engine_cleanup_timeout_ms, do: get(:container_engine_cleanup_timeout_ms, 120_000)
 
+  @doc "Maximum attachments on one single-spec run (feature 047)."
+  @spec attachment_max_files() :: pos_integer()
+  def attachment_max_files, do: positive!(:attachment_max_files, 10)
+
+  @doc "Maximum size in bytes of one attachment (feature 047)."
+  @spec attachment_max_file_bytes() :: pos_integer()
+  def attachment_max_file_bytes, do: positive!(:attachment_max_file_bytes, 10_000_000)
+
+  @doc "Maximum combined size in bytes of one run's attachments (feature 047)."
+  @spec attachment_max_total_bytes() :: pos_integer()
+  def attachment_max_total_bytes, do: positive!(:attachment_max_total_bytes, 25_000_000)
+
+  @doc """
+  Longest stdout line, in bytes, a session transport accepts (feature 047, R3).
+  A `Read` of a binary file puts its base64 on one line twice, so the limit is
+  twice the encoded size of the largest attachment plus 1 MiB of headroom.
+  """
+  @spec session_max_line_bytes() :: pos_integer()
+  def session_max_line_bytes,
+    do: 2 * ceil(attachment_max_file_bytes() * 4 / 3) + 1_048_576
+
   @doc "Stderr lines kept from the start of a session's conversation record (feature 043)."
   @spec conversation_stderr_head() :: pos_integer()
   def conversation_stderr_head, do: positive!(:conversation_stderr_head, 1000)
