@@ -325,6 +325,11 @@ fieldset {
   font-size: var(--fs-eyebrow);
   line-height: 0;
   color: transparent;
+  /* The sublabel text is invisible but nowrap: without this its width feeds the
+     table cell's auto-layout and stretches the whole Progress column (implement
+     chunk titles are long). inline-size containment gives the cell no intrinsic
+     width, so the strip fills the column instead of widening it. */
+  contain: inline-size;
 }
 
 .phase-sublabel {
