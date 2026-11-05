@@ -370,6 +370,37 @@ The optional stacked PR workflow works too — `run_spec(description,
 pr_workflow: true)` preflights the remote/pack, then pushes the branch and
 opens a PR on `:done`, exactly like `run/1`.
 
+### Attachments (047)
+
+`run_spec/2` (and the console single-spec form) accept reference files — images
+(PNG, JPEG, GIF, WebP), PDFs, and text/data (`.md .markdown .txt .csv .json`) — **at start only**:
+
+```elixir
+Autonomous.run_spec("Build the screen in the mockup", attachments: ["~/mock.png", "~/brief.pdf"])
+```
+
+- Validation is content-based (`Attachments.Sniff`): signature first, extension second.
+  Every refusal is named per file (`{:error, {:attachments, [%{file:, reason:}]}}`); a
+  refused start writes nothing.
+- Limits (defaults): 10 files, **6 MB each**, 25 MB total. Do not raise the per-file limit past
+  about 6.2 MB: a `Read` of a larger PDF/image puts a base64 line past the transport's 16 MiB
+  ceiling and the session ends silently (live probe, 047). Override with
+  `AUTONOMOUS_ATTACHMENT_MAX_FILES`, `AUTONOMOUS_ATTACHMENT_MAX_FILE_BYTES`,
+  `AUTONOMOUS_ATTACHMENT_MAX_TOTAL_BYTES`; a bad value raises at first read.
+- Files are committed by the orchestrator into `specs/<id>-<slug>/attachments/` before the
+  seed, so they land in the feature branch and the PR. **Warning:** they are committed and
+  pushed — do not attach secrets. The PR body lists them.
+- Sessions open them with `Read`; the prompt names stored names only. An attachment a
+  session cannot read becomes `## NEEDS HUMAN` at specify/clarify.
+- `resume/2`, `continue_run/1` and a `resolve/1` re-run cannot add or change attachments
+  (`{:unsupported_option, :attachments}`); at entry `FeatureRunner` verifies sha256 and fails
+  with `attachments changed since the run started: …` on tamper.
+- Conversation recordings replace base64 content with a `[application/pdf, 512 KB: binary
+  content not recorded]` text block. Sessions' stream line limit is raised
+  (`Config.session_max_line_bytes/0`) so a large PDF read does not kill the session.
+
+Store schema v9 (manifest on the feature). See `specs/047-multimodal-single-spec/`.
+
 See `specs/001-single-spec-run/quickstart.md` for the full validation walkthrough
 (including the guarantee checks) and `specs/001-single-spec-run/contracts/run_spec.md`
 for the interface contract.

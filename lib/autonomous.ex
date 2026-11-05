@@ -9,6 +9,7 @@ defmodule Autonomous do
   """
 
   alias Autonomous.{
+    Attachments,
     Backlog,
     Config,
     ContainerGuard,
@@ -125,6 +126,7 @@ defmodule Autonomous do
     # nothing and creates nothing. 039: it also precedes capturing the run
     # context, so a retired option's value is never even read.
     with :ok <- reject_retired_opts(opts),
+         :ok <- reject_attachments_opt(opts),
          run_context = RunContext.capture(opts),
          {:ok, _settings} <- preflight_remediation(run_context),
          {:ok, _settings} <- preflight_interactive_clarify(run_context),
@@ -170,6 +172,15 @@ defmodule Autonomous do
       [] -> :ok
       retired -> {:error, {:preflight, Enum.map(retired, &{:retired_option, &1})}}
     end
+  end
+
+  # 047: attachments are supplied once, to `run_spec/2`, and then live in the run
+  # record. `run/1` (and so `resume/2`/`continue_run/1`, which route through it)
+  # never accepts them — they are restored from the record, not re-supplied.
+  defp reject_attachments_opt(opts) do
+    if Keyword.has_key?(opts, :attachments),
+      do: {:error, {:unsupported_option, :attachments}},
+      else: :ok
   end
 
   # 018: a resume path already resolved the run to continue (`:run_key`) —
@@ -260,7 +271,8 @@ defmodule Autonomous do
         path: &1.path,
         number: &1.number,
         group: &1.group,
-        created_at: &1.created_at
+        created_at: &1.created_at,
+        attachments: &1.attachments
       }
     )
   end
@@ -366,6 +378,14 @@ defmodule Autonomous do
     * `:repo`, `:ad_hoc_dir` — override target locations used to gather
       already-taken ids (tests; default `Config.repo/0`,
       `Layout.in_repo_rel(:ad_hoc)` joined onto `:repo`).
+    * `:attachments` (feature 047) — a list of files (`path` or
+      `{path, display_name}`) the specification is built from: images, PDFs and
+      text (`.md .markdown .txt .csv .json`). Every file is validated before any
+      side effect; on refusal the call returns
+      `{:error, {:attachments, [%{file: name, reason: term}]}}` naming **every**
+      bad file and creates no branch, worktree or run record. Accepted files are
+      committed on the feature branch before the seed. Only `run_spec/2` takes
+      this option; `run/1`, `resume/2` and `continue_run/1` refuse or ignore it.
 
   When the caller injects `:runner` or `:executor` (test seam), the seed is
   **not** written — there is no real worktree to write it into.
@@ -387,15 +407,25 @@ defmodule Autonomous do
       if blank?(description) do
         {:error, :empty_description}
       else
-        case SingleSpec.build(description, gather_taken_ids(opts), opts) do
-          {:error, :empty_description} = err ->
-            err
+        # 047: attachments are read and validated here, before any taken-id
+        # gathering, branch, worktree or run record — a refusal names every bad
+        # file and creates nothing. The bytes stay in memory (the executor
+        # closure) until the worktree exists. `run/1` never sees the option.
+        {attachment_inputs, opts} = Keyword.pop(opts, :attachments, [])
 
-          {:ok, feature} ->
-            case spec_run_opts(opts, feature, description) do
-              {:ok, run_opts} -> run(run_opts)
-              {:error, _reason} = err -> err
-            end
+        with {:ok, {manifest, payloads}} <- Attachments.load(attachment_inputs) do
+          case SingleSpec.build(description, gather_taken_ids(opts), opts) do
+            {:error, :empty_description} = err ->
+              err
+
+            {:ok, feature} ->
+              feature = %{feature | attachments: manifest}
+
+              case spec_run_opts(opts, feature, description, payloads) do
+                {:ok, run_opts} -> run(run_opts)
+                {:error, _reason} = err -> err
+              end
+          end
         end
       end
     end
@@ -2353,7 +2383,7 @@ defmodule Autonomous do
   # check think the *caller* supplied a test seam and silently skip its
   # preflight for a real run. We check against the caller's original opts, run
   # the preflight ourselves when it applies, and only then inject.
-  defp spec_run_opts(opts, feature, description) do
+  defp spec_run_opts(opts, feature, description, payloads) do
     # T023: a single-spec run is always ad-hoc scope — never a breakdown
     # package selection.
     opts = opts |> Keyword.put(:features, [feature]) |> Keyword.put(:scope, :ad_hoc)
@@ -2373,7 +2403,10 @@ defmodule Autonomous do
               opts =
                 opts
                 |> Keyword.put(:layout, layout)
-                |> Keyword.put(:executor, seed_executor(description, run_context, layout))
+                |> Keyword.put(
+                  :executor,
+                  seed_executor(description, run_context, layout, payloads)
+                )
 
               {:ok, opts}
 
@@ -2422,14 +2455,22 @@ defmodule Autonomous do
     end
   end
 
-  defp seed_executor(description, run_context, layout) do
+  defp seed_executor(description, run_context, layout, payloads) do
     fn feature, base, notify ->
       Workers.spawn(current_run_key(), feature.id, fn ->
         case ensure_spec_number(feature, current_run_key(), base) do
           {:ok, feature} ->
             case Worktree.create(feature, [base: base] ++ worktree_create_opts(layout)) do
               {:ok, worktree} ->
-                run_seeded(feature, worktree, base, description, notify, run_context, layout)
+                run_seeded(
+                  feature,
+                  worktree,
+                  base,
+                  {description, payloads},
+                  notify,
+                  run_context,
+                  layout
+                )
 
               {:error, reason} ->
                 notify.(feature.id, :failed, {:worktree, reason})
@@ -2444,21 +2485,33 @@ defmodule Autonomous do
     end
   end
 
-  defp run_seeded(feature, worktree, base, description, notify, run_context, layout) do
-    case write_seed(worktree, feature, description, layout) do
-      :ok ->
-        FeatureRunner.run(feature,
-          worktree: worktree,
-          ledger: Ledger,
-          notify: notify,
-          run_context: run_context,
-          layout: layout,
-          stack_base: base,
-          run_key: current_run_key()
-        )
+  defp run_seeded(feature, worktree, base, {description, payloads}, notify, run_context, layout) do
+    # 047: the attachments are committed on the feature branch BEFORE the seed
+    # (and before any session), so a retry, restore or resume finds them.
+    with :ok <- commit_attachments(feature, worktree, payloads),
+         :ok <- write_seed(worktree, feature, description, layout) do
+      FeatureRunner.run(feature,
+        worktree: worktree,
+        ledger: Ledger,
+        notify: notify,
+        run_context: run_context,
+        layout: layout,
+        stack_base: base,
+        run_key: current_run_key()
+      )
+    else
+      {:attachments_failed, reason} ->
+        notify.(feature.id, :failed, {:attachments, reason})
 
       {:error, reason} ->
         notify.(feature.id, :failed, {:seed, reason})
+    end
+  end
+
+  defp commit_attachments(feature, worktree, payloads) do
+    case Attachments.commit(feature, worktree, payloads) do
+      :ok -> :ok
+      {:error, reason} -> {:attachments_failed, reason}
     end
   end
 
@@ -2969,7 +3022,9 @@ defmodule Autonomous do
   # recorded on :done (018 — replaces `Describe.read_pr/2`); fall back to a
   # template if it is absent/empty or this run isn't store-backed.
   defp pr_text(feature, base) do
-    note = Remediation.pr_note(store_advanced_with_findings(feature.id))
+    note =
+      Remediation.pr_note(store_advanced_with_findings(feature.id)) <>
+        Attachments.pr_note(feature)
 
     case store_pr_description(feature.id) do
       %{pr_title: t, pr_body: b} when t not in [nil, ""] and b not in [nil, ""] ->

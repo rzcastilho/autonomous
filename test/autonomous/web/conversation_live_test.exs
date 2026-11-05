@@ -507,6 +507,7 @@ defmodule Autonomous.Web.ConversationLiveTest do
       refute html =~ "first session words"
       refute has_element?(view, ".conv-follow")
       assert has_element?(view, "[data-live-badge]")
+
       assert has_element?(
                view,
                ~s(a.btn-secondary.btn-compact.conv-open-full[href="/live/#{first.conversation_id}"])

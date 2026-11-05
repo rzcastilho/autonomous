@@ -230,6 +230,51 @@ defmodule Autonomous.Store.ExportTest do
     end
   end
 
+  describe "attachments (047)" do
+    defp bare_feature(extra) do
+      Map.merge(
+        %{
+          feature_id: "003",
+          slug: "x",
+          path: "specs/003",
+          number: 3,
+          group: :ad_hoc,
+          created_at: nil,
+          status: :running,
+          terminal_reason: nil,
+          branch: nil,
+          worktree_path: nil,
+          pr_description: nil,
+          checkpoint: nil,
+          escalations: [],
+          remediation_attempts: [],
+          phase_attempts: []
+        },
+        extra
+      )
+    end
+
+    test "the key appears only when the manifest is non-empty" do
+      att = %{
+        original_name: "My Mock.png",
+        stored_name: "My-Mock.png",
+        type: :png,
+        media_type: "image/png",
+        size: 67,
+        sha256: "abc"
+      }
+
+      with_att = decode(base_input([bare_feature(%{attachments: [att]})]))
+      [f] = with_att["run"]["features"]
+      assert [%{"stored_name" => "My-Mock.png", "type" => "png", "size" => 67}] = f["attachments"]
+
+      for extra <- [%{}, %{attachments: []}] do
+        [f] = decode(base_input([bare_feature(extra)]))["run"]["features"]
+        refute Map.has_key?(f, "attachments")
+      end
+    end
+  end
+
   describe "conversations (040)" do
     defp feature_with(attempt) do
       %{

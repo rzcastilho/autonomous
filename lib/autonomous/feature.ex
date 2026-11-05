@@ -26,7 +26,8 @@ defmodule Autonomous.Feature do
             group: :backlog,
             created_at: nil,
             status: :pending,
-            spec_number: nil
+            spec_number: nil,
+            attachments: []
 
   @type status ::
           :pending
@@ -45,7 +46,8 @@ defmodule Autonomous.Feature do
           group: :backlog | :ad_hoc,
           created_at: DateTime.t() | nil,
           status: status(),
-          spec_number: pos_integer() | nil
+          spec_number: pos_integer() | nil,
+          attachments: [Autonomous.Attachment.t()]
         }
 
   @terminal_statuses [:done, :escalated, :halted, :failed]

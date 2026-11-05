@@ -142,6 +142,38 @@ defmodule Autonomous.Worktree do
   end
 
   @doc """
+  Force-add and commit exactly `paths` (relative to the worktree) as the
+  orchestrator (feature 047). `git add -f` makes an attachment a tracked file even
+  when the target's `.gitignore` would hide it, so later `git add -A`
+  checkpoints, `restore/1` (`reset --hard` + `clean -fd`) and `squash/3` all keep
+  it. Returns `:ok` on a commit, `:noop` when nothing changed, `{:error, term}`.
+  """
+  @spec commit_paths(t(), [String.t()], String.t()) :: :ok | :noop | {:error, term()}
+  def commit_paths(%__MODULE__{path: path}, paths, message) when is_list(paths) do
+    with {:ok, _} <- git(path, ["add", "-f", "--" | paths]) do
+      case git(path, ["diff", "--cached", "--quiet", "--" | paths]) do
+        {:ok, _} ->
+          :noop
+
+        {:error, _} ->
+          case git(path, [
+                 "-c",
+                 "user.name=autonomous",
+                 "-c",
+                 "user.email=orchestrator@speckit.local",
+                 "commit",
+                 "-m",
+                 message,
+                 "--" | paths
+               ]) do
+            {:ok, _} -> :ok
+            {:error, _} = err -> err
+          end
+      end
+    end
+  end
+
+  @doc """
   Collapse the per-phase checkpoint commits made since `base_ref` into one
   commit (FR-004). `git reset --soft base_ref` moves the branch pointer back to
   the fork point while keeping the working tree and index untouched, so the

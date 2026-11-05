@@ -75,7 +75,14 @@ defmodule Autonomous.SdkProxy do
   def prepare(%{env: env} = options) when is_map(env) do
     {marker, env} = Map.pop(env, @env_key)
     {conversation, env} = Map.pop(env, @conversation_key)
-    %{options | env: env, stderr: callback(decode(marker), decode(conversation))}
+    # 047 (R3): a Read of an attached PDF/image arrives as one base64 line; the
+    # SDK default buffer would abort the session on it.
+    %{
+      options
+      | env: env,
+        stderr: callback(decode(marker), decode(conversation)),
+        max_buffer_size: Autonomous.Config.session_max_line_bytes()
+    }
   end
 
   def prepare(options), do: options

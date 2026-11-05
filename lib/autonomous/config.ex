@@ -145,6 +145,44 @@ defmodule Autonomous.Config do
   @spec container_engine_cleanup_timeout_ms() :: pos_integer()
   def container_engine_cleanup_timeout_ms, do: get(:container_engine_cleanup_timeout_ms, 120_000)
 
+  @doc "Maximum attachments on one single-spec run (feature 047)."
+  @spec attachment_max_files() :: pos_integer()
+  def attachment_max_files, do: positive!(:attachment_max_files, 10)
+
+  @doc """
+  Maximum size in bytes of one attachment (feature 047). The default is the largest
+  size whose `Read` still fits the transport's line ceiling (see
+  `session_max_line_bytes/0`): a base64 line past 16 MiB ends the session silently,
+  which a live probe showed at 6.4 MB and above. Raising it past about 6.2 MB with
+  `AUTONOMOUS_ATTACHMENT_MAX_FILE_BYTES` accepts files a session cannot read.
+  """
+  @spec attachment_max_file_bytes() :: pos_integer()
+  def attachment_max_file_bytes, do: positive!(:attachment_max_file_bytes, 6_000_000)
+
+  @doc "Maximum combined size in bytes of one run's attachments (feature 047)."
+  @spec attachment_max_total_bytes() :: pos_integer()
+  def attachment_max_total_bytes, do: positive!(:attachment_max_total_bytes, 25_000_000)
+
+  # `external_runtime_transport` fails a stdout line past this size no matter what
+  # `max_buffer_size` says (its `max_recoverable_line_bytes` default, not exposed by
+  # `ClaudeAgentSDK`): the stream just ends after the tool call. Probed live: a
+  # ~14 MiB line passes, a ~16.3 MiB one does not.
+  @transport_line_ceiling 16_777_216
+
+  @doc """
+  Longest stdout line, in bytes, a session transport accepts (feature 047, R3).
+  A `Read` of a binary file puts its base64 on one line twice, so the limit is
+  twice the encoded size of the largest attachment plus 512 KiB of headroom,
+  clamped to the transport's own 16 MiB ceiling (a larger value changes nothing).
+  """
+  @spec session_max_line_bytes() :: pos_integer()
+  def session_max_line_bytes,
+    do:
+      min(
+        2 * ceil(attachment_max_file_bytes() * 4 / 3) + 524_288,
+        @transport_line_ceiling
+      )
+
   @doc "Stderr lines kept from the start of a session's conversation record (feature 043)."
   @spec conversation_stderr_head() :: pos_integer()
   def conversation_stderr_head, do: positive!(:conversation_stderr_head, 1000)

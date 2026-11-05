@@ -179,3 +179,11 @@ three independent edges, because each is read at a different time:
 
 See `docs/runbook.md` → "Parked runs" for the operator step-by-step and
 `docs/autonomous-implementation-plan.md` for scope and rationale.
+
+## Attachments (047)
+
+Single-spec runs may carry attachments (images, PDFs, text) supplied at start. The
+orchestrator commits them to `specs/<id>-<slug>/attachments/` before the seed; `specify` and
+`clarify` prompts name them and sessions open them with `Read`. No new phase or gate: an
+unreadable attachment surfaces through the existing `## NEEDS HUMAN` clarify gate; a changed
+file fails the feature at `FeatureRunner` entry. See `docs/runbook.md` → "Attachments (047)".

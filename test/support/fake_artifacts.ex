@@ -50,7 +50,7 @@ defmodule Autonomous.FakeArtifacts do
   def passthrough(:plan, cwd) do
     template = File.read!(Path.expand("../fixtures/templates/plan-template.md", __DIR__))
     write_file(cwd, ".specify/templates/plan-template.md", template)
-    write_file(cwd, "specs/001-fake/plan.md", template)
+    write_file(cwd, Path.join(spec_dir(cwd), "plan.md"), template)
   end
 
   defp under_tmp?(cwd) do
@@ -74,21 +74,31 @@ defmodule Autonomous.FakeArtifacts do
   end
 
   defp do_write(:specify, cwd) do
-    write_file(cwd, "specs/001-fake/spec.md", "# Spec\n\nFake feature spec.\n")
+    write_file(cwd, Path.join(spec_dir(cwd), "spec.md"), "# Spec\n\nFake feature spec.\n")
   end
 
   defp do_write(:plan, cwd) do
-    write_file(cwd, "specs/001-fake/plan.md", "# Plan\n\nFake implementation plan.\n")
+    write_file(cwd, Path.join(spec_dir(cwd), "plan.md"), "# Plan\n\nFake implementation plan.\n")
   end
 
   defp do_write(:tasks, cwd) do
-    write_file(cwd, "specs/001-fake/tasks.md", "# Tasks\n\n- [ ] T001 Do the thing\n")
+    write_file(cwd, Path.join(spec_dir(cwd), "tasks.md"), "# Tasks\n\n- [ ] T001 Do the thing\n")
   end
 
   # Implement must produce a change OUTSIDE the spec/doc scaffolding — that is
   # precisely what the gate looks for.
   defp do_write(:implement, cwd) do
     write_file(cwd, "lib/fake_feature.ex", "defmodule FakeFeature do\nend\n")
+  end
+
+  # A model told the feature directory already exists (047: it holds
+  # `attachments/`) reuses it; otherwise the fake creates its own.
+  defp spec_dir(cwd) do
+    case Path.wildcard(Path.join(cwd, "specs/001-*/attachments"))
+         |> Enum.map(&Path.dirname/1) do
+      [dir] -> Path.relative_to(dir, cwd)
+      _ -> "specs/001-fake"
+    end
   end
 
   defp write_file(cwd, rel, contents) do

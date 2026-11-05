@@ -333,4 +333,40 @@ defmodule Autonomous.ReportTest do
       refute out =~ "{:"
     end
   end
+
+  describe "attachment reasons (047)" do
+    test "one line per refused file, naming the limit" do
+      text =
+        Report.format_reason(
+          {:attachments,
+           [
+             %{file: "song.mp3", reason: :unsupported_type},
+             %{file: "huge.png", reason: {:too_large, 12_000_000, 10_000_000}},
+             %{file: "f11.txt", reason: {:too_many_files, 10}},
+             %{file: "b.pdf", reason: {:total_too_large, 26_000_000, 25_000_000}},
+             %{file: "x.png", reason: :content_mismatch},
+             %{file: "gone.png", reason: :not_found}
+           ]}
+        )
+
+      assert text =~ "song.mp3: unsupported file type"
+      assert text =~ "huge.png: 12000000 bytes exceeds the per-file limit of 10000000 bytes"
+      assert text =~ "f11.txt: more than 10 files"
+      assert text =~ "b.pdf: brings the total to 26000000 bytes, over the limit of 25000000"
+      assert text =~ "x.png: content does not match the file extension"
+      assert text =~ "gone.png: file not found"
+      refute text =~ "%{"
+    end
+
+    test "changed attachments and commit failures" do
+      assert Report.format_reason({:attachments_changed, ["a.png", "b.pdf"]}) =~
+               "attachments changed since the run started: a.png, b.pdf"
+
+      assert Report.format_reason({:attachments, {:git_failed, 128, "boom"}}) =~
+               "could not commit the attachments: git exited 128: boom"
+
+      assert Report.format_reason({:attachments, {:write_failed, "a.png", :enospc}}) =~
+               "writing a.png failed"
+    end
+  end
 end

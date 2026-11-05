@@ -96,7 +96,8 @@ defmodule Autonomous.Store.Writer do
             pr_description: nil,
             started_at: nil,
             ended_at: nil,
-            spec_number: nil
+            spec_number: nil,
+            attachments: attachment_records(f)
           })
         )
       end)
@@ -146,7 +147,8 @@ defmodule Autonomous.Store.Writer do
                 pr_description: nil,
                 started_at: nil,
                 ended_at: nil,
-                spec_number: nil
+                spec_number: nil,
+                attachments: attachment_records(f)
               })
             )
 
@@ -156,6 +158,17 @@ defmodule Autonomous.Store.Writer do
       end)
 
       :ok
+    end)
+  end
+
+  # 047: the manifest as plain maps (`nil`/absent ⇒ `[]`, "no attachments").
+  defp attachment_records(f) do
+    f
+    |> Map.get(:attachments)
+    |> List.wrap()
+    |> Enum.map(fn
+      %Autonomous.Attachment{} = a -> Autonomous.Attachment.to_record(a)
+      %{} = m -> m
     end)
   end
 

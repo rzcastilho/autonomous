@@ -212,6 +212,10 @@ defmodule Autonomous.Web.RunDetailLive do
   defp diverted?(%{status: status}), do: status in [:escalated, :halted, :failed]
   defp diverted?(_feature), do: false
 
+  # ---- attachments (047) --------------------------------------------------
+
+  defp attachment_rows(f), do: Autonomous.Web.AttachmentsView.rows(f)
+
   # ---- advanced-with-findings (021, contracts/advanced-record.md §4.2) ------
 
   defp finding_severity(finding), do: Map.get(finding, "severity", "unknown")
@@ -407,6 +411,19 @@ defmodule Autonomous.Web.RunDetailLive do
               <div :if={clarify_exhausted_evidence(f)} class="clarify-block" data-round="exhausted">
                 {clarify_exhausted_label(f)}
               </div>
+            </div>
+
+            <div :if={attachment_rows(f) != []} data-attachments>
+              <div class="run-context-label">Attachments</div>
+              <div :for={row <- attachment_rows(f)} class="attachment-row" data-attachment-row>
+                <span class="attachment-name">{row.original_name}</span>
+                <span :if={row.renamed?} class="attachment-meta">stored as {row.stored_name}</span>
+                <span class="attachment-meta">{row.media_type}</span>
+                <span class="attachment-meta">{row.size}</span>
+                <span class="attachment-meta">{row.location}</span>
+                <span class="attachment-meta" title={row.sha}>sha256 {row.sha_short}</span>
+              </div>
+              <div class="attachment-meta">branch: {f.branch}</div>
             </div>
 
             <div :if={f.advanced_with_findings} data-advanced-with-findings>

@@ -350,4 +350,37 @@ defmodule Autonomous.ConversationEntryTest do
       end
     end
   end
+
+  test "base64 source in a tool_result is replaced by a placeholder (047)" do
+    data = Base.encode64(:binary.copy("x", 512_000))
+
+    raw = %{
+      "type" => "user",
+      "message" => %{
+        "content" => [
+          %{
+            "type" => "tool_result",
+            "tool_use_id" => "t1",
+            "content" => [
+              %{
+                "type" => "document",
+                "source" => %{
+                  "type" => "base64",
+                  "media_type" => "application/pdf",
+                  "data" => data
+                }
+              },
+              %{"type" => "text", "text" => "kept"}
+            ]
+          }
+        ]
+      }
+    }
+
+    [e] = E.from_frame(frame(:user, raw))
+    encoded = Jason.encode!(e.body)
+    refute encoded =~ String.slice(data, 0, 40)
+    assert encoded =~ "application/pdf, 512.0 KB: binary content not recorded"
+    assert encoded =~ "kept"
+  end
 end

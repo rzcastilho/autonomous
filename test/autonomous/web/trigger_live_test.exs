@@ -144,6 +144,172 @@ defmodule Autonomous.Web.TriggerLiveTest do
     refute Process.whereis(Coordinator)
   end
 
+  # ---- 047 attachments ----------------------------------------------------
+
+  describe "single-spec attachments (047)" do
+    alias Autonomous.AttachmentFixtures, as: Fx
+
+    setup %{conn: conn} do
+      tmp = Path.join(System.tmp_dir!(), "trigger_att_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(tmp)
+      {_, 0} = System.cmd("git", ["init", "-q", tmp])
+
+      {_, 0} =
+        System.cmd("git", ["-C", tmp, "remote", "add", "origin", "git@example.com:test/t.git"])
+
+      on_exit(fn -> File.rm_rf(tmp) end)
+      Application.put_env(:autonomous, :repo, tmp)
+      Application.put_env(:autonomous, :breakdown_dir, "docs/breakdown")
+
+      me = self()
+
+      Application.put_env(:autonomous, :console_test_runner, fn feature, notify ->
+        send(me, {:started, feature})
+        notify.(feature.id, :done, nil)
+      end)
+
+      {:ok, view, _html} = live(conn, "/trigger")
+      render_click(view, "set_mode", %{"mode" => "single_spec"})
+      {:ok, view: view, conn: conn}
+    end
+
+    defp file(name, content, type \\ "application/octet-stream"),
+      do: %{name: name, content: content, type: type}
+
+    # One file per input: the test client drops its whole file list when the
+    # server cancels one of several files picked together, which a browser's
+    # input does not.
+    defp attach(view, files) do
+      for f <- files do
+        input = file_input(view, "#single-spec-form", :attachments, [f])
+        # a browser fires the form's phx-change on selection; the test client does not
+        view |> form("#single-spec-form") |> render_change(input)
+        render_upload(input, f.name)
+      end
+    end
+
+    test "a valid file is listed with name and size, and the commit notice appears", %{view: view} do
+      refute render(view) =~ "data-attachments-notice"
+      attach(view, [file("mockup.png", Fx.png())])
+      html = render(view)
+
+      assert html =~ "data-attachment="
+      assert html =~ "mockup.png"
+      assert html =~ "45 B"
+      assert html =~ "data-attachments-notice"
+      assert html =~ "pushed to the target"
+      refute html =~ ~s(data-error="attachment")
+    end
+
+    test "an invalid file is cancelled with a named refusal; others and the description stay",
+         %{view: view} do
+      render_change(view, "update_description", %{"description" => "Build the thing"})
+      attach(view, [file("ok.png", Fx.png()), file("fake.png", "just text")])
+      html = render(view)
+
+      assert html =~ ~s(data-error="attachment")
+      assert html =~ "fake.png: content does not match the file extension"
+      assert html =~ "ok.png"
+      refute html =~ ~r/data-attachment="[^"]*"[^>]*>\s*<span[^>]*>\s*fake\.png/
+      assert html =~ "Build the thing"
+    end
+
+    test "the file past the limit is refused by name", %{conn: conn} do
+      prior = Application.fetch_env(:autonomous, :attachment_max_files)
+      Application.put_env(:autonomous, :attachment_max_files, 2)
+
+      on_exit(fn ->
+        case prior do
+          {:ok, v} -> Application.put_env(:autonomous, :attachment_max_files, v)
+          :error -> Application.delete_env(:autonomous, :attachment_max_files)
+        end
+      end)
+
+      {:ok, view, _html} = live(conn, "/trigger")
+      render_click(view, "set_mode", %{"mode" => "single_spec"})
+      attach(view, for(i <- 1..3, do: file("f#{i}.txt", "x")))
+      html = render(view)
+
+      assert html =~ "f3.txt: more than 2 files"
+      assert html =~ "f1.txt"
+      assert html =~ "f2.txt"
+    end
+
+    test "remove_attachment drops the file and its refusal", %{view: view} do
+      attach(view, [file("a.png", Fx.png())])
+      [_, ref] = Regex.run(~r/data-attachment="([^"]+)"/, render(view))
+
+      html = render_click(view, "remove_attachment", %{"ref" => ref})
+      refute html =~ "data-attachment="
+      refute html =~ "data-attachments-notice"
+    end
+
+    test "blank description with attachments keeps the existing error and the files",
+         %{view: view} do
+      attach(view, [file("a.png", Fx.png())])
+      html = render_submit(view, "start_single_spec", %{"description" => "  "})
+
+      assert html =~ "Description is required"
+      assert html =~ "a.png"
+      refute_received {:started, _}
+    end
+
+    test "start with an upload in flight is refused and nothing is dispatched", %{view: view} do
+      input = file_input(view, "#single-spec-form", :attachments, [file("a.png", Fx.png())])
+      render_upload(input, "a.png", 40)
+
+      html = render_submit(view, "start_single_spec", %{"description" => "Build it"})
+      assert html =~ "still uploading"
+      refute_received {:started, _}
+    end
+
+    test "a valid start carries the manifest and navigates", %{view: view, conn: conn} do
+      attach(view, [file("mockup.png", Fx.png())])
+      result = render_submit(view, "start_single_spec", %{"description" => "Build the screen"})
+      {:ok, _mc, html} = follow_redirect(result, conn)
+
+      assert html =~ "Feature started"
+      assert_receive {:started, feature}, 5_000
+      assert [%{stored_name: "mockup.png", type: :png, size: 45}] = feature.attachments
+    end
+
+    test "a start with no files is the same as before", %{view: view, conn: conn} do
+      result = render_submit(view, "start_single_spec", %{"description" => "Build the screen"})
+      {:ok, _mc, _html} = follow_redirect(result, conn)
+      assert_receive {:started, feature}, 5_000
+      assert feature.attachments == []
+    end
+
+    test "the id/slug preview ignores attachments (FR-009)", %{view: view} do
+      before_html =
+        render_change(view, "update_description", %{"description" => "Add CSV export"})
+
+      attach(view, [file("a.png", Fx.png())])
+      after_html = render(view)
+
+      for html <- [before_html, after_html] do
+        assert html =~ "add-csv-export"
+      end
+    end
+
+    test "toggling the mode keeps finished uploads", %{view: view} do
+      attach(view, [file("a.png", Fx.png())])
+      render_click(view, "set_mode", %{"mode" => "backlog"})
+      html = render_click(view, "set_mode", %{"mode" => "single_spec"})
+      assert html =~ "a.png"
+    end
+
+    test "backlog start never carries attachments (FR-023)", %{view: view, conn: conn} do
+      attach(view, [file("a.png", Fx.png())])
+      point_backlog_at(@valid_dir)
+      render_click(view, "set_mode", %{"mode" => "backlog"})
+      result = render_click(view, "start_backlog", %{})
+      {:ok, _mc, _html} = follow_redirect(result, conn)
+      assert_receive {:started, feature}, 5_000
+      assert feature.attachments == []
+    end
+  end
+
   # 019, SC-001: no run-mode or concurrency decision exists anywhere on this
   # form — the trigger screen only describes the one run shape there is.
   test "the trigger screen renders zero run-shape inputs", %{conn: conn} do

@@ -100,7 +100,8 @@ defmodule Autonomous.Store.Schema do
           :ended_at,
           :pr_url,
           :advanced_with_findings,
-          :spec_number
+          :spec_number,
+          :attachments
         ],
         type: :set,
         storage: :disc_copies,

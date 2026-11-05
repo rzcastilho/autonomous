@@ -40,6 +40,13 @@ defmodule Autonomous.Store.Migrations do
   refused `continue_run/1` could not re-park the run. A plain **transform**:
   every v6 row gets `nil` (the fact did not exist when it was written).
 
+  Version 9 (feature 047, data-model.md) appends `speckit_feature_run.attachments`
+  — the manifest of files a single-spec run was started with. A plain
+  **transform**: every v8 row gets `nil` ("written before 047"), distinct from
+  `[]` ("no attachments"). Migration 5 now pins its own attribute list instead
+  of reading the current schema, which a v9 table would have made one longer
+  than the tuple v5 builds.
+
   Version 8 (feature 040, data-model.md) appends
   `speckit_phase_attempt.conversations` — the list of conversation refs, one per
   session the attempt drove. A plain **transform**: every v7 row gets `nil`,
@@ -47,7 +54,7 @@ defmodule Autonomous.Store.Migrations do
   from `[]` ("recorded, no session"). No row is dropped or rewritten lossily.
   """
 
-  alias Autonomous.Store.{Mnesia, Schema}
+  alias Autonomous.Store.Mnesia
 
   @type migration :: {pos_integer(), String.t(), (-> :ok | {:error, term()})}
 
@@ -137,12 +144,17 @@ defmodule Autonomous.Store.Migrations do
     :conversations
   ]
 
+  # v5 shape: v4 plus the appended :spec_number (what migration 5 transforms INTO).
+  @feature_run_v5_attributes @feature_run_v4_attributes ++ [:spec_number]
+
+  @feature_run_v9_attributes @feature_run_v5_attributes ++ [:attachments]
+
   # Position of :number in a v4 tuple: +1 for the record tag at element 0.
   @number_index Enum.find_index(@feature_run_v4_attributes, &(&1 == :number)) + 1
 
   @doc "The schema version this build of the orchestrator understands."
   @spec current_version() :: pos_integer()
-  def current_version, do: 8
+  def current_version, do: 9
 
   @doc "Every migration, ascending by version."
   @spec all() :: [migration()]
@@ -155,7 +167,8 @@ defmodule Autonomous.Store.Migrations do
       {5, "append feature_run.spec_number (backfilled from :number)", &add_spec_number/0},
       {6, "create speckit_clarify_round", &create_clarify_round/0},
       {7, "append speckit_run.continue_restore_failure", &add_continue_restore_failure/0},
-      {8, "append speckit_phase_attempt.conversations", &add_conversations/0}
+      {8, "append speckit_phase_attempt.conversations", &add_conversations/0},
+      {9, "append speckit_feature_run.attachments", &add_attachments/0}
     ]
   end
 
@@ -186,7 +199,7 @@ defmodule Autonomous.Store.Migrations do
     transform_table(
       :speckit_feature_run,
       &Tuple.insert_at(&1, tuple_size(&1), elem(&1, @number_index)),
-      Schema.table(:speckit_feature_run).attributes
+      @feature_run_v5_attributes
     )
   end
 
@@ -206,6 +219,16 @@ defmodule Autonomous.Store.Migrations do
       :speckit_phase_attempt,
       &Tuple.insert_at(&1, tuple_size(&1), nil),
       @phase_attempt_v8_attributes
+    )
+  end
+
+  # `:attachments` is the last attribute in the v9 table shape: a plain append.
+  # `nil` = "written before 047"; distinct from `[]` ("no attachments").
+  defp add_attachments do
+    transform_table(
+      :speckit_feature_run,
+      &Tuple.insert_at(&1, tuple_size(&1), nil),
+      @feature_run_v9_attributes
     )
   end
 

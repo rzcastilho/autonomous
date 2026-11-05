@@ -40,6 +40,54 @@ defmodule Autonomous.WorktreeTest do
     [repo: repo, worktree_root: root]
   end
 
+  describe "commit_paths/3 (047)" do
+    test "force-adds an ignored file, commits only the given paths, and survives restore and squash" do
+      repo = base_repo()
+      File.write!(Path.join(repo, ".gitignore"), "*.png\n")
+      git!(repo, ["add", "-A"])
+      git!(repo, ["commit", "-q", "-m", "ignore"])
+
+      {:ok, wt} = Worktree.create(feature(), with_root(repo))
+      {:ok, base} = git_rev(repo, "main")
+
+      File.mkdir_p!(Path.join(wt.path, "specs/001-x/attachments"))
+      File.write!(Path.join(wt.path, "specs/001-x/attachments/a.png"), "png")
+      File.write!(Path.join(wt.path, "other.txt"), "not me")
+
+      assert :ok =
+               Worktree.commit_paths(
+                 wt,
+                 ["specs/001-x/attachments"],
+                 "speckit: 001 attachments (1 files)"
+               )
+
+      {files, 0} =
+        System.cmd("git", ["-C", wt.path, "show", "--name-only", "--format=%an", "HEAD"])
+
+      assert String.split(files, "\n", trim: true) == [
+               "autonomous",
+               "specs/001-x/attachments/a.png"
+             ]
+
+      # nothing new to commit
+      assert Worktree.commit_paths(wt, ["specs/001-x/attachments"], "again") == :noop
+
+      assert :ok = Worktree.restore(wt)
+      assert File.read!(Path.join(wt.path, "specs/001-x/attachments/a.png")) == "png"
+      refute File.exists?(Path.join(wt.path, "other.txt"))
+
+      assert :ok = Worktree.squash(wt, base, "one commit")
+      {tracked, 0} = System.cmd("git", ["-C", wt.path, "ls-files", "specs"])
+      assert String.trim(tracked) == "specs/001-x/attachments/a.png"
+    end
+
+    test "a failing git add is an error" do
+      repo = base_repo()
+      {:ok, wt} = Worktree.create(feature(), with_root(repo))
+      assert {:error, {:git_failed, _, _}} = Worktree.commit_paths(wt, ["no/such/path"], "m")
+    end
+  end
+
   describe "fork_point/2" do
     test "returns the commit the branch diverged from its base at, not the branch tip" do
       repo = base_repo()

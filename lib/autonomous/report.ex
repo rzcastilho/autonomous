@@ -159,6 +159,21 @@ defmodule Autonomous.Report do
     do:
       "containment_profile is retired — there is one containment behaviour; run in the container"
 
+  # 047: attachment refusals (one line per file) and the post-start failures.
+  def format_reason({:attachments, refusals}) when is_list(refusals) do
+    Enum.map_join(refusals, "; ", fn %{file: file, reason: reason} ->
+      "#{file}: #{attachment_reason(reason)}"
+    end)
+  end
+
+  def format_reason({:attachments, reason}),
+    do: "could not commit the attachments: " <> attachment_commit_reason(reason)
+
+  def format_reason({:attachments_changed, names}) when is_list(names),
+    do:
+      "attachments changed since the run started: " <>
+        Enum.join(names, ", ") <> " (resume with the original files)"
+
   def format_reason({:preflight, problems}) when is_list(problems),
     do: "preflight failed: " <> Enum.map_join(problems, "; ", &format_reason/1)
 
@@ -283,4 +298,32 @@ defmodule Autonomous.Report do
       |> Enum.map_join("  ", fn {cell, w} -> String.pad_trailing(cell, w) end)
     end)
   end
+
+  defp attachment_reason(:not_found), do: "file not found"
+  defp attachment_reason(:unreadable), do: "could not be read"
+  defp attachment_reason(:empty), do: "file is empty"
+
+  defp attachment_reason(:unsupported_type),
+    do: "unsupported file type (PNG, JPEG, GIF, WebP, PDF, .md, .markdown, .txt, .csv, .json)"
+
+  defp attachment_reason(:content_mismatch), do: "content does not match the file extension"
+  defp attachment_reason(:corrupt), do: "file is corrupt or truncated"
+  defp attachment_reason(:not_text), do: "not valid UTF-8 text"
+
+  defp attachment_reason({:too_large, size, max}),
+    do: "#{size} bytes exceeds the per-file limit of #{max} bytes"
+
+  defp attachment_reason({:too_many_files, max}), do: "more than #{max} files (the limit)"
+
+  defp attachment_reason({:total_too_large, total, max}),
+    do: "brings the total to #{total} bytes, over the limit of #{max} bytes"
+
+  defp attachment_reason(other), do: "refused (#{format_reason(other)})"
+
+  defp attachment_commit_reason({:write_failed, name, posix}),
+    do: "writing #{name} failed (#{posix})"
+
+  defp attachment_commit_reason({:missing_payload, name}), do: "no content for #{name}"
+  defp attachment_commit_reason({:git_failed, code, out}), do: "git exited #{code}: #{out}"
+  defp attachment_commit_reason(other), do: format_reason(other)
 end

@@ -10,6 +10,10 @@ defmodule Autonomous.FeatureTest do
     assert f.created_at == nil
   end
 
+  test "attachments default to the empty list (047)" do
+    assert %Feature{id: "001", number: 1, slug: "a", path: "p"}.attachments == []
+  end
+
   test "terminal_statuses are the four end states" do
     assert Enum.sort(Feature.terminal_statuses()) ==
              Enum.sort([:done, :escalated, :halted, :failed])

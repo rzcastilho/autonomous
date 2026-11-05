@@ -7,7 +7,7 @@ defmodule Autonomous.Prompts do
   @prompts_dir Path.join([__DIR__, "..", "..", "priv", "prompts"])
 
   for name <-
-        ~w(clarify plan analyze analyze_remediation converge describe headless_rule agent_root container_engine) do
+        ~w(clarify plan analyze analyze_remediation converge describe headless_rule agent_root container_engine attachments attachments_specify attachments_clarify) do
     path = Path.join(@prompts_dir, "#{name}.md")
     @external_resource path
     contents = File.read!(path)

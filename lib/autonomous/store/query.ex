@@ -354,6 +354,7 @@ defmodule Autonomous.Store.Query do
       ended_at: f.ended_at,
       advanced_with_findings: f.advanced_with_findings,
       spec_number: f.spec_number,
+      attachments: f.attachments || [],
       phase_attempts:
         :speckit_phase_attempt
         |> Mnesia.index_read(f.key, :feature_key)

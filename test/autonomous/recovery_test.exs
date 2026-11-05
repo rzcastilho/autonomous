@@ -298,6 +298,25 @@ defmodule Autonomous.RecoveryTest do
     assert [%Feature{id: "001", spec_number: 42}] = features
   end
 
+  test "to_feature/1 restores the attachment manifest; absent or nil is []" do
+    rec = %{
+      original_name: "a.png",
+      stored_name: "a.png",
+      type: :png,
+      media_type: "image/png",
+      size: 1,
+      sha256: "x"
+    }
+
+    base = %{feature_id: "001", slug: "s", path: "p"}
+
+    assert [%Autonomous.Attachment{stored_name: "a.png", type: :png}] =
+             Recovery.to_feature(Map.put(base, :attachments, [rec])).attachments
+
+    assert Recovery.to_feature(Map.put(base, :attachments, nil)).attachments == []
+    assert Recovery.to_feature(base).attachments == []
+  end
+
   test "plan_run/2 rebuild carries spec_number: nil for an unallocated feature" do
     {layout, run_key} = seed_mid_run_state()
     on_exit(fn -> File.rm_rf(layout.worktree_root) end)
